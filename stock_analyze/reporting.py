@@ -15,7 +15,9 @@ POSITION_COLUMNS = {
     "code": "代码",
     "name": "名称",
     "shares": "持股数",
+    "available_shares": "可卖股数",
     "avg_cost": "平均成本",
+    "last_buy_date": "最近买入日",
     "last_price": "最新价",
     "market_value": "市值",
     "unrealized_pnl": "浮动盈亏",
@@ -68,6 +70,9 @@ PENDING_COLUMNS = {
     "signal_date": "信号日",
     "execute_after": "模拟成交日",
     "account_id": "账户",
+    "status": "状态",
+    "unfilled_reason": "未成交原因",
+    "attempts": "尝试次数",
     "side": "方向",
     "code": "代码",
     "name": "名称",
@@ -87,6 +92,9 @@ STATUS_LABELS = {
     "retry": "退避重试",
     "failed": "失败",
     "cache": "使用缓存",
+    "pending": "待执行",
+    "partial": "部分成交",
+    "filled": "已完成",
 }
 
 REASON_LABELS = {
@@ -96,6 +104,16 @@ REASON_LABELS = {
     "financial_fetch_failed": "财务数据获取失败",
     "pe_missing": "PE 缺失",
     "pb_missing": "PB 缺失",
+    "execution_quote_missing": "缺少模拟成交行情",
+    "execution_quote_not_visible": "运行日尚无可见成交行情",
+    "execution_price_missing": "模拟成交价缺失",
+    "limit_up_buy_blocked": "涨停买入阻塞",
+    "limit_down_sell_blocked": "跌停卖出阻塞",
+    "paused": "停牌阻塞",
+    "no_position": "无可卖持仓",
+    "no_sellable_shares": "T+1 或可卖股数不足",
+    "insufficient_cash": "现金不足",
+    "partial_fill": "部分成交",
 }
 
 FACTOR_LABELS = {
@@ -553,6 +571,10 @@ def display_pending_orders(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     if "side" in out.columns:
         out["side"] = out["side"].map(lambda value: SIDE_LABELS.get(str(value), str(value)))
+    if "status" in out.columns:
+        out["status"] = out["status"].map(lambda value: STATUS_LABELS.get(str(value), str(value)))
+    if "unfilled_reason" in out.columns:
+        out["unfilled_reason"] = out["unfilled_reason"].map(localize_reason)
     for col in ["reference_price", "score"]:
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce").round(3)
@@ -580,6 +602,9 @@ def read_pending_orders(store: PortfolioStore) -> pd.DataFrame:
                     "execute_after": batch.get("execute_after"),
                     "account_id": batch.get("account_id"),
                     "scope": batch.get("scope"),
+                    "status": order.get("status", "pending"),
+                    "unfilled_reason": order.get("unfilled_reason", ""),
+                    "attempts": order.get("attempts", 0),
                     **order,
                 }
             )

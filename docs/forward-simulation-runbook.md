@@ -6,7 +6,7 @@
 
 - 每周按配置的 A 股股票池生成选股信号。
 - 根据目标持仓生成待执行的模拟订单。
-- 在下一交易日用模拟价格、佣金、印花税、滑点执行订单。
+- 在下一交易日用模拟价格、佣金、印花税、滑点执行订单；缺少可见行情、停牌、涨停买入、跌停卖出或 T+1 不可卖时，订单会继续保留在 pending 状态。
 - 每日更新账户净值、持仓、交易流水和基准指数。
 - 生成中文 Markdown 周报和静态 HTML dashboard。
 - 记录数据源健康状态，方便看到接口失败、重试、缓存和降级情况。
@@ -119,8 +119,8 @@ python -m stock_analyze \
 
 ```text
 data/state.json                 账户现金和持仓状态
-data/pending_orders.json        等待模拟执行的订单
-data/daily_nav.csv              每日账户净值
+data/pending_orders.json        等待模拟执行的订单，包含 status、attempts、unfilled_reason
+data/daily_nav.csv              每日账户净值，按 date + account_id 去重/upsert
 data/trades.csv                 模拟交易流水
 data/positions.csv              当前模拟持仓
 data/latest_signals.csv         最近一次选股结果
@@ -140,10 +140,24 @@ logs/*.log, logs/*.err          systemd stdout/stderr 日志
 - 调仓：每周生成信号，下一交易日模拟成交。
 - 因子：PE、PB、ROE、毛利率、资产负债率、市值、20 日动量、60 日动量。
 - 成本：佣金、最低佣金、印花税、滑点、100 股整数倍。
+- 仓位：`max_single_weight` 会限制单只股票目标权重。
 - 严格必需字段：`require_fields`。
 - 降级必需字段：`fallback_require_fields`。
 
 策略会先执行严格过滤。如果公开数据缺失导致候选池被筛空，会记录 `hard_filters_empty_relaxed`，再用 `fallback_require_fields` 继续生成可观察的模拟结果。缺失因子不会加分，仍会影响排序。
+
+## 模拟成交规则
+
+周度任务会优先通过 AkShare 交易日历选择信号日之后的下一个 A 股交易日；如果交易日历接口和缓存都不可用，系统会降级为仅跳过周末的工作日近似，并把降级记录进 `data_health.json`。
+
+日度任务执行 pending orders 时采用保守规则：
+
+- 只使用当前运行日 `as_of` 之前已经可见的日 K 行情，不再为了成交去读取未来行情。
+- 正常模拟成交不再使用订单参考价兜底；如果运行日尚无可见行情，订单保留 pending。
+- 停牌、买入时涨停、卖出时跌停会阻塞模拟成交，并写入 `unfilled_reason`。
+- 持仓会记录 `available_shares` 和 `last_buy_date`。当日买入的股票按 T+1 近似处理，当日不可卖。
+- 部分成交或无法成交的订单不会静默消失，会保留 `status`、`attempts`、`last_attempt_at`、`unfilled_reason`、剩余 `delta_shares`。
+- 同一天重复更新 NAV 时，`daily_nav.csv` 会按 `date + account_id` 保留最新一行，避免重复净值点污染收益和回撤。
 
 ## 数据源和降级逻辑
 

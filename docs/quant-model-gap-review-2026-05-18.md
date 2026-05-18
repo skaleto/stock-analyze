@@ -12,6 +12,22 @@
 
 最优先要补的是正确性地基：point-in-time 财务数据、真实交易日历、停牌和涨跌停不可成交、T+1 可卖约束、历史指数成分、NAV 去重、未成交订单状态保留。否则后续即使加更多因子和图表，结果也可能被未来函数、幸存者偏差或模拟成交偏差污染。
 
+## OpenSpec 修正记录
+
+本轮按 OpenSpec change `harden-forward-simulation-correctness` 落地了 P0 中最直接影响前向模拟可信度的部分：
+
+- 周度调仓优先使用 A 股交易日历确定 `execute_after`，接口不可用时才降级到工作日近似。
+- 模拟成交只读取运行日之前可见的行情，不再为了成交偷看未来 K 线。
+- 正常执行不再用订单参考价兜底；缺少可见行情时订单保留 pending。
+- 未成交或部分成交订单会记录 `status`、`attempts`、`last_attempt_at`、`unfilled_reason`，不会静默消失。
+- 模拟成交会阻塞停牌、涨停买入、跌停卖出。
+- 持仓增加 `available_shares` 和 `last_buy_date`，用作 T+1 可卖股数近似。
+- `daily_nav.csv` 改为按 `date + account_id` upsert，避免同日重复运行污染净值曲线。
+- `trading.max_single_weight` 已参与目标股数计算。
+- Dashboard pending orders 增加状态、尝试次数和未成交原因。
+
+仍未在本轮完成的关键项包括：point-in-time 财务公告日、历史指数成分、公司行动/复权审计、多年回测、因子 IC/RankIC、行业/市值中性和数据库 run ledger。
+
 ## 当前模型画像
 
 配置入口：[configs/strategy_v1.yaml](../configs/strategy_v1.yaml)
@@ -42,11 +58,11 @@
 
 1. 历史模拟存在未来函数风险。`financial_metrics()`、`valuation_metrics()` 没有严格按 `as_of` 和公告日截断，`baostock_financial_metrics()` 还可能按当前年份取财务数据。历史回测时可能拿到当时不可见的信息。
 
-2. 成交价格路径有未来行情风险。`execution_price()` 通过完整历史数据找 `>= execute_after` 的第一根 K 线，如果用于历史回测，会从未来数据中寻找成交日。前向运行影响较小，但回测前必须修正。
+2. 成交价格路径原先有未来行情风险。`execution_price()` 曾通过完整历史数据找 `>= execute_after` 的第一根 K 线。OpenSpec 修正后，模拟成交通过运行日可见的 `execution_quote()` 取价，运行日之后的行情不会被用于成交。
 
-3. 未成交订单会被静默丢弃。`execute_due_orders()` 无论 `execute_order()` 是否返回交易，都会移除该批 pending orders。行情缺失、停牌、涨跌停不可成交时，订单不应该直接消失。
+3. 未成交订单原先会被静默丢弃。OpenSpec 修正后，行情缺失、停牌、涨跌停不可成交、T+1 可卖股数不足或现金不足时，订单保留 pending，并记录 `unfilled_reason`。
 
-4. 交易日历只是自然日近似。`next_business_day()` 只跳过周末，没有处理 A 股节假日、交易所休市日、临时停牌、复牌。
+4. 交易日历原先只是自然日近似。OpenSpec 修正后，周度调仓会优先使用 AkShare 交易日历；接口和缓存都不可用时才降级到 `next_business_day()`。
 
 5. 股票池预筛选会引入样本偏差。`max_fetch_candidates=180` 先按 PE/PB/市值预筛，再拉取财务和历史数据，后续因子排名不再是完整指数池排名。
 
@@ -56,21 +72,21 @@
 
 8. 市值因子方向可能变成风格押注。配置里 `market_cap_yi` 是“越大越好”，这会让组合偏大盘，未必是在赚价值/质量/动量的钱。
 
-9. `max_single_weight` 配置未被真正实现。当前等权目标来自 `total_value / top_n`，只是因为 `top_n=10` 才近似 10%。
+9. `max_single_weight` 配置原先未被真正实现。OpenSpec 修正后，目标订单会用 `account_total_value * max_single_weight` 对单票目标市值做上限。
 
 10. 买入资金规划与实际成交脱节。订单按信号价估算目标股数，执行时按开盘价和滑点逐单缩水，买入顺序会影响最终权重。
 
 11. 基准没有进入完整绩效计算。系统记录了 `benchmark_close`，但缺少基准收益、超额收益、超额回撤、信息比率等指标。
 
-12. NAV 可能重复追加。同一天重复运行会 append 多行 NAV，影响曲线、回撤和累计收益。
+12. NAV 原先可能重复追加。OpenSpec 修正后，`daily_nav.csv` 按 `date + account_id` upsert，同一天重复运行会保留最新一行。
 
 建议优先修复：
 
 - 给所有数据接口增加明确 `as_of` 语义和公告日约束。
-- `execution_price()` 只能看运行日可见数据，不能从完整未来行情里找成交。
-- 未成交订单保留 pending，并记录 `unfilled_reason`。
-- 引入真实 A 股交易日历。
-- `daily_nav.csv` 按 `date + account_id` upsert 或去重。
+- `execution_price()` 只能看运行日可见数据，不能从完整未来行情里找成交。（已在 OpenSpec P0 修正中处理）
+- 未成交订单保留 pending，并记录 `unfilled_reason`。（已在 OpenSpec P0 修正中处理）
+- 引入真实 A 股交易日历。（已在 OpenSpec P0 修正中处理，仍保留工作日降级）
+- `daily_nav.csv` 按 `date + account_id` upsert 或去重。（已在 OpenSpec P0 修正中处理）
 - 补基准收益、超额收益、最大超额回撤、信息比率。
 - 实现 `max_single_weight`、现金缓冲、成交后权重偏离记录。
 

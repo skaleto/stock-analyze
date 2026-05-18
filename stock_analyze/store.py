@@ -94,21 +94,29 @@ class PortfolioStore:
         )
 
     def append_nav(self, rows: list[dict[str, Any]]) -> None:
-        append_csv(
-            self.data_dir / DAILY_NAV_FILE,
-            rows,
-            [
-                "date",
-                "account_id",
-                "cash",
-                "market_value",
-                "total_value",
-                "benchmark_code",
-                "benchmark_close",
-                "benchmark_date",
-                "notes",
-            ],
-        )
+        if not rows:
+            return
+        columns = [
+            "date",
+            "account_id",
+            "cash",
+            "market_value",
+            "total_value",
+            "benchmark_code",
+            "benchmark_close",
+            "benchmark_date",
+            "notes",
+        ]
+        path = self.data_dir / DAILY_NAV_FILE
+        if path.exists():
+            existing = pd.read_csv(path)
+        else:
+            existing = pd.DataFrame(columns=columns)
+        new_rows = pd.DataFrame(rows, columns=columns)
+        combined = pd.concat([existing, new_rows], ignore_index=True)
+        combined = combined.drop_duplicates(["date", "account_id"], keep="last")
+        combined = combined.sort_values(["date", "account_id"])
+        combined.to_csv(path, index=False, encoding="utf-8-sig")
 
     def write_positions(self, state: dict[str, Any]) -> None:
         rows: list[dict[str, Any]] = []
@@ -122,7 +130,9 @@ class PortfolioStore:
             "code",
             "name",
             "shares",
+            "available_shares",
             "avg_cost",
+            "last_buy_date",
             "last_price",
             "market_value",
             "unrealized_pnl",
@@ -150,4 +160,3 @@ class PortfolioStore:
         if not path.exists():
             return pd.DataFrame()
         return pd.read_csv(path, dtype={"code": str})
-

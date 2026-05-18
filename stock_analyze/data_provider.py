@@ -13,7 +13,7 @@ import akshare as ak
 import pandas as pd
 import requests
 
-from .utils import ak_date, pct_change, previous_calendar_date, safe_float, write_json
+from .utils import ak_date, next_business_day, parse_date, pct_change, previous_calendar_date, safe_float, write_json
 
 
 INDEX_CODES = {
@@ -60,6 +60,18 @@ class PriceSnapshot:
     limit_down: bool = False
     source: str = ""
     warning: str = ""
+
+
+@dataclass
+class ExecutionQuote:
+    code: str
+    trade_date: str | None
+    price: float | None
+    paused: bool = False
+    limit_up: bool = False
+    limit_down: bool = False
+    source: str = ""
+    reason: str = ""
 
 
 class AkshareProvider:
@@ -198,6 +210,38 @@ class AkshareProvider:
         merged = constituents.merge(spot, on="code", how="left", suffixes=("_index", ""))
         merged["name"] = merged["name"].fillna(merged.get("name_index"))
         return merged[["code", "name", "latest_price", "pe", "pb", "market_cap_yi"]].copy()
+
+    def trading_calendar(self) -> list[str]:
+        cache_name = "trading_calendar"
+        try:
+            df = self.retry("trading_calendar_sina", ak.tool_trade_date_hist_sina, delays=[0.5])
+            dates = normalize_trading_calendar(df)
+            if dates:
+                self.save_cache(cache_name, pd.DataFrame({"trade_date": dates}))
+                return dates
+        except Exception as exc:  # noqa: BLE001
+            self.record_health("trading_calendar_sina", "failed", str(exc))
+
+        cached = self.load_cache(cache_name)
+        dates = normalize_trading_calendar(cached)
+        if dates:
+            return dates
+
+        return []
+
+    def next_trading_day(self, value: str | date | None) -> str:
+        day = parse_date(value)
+        dates = self.trading_calendar()
+        for item in dates:
+            try:
+                candidate = parse_date(item)
+            except ValueError:
+                continue
+            if candidate > day:
+                return candidate.isoformat()
+        fallback = next_business_day(day)
+        self.record_health("trading_calendar", "cache", f"fallback next_business_day={fallback}")
+        return fallback
 
     def basic_info(self, code: str) -> dict[str, Any]:
         cache_name = f"basic_{code}"
@@ -366,18 +410,53 @@ class AkshareProvider:
             source=str(latest.get("source", "")),
         )
 
-    def execution_price(self, code: str, execute_after: str, side: str) -> tuple[float | None, str | None]:
-        df = self.price_history(code, as_of=None, days=30)
+    def execution_quote(self, code: str, execute_after: str, side: str, as_of: str | None = None) -> ExecutionQuote:
+        visible_as_of = as_of or execute_after
+        df = self.price_history(code, as_of=visible_as_of, days=45)
         if df.empty:
-            return None, None
+            return ExecutionQuote(code=code, trade_date=None, price=None, reason="execution_quote_missing")
         df = df.copy()
         target = pd.to_datetime(execute_after).date()
-        df = df[pd.to_datetime(df["日期"]).dt.date >= target]
-        if df.empty:
-            return None, None
-        row = df.iloc[0]
+        visible_until = pd.to_datetime(visible_as_of).date()
+        df["_date"] = pd.to_datetime(df["日期"]).dt.date
+        visible = df[(df["_date"] >= target) & (df["_date"] <= visible_until)].copy()
+        if visible.empty:
+            return ExecutionQuote(code=code, trade_date=None, price=None, reason="execution_quote_not_visible")
+        row = visible.iloc[0]
         price = safe_float(row.get("开盘")) or safe_float(row.get("收盘"))
-        return price, str(row.get("日期"))
+        trade_date = str(row.get("日期"))
+        if price is None or price <= 0:
+            return ExecutionQuote(code=code, trade_date=trade_date, price=None, reason="execution_price_missing")
+
+        previous = df[df["_date"] < row["_date"]]
+        previous_close = safe_float(previous.iloc[-1].get("收盘")) if not previous.empty else None
+        upper, lower = price_limit_bounds(previous_close, code, is_truthy(row.get("is_st")))
+        paused = is_truthy(row.get("停牌"))
+        limit_up = upper is not None and price >= upper - 0.005
+        limit_down = lower is not None and price <= lower + 0.005
+        reason = ""
+        if paused:
+            reason = "paused"
+        elif side == "buy" and limit_up:
+            reason = "limit_up_buy_blocked"
+        elif side == "sell" and limit_down:
+            reason = "limit_down_sell_blocked"
+        return ExecutionQuote(
+            code=code,
+            trade_date=trade_date,
+            price=price,
+            paused=paused,
+            limit_up=limit_up,
+            limit_down=limit_down,
+            source=str(row.get("source", "")),
+            reason=reason,
+        )
+
+    def execution_price(self, code: str, execute_after: str, side: str) -> tuple[float | None, str | None]:
+        quote = self.execution_quote(code, execute_after, side, as_of=execute_after)
+        if quote.reason:
+            return None, quote.trade_date
+        return quote.price, quote.trade_date
 
     def benchmark_close(self, benchmark_code: str, as_of: str | None = None) -> tuple[float | None, str | None]:
         eastmoney_symbol = EASTMONEY_BENCHMARK_SYMBOLS.get(benchmark_code, f"sh{benchmark_code}")
@@ -572,6 +651,34 @@ def is_truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
+def normalize_trading_calendar(df: pd.DataFrame) -> list[str]:
+    if df is None or df.empty:
+        return []
+    date_col = first_available_column(df, ["trade_date", "日期", "date", "calendarDate"])
+    if not date_col:
+        return []
+    dates = pd.to_datetime(df[date_col], errors="coerce").dropna().dt.date.astype(str)
+    return sorted(set(dates.tolist()))
+
+
+def price_limit_bounds(previous_close: float | None, code: str, is_st: bool = False) -> tuple[float | None, float | None]:
+    if previous_close is None or previous_close <= 0:
+        return None, None
+    rate = price_limit_rate(code, is_st)
+    return round(previous_close * (1 + rate), 2), round(previous_close * (1 - rate), 2)
+
+
+def price_limit_rate(code: str, is_st: bool = False) -> float:
+    normalized = normalize_code(code)
+    if is_st:
+        return 0.05
+    if normalized.startswith(("300", "301", "688", "689")):
+        return 0.20
+    if normalized.startswith(("8", "4")):
+        return 0.30
+    return 0.10
 
 
 def normalize_spot(df: pd.DataFrame) -> pd.DataFrame:
