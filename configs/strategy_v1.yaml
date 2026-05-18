@@ -42,7 +42,8 @@
     "min_listing_days": 365,
     "min_pe": 0,
     "min_avg_amount_20": 50000000,
-    "require_fields": ["pe", "pb", "roe", "gross_margin", "debt_ratio", "momentum_20", "momentum_60"]
+    "require_fields": ["pe", "pb", "roe", "gross_margin", "debt_ratio", "momentum_20", "momentum_60"],
+    "fallback_require_fields": ["pe", "pb", "momentum_20", "momentum_60"]
   },
   "trading": {
     "lot_size": 100,

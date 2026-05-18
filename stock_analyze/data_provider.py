@@ -576,7 +576,7 @@ def normalize_history(df: pd.DataFrame) -> pd.DataFrame:
     normalized["最高"] = out[high_col].map(safe_float) if high_col else None
     normalized["最低"] = out[low_col].map(safe_float) if low_col else None
     if amount_col:
-        normalized["成交额"] = out[amount_col].map(safe_float)
+        normalized["成交额"] = normalize_amount_series(out[amount_col].map(safe_float))
     elif volume_col:
         normalized["成交额"] = pd.to_numeric(out[volume_col].map(safe_float), errors="coerce") * pd.to_numeric(normalized["收盘"], errors="coerce")
     else:
@@ -600,6 +600,19 @@ def normalize_index_history(df: pd.DataFrame) -> pd.DataFrame:
     out["日期"] = pd.to_datetime(df[date_col]).dt.date.astype(str)
     out["收盘"] = df[close_col].map(safe_float)
     return out.sort_values("日期").dropna(subset=["收盘"])
+
+
+def normalize_amount_series(values: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce")
+    if numeric.dropna().empty:
+        return numeric
+    # Tencent historical quotes report turnover in ten-thousand yuan while
+    # Eastmoney, Sina, and Baostock usually report yuan. Normalize the small
+    # but positive turnover scale so liquidity filters compare one unit.
+    high_quantile = numeric[numeric > 0].quantile(0.95)
+    if pd.notna(high_quantile) and 0 < high_quantile < 10_000_000:
+        return numeric * 10_000
+    return numeric
 
 
 def parse_financial_metrics(df: pd.DataFrame) -> dict[str, Any]:

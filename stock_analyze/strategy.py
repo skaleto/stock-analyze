@@ -71,7 +71,11 @@ def build_signals(config: dict[str, Any], account: dict[str, Any], provider: Aks
     if candidates.empty:
         raise RuntimeError(f"No candidates left after basic filters for {scope}")
 
-    candidates = apply_hard_filters(candidates, filters)
+    filtered = apply_hard_filters(candidates, filters)
+    if filtered.empty:
+        warnings.append("hard_filters_empty_relaxed")
+        filtered = apply_relaxed_filters(candidates, filters)
+    candidates = filtered
     if candidates.empty:
         raise RuntimeError(f"No candidates left after hard filters for {scope}")
 
@@ -134,6 +138,20 @@ def apply_hard_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.DataFram
         out = out[~out["paused"].fillna(False)]
 
     for field in filters.get("require_fields", []):
+        if field in out:
+            out = out[out[field].notna()]
+    return out
+
+
+def apply_relaxed_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.DataFrame:
+    out = df.copy()
+    min_pe = safe_float(filters.get("min_pe"))
+    if min_pe is not None and "pe" in out:
+        out = out[(out["pe"].isna()) | (out["pe"] > min_pe)]
+    if "paused" in out:
+        out = out[~out["paused"].fillna(False)]
+    fallback_fields = filters.get("fallback_require_fields") or ["pe", "pb", "momentum_20", "momentum_60"]
+    for field in fallback_fields:
         if field in out:
             out = out[out[field].notna()]
     return out
