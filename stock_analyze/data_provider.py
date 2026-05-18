@@ -73,9 +73,10 @@ class AkshareProvider:
         if self.cache_dir and self.health:
             write_json(self.cache_dir.parent / "data_health.json", self.health)
 
-    def retry(self, label: str, func: Callable[[], Any]) -> Any:
+    def retry(self, label: str, func: Callable[[], Any], delays: list[float] | None = None) -> Any:
         last_error: Exception | None = None
-        for attempt, delay in enumerate([0.0] + RETRY_DELAYS, start=1):
+        retry_delays = RETRY_DELAYS if delays is None else delays
+        for attempt, delay in enumerate([0.0] + retry_delays, start=1):
             if delay:
                 time.sleep(delay)
             try:
@@ -85,8 +86,11 @@ class AkshareProvider:
                 return result
             except Exception as exc:  # noqa: BLE001 - external data APIs fail in many shapes
                 last_error = exc
-                self.record_health(label, "retry" if attempt <= len(RETRY_DELAYS) else "failed", f"attempt={attempt}: {exc}")
+                self.record_health(label, "retry" if attempt <= len(retry_delays) else "failed", f"attempt={attempt}: {exc}")
         raise last_error or RuntimeError(f"{label} failed")
+
+    def fallback_retry(self, label: str, func: Callable[[], Any]) -> Any:
+        return self.retry(label, func, delays=[0.5])
 
     def cache_path(self, name: str) -> Path | None:
         if not self.cache_dir:
@@ -183,7 +187,7 @@ class AkshareProvider:
         if not cached.empty:
             return cached.iloc[0].to_dict()
         try:
-            df = self.retry(f"basic_{code}", lambda: ak.stock_individual_info_em(symbol=code))
+            df = self.fallback_retry(f"basic_{code}", lambda: ak.stock_individual_info_em(symbol=code))
             info = {row["item"]: row["value"] for _, row in df.iterrows()}
             result = {
                 "code": normalize_code(info.get("股票代码", code)) or code,
@@ -210,7 +214,7 @@ class AkshareProvider:
         indicator_map = {"pe": "市盈率(TTM)", "pb": "市净率"}
         for key, indicator in indicator_map.items():
             try:
-                df = self.retry(
+                df = self.fallback_retry(
                     f"valuation_{indicator}_{code}",
                     lambda indicator=indicator: ak.stock_zh_valuation_baidu(symbol=code, indicator=indicator, period="近一年"),
                 )
@@ -233,10 +237,10 @@ class AkshareProvider:
             return cached.iloc[0].to_dict()
 
         try:
-            indicators = self.retry(f"financial_abstract_{code}", lambda: ak.stock_financial_abstract(symbol=code))
+            indicators = self.fallback_retry(f"financial_abstract_{code}", lambda: ak.stock_financial_abstract(symbol=code))
             result = parse_financial_metrics(indicators)
             if not result:
-                indicators = self.retry(
+                indicators = self.fallback_retry(
                     f"financial_indicator_{code}",
                     lambda: ak.stock_financial_analysis_indicator(symbol=code),
                 )
@@ -288,7 +292,7 @@ class AkshareProvider:
         ]
         for name, fetch in sources:
             try:
-                df = self.retry(name, fetch)
+                df = self.fallback_retry(name, fetch)
                 normalized = normalize_history(df)
                 if not normalized.empty:
                     self.save_cache(cache_name, normalized)
@@ -358,7 +362,7 @@ class AkshareProvider:
         ]
         for name, fetch in sources:
             try:
-                df = self.retry(f"{name}_{benchmark_code}", fetch)
+                df = self.fallback_retry(f"{name}_{benchmark_code}", fetch)
                 normalized = normalize_index_history(df)
                 if normalized.empty:
                     continue

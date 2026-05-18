@@ -35,7 +35,7 @@ def build_signals(config: dict[str, Any], account: dict[str, Any], provider: Aks
         if filters.get("exclude_st") and "ST" in name.upper():
             continue
 
-        basic = provider.basic_info(code)
+        basic = provider.basic_info(code) if not name or name == "nan" else {}
         valuation = provider.valuation_metrics(code)
         metrics = provider.financial_metrics(code)
         snapshot = provider.price_snapshot(code, as_of=as_of, spot_row=stock.to_dict())
@@ -116,7 +116,7 @@ def preselect_universe(universe: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
         out["pre_score"] += out["market_cap_rank_seed"].rank(pct=True).fillna(0) * 0.30
         has_seed = True
     if not has_seed:
-        return universe
+        return universe.head(max_candidates)
     return out.sort_values("pre_score", ascending=False).head(max_candidates)
 
 
