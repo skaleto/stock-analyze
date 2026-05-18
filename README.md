@@ -38,7 +38,7 @@
 
 ## 使用方法
 
-更完整的环境准备、运行、部署、故障排查说明见 [docs/forward-simulation-runbook.md](docs/forward-simulation-runbook.md)。本次系统化整理的 OpenSpec 记录在 [openspec/changes/document-forward-simulation-runbook](openspec/changes/document-forward-simulation-runbook)。
+更完整的环境准备、运行、部署、故障排查说明见 [docs/forward-simulation-runbook.md](docs/forward-simulation-runbook.md)。模型与工程差距 review 见 [docs/quant-model-gap-review-2026-05-18.md](docs/quant-model-gap-review-2026-05-18.md)。本次系统化整理的 OpenSpec 记录在 [openspec/changes/document-forward-simulation-runbook](openspec/changes/document-forward-simulation-runbook)。
 
 安装依赖：
 
