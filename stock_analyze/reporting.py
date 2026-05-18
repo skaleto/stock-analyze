@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from .store import PERFORMANCE_FILE, PortfolioStore
+from .store import PERFORMANCE_FILE, PENDING_FILE, SIGNALS_FILE, PortfolioStore
 from .utils import ensure_dirs, format_money, format_pct, safe_float, today_str, write_json
 
 
@@ -46,6 +46,35 @@ HEALTH_COLUMNS = {
     "status": "状态",
     "rows": "行数",
     "message": "说明",
+}
+
+SIGNAL_COLUMNS = {
+    "account_id": "账户",
+    "code": "代码",
+    "name": "名称",
+    "score": "综合分",
+    "pe": "PE",
+    "pb": "PB",
+    "roe": "ROE",
+    "gross_margin": "毛利率",
+    "debt_ratio": "资产负债率",
+    "momentum_20": "20日动量",
+    "momentum_60": "60日动量",
+    "score_detail": "因子贡献",
+    "data_warnings": "数据提示",
+}
+
+PENDING_COLUMNS = {
+    "signal_date": "信号日",
+    "execute_after": "模拟成交日",
+    "account_id": "账户",
+    "side": "方向",
+    "code": "代码",
+    "name": "名称",
+    "delta_shares": "计划股数",
+    "reference_price": "参考价",
+    "score": "入选分",
+    "reason": "原因",
 }
 
 SIDE_LABELS = {
@@ -217,12 +246,21 @@ def generate_dashboard(config: dict[str, Any], store: PortfolioStore, reports_di
     positions = store.read_positions()
     trades = store.read_trades()
     health = read_health(store)
+    signals = read_signals(store)
+    pending_orders = read_pending_orders(store)
+    price_panels = load_price_panels(store, signals)
+    factor_summary = build_factor_summary(signals)
     dashboard_path = Path(reports_dir) / "dashboard.html"
 
     nav_json = nav.to_json(orient="records", force_ascii=False) if not nav.empty else "[]"
+    price_json = json.dumps(price_panels, ensure_ascii=False)
+    factor_json = json.dumps(factor_summary, ensure_ascii=False)
     positions_html = dataframe_html(display_positions(positions), POSITION_COLUMNS, "暂无持仓。请先运行周度信号，等待下一交易日模拟成交后再观察。")
     trades_html = dataframe_html(display_trades(trades.tail(30)), TRADE_COLUMNS, "暂无交易。周度任务会先生成待执行订单，下一交易日由日度任务模拟成交。")
     health_html = dataframe_html(display_health(health.tail(40)), HEALTH_COLUMNS, "暂无数据源状态。运行周度或日度任务后会显示接口、缓存和降级情况。")
+    signals_html = dataframe_html(display_signals(signals), SIGNAL_COLUMNS, "暂无选股信号。请先运行 run-weekly。")
+    pending_html = dataframe_html(display_pending_orders(pending_orders), PENDING_COLUMNS, "暂无待执行订单。请先运行 run-weekly 生成调仓计划。")
+    execution_hint = pending_execution_hint(pending_orders)
     cards = []
     for account_id, item in summary.get("accounts", {}).items():
         status = "模拟观察中"
@@ -253,6 +291,7 @@ def generate_dashboard(config: dict[str, Any], store: PortfolioStore, reports_di
       --blue: #2457a7;
       --green: #147d64;
       --amber: #b76e00;
+      --red: #b42318;
     }}
     * {{ box-sizing: border-box; }}
     body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--ink); }}
@@ -268,13 +307,20 @@ def generate_dashboard(config: dict[str, Any], store: PortfolioStore, reports_di
     .metric-card p {{ margin: 10px 0 12px; color: var(--muted); }}
     .tag {{ display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border-radius: 6px; background: #e8f3ef; color: var(--green); font-size: 12px; }}
     .panel {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; overflow: auto; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }}
+    .split {{ display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr); gap: 16px; }}
+    .price-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }}
+    .mini-chart {{ min-height: 230px; }}
+    .chart-title {{ margin: 0 0 8px; font-size: 14px; font-weight: 650; color: #344054; }}
     .table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
     .table th, .table td {{ border-bottom: 1px solid #edf0f3; padding: 9px 10px; text-align: left; white-space: nowrap; }}
     .table th {{ background: #f1f4f8; color: #344054; font-weight: 650; }}
     .table td {{ max-width: 360px; overflow: hidden; text-overflow: ellipsis; }}
     .empty {{ margin: 0; color: var(--muted); }}
     canvas {{ width: 100%; height: 340px; border: 1px solid #edf0f3; border-radius: 6px; background: #fff; }}
+    .mini-chart canvas {{ height: 180px; }}
     .hint {{ color: var(--muted); font-size: 13px; margin-top: 8px; }}
+    .warning {{ color: var(--amber); }}
+    @media (max-width: 900px) {{ .split {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
 <body>
@@ -289,6 +335,26 @@ def generate_dashboard(config: dict[str, Any], store: PortfolioStore, reports_di
       <canvas id="navChart" width="1200" height="340"></canvas>
       <div class="hint">曲线基于模拟账户净值生成；如果只有一个净值点，图上会显示为水平参考线。</div>
     </div>
+    <section class="split">
+      <div>
+        <h2>本期选股信号</h2>
+        <div class="panel">{signals_html}</div>
+      </div>
+      <div>
+        <h2>因子贡献均值</h2>
+        <div class="panel">
+          <canvas id="factorChart" width="680" height="340"></canvas>
+          <div class="hint">从 `score_detail` 解析各因子对入选股票的平均贡献。</div>
+        </div>
+      </div>
+    </section>
+    <h2>待执行模拟订单</h2>
+    <div class="panel">
+      {pending_html}
+      <div class="hint warning">{execution_hint}</div>
+    </div>
+    <h2>候选股价格走势</h2>
+    <div class="price-grid" id="priceGrid"></div>
     <h2>当前持仓</h2>
     <div class="panel">{positions_html}</div>
     <h2>近期交易</h2>
@@ -298,6 +364,8 @@ def generate_dashboard(config: dict[str, Any], store: PortfolioStore, reports_di
   </main>
   <script>
     const nav = {nav_json};
+    const factorSummary = {factor_json};
+    const pricePanels = {price_json};
     const canvas = document.getElementById('navChart');
     const ctx = canvas.getContext('2d');
     function drawChart(rows) {{
@@ -343,6 +411,95 @@ def generate_dashboard(config: dict[str, Any], store: PortfolioStore, reports_di
       }});
     }}
     drawChart(nav);
+
+    function drawFactorChart(items) {{
+      const chart = document.getElementById('factorChart');
+      const c = chart.getContext('2d');
+      c.clearRect(0, 0, chart.width, chart.height);
+      c.font = '13px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+      if (!items.length) {{
+        c.fillStyle = '#667085';
+        c.fillText('暂无因子贡献数据', 24, 40);
+        return;
+      }}
+      const max = Math.max(...items.map(item => item.value), 1);
+      const left = 96;
+      const top = 24;
+      const rowH = 34;
+      items.slice(0, 8).forEach((item, idx) => {{
+        const y = top + idx * rowH;
+        const w = (chart.width - left - 70) * item.value / max;
+        c.fillStyle = '#344054';
+        c.fillText(item.label, 12, y + 18);
+        c.fillStyle = '#2457a7';
+        c.fillRect(left, y, w, 18);
+        c.fillStyle = '#667085';
+        c.fillText(item.value.toFixed(1), left + w + 8, y + 15);
+      }});
+    }}
+
+    function drawPricePanels(panels) {{
+      const grid = document.getElementById('priceGrid');
+      if (!panels.length) {{
+        grid.innerHTML = '<div class="panel"><p class="empty">暂无可用历史行情缓存。运行 run-weekly 后会展示入选股票走势。</p></div>';
+        return;
+      }}
+      panels.forEach((panel, idx) => {{
+        const box = document.createElement('section');
+        box.className = 'panel mini-chart';
+        box.innerHTML = `<p class="chart-title">${{panel.code}} ${{panel.name}} · ${{panel.account_id}}</p><canvas width="520" height="180"></canvas>`;
+        grid.appendChild(box);
+        drawCandles(box.querySelector('canvas'), panel.rows);
+      }});
+    }}
+
+    function drawCandles(chart, rows) {{
+      const c = chart.getContext('2d');
+      c.clearRect(0, 0, chart.width, chart.height);
+      const prices = rows.flatMap(r => [Number(r.high), Number(r.low), Number(r.close)]).filter(Number.isFinite);
+      if (!prices.length) {{
+        c.fillStyle = '#667085';
+        c.fillText('无价格数据', 20, 40);
+        return;
+      }}
+      const min = Math.min(...prices);
+      const max = Math.max(...prices);
+      const pad = 24;
+      const span = Math.max(max - min, 1);
+      const xStep = (chart.width - pad * 2) / Math.max(rows.length - 1, 1);
+      c.strokeStyle = '#e1e7ef';
+      c.beginPath();
+      c.moveTo(pad, pad);
+      c.lineTo(pad, chart.height - pad);
+      c.lineTo(chart.width - pad, chart.height - pad);
+      c.stroke();
+      rows.forEach((r, i) => {{
+        const open = Number(r.open), close = Number(r.close), high = Number(r.high), low = Number(r.low);
+        if (![open, close, high, low].every(Number.isFinite)) return;
+        const x = pad + i * xStep;
+        const yHigh = chart.height - pad - (high - min) / span * (chart.height - pad * 2);
+        const yLow = chart.height - pad - (low - min) / span * (chart.height - pad * 2);
+        const yOpen = chart.height - pad - (open - min) / span * (chart.height - pad * 2);
+        const yClose = chart.height - pad - (close - min) / span * (chart.height - pad * 2);
+        const up = close >= open;
+        c.strokeStyle = up ? '#b42318' : '#147d64';
+        c.fillStyle = up ? '#f04438' : '#12b76a';
+        c.beginPath();
+        c.moveTo(x, yHigh);
+        c.lineTo(x, yLow);
+        c.stroke();
+        const bodyTop = Math.min(yOpen, yClose);
+        const bodyH = Math.max(Math.abs(yClose - yOpen), 2);
+        c.fillRect(x - 2, bodyTop, 4, bodyH);
+      }});
+      c.fillStyle = '#667085';
+      c.font = '12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+      c.fillText(max.toFixed(2), 4, pad + 4);
+      c.fillText(min.toFixed(2), 4, chart.height - pad);
+    }}
+
+    drawFactorChart(factorSummary);
+    drawPricePanels(pricePanels);
   </script>
 </body>
 </html>
@@ -376,6 +533,123 @@ def display_trades(df: pd.DataFrame) -> pd.DataFrame:
         out["side"] = out["side"].map(lambda value: SIDE_LABELS.get(str(value), str(value)))
     if "reason" in out.columns:
         out["reason"] = out["reason"].map(localize_reason)
+    return out
+
+
+def display_signals(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    out = df.copy()
+    numeric_cols = ["score", "pe", "pb", "roe", "gross_margin", "debt_ratio", "momentum_20", "momentum_60"]
+    for col in numeric_cols:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").round(3)
+    return out.sort_values(["account_id", "score"], ascending=[True, False])
+
+
+def display_pending_orders(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    out = df.copy()
+    if "side" in out.columns:
+        out["side"] = out["side"].map(lambda value: SIDE_LABELS.get(str(value), str(value)))
+    for col in ["reference_price", "score"]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").round(3)
+    return out.sort_values(["account_id", "side", "score"], ascending=[True, True, False])
+
+
+def read_signals(store: PortfolioStore) -> pd.DataFrame:
+    path = store.data_dir / SIGNALS_FILE
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path, dtype={"code": str})
+
+
+def read_pending_orders(store: PortfolioStore) -> pd.DataFrame:
+    path = store.data_dir / PENDING_FILE
+    if not path.exists():
+        return pd.DataFrame()
+    batches = json.loads(path.read_text(encoding="utf-8"))
+    rows: list[dict[str, Any]] = []
+    for batch in batches:
+        for order in batch.get("orders", []):
+            rows.append(
+                {
+                    "signal_date": batch.get("signal_date"),
+                    "execute_after": batch.get("execute_after"),
+                    "account_id": batch.get("account_id"),
+                    "scope": batch.get("scope"),
+                    **order,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def pending_execution_hint(df: pd.DataFrame) -> str:
+    if df.empty or "execute_after" not in df.columns:
+        return "当前没有待执行订单。"
+    dates = sorted({str(value) for value in df["execute_after"].dropna().tolist()})
+    if not dates:
+        return "当前待执行订单缺少执行日期。"
+    return f"模拟成交将在 {', '.join(dates)} 或之后的日度任务执行；若该日期尚未有行情数据，订单会继续等待。"
+
+
+def build_factor_summary(signals: pd.DataFrame) -> list[dict[str, Any]]:
+    if signals.empty or "score_detail" not in signals.columns:
+        return []
+    totals: dict[str, list[float]] = {}
+    for detail in signals["score_detail"].dropna().astype(str):
+        for part in detail.split(";"):
+            if ":" not in part:
+                continue
+            key, value = part.split(":", 1)
+            number = safe_float(value)
+            if number is not None:
+                totals.setdefault(key.strip(), []).append(number)
+    labels = {key: value for key, value in FACTOR_LABELS.items()}
+    return sorted(
+        [
+            {
+                "factor": factor,
+                "label": labels.get(factor, factor),
+                "value": sum(values) / len(values),
+            }
+            for factor, values in totals.items()
+            if values
+        ],
+        key=lambda item: item["value"],
+        reverse=True,
+    )
+
+
+def load_price_panels(store: PortfolioStore, signals: pd.DataFrame, limit: int = 6) -> list[dict[str, Any]]:
+    if signals.empty:
+        return []
+    out: list[dict[str, Any]] = []
+    selected = signals.copy()
+    selected["score"] = pd.to_numeric(selected.get("score"), errors="coerce")
+    selected = selected.sort_values(["account_id", "score"], ascending=[True, False]).head(limit)
+    for _, row in selected.iterrows():
+        code = str(row.get("code", "")).zfill(6)
+        matches = sorted((store.data_dir / "cache").glob(f"history_{code}_*.csv"))
+        if not matches:
+            continue
+        history = pd.read_csv(matches[-1])
+        if history.empty:
+            continue
+        rows = []
+        for _, item in history.tail(60).iterrows():
+            rows.append(
+                {
+                    "date": str(item.get("日期", item.get("date", ""))),
+                    "open": safe_float(item.get("开盘", item.get("open"))),
+                    "close": safe_float(item.get("收盘", item.get("close"))),
+                    "high": safe_float(item.get("最高", item.get("high"))),
+                    "low": safe_float(item.get("最低", item.get("low"))),
+                }
+            )
+        out.append({"code": code, "name": str(row.get("name", "")), "account_id": str(row.get("account_id", "")), "rows": rows})
     return out
 
 

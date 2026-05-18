@@ -46,6 +46,14 @@
 python3 -m pip install -r requirements.txt
 ```
 
+可选：如果东方财富接口在当前网络下频繁断开，可以从浏览器开发者工具复制东财请求的 Cookie，并只放到运行环境变量里：
+
+```bash
+export EASTMONEY_COOKIE='ct=...; ut=...'
+```
+
+不要把 Cookie 写入仓库、配置文件或日志。
+
 初始化模拟账户：
 
 ```bash

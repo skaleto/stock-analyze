@@ -54,6 +54,14 @@ python -c "import akshare, baostock, pandas, numpy; print(akshare.__version__)"
 python -m py_compile stock_analyze/*.py
 ```
 
+如果东方财富实时或历史接口被当前网络/风控断开，可以从浏览器开发者工具里复制东财行情请求的 Cookie，并只通过环境变量传入运行进程：
+
+```bash
+export EASTMONEY_COOKIE='ct=...; ut=...'
+```
+
+`EASTMONEY_COOKIE` 是敏感会话信息。不要提交到 Git，不要写入 `configs/`，不要打印到日志；服务器部署时应放在 systemd EnvironmentFile 或受权限保护的 shell 环境中。
+
 如果使用 HTTPS 克隆，替换成你自己的 GitHub 克隆地址即可。不要把个人 SSH key 路径、服务器 IP、用户名、token、本机绝对路径提交进仓库。
 
 ## 本地运行命令
@@ -147,6 +155,7 @@ logs/*.log, logs/*.err          systemd stdout/stderr 日志
 - 失败后尝试 AkShare 新浪实时行情。
 - 再失败则使用本地 `data/cache/spot_latest.csv`。
 - Baostock 不作为全市场实时行情替代源。
+- 如设置 `EASTMONEY_COOKIE`，系统会在东方财富请求上附加浏览器式 `User-Agent`、`Referer` 和 Cookie；未设置时仍按无 Cookie 请求并保留降级路径。
 
 指数成分：
 

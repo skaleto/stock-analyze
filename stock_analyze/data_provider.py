@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -9,6 +11,7 @@ from typing import Any, Callable
 
 import akshare as ak
 import pandas as pd
+import requests
 
 from .utils import ak_date, pct_change, previous_calendar_date, safe_float, write_json
 
@@ -21,12 +24,23 @@ INDEX_CODES = {
     "kcb": "000688",
 }
 
-BENCHMARK_SYMBOLS = {
+EASTMONEY_BENCHMARK_SYMBOLS = {
+    "000300": "csi000300",
+    "000905": "csi000905",
+}
+
+FALLBACK_BENCHMARK_SYMBOLS = {
     "000300": "sh000300",
     "000905": "sh000905",
 }
 
 RETRY_DELAYS = [2.0, 5.0, 10.0]
+EASTMONEY_COOKIE_ENV = "EASTMONEY_COOKIE"
+EASTMONEY_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0 Safari/537.36"
+)
+EASTMONEY_DEFAULT_REFERER = "https://quote.eastmoney.com/center/gridlist.html"
 
 
 @dataclass
@@ -92,6 +106,10 @@ class AkshareProvider:
     def fallback_retry(self, label: str, func: Callable[[], Any]) -> Any:
         return self.retry(label, func, delays=[0.5])
 
+    def eastmoney_retry(self, label: str, func: Callable[[], Any], referer: str = EASTMONEY_DEFAULT_REFERER) -> Any:
+        with eastmoney_request_headers(referer):
+            return self.fallback_retry(label, func)
+
     def cache_path(self, name: str) -> Path | None:
         if not self.cache_dir:
             return None
@@ -115,12 +133,12 @@ class AkshareProvider:
             return self._spot.copy()
 
         sources: list[tuple[str, Callable[[], pd.DataFrame]]] = [
-            ("spot_eastmoney", ak.stock_zh_a_spot_em),
+            ("spot_eastmoney", lambda: self.eastmoney_retry("spot_eastmoney", ak.stock_zh_a_spot_em)),
             ("spot_sina", ak.stock_zh_a_spot),
         ]
         for name, fetch in sources:
             try:
-                df = self.retry(name, fetch)
+                df = fetch() if name == "spot_eastmoney" else self.retry(name, fetch)
                 normalized = normalize_spot(df)
                 if not normalized.empty:
                     self.save_cache("spot_latest", normalized)
@@ -187,7 +205,11 @@ class AkshareProvider:
         if not cached.empty:
             return cached.iloc[0].to_dict()
         try:
-            df = self.fallback_retry(f"basic_{code}", lambda: ak.stock_individual_info_em(symbol=code))
+            df = self.eastmoney_retry(
+                f"basic_{code}",
+                lambda: ak.stock_individual_info_em(symbol=code),
+                referer=f"https://quote.eastmoney.com/{market_symbol(code)}.html",
+            )
             info = {row["item"]: row["value"] for _, row in df.iterrows()}
             result = {
                 "code": normalize_code(info.get("股票代码", code)) or code,
@@ -275,7 +297,11 @@ class AkshareProvider:
         sources = [
             (
                 f"history_eastmoney_{code}",
-                lambda: ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, end_date=end_date, adjust="qfq"),
+                lambda: self.eastmoney_retry(
+                    f"history_eastmoney_{code}",
+                    lambda: ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, end_date=end_date, adjust="qfq"),
+                    referer=f"https://quote.eastmoney.com/{market_symbol(code)}.html",
+                ),
             ),
             (
                 f"history_tencent_{code}",
@@ -292,7 +318,7 @@ class AkshareProvider:
         ]
         for name, fetch in sources:
             try:
-                df = self.fallback_retry(name, fetch)
+                df = fetch() if name.startswith("history_eastmoney_") else self.fallback_retry(name, fetch)
                 normalized = normalize_history(df)
                 if not normalized.empty:
                     self.save_cache(cache_name, normalized)
@@ -354,15 +380,23 @@ class AkshareProvider:
         return price, str(row.get("日期"))
 
     def benchmark_close(self, benchmark_code: str, as_of: str | None = None) -> tuple[float | None, str | None]:
-        symbol = BENCHMARK_SYMBOLS.get(benchmark_code, f"sh{benchmark_code}")
+        eastmoney_symbol = EASTMONEY_BENCHMARK_SYMBOLS.get(benchmark_code, f"sh{benchmark_code}")
+        fallback_symbol = FALLBACK_BENCHMARK_SYMBOLS.get(benchmark_code, f"sh{benchmark_code}")
         sources = [
-            ("benchmark_eastmoney", lambda: ak.stock_zh_index_daily_em(symbol=symbol)),
-            ("benchmark_tencent", lambda: ak.stock_zh_index_daily_tx(symbol=symbol)),
-            ("benchmark_sina", lambda: ak.stock_zh_index_daily(symbol=symbol)),
+            (
+                "benchmark_eastmoney",
+                lambda: self.eastmoney_retry(
+                    f"benchmark_eastmoney_{benchmark_code}",
+                    lambda: ak.stock_zh_index_daily_em(symbol=eastmoney_symbol),
+                    referer="https://quote.eastmoney.com/center/hszs.html",
+                ),
+            ),
+            ("benchmark_tencent", lambda: ak.stock_zh_index_daily_tx(symbol=fallback_symbol)),
+            ("benchmark_sina", lambda: ak.stock_zh_index_daily(symbol=fallback_symbol)),
         ]
         for name, fetch in sources:
             try:
-                df = self.fallback_retry(f"{name}_{benchmark_code}", fetch)
+                df = fetch() if name == "benchmark_eastmoney" else self.fallback_retry(f"{name}_{benchmark_code}", fetch)
                 normalized = normalize_index_history(df)
                 if normalized.empty:
                     continue
@@ -480,6 +514,28 @@ class AkshareProvider:
         except Exception as exc:  # noqa: BLE001
             self.record_health(f"financial_baostock_{code}", "failed", str(exc))
             return {}
+
+
+@contextmanager
+def eastmoney_request_headers(referer: str):
+    original_request = requests.sessions.Session.request
+    cookie = os.environ.get(EASTMONEY_COOKIE_ENV, "").strip()
+
+    def patched_request(session: requests.Session, method: str, url: str, **kwargs: Any) -> requests.Response:
+        if "eastmoney.com" in str(url).lower():
+            headers = dict(kwargs.get("headers") or {})
+            headers.setdefault("User-Agent", EASTMONEY_USER_AGENT)
+            headers.setdefault("Referer", referer)
+            if cookie:
+                headers.setdefault("Cookie", cookie)
+            kwargs["headers"] = headers
+        return original_request(session, method, url, **kwargs)
+
+    requests.sessions.Session.request = patched_request
+    try:
+        yield
+    finally:
+        requests.sessions.Session.request = original_request
 
 
 def normalize_code(value: Any) -> str:
