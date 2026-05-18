@@ -35,15 +35,26 @@ def build_signals(config: dict[str, Any], account: dict[str, Any], provider: Aks
         if filters.get("exclude_st") and "ST" in name.upper():
             continue
 
+        basic = provider.basic_info(code)
+        valuation = provider.valuation_metrics(code)
         metrics = provider.financial_metrics(code)
-        snapshot = provider.price_snapshot(code, as_of=as_of)
+        snapshot = provider.price_snapshot(code, as_of=as_of, spot_row=stock.to_dict())
+        data_warnings = []
+        if valuation.get("pe") is None and safe_float(stock.get("pe")) is None:
+            data_warnings.append("pe_missing")
+        if valuation.get("pb") is None and safe_float(stock.get("pb")) is None:
+            data_warnings.append("pb_missing")
+        if metrics.get("fetch_error"):
+            data_warnings.append("financial_fetch_failed")
+        if snapshot.warning:
+            data_warnings.append(snapshot.warning)
         row = {
             "code": code,
-            "name": name,
+            "name": name if name and name != "nan" else basic.get("name", ""),
             "latest_price": safe_float(stock.get("latest_price")) or snapshot.close,
-            "pe": safe_float(stock.get("pe")),
-            "pb": safe_float(stock.get("pb")),
-            "market_cap_yi": safe_float(stock.get("market_cap_yi")),
+            "pe": safe_float(stock.get("pe")) or valuation.get("pe"),
+            "pb": safe_float(stock.get("pb")) or valuation.get("pb"),
+            "market_cap_yi": safe_float(stock.get("market_cap_yi")) or safe_float(basic.get("market_cap_yi")),
             "roe": safe_float(metrics.get("roe")),
             "gross_margin": safe_float(metrics.get("gross_margin")),
             "debt_ratio": safe_float(metrics.get("debt_ratio")),
@@ -52,10 +63,8 @@ def build_signals(config: dict[str, Any], account: dict[str, Any], provider: Aks
             "momentum_60": snapshot.momentum_60,
             "avg_amount_20": snapshot.avg_amount_20,
             "paused": snapshot.paused,
-            "data_warnings": "",
+            "data_warnings": ";".join(data_warnings),
         }
-        if metrics.get("fetch_error"):
-            row["data_warnings"] = "financial_fetch_failed"
         rows.append(row)
 
     candidates = pd.DataFrame(rows)
@@ -96,12 +105,18 @@ def preselect_universe(universe: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
     if out.empty:
         return universe.head(max_candidates)
     out["pre_score"] = 0.0
+    has_seed = False
     if out["pe_rank_seed"].notna().any():
         out["pre_score"] += (1 - out["pe_rank_seed"].rank(pct=True)).fillna(0) * 0.35
+        has_seed = True
     if out["pb_rank_seed"].notna().any():
         out["pre_score"] += (1 - out["pb_rank_seed"].rank(pct=True)).fillna(0) * 0.35
+        has_seed = True
     if out["market_cap_rank_seed"].notna().any():
         out["pre_score"] += out["market_cap_rank_seed"].rank(pct=True).fillna(0) * 0.30
+        has_seed = True
+    if not has_seed:
+        return universe
     return out.sort_values("pre_score", ascending=False).head(max_candidates)
 
 

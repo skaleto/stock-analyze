@@ -46,39 +46,44 @@ def main(argv: list[str] | None = None) -> int:
 
     config = load_config(args.config)
     store = PortfolioStore(args.data_dir)
-    provider = AkshareProvider()
+    provider = AkshareProvider(cache_dir=Path(args.data_dir) / "cache")
 
-    if args.command == "init":
-        initialize(config, store)
-        print(f"Initialized {args.data_dir}")
-    elif args.command == "rebalance":
-        batches = generate_rebalance_orders(config, store, provider, as_of=args.as_of)
-        print(f"Generated {sum(len(batch.get('orders', [])) for batch in batches)} pending orders")
-    elif args.command == "execute":
-        trades = execute_due_orders(config, store, provider, as_of=args.as_of)
-        print(f"Executed {len(trades)} trades")
-    elif args.command == "update-nav":
-        rows = update_nav(config, store, provider, as_of=args.as_of)
-        print(f"Updated NAV for {len(rows)} accounts")
-    elif args.command == "report":
-        path = generate_weekly_report(config, store, args.reports_dir)
-        print(f"Report written to {path}")
-    elif args.command == "dashboard":
-        path = generate_dashboard(config, store, args.reports_dir)
-        print(f"Dashboard written to {path}")
-    elif args.command == "run-daily":
-        trades = execute_due_orders(config, store, provider, as_of=args.as_of)
-        rows = update_nav(config, store, provider, as_of=args.as_of, notes=f"daily; trades={len(trades)}")
-        path = generate_dashboard(config, store, args.reports_dir)
-        print(f"Daily run complete: trades={len(trades)}, nav_rows={len(rows)}, dashboard={path}")
-    elif args.command == "run-weekly":
-        batches = generate_rebalance_orders(config, store, provider, as_of=args.as_of)
-        rows = update_nav(config, store, provider, as_of=args.as_of, notes="weekly signal")
-        report = generate_weekly_report(config, store, args.reports_dir)
-        dashboard = generate_dashboard(config, store, args.reports_dir)
-        print(f"Weekly run complete: batches={len(batches)}, nav_rows={len(rows)}, report={report}, dashboard={dashboard}")
-    else:
-        parser.error(f"Unknown command: {args.command}")
+    try:
+        if args.command == "init":
+            initialize(config, store)
+            print(f"Initialized {args.data_dir}")
+        elif args.command == "rebalance":
+            batches = generate_rebalance_orders(config, store, provider, as_of=args.as_of)
+            print(f"Generated {sum(len(batch.get('orders', [])) for batch in batches)} pending orders")
+        elif args.command == "execute":
+            trades = execute_due_orders(config, store, provider, as_of=args.as_of)
+            print(f"Executed {len(trades)} trades")
+        elif args.command == "update-nav":
+            rows = update_nav(config, store, provider, as_of=args.as_of)
+            print(f"Updated NAV for {len(rows)} accounts")
+        elif args.command == "report":
+            path = generate_weekly_report(config, store, args.reports_dir)
+            print(f"Report written to {path}")
+        elif args.command == "dashboard":
+            path = generate_dashboard(config, store, args.reports_dir)
+            print(f"Dashboard written to {path}")
+        elif args.command == "run-daily":
+            trades = execute_due_orders(config, store, provider, as_of=args.as_of)
+            rows = update_nav(config, store, provider, as_of=args.as_of, notes=f"daily; trades={len(trades)}")
+            provider.persist_health()
+            path = generate_dashboard(config, store, args.reports_dir)
+            print(f"Daily run complete: trades={len(trades)}, nav_rows={len(rows)}, dashboard={path}")
+        elif args.command == "run-weekly":
+            batches = generate_rebalance_orders(config, store, provider, as_of=args.as_of)
+            rows = update_nav(config, store, provider, as_of=args.as_of, notes="weekly signal")
+            provider.persist_health()
+            report = generate_weekly_report(config, store, args.reports_dir)
+            dashboard = generate_dashboard(config, store, args.reports_dir)
+            print(f"Weekly run complete: batches={len(batches)}, nav_rows={len(rows)}, report={report}, dashboard={dashboard}")
+        else:
+            parser.error(f"Unknown command: {args.command}")
+    finally:
+        provider.persist_health()
     return 0
 
 
@@ -93,4 +98,3 @@ def serve_dashboard(reports_dir: str, host: str, port: int) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

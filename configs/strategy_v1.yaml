@@ -38,7 +38,7 @@
   },
   "filters": {
     "exclude_st": true,
-    "max_fetch_candidates": 160,
+    "max_fetch_candidates": 180,
     "min_listing_days": 365,
     "min_pe": 0,
     "min_avg_amount_20": 50000000,
