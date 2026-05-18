@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Stock Analyze daily after A-share close
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:30:00 UTC
+Persistent=true
+Unit=stock-analyze-daily.service
+
+[Install]
+WantedBy=timers.target
+

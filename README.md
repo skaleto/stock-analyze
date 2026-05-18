@@ -1,86 +1,144 @@
-# A股新手量化价值质量策略
+# Stock Analyze
 
-这是一个入门级研究工具，用来把“看起来不错的股票”筛成一个观察池。它不自动下单，也不构成投资建议。
+一个面向 A 股的前向模拟交易系统。它只做模拟交易、净值追踪、报告和 dashboard，不接券商接口，不真实下单，也不构成投资建议。
+
+## 第一版目标
+
+- 股票池：沪深300、中证500
+- 基准：沪深300指数、中证500指数
+- 资金：模拟总资金 100 万，两个账户各 50 万
+- 调仓：每周生成信号，下一交易日模拟成交
+- 持仓：每个账户选前 10 只，等权
+- 目标：扣除成本后，观察是否能跑出年化超额收益
+- 报告：CSV/JSON、Markdown 周报、静态 HTML dashboard
 
 ## 策略逻辑
 
-默认股票池是沪深300，适合新手先从流动性和公司质量相对较好的大盘股开始。
+因子权重在 [configs/strategy_v1.yaml](configs/strategy_v1.yaml) 中配置：
 
-默认筛选条件：
+- 价值 30%：PE、PB
+- 质量 30%：ROE、毛利率
+- 安全 20%：资产负债率、总市值
+- 动量 20%：20 日收益率、60 日收益率
 
-- `PE` 在 `0-25` 之间
-- `PB` 在 `0-4` 之间
-- 总市值不低于 `500` 亿元
-- `ROE` 不低于 `12%`
-- 资产负债率不高于 `60%`
-- 排除名称包含 `ST` 的股票
+硬过滤：
 
-脚本会继续按以下维度打分：
+- 排除 ST
+- 排除停牌或取不到价格的股票
+- 排除 PE <= 0
+- 排除最近 20 日平均成交额过低的股票
+- 排除关键财务数据缺失严重的股票
 
-- 估值：PE、PB
-- 质量：ROE、毛利率
-- 安全：资产负债率、市值规模
-- 成长：净利润增长率
-- 风险提示：高估值、高负债、利润负增长、财务数据缺失
+交易成本默认：
+
+- 佣金：0.03%，最低 5 元
+- 印花税：卖出 0.05%
+- 滑点：买卖各 0.05%
+- 买入：100 股整数倍
 
 ## 使用方法
 
-安装依赖后运行：
+安装依赖：
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+初始化模拟账户：
+
+```bash
+python3 -m stock_analyze init
+```
+
+每日运行：
+
+```bash
+python3 -m stock_analyze run-daily
+```
+
+每周生成信号和报告：
+
+```bash
+python3 -m stock_analyze run-weekly
+```
+
+只生成 dashboard：
+
+```bash
+python3 -m stock_analyze dashboard
+```
+
+本地查看 dashboard：
+
+```bash
+python3 -m stock_analyze serve-dashboard --host 127.0.0.1 --port 8765
+```
+
+浏览器打开 `http://127.0.0.1:8765/dashboard.html`。
+
+## 运行输出
+
+运行数据默认写到本地目录，不提交进 Git：
+
+- `data/state.json`
+- `data/pending_orders.json`
+- `data/daily_nav.csv`
+- `data/trades.csv`
+- `data/positions.csv`
+- `data/performance_summary.json`
+- `reports/weekly_report.md`
+- `reports/dashboard.html`
+
+## 服务器部署
+
+第一版推荐部署到 Linux 服务器的 `/opt/stock-analyze`：
+
+```text
+/opt/stock-analyze/
+  app/
+  data/
+  reports/
+  logs/
+  backups/
+  venv/
+```
+
+仓库包含 systemd 模板：
+
+- `deploy/systemd/stock-analyze-daily.service`
+- `deploy/systemd/stock-analyze-daily.timer`
+- `deploy/systemd/stock-analyze-weekly.service`
+- `deploy/systemd/stock-analyze-weekly.timer`
+- `deploy/systemd/stock-analyze-dashboard.service`
+
+dashboard 服务只监听 `127.0.0.1:8765`。建议通过 SSH 隧道访问：
+
+```bash
+ssh -L 8765:127.0.0.1:8765 user@your-server
+```
+
+然后打开 `http://127.0.0.1:8765/dashboard.html`。
+
+## 旧版筛选器
+
+仓库仍保留一个单文件筛选器 [quant_value_quality_strategy.py](quant_value_quality_strategy.py)，用于手动生成观察池：
 
 ```bash
 python3 quant_value_quality_strategy.py
 ```
 
-输出会写到 `outputs/`：
-
-- `value_quality_watchlist_*.csv`
-- `value_quality_watchlist_*.json`
-
-放宽条件示例：
-
-```bash
-python3 quant_value_quality_strategy.py --pe-max 35 --pb-max 6 --roe-min 8
-```
-
-换股票池示例：
-
-```bash
-python3 quant_value_quality_strategy.py --scope zz500
-python3 quant_value_quality_strategy.py --scope custom:600519,000858,000333,600036
-```
-
-如果提示 `ModuleNotFoundError: No module named 'akshare'`，说明当前 Python 环境还没有安装依赖。请先运行：
-
-```bash
-python3 -m pip install akshare pandas
-```
-
-如果当天 `akshare` 接口不可用，也可以使用本地 CSV：
-
-```bash
-python3 quant_value_quality_strategy.py --input-csv your_stocks.csv
-```
-
-CSV 可以使用中文列名或英文列名：
-
-- 股票代码：`代码` 或 `code`
-- 股票名称：`名称` 或 `name`
-- 估值：`市盈率`/`pe`，`市净率`/`pb`
-- 市值：`market_cap_yi`，单位为亿元
-- 财务指标：`roe`、`debt_ratio`、`gross_margin`、`net_profit_growth`
-
 ## 怎么看结果
 
-新手不要把最高分当作“马上买”。更合理的用法是：
+不要把最高分当作“马上买”。更合理的用法是：
 
 1. 先看 `warnings`，有高负债、利润负增长、数据缺失的公司要谨慎。
 2. 再看业务是否能理解，不懂公司怎么赚钱就先不碰。
 3. 对候选股票逐只做 F10、年报、同行对比。
-4. 只有在估值、基本面、仓位计划都清楚时，才考虑买入。
+4. 用模拟结果验证模型稳定性，不用短期胜负直接调参。
 
 ## 风险边界
 
 - 数据来自公开接口，可能受网络、接口变更、限流影响。
 - 财务指标可能有缺失或口径差异，不能只看脚本输出。
-- 这个策略没有做历史回测，不代表未来收益。
-- DCF、PE、PB、ROE 都只是工具，不是买卖指令。
+- 第一版做前向模拟，不代表未来收益。
+- PE、PB、ROE、动量都只是工具，不是买卖指令。

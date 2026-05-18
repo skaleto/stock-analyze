@@ -1,0 +1,13 @@
+[Unit]
+Description=Stock Analyze daily simulation run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --config /opt/stock-analyze/app/configs/strategy_v1.yaml --data-dir /opt/stock-analyze/data --reports-dir /opt/stock-analyze/reports --logs-dir /opt/stock-analyze/logs run-daily
+StandardOutput=append:/opt/stock-analyze/logs/daily.log
+StandardError=append:/opt/stock-analyze/logs/daily.err
+

@@ -1,0 +1,59 @@
+{
+  "strategy_id": "strategy_v1",
+  "name": "weekly_value_quality_momentum_v1",
+  "created_at": "2026-05-18",
+  "initial_cash": 1000000,
+  "accounts": [
+    {
+      "id": "hs300",
+      "name": "CSI 300 Strategy",
+      "scope": "hs300",
+      "benchmark": "000300",
+      "cash": 500000,
+      "top_n": 10
+    },
+    {
+      "id": "zz500",
+      "name": "CSI 500 Strategy",
+      "scope": "zz500",
+      "benchmark": "000905",
+      "cash": 500000,
+      "top_n": 10
+    }
+  ],
+  "schedule": {
+    "rebalance": "weekly_after_close",
+    "signal_day": "last_trading_day_of_week",
+    "execution": "next_trading_day_open"
+  },
+  "factors": {
+    "pe": {"weight": 0.15, "direction": "low"},
+    "pb": {"weight": 0.15, "direction": "low"},
+    "roe": {"weight": 0.20, "direction": "high"},
+    "gross_margin": {"weight": 0.10, "direction": "high"},
+    "debt_ratio": {"weight": 0.10, "direction": "low"},
+    "market_cap_yi": {"weight": 0.10, "direction": "high"},
+    "momentum_20": {"weight": 0.10, "direction": "high"},
+    "momentum_60": {"weight": 0.10, "direction": "high"}
+  },
+  "filters": {
+    "exclude_st": true,
+    "max_fetch_candidates": 160,
+    "min_listing_days": 365,
+    "min_pe": 0,
+    "min_avg_amount_20": 50000000,
+    "require_fields": ["pe", "pb", "roe", "gross_margin", "debt_ratio", "momentum_20", "momentum_60"]
+  },
+  "trading": {
+    "lot_size": 100,
+    "commission_rate": 0.0003,
+    "min_commission": 5,
+    "stamp_tax_rate": 0.0005,
+    "slippage_rate": 0.0005,
+    "max_single_weight": 0.10
+  },
+  "objective": {
+    "annual_excess_return_target": 0.05,
+    "max_drawdown_vs_benchmark": 1.2
+  }
+}

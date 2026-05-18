@@ -1,0 +1,18 @@
+[Unit]
+Description=Stock Analyze dashboard server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --data-dir /opt/stock-analyze/data --reports-dir /opt/stock-analyze/reports serve-dashboard --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/opt/stock-analyze/logs/dashboard.log
+StandardError=append:/opt/stock-analyze/logs/dashboard.err
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Stock Analyze weekly signal after Friday close
+
+[Timer]
+OnCalendar=Fri *-*-* 09:00:00 UTC
+Persistent=true
+Unit=stock-analyze-weekly.service
+
+[Install]
+WantedBy=timers.target
+

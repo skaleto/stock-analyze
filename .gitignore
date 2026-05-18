@@ -1,2 +1,13 @@
 outputs/
 __pycache__/
+*.pyc
+.venv/
+venv/
+data/*
+reports/*
+logs/*
+backups/*
+!data/.gitkeep
+!reports/.gitkeep
+!logs/.gitkeep
+!backups/.gitkeep
