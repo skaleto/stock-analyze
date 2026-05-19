@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/stock-analyze/app
 Environment=TZ=Asia/Shanghai
-ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --reports-dir /opt/stock-analyze/reports/competition serve-dashboard --host 127.0.0.1 --port 8765
+ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --reports-dir /opt/stock-analyze/app/reports/competition serve-dashboard --host 127.0.0.1 --port 8765
 Restart=on-failure
 RestartSec=10
 StandardOutput=append:/opt/stock-analyze/logs/dashboard.log
@@ -15,4 +15,3 @@ StandardError=append:/opt/stock-analyze/logs/dashboard.err
 
 [Install]
 WantedBy=multi-user.target
-
