@@ -170,7 +170,7 @@ T 日 17:00 ECS
 ### 4c. 每月 1 号
 
 ```
-01:00 ECS
+09:00 CST / 01:00 UTC ECS
   competition-monthly-review --month <prev>
     └─ compute_review(month, [claude, codex])
        · 各 agent 年化/Sharpe/IR/换手/成本/win rate
@@ -441,7 +441,7 @@ CSS `:target` 切 tab，纯静态，无 JS 框架。
 | 每个交易日 16:30 / 16:35 | ECS systemd | `--agent claude/codex run-daily` |
 | 每周五 17:00 / 17:05 | ECS systemd | `--agent claude/codex run-weekly`（自带 briefing） |
 | 周五晚 / 周末 | 你 + agent CLI | sync-from-ecs → `/weekly-review claude` + `do weekly review for codex` → sync-to-ecs |
-| 每月 1 号 01:00 | ECS systemd | `competition-monthly-review` + `agent-judge-proposals` + `agent-apply-approved-proposals` + `competition-dashboard` |
+| 每月 1 号 09:00 CST | ECS systemd | `competition-monthly-review` + `agent-judge-proposals` + `agent-apply-approved-proposals` + `competition-dashboard` |
 | 每月 1-2 号 | 你 + agent CLI + ECS | sync-from-ecs → `/monthly-strategy claude` + `do monthly strategy for codex` → sync-to-ecs 自动裁判/应用 |
 | 季度 | 你 | 翻 leaderboard 与 monthly reviews，决定是否调整 baseline 或新增 OpenSpec change |
 | 任意时刻 | 你 | `competition-dashboard` 刷新；`openspec list` 看变更状态 |
