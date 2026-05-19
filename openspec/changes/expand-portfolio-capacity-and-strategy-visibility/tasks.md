@@ -60,12 +60,12 @@
 - [x] 5.2 `python3 -m unittest discover -s tests`：72/72 通过（61 既有 + 11 新增）。
 - [x] 5.3 `openspec validate expand-portfolio-capacity-and-strategy-visibility --strict` 通过。
 - [x] 5.4 烟囱：`competition-init` + `--agent claude dashboard` + `competition-dashboard` 全部跑通；新 panel 在 dashboard.html 与 dashboard_fragment.html 中可 grep。
-- [ ] 5.5 `git commit` + `git push origin HEAD:main` 直推 main。
+- [x] 5.5 `git commit` + `git push origin HEAD:main` 直推 main。commit `27451a7`。
 
 **Quality Gate:**
 - [x] 三件套通过。
 - [x] 烟囱产物可访问，三个新 panel 出现。
-- [ ] 推送成功，origin/main 推进到新 commit。（commit + push 步骤本任务执行）
+- [x] 推送成功，origin/main 推进到 `27451a7`。
 
 ---
 

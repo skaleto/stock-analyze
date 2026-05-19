@@ -81,4 +81,4 @@
 - [x] 所有 Phase 完成并通过 Quality Gate。
 - [x] `CLAUDE.md` / `AGENTS.md` / slash commands / runbook 一致。
 - [x] 既有单 agent 模式不受影响。
-- [ ] 留下 `enable-monthly-config-evolution` change 作为下一步（apply approved proposal）。
+- [x] 留下 `enable-monthly-config-evolution` change 作为下一步（apply approved proposal）。已落在 `openspec/changes/enable-monthly-config-evolution/`。

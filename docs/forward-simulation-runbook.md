@@ -134,17 +134,45 @@ logs/*.log, logs/*.err          systemd stdout/stderr 日志
 
 ## 策略配置
 
-默认配置在 `configs/strategy_v1.yaml`：
+> 注：本节描述**单 agent 模式**（`--config configs/strategy_v1.yaml`，老入口）。**双 agent 竞赛模式**走 `configs/competition.yaml` + `configs/agents/<id>.yaml`，详见 [`docs/competition-runbook.md`](competition-runbook.md) 与 [`docs/system-overview.md`](system-overview.md)。
 
-- 账户：沪深300模拟账户、中证500模拟账户。
+默认配置在 `configs/strategy_v1.yaml`（v2 schema）：
+
+- 账户：沪深300模拟账户、中证500模拟账户，各 `top_n=10`。
 - 调仓：每周生成信号，下一交易日模拟成交。
-- 因子：PE、PB、ROE、毛利率、资产负债率、市值、20 日动量、60 日动量。
-- 成本：佣金、最低佣金、印花税、滑点、100 股整数倍。
-- 仓位：`max_single_weight` 会限制单只股票目标权重。
-- 严格必需字段：`require_fields`。
-- 降级必需字段：`fallback_require_fields`。
+- 因子（默认权重总和 1.0）：PE 0.17、PB 0.17、ROE 0.22、毛利率 0.11、资产负债率 0.11、20 日动量 0.11、60 日动量 0.11；可选因子 `low_volatility_60`、`dividend_yield` 默认权重 0。
+- 成本：佣金 0.03% + 最低 5 元、印花税 0.05%、滑点 0.05%、100 股整数倍。
+- 仓位：`max_single_weight` 限制单只股票目标权重；缺省 0.10。
 
-策略会先执行严格过滤。如果公开数据缺失导致候选池被筛空，会记录 `hard_filters_empty_relaxed`，再用 `fallback_require_fields` 继续生成可观察的模拟结果。缺失因子不会加分，仍会影响排序。
+### v2 新增配置节
+
+- **`factor_processing`**：因子流水线参数。
+  - `enabled`：是否启用流水线（false 时回退到 v1 的简单排名）。
+  - `winsorize_lower` / `winsorize_upper`：截面 winsorize 上下分位（默认 0.01/0.99）。
+  - `neutralize_industry`：是否按行业 demean（默认 true，缺失行业归入 `未分类`）。
+  - `min_factor_coverage`：单只股票需要的因子有效权重比例下限（默认 0.6），低于则剔除并写 `insufficient_factor_coverage` warning。
+- **`portfolio_controls`**：组合控制参数。
+  - `max_industry_weight`：单行业上限（默认 0.30）。
+  - `hold_buffer_pct`：持仓缓冲百分比（默认 0.5）；当前持仓排名落在 `[top_n, top_n × (1 + buffer)]` 区间时保留不卖。
+  - `max_holding_days`：单只股票最长持有日数（默认 60），到期强制重新评估。
+  - `industry_unclassified_label`：未分类行业的桶名（默认 `未分类`）。
+- **`performance`**：绩效计算参数。
+  - `risk_free_rate`（默认 0.02）、`trading_days_per_year`（默认 252）、`forward_ic_horizon_days`（默认 5）、`low_coverage_threshold`（默认 0.5，dashboard 高亮阈值）。
+- **`filters.min_market_cap_yi` / `max_market_cap_yi`**：市值过滤上下限（亿元）。市值在 v2 不再是 alpha 因子，只作为流动性过滤。
+
+v1 → v2 配置自动迁移由 `stock_analyze.config.migrate_strategy_config()` 处理：旧配置如果含 `factors.market_cap_yi`，自动折叠到 `filters.min_market_cap_yi=30` 并写一次性 warning `config_v1_market_cap_demoted`。
+
+### v2 新增产物文件
+
+- `data/runs.csv`：每条 CLI 命令的运行账本（`run_id, command, as_of, started_at, finished_at, duration_ms, status, error_summary, config_hash, code_version`）。
+- `data/configs/<config_hash>.json`：按 12 字符 sha256 哈希归档的完整配置快照。
+- `data/factor_runs/<run_id>.csv`：每次 `run-weekly` 的完整因子明细（raw / winsorized / zscore / neutralized / weight / contribution / valid / selected）。
+- `data/factor_diagnostics/coverage.csv`：每周因子覆盖率累积（`signal_date, account_id, factor, coverage_pct, missing_count, mean, p5, p50, p95, std`）。
+- `data/factor_diagnostics/forward_ic.csv`：5 日前向 Spearman rank IC 累积；冷启动写 `ic_status=insufficient_history` 占位，达到历史长度后自动回填。
+
+### 严格 vs 宽松过滤
+
+策略会先执行严格过滤。如果公开数据缺失导致候选池被筛空，会记录 `hard_filters_empty_relaxed`，再用 `fallback_require_fields` 继续生成可观察的模拟结果。v2 流水线下，缺失因子按可用权重重新归一，不再固定为 0 加分。
 
 ## 模拟成交规则
 

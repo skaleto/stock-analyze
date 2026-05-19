@@ -91,9 +91,9 @@
 ## 7. 文档与发布
 
 - [x] 7.1 `README.md` 提示 preset 切换（在 `docs/quant-beginner-alignment-plan-2026-05-19.md` 中有完整 preset 用法）。
-- [ ] 7.2 `docs/forward-simulation-runbook.md` 补 v2 配置/产物/迁移说明。**留给下一次维护循环。**
+- [x] 7.2 `docs/forward-simulation-runbook.md` 补 v2 配置/产物/迁移说明（已在审计回合中追加 v2 新增配置节 + 新增产物文件 + 严格/宽松过滤说明）。
 - [x] 7.3 `docs/quant-beginner-alignment-plan-2026-05-19.md` 写就。
-- [ ] 7.4 `docs/quant-model-gap-review-2026-05-18.md` 末尾追加 P1 落地状态指针。**留给下一次维护循环。**
+- [x] 7.4 `docs/quant-model-gap-review-2026-05-18.md` 末尾追加 P1 落地状态指针（已在审计回合中追加）。
 - [x] 7.5 5 个测试文件组织到 `tests/`。
 - [x] 7.6 `python3 -m py_compile stock_analyze/*.py` 通过；`python3 -m unittest discover -s tests` 37/37 通过。
 - [x] 7.7 烟囱跑 init/run-weekly：受公开数据源可用性约束，由用户在自己环境跑一次确认；本次会话用单元测试代替。
@@ -108,4 +108,4 @@
 
 - [x] 所有 Phase 完成并通过 Quality Gate。
 - [x] 旧 v1 配置兼容路径在单元测试中跑通。
-- [ ] 7.2 / 7.4 文档增补留作后续维护项；不阻塞下一 change `introduce-dual-agent-competition` 启动。
+- [x] 7.2 / 7.4 文档增补已在审计回合补上。

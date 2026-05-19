@@ -279,6 +279,24 @@ A 股场景必须建模为硬约束：
 - dashboard 能清楚解释收益、风险、成交失败和数据异常。
 - 真实交易前有手工确认、只读账户同步、权限隔离和风控熔断。
 
+## P1 落地状态（2026-05-19）
+
+OpenSpec change [`align-beginner-friendly-multi-factor-foundations`](../openspec/changes/align-beginner-friendly-multi-factor-foundations/proposal.md) 已实现并合入 main：
+
+- 因子流水线 winsorize → z-score → 行业中性化 → 按可用因子归一权重。
+- 单行业上限、持仓 buffer、`max_holding_days` 强制重评估。
+- 市值降级为流动性/规模过滤；新增可选低波 60 与 TTM 股息率因子。
+- 年化收益/波动、Sharpe、Sortino、最大回撤天数、累计/年化超额、跟踪误差、信息比率、双边换手率、成本占比 bps、FIFO Win Rate。
+- 因子覆盖率累计 + 前向 5 日 Spearman RankIC（不依赖 scipy）。
+- `runs.csv` 运行账本 + 按 `config_hash` 归档的 config snapshot；`code_version` 直接读 `.git/HEAD`。
+
+后续相关 change 的落地节奏：
+
+- [`introduce-dual-agent-competition`](../openspec/changes/introduce-dual-agent-competition/proposal.md)：双 agent 共享起跑线、月度对比、聚合 dashboard。
+- [`enable-cli-based-agent-analysis`](../openspec/changes/enable-cli-based-agent-analysis/proposal.md)：本地 CLI 分析闭环 + 周/月 briefing + slash commands + sync 脚本，无 API key 依赖。
+- [`expand-portfolio-capacity-and-strategy-visibility`](../openspec/changes/expand-portfolio-capacity-and-strategy-visibility/proposal.md)：组合容量提到 100 只、策略演进可视化、系统总览文档。
+- 仍未启动：`enable-monthly-config-evolution`（提案自动应用）、`add-historical-backtest-baseline`、`introduce-point-in-time-fundamentals`、`add-research-factor-toolkit`。
+
 ## 参考资料
 
 - Qlib 文档：https://qlib.readthedocs.io/en/latest/

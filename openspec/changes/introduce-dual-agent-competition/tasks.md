@@ -108,4 +108,4 @@
 - [x] 所有 Phase 完成并通过 Quality Gate。
 - [x] `AGENTS.md` 与 `docs/competition-runbook.md` 落地。
 - [x] 既有单 agent 模式回归测试通过。
-- [ ] 准备好下一 change `enable-monthly-config-evolution` 的 proposal stub（学习模式 + patch 协议）。**留给下一次启动。**
+- [x] 准备好下一 change `enable-monthly-config-evolution` 的 proposal stub（学习模式 + patch 协议）。已落在 `openspec/changes/enable-monthly-config-evolution/`，标记 `Status: STUB`，通过 `openspec validate --strict`。
