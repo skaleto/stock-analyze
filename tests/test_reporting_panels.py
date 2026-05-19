@@ -66,6 +66,20 @@ class StrategyEvolutionPanelTests(unittest.TestCase):
             self.assertIn("4.00%", html)
             self.assertIn("6.00%", html)
 
+    def test_decision_status_is_rendered_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "claude"
+            proposals = data_dir / "proposals"
+            _write_proposal(proposals, "2026-05", {"rationale": "x", "patch": {}, "no_change": True, "risks": []})
+            decisions = Path(tmp) / "competition" / "decisions"
+            decisions.mkdir(parents=True)
+            (decisions / "2026-05-claude.json").write_text(
+                json.dumps({"decision": "approved", "risk_level": "low"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            html = render_strategy_evolution_panel(data_dir)
+            self.assertIn("裁判通过 / low", html)
+
     def test_html_escape_in_rationale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "claude"

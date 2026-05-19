@@ -1220,6 +1220,31 @@ def _leaderboard_return_cell(row: dict[str, Any] | None, agent: str) -> str:
     return format_pct(value)
 
 
+def _load_decision(agent: str, month: str, data_dir: Path) -> dict[str, Any] | None:
+    path = data_dir.parent / "competition" / "decisions" / f"{month}-{agent}.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _decision_status_text(decision: dict[str, Any] | None) -> str:
+    if not decision:
+        return "待裁判"
+    value = str(decision.get("decision") or "-")
+    mapping = {
+        "approved": "裁判通过",
+        "rejected": "裁判拒绝",
+        "needs_human": "需要人工",
+    }
+    risk = decision.get("risk_level")
+    text = mapping.get(value, value)
+    return f"{text} / {risk}" if risk else text
+
+
 def render_strategy_evolution_panel(
     data_dir: str | Path,
     leaderboard_path: str | Path | None = None,
@@ -1248,6 +1273,8 @@ def render_strategy_evolution_panel(
         if len(rationale) > 200:
             rationale = rationale[:200] + "…"
         expected = _escape_html(str(proposal.get("expected_effect", "") or "-"))
+        decision = _load_decision(agent, month, Path(data_dir))
+        decision_status = _escape_html(_decision_status_text(decision))
         risks = proposal.get("risks") or []
         if isinstance(risks, list):
             risks_html = "<br>".join(_escape_html(str(item)) for item in risks[:3]) or "-"
@@ -1263,6 +1290,7 @@ def render_strategy_evolution_panel(
             f'<tr class="{row_class}">'
             f"<td>{_escape_html(month)}</td>"
             f"<td>{status_text}</td>"
+            f"<td>{decision_status}</td>"
             f"<td>{rationale or '-'}</td>"
             f"<td>{patch_html}</td>"
             f"<td>{risks_html}</td>"
@@ -1272,7 +1300,7 @@ def render_strategy_evolution_panel(
         )
     return (
         '<table class="table strategy-evolution"><thead>'
-        "<tr><th>月份</th><th>状态</th><th>理由摘要</th><th>改了哪些键</th>"
+        "<tr><th>月份</th><th>提案状态</th><th>裁判结论</th><th>理由摘要</th><th>改了哪些键</th>"
         "<th>风险</th><th>当月收益</th><th>次月收益</th></tr></thead>"
         f"<tbody>{''.join(rows_html)}</tbody></table>"
     )

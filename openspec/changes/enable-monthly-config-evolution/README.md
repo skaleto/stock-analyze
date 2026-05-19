@@ -1,3 +1,3 @@
 # enable-monthly-config-evolution
 
-把月度 proposal JSON 应用到 configs/agents/<agent>.yaml 的自动化（含人工审批 UI、配置演进历史、回滚命令）
+把月度 proposal JSON 交给确定性裁判审查，只自动应用 `approved` patch，并提供配置演进历史、dashboard 状态展示和回滚命令。

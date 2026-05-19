@@ -11,4 +11,8 @@
 - **AND** `configs/agents/claude.yaml` 包含 patch 字段
 - **AND** `data/claude/config_evolution.csv` 追加一行 `applied_at, 2026-06, ..., from_hash, to_hash, decisions/2026-06-claude.json`
 
-> Stub: 后续 scenario 将覆盖 rejected / edited 路径、锁字段违例的 dry-run、并发安全。
+#### Scenario: Non-approved decisions are skipped
+- **GIVEN** decision JSON 含 `decision="needs_human"` 或 `decision="rejected"`
+- **WHEN** 运行 `agent-apply-approved-proposals --month 2026-06`
+- **THEN** 对应 `configs/agents/<agent>.yaml` 不变
+- **AND** 命令输出 `status=skipped`

@@ -159,10 +159,8 @@ Steps:
       `patch`.
 
 5. **Do NOT directly edit `configs/agents/claude.yaml`.** The proposal is
-   reviewed by the human operator. Phase 2 (a future change,
-   `enable-monthly-config-evolution`) will introduce automated patch
-   application. Until then, the human operator merges approved patches
-   manually.
+   reviewed by the deterministic referee. Only a separate
+   `agent-apply-approved-proposals` run may apply an approved patch.
 
 ## 6. Slash commands
 
@@ -237,8 +235,8 @@ paper trading project.
   a rolling 3-month window.
 - No data corruption in your own `data/claude/` directory.
 - No reach across the fairness boundary.
-- Strategy diffs in `configs/agents/claude.yaml` come with comments that a
-  human reading the git log can understand.
+- Strategy changes have matching proposal, decision, and `config_evolution.csv`
+  audit rows a human can understand.
 
 Have fun. Lose some weeks, win some. The point is to learn what your
 strategy actually trades — not to chase last week's winner.

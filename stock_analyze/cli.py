@@ -22,6 +22,8 @@ from .data_provider import AkshareProvider
 from .dashboard_aggregator import generate_competition_dashboard
 from .diagnostics import compute_pending_forward_ic
 from .monthly_review import compute_review, default_month_for, write_review
+from .proposal_apply import apply_approved_proposals
+from .proposal_judge import judge_all
 from .reporting import generate_dashboard, generate_weekly_report
 from .run_ledger import RunLedger
 from .simulator import execute_due_orders, generate_rebalance_orders, initialize, update_nav
@@ -60,6 +62,16 @@ def build_parser() -> argparse.ArgumentParser:
     prep_monthly = sub.add_parser("agent-prepare-monthly", help="Write the monthly briefing markdown for an agent")
     prep_monthly.add_argument("--agent", required=True)
     prep_monthly.add_argument("--month", help="Target month YYYY-MM (default: previous calendar month)")
+    judge = sub.add_parser("agent-judge-proposals", help="Judge monthly strategy proposals with deterministic guardrails")
+    judge.add_argument("--month", help="Target month YYYY-MM (default: previous calendar month)")
+    judge.add_argument("--agents", nargs="*", help="Subset of agent ids to judge (default: all)")
+    judge.add_argument("--reviewer", default="referee", help="Reviewer label written to decision JSON")
+    apply_cmd = sub.add_parser("agent-apply-approved-proposals", help="Apply referee-approved monthly strategy proposals")
+    apply_cmd.add_argument("--month", help="Target month YYYY-MM (default: previous calendar month)")
+    apply_cmd.add_argument("--agents", nargs="*", help="Subset of agent ids to apply (default: all)")
+    rollback = sub.add_parser("agent-rollback", help="Rollback an agent overlay to a historical config hash")
+    rollback.add_argument("--agent", required=True)
+    rollback.add_argument("--to", required=True, help="Config hash saved under configs/agents/_history/")
     serve = sub.add_parser("serve-dashboard", help="Serve reports directory on localhost")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
@@ -126,6 +138,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "agent-prepare-monthly":
         ensure_dirs(args.logs_dir)
         return _command_agent_prepare_monthly(args)
+    if args.command == "agent-judge-proposals":
+        ensure_dirs(args.logs_dir)
+        return _command_agent_judge_proposals(args)
+    if args.command == "agent-apply-approved-proposals":
+        ensure_dirs(args.logs_dir)
+        return _command_agent_apply_approved_proposals(args)
+    if args.command == "agent-rollback":
+        ensure_dirs(args.logs_dir)
+        return _command_agent_rollback(args)
 
     try:
         config, data_dir, reports_dir, cache_dir = _resolve_runtime(args)
@@ -291,6 +312,57 @@ def _command_agent_prepare_monthly(args: argparse.Namespace) -> int:
     target = monthly_briefing_path(paths, month)
     write_briefing(text, target)
     print(f"Monthly briefing written: {target}")
+    return 0
+
+
+def _command_agent_judge_proposals(args: argparse.Namespace) -> int:
+    repo_root = Path.cwd()
+    month = args.month or default_month_for()
+    agents = args.agents or competition.list_agents(repo_root)
+    results = judge_all(month=month, agents=agents, repo_root=repo_root, reviewer=args.reviewer)
+    if not results:
+        print(f"No proposals found for month={month}")
+        return 0
+    for result in results:
+        print(
+            "Judge result: "
+            f"agent={result['agent_id']} month={result['month']} "
+            f"decision={result['decision']} risk={result['risk_level']} "
+            f"warnings={len(result.get('warnings') or [])} violations={len(result.get('violations') or [])}"
+        )
+    return 0
+
+
+def _command_agent_apply_approved_proposals(args: argparse.Namespace) -> int:
+    repo_root = Path.cwd()
+    month = args.month or default_month_for()
+    agents = args.agents or competition.list_agents(repo_root)
+    results = apply_approved_proposals(month=month, agents=agents, repo_root=repo_root)
+    if not results:
+        print(f"No decisions found for month={month}")
+        return 0
+    for result in results:
+        print(
+            "Apply result: "
+            f"agent={result['agent_id']} month={result.get('month', month)} "
+            f"status={result['status']} from={result.get('from_hash', '-')} to={result.get('to_hash', '-')}"
+        )
+    return 0
+
+
+def _command_agent_rollback(args: argparse.Namespace) -> int:
+    from .agent_rollback import rollback
+
+    try:
+        result = rollback(args.agent, args.to, repo_root=Path.cwd())
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(
+        "Rollback result: "
+        f"agent={result['agent_id']} status={result['status']} "
+        f"from={result.get('from_hash', '-')} to={result.get('to_hash', '-')}"
+    )
     return 0
 
 

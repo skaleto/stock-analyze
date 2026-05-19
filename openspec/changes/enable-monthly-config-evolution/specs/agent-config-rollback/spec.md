@@ -10,4 +10,7 @@
 - **THEN** `configs/agents/claude.yaml` 文本与历史快照一致
 - **AND** `data/claude/config_evolution.csv` 末尾一行包含 `event="rollback"`、`to_hash="abc123def456"`
 
-> Stub: 后续 scenario 覆盖未知 hash、锁字段不兼容（baseline 改变后老 overlay 不再合法）的情况。
+#### Scenario: Unknown history hash is rejected
+- **GIVEN** `configs/agents/_history/missing.yaml` 不存在
+- **WHEN** 运行 `python3 -m stock_analyze agent-rollback --agent claude --to missing`
+- **THEN** 命令失败并提示 `history_not_found:missing`

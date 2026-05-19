@@ -117,6 +117,19 @@ python3 -m stock_analyze competition-monthly-review --month 2026-05 --agents cla
 - `reports/competition/monthly_review_<month>.md` — 人类可读，含双方指标横向对比表、共同/分歧驱动因子、自动生成的差异化建议（不构成投资建议）。
 - `data/competition/leaderboard.csv` — 每月一行，按累计收益和信息比率分别记录胜方；同月再跑会 upsert。
 
+## 策略 proposal 裁判与应用
+
+```bash
+python3 -m stock_analyze agent-judge-proposals --month 2026-05
+python3 -m stock_analyze agent-apply-approved-proposals --month 2026-05
+```
+
+- `agent-judge-proposals` 读取 `data/<agent>/proposals/<month>-strategy.json`，写 `data/competition/decisions/<month>-<agent>.json`。
+- 裁判结论只有三类：`approved` 自动应用，`rejected` 拒绝，`needs_human` 保留给人工看但不自动应用。
+- `agent-apply-approved-proposals` 只处理 `approved`，会先把旧 overlay 存到 `configs/agents/_history/<config_hash>.yaml`，再合并 patch，并追加 `data/<agent>/config_evolution.csv`。
+- `scripts/sync-to-ecs.sh` 默认在推回 notes/proposals 后自动在 ECS 上跑上述两条命令并刷新 dashboard；如只想同步文件，设置 `SA_ECS_AFTER_SYNC=0`。
+- 回滚用 `python3 -m stock_analyze agent-rollback --agent codex --to <config_hash>`。
+
 ## 聚合 Dashboard
 
 ```bash
@@ -233,16 +246,17 @@ ECS 端（systemd 自动）
       └ 自动 build_weekly_briefing → data/<id>/notes/briefings/<date>-weekly.md
   └ competition-monthly-review
       └ 对每个 agent 自动 build_monthly_briefing → data/<id>/notes/briefings/<month>-monthly.md
+      └ 如 proposal 已存在，则自动 judge → apply approved → 刷 dashboard
 
 本地（人 + agent CLI）
   └ scripts/sync-from-ecs.sh       拉数据/配置/报告
   └ Claude Code: /weekly-review claude       agent 读 briefing → 写 data/claude/notes/<date>-weekly-review.md
   └ Codex CLI: "do weekly review for codex"  agent 读 briefing → 写 data/codex/notes/<date>-weekly-review.md
   └ （月底再各跑一次 /monthly-strategy <id>，产 proposal JSON）
-  └ scripts/sync-to-ecs.sh         推 notes / proposals 回 ECS
+  └ scripts/sync-to-ecs.sh         推 notes / proposals 回 ECS，并自动触发裁判/apply/dashboard
 
 ECS 端
-  └ competition-dashboard          下次刷新时 notes 出现在 dashboard
+  └ dashboard 显示 notes、proposal 与裁判结论；approved patch 下次交易周期生效
 ```
 
 ### 一次性环境变量
@@ -251,6 +265,10 @@ ECS 端
 export SA_ECS_REMOTE=user@your-ecs-host:/opt/stock-analyze/app
 # 可选：覆盖本地仓库路径，默认 $(pwd)
 # export SA_ECS_LOCAL_REPO=$HOME/code/stock-analyze
+# 可选：远端自动裁判/apply 使用的 ssh 参数与目标月份
+# export SA_ECS_SSH_OPTS="-i ~/.ssh/your_key"
+# export SA_ECS_MONTH=2026-05
+# export SA_ECS_AFTER_SYNC=0  # 只同步，不触发远端裁判/apply
 ```
 
 ### 周度本地分析步骤
@@ -292,10 +310,10 @@ ls data/claude/proposals/2026-05-strategy.json
 ls data/codex/notes/2026-05-monthly-review.md
 ls data/codex/proposals/2026-05-strategy.json
 
-# 3. 你自己 review proposal JSON（rationale + risks + patch）。决定 approve 哪些，
-#    手动编辑 configs/agents/<agent>.yaml（Phase 2 之前都是人工合入）。
+# 3. 推回 ECS。默认会自动运行：
+#    agent-judge-proposals → agent-apply-approved-proposals → competition-dashboard
+#    如果只想同步文件：SA_ECS_AFTER_SYNC=0 ./scripts/sync-to-ecs.sh
 
-# 4. 推 notes 回 ECS
 ./scripts/sync-to-ecs.sh
 ```
 
@@ -312,7 +330,7 @@ ls data/codex/proposals/2026-05-strategy.json
 ### 关键边界
 
 - 周度 agent **只写笔记**，不改 config。
-- 月度 agent 写 markdown 笔记 + JSON proposal；proposal 不会自动应用，由你审核后手动合入 `configs/agents/<agent>.yaml`。
+- 月度 agent 写 markdown 笔记 + JSON proposal；proposal 先由确定性裁判写 decision，只有 `approved` 会自动合入 overlay。
 - agent 不能跨写对方目录（CLAUDE.md / AGENTS.md 强约束）；月度只能通过 `data/competition/monthly_reviews/<month>.json` 看到对手公开数据。
 - 不要把 LLM API key 放到这个仓库里——本工作流不需要。
 
@@ -332,8 +350,8 @@ python3 -m stock_analyze agent-prepare-monthly --agent codex --month 2026-05
 | 每个交易日 16:30 / 16:35 | `--agent claude/codex run-daily` | ECS systemd timer |
 | 每周五 17:00 / 17:05 | `--agent claude/codex run-weekly`（自带 briefing） | ECS systemd timer |
 | 周五晚 | sync-from-ecs → `/weekly-review claude` + 同步 codex → sync-to-ecs | 本地人工 + agent |
-| 每月 1 号 09:00 | `competition-monthly-review` + `competition-dashboard` | ECS systemd timer |
-| 每月 1-2 号 | sync-from-ecs → `/monthly-strategy claude` + 同步 codex → 人工审 → 手动合入 → sync-to-ecs | 本地人工 + agent |
+| 每月 1 号 09:00 | `competition-monthly-review` + `agent-judge-proposals` + `agent-apply-approved-proposals` + `competition-dashboard` | ECS systemd timer |
+| 每月 1-2 号 | sync-from-ecs → `/monthly-strategy claude` + 同步 codex → sync-to-ecs 自动裁判/应用 | 本地人工 + agent + ECS |
 | 任意时刻 | `competition-dashboard` | 人或 timer |
 
 ## 风险与边界
@@ -341,4 +359,4 @@ python3 -m stock_analyze agent-prepare-monthly --agent codex --month 2026-05
 - 仅模拟。任何输出都不构成投资建议。
 - 公开数据接口可能失败/限流；`data/shared/data_health.json` 会记录降级路径。
 - 两侧 overlay 同质化（`daily_return_correlation > 0.85`）时对比意义下降，月度报告会自动给出提醒。
-- 学习模式（agent 自动生成 config patch 并应用）暂未启用；下一个 OpenSpec change `enable-monthly-config-evolution` 跟踪。
+- 策略自动演进只应用裁判判定为 `approved` 的小步 patch；`needs_human` 和 `rejected` 不会自动改配置。

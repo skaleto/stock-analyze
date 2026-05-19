@@ -29,7 +29,7 @@
 │ ECS (Linux + systemd)                                        │
 │  · 每个交易日跑 run-daily（模拟成交、NAV、刷 dashboard）     │
 │  · 每周五跑 run-weekly（生成信号 + 待执行订单 + 周 briefing）│
-│  · 每月 1 号跑 competition-monthly-review + 聚合 dashboard   │
+│  · 每月 1 号跑 monthly-review + referee/apply + dashboard    │
 │  · 不调 LLM API；只产数据 + 输出"待 agent 看的任务包"        │
 └──────────────────────────────────────────────────────────────┘
                             │
@@ -40,10 +40,9 @@
 │  · 周五晚：sync → 在 Claude Code 跑 /weekly-review claude    │
 │             同时在 Codex CLI 让 codex 跑 weekly review       │
 │             → agent 写笔记到 data/<agent>/notes/             │
-│             → scripts/sync-to-ecs.sh 推回                    │
+│             → scripts/sync-to-ecs.sh 推回并刷新 dashboard    │
 │  · 月度同上 + /monthly-strategy <agent> 产 proposal JSON     │
-│  · proposal 由你 review 后手动 merge 到                      │
-│    configs/agents/<agent>.yaml                               │
+│  · sync-to-ecs 默认触发 ECS 裁判，只应用 approved patch       │
 └──────────────────────────────────────────────────────────────┘
                             │
                             │  git push origin main
@@ -52,19 +51,19 @@
                   │ GitHub (origin/main)│
                   └─────────────────────┘
                             ↑
-                            │  git pull (ECS 拉新策略)
+                            │  git pull / rsync (ECS 更新代码)
                             │
-                          ECS 应用新 overlay 跑下一周期
+                          ECS 用已应用 overlay 跑下一周期
 ```
 
 三方角色：
 
 | 谁 | 干什么 | 安全边界 |
 | --- | --- | --- |
-| **ECS** | 自动跑数、出 dashboard 和 briefings，不修改 config | systemd timer 主导，无人值守 |
+| **ECS** | 自动跑数、出 dashboard/briefings，并应用 referee-approved config patch | systemd timer + sync 后置命令 |
 | **本地 Claude Code** | claude 视角分析与提案 | 只动 `data/claude/notes/` 与 `data/claude/proposals/` |
 | **本地 Codex CLI** | codex 视角分析与提案 | 只动 `data/codex/notes/` 与 `data/codex/proposals/` |
-| **你（人）** | review proposal、合入 overlay、push main | 唯一能改 `configs/agents/*.yaml` 与 `configs/competition.yaml` 的角色 |
+| **你（人）** | 查看 dashboard、处理 `needs_human`、决定是否回滚或暂停 | 唯一能改 `configs/competition.yaml` 的角色 |
 
 ---
 
@@ -183,6 +182,10 @@ T 日 17:00 ECS
        · data/competition/leaderboard.csv（upsert）
     └─ build_monthly_briefing for each agent
        · data/<agent>/notes/briefings/<month>-monthly.md  ← agent 月度待办
+    └─ agent-judge-proposals
+       · data/competition/decisions/<month>-<agent>.json
+    └─ agent-apply-approved-proposals
+       · 只应用 approved patch，并记录 config_evolution.csv
 
 01:10 competition-dashboard
   生成三 tab 聚合页 reports/competition/dashboard.html
@@ -202,12 +205,13 @@ T 日 17:00 ECS
 
   ./scripts/sync-to-ecs.sh
     └─ 推 data/<agent>/notes/ 与 data/<agent>/proposals/ 回 ECS
+    └─ 默认远端运行 judge → apply approved → competition-dashboard
 
 ECS:
-  下次 competition-dashboard 时自动把新笔记、新提案显示到 dashboard 上
+  dashboard 显示新笔记、新提案和裁判结论；approved patch 进入下一周期
 ```
 
-月度 proposal **不会自动应用**。你 review 完后**手动改** `configs/agents/<agent>.yaml`，git commit + push，ECS 下次 pull 后生效。下一阶段（`enable-monthly-config-evolution`）会自动化这一步。
+月度 proposal 不再要求你判断策略是否该合入。确定性裁判只做安全/合规/小步审查：`approved` 自动应用，`rejected` 与 `needs_human` 保留在 dashboard 里供人工查看。
 
 ---
 
@@ -226,9 +230,9 @@ ECS:
 - `schedule.execution`、`schedule.signal_day`
 - `trading.*`（所有交易成本相关）
 
-### 5b. `configs/agents/<agent>.yaml`（agent 可改）
+### 5b. `configs/agents/<agent>.yaml`（agent proposal 可改）
 
-每个 agent 自由设置：
+每个 agent 通过月度 proposal 影响以下 overlay 字段；实际写回由 referee-approved apply 命令执行：
 
 - `factors`：哪些因子、各自权重、方向 (`high` / `low`)
 - `factor_processing`：winsorize 上下分位、是否行业中性化、最小因子覆盖率
@@ -382,7 +386,7 @@ CSS `:target` 切 tab，纯静态，无 JS 框架。
 
 - **周度**：ECS 自动生成 `data/<agent>/notes/briefings/<date>-weekly.md` → 你 sync → agent 跑 `/weekly-review claude`（或 codex 类似指令）→ agent 自己 Read 任务包 + 写 markdown 笔记到 `data/<agent>/notes/<date>-weekly-review.md` → 你 sync 回 ECS。**周度不改 config**。
 
-- **月度**：ECS 自动生成 `data/<agent>/notes/briefings/<month>-monthly.md`（含完整月度对比 JSON 摘要 + 近 4 周笔记 + 锁字段清单）→ 你 sync → agent 跑 `/monthly-strategy claude 2026-05` → 输出 markdown 月度复盘 + 严格 JSON proposal 到 `data/<agent>/proposals/<month>-strategy.json` → 你 sync 回 → 在 dashboard 上 review proposal → 决定合入哪些 → **手动编辑** `configs/agents/<agent>.yaml`（Phase 2 自动化）。
+- **月度**：ECS 自动生成 `data/<agent>/notes/briefings/<month>-monthly.md`（含完整月度对比 JSON 摘要 + 近 4 周笔记 + 锁字段清单）→ 你 sync → agent 跑 `/monthly-strategy claude 2026-05` → 输出 markdown 月度复盘 + 严格 JSON proposal 到 `data/<agent>/proposals/<month>-strategy.json` → 你 sync 回 → ECS 裁判写 decision → 只自动应用 `approved` patch。
 
 每份 briefing 是**五段**结构：角色 / 数据快照 / 任务 / 输出契约 / 可选参考。agent 看到的就是一段固定模板，写什么、写到哪、不要碰什么完全明确。
 
@@ -413,7 +417,9 @@ CSS `:target` 切 tab，纯静态，无 JS 框架。
 | `data/<agent>/notes/briefings/*.md` | ECS（agent_briefing） | agent 待办任务包 |
 | `data/<agent>/notes/*.md` | agent | 周/月分析笔记 |
 | `data/<agent>/proposals/*-strategy.json` | agent | 月度策略提案 |
+| `data/<agent>/config_evolution.csv` | proposal_apply | 策略应用 / 回滚审计 |
 | `data/competition/competition_metadata.json` | competition-init | 起跑日 / baseline_hash |
+| `data/competition/decisions/<month>-<agent>.json` | proposal_judge | 裁判结论 |
 | `data/competition/monthly_reviews/<month>.json` | monthly_review | 机器可读对比 |
 | `data/competition/leaderboard.csv` | monthly_review | 按月滚动战绩 |
 | `data/shared/cache/*.csv` | data_provider | 公开数据缓存（两侧共用） |
@@ -435,8 +441,8 @@ CSS `:target` 切 tab，纯静态，无 JS 框架。
 | 每个交易日 16:30 / 16:35 | ECS systemd | `--agent claude/codex run-daily` |
 | 每周五 17:00 / 17:05 | ECS systemd | `--agent claude/codex run-weekly`（自带 briefing） |
 | 周五晚 / 周末 | 你 + agent CLI | sync-from-ecs → `/weekly-review claude` + `do weekly review for codex` → sync-to-ecs |
-| 每月 1 号 01:00 | ECS systemd | `competition-monthly-review` + `competition-dashboard` |
-| 每月 1-2 号 | 你 + agent CLI | sync-from-ecs → `/monthly-strategy claude` + `do monthly strategy for codex` → 审 proposal → 手动改 overlay → commit + push |
+| 每月 1 号 01:00 | ECS systemd | `competition-monthly-review` + `agent-judge-proposals` + `agent-apply-approved-proposals` + `competition-dashboard` |
+| 每月 1-2 号 | 你 + agent CLI + ECS | sync-from-ecs → `/monthly-strategy claude` + `do monthly strategy for codex` → sync-to-ecs 自动裁判/应用 |
 | 季度 | 你 | 翻 leaderboard 与 monthly reviews，决定是否调整 baseline 或新增 OpenSpec change |
 | 任意时刻 | 你 | `competition-dashboard` 刷新；`openspec list` 看变更状态 |
 
@@ -450,7 +456,7 @@ CSS `:target` 切 tab，纯静态，无 JS 框架。
 | top_n / 股票池 / 基准 一致 | 同上 |
 | agent 不能跨写对方目录 | `CLAUDE.md` / `AGENTS.md` 行为约束 + slash command 禁止条款 |
 | agent 不能改 `stock_analyze/`、`configs/competition.yaml`、operating manual | 同上 |
-| 月度 proposal 不会自动应用 | 当前实现就不应用；Phase 2 才做 + 必须人工 approve |
+| 月度 proposal 自动应用边界 | 只有 referee 判定为 `approved` 的小步 patch 会应用；`needs_human` / `rejected` 不改配置 |
 | 无 LLM API 依赖 | 整个 stack 没有任何 HTTP 调用到 anthropic.com / openai.com |
 | 真单 | 不可能。代码里没有任何券商 SDK 也没有任何下单链路 |
 | 敏感凭据 | 仅 `EASTMONEY_COOKIE` 环境变量；不写入仓库、配置、日志；systemd 用 EnvironmentFile 隔离权限 |
@@ -472,13 +478,12 @@ CSS `:target` 切 tab，纯静态，无 JS 框架。
 
 按优先级建议：
 
-1. `enable-monthly-config-evolution`：dashboard 加 Approve/Reject 按钮 + CLI `apply-approved-proposals` 自动应用 patch + 配置演进 audit log + 回滚命令。
-2. `add-historical-backtest-baseline`：把当前规则跑 3-5 年历史，输出年化 / 超额 / 最大回撤 / 夏普 / 换手；提供样本外检验。
-3. `introduce-point-in-time-fundamentals`：按公告日生效财务因子。
-4. `add-research-factor-toolkit`：因子衰减、相关性、行业暴露归因、风格暴露归因。
-5. `migrate-run-ledger-to-sqlite`：CSV 账本 → SQLite/DuckDB，加索引、原子写、备份。
-6. `add-alerting-and-sla`：任务失败 / NAV 停更 / pending 超期 / 回撤超阈值告警。
-7. `introduce-portfolio-optimizer`：在既有约束下接 CVXPY 做加权。
+1. `add-historical-backtest-baseline`：把当前规则跑 3-5 年历史，输出年化 / 超额 / 最大回撤 / 夏普 / 换手；提供样本外检验。
+2. `introduce-point-in-time-fundamentals`：按公告日生效财务因子。
+3. `add-research-factor-toolkit`：因子衰减、相关性、行业暴露归因、风格暴露归因。
+4. `migrate-run-ledger-to-sqlite`：CSV 账本 → SQLite/DuckDB，加索引、原子写、备份。
+5. `add-alerting-and-sla`：任务失败 / NAV 停更 / pending 超期 / 回撤超阈值告警。
+6. `introduce-portfolio-optimizer`：在既有约束下接 CVXPY 做加权。
 
 每个 change 都走 OpenSpec：proposal → design → tasks → specs，验证通过后实施。
 

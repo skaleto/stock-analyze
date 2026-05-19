@@ -10,9 +10,8 @@
 #
 # ECS keeps ownership of everything else (state.json, daily_nav.csv, trades.csv,
 # positions.csv, runs.csv, factor_runs/, factor_diagnostics/, configs/, reports/).
-# After push, on ECS run:
-#   python3 -m stock_analyze competition-dashboard
-# (or wait for the next monthly-review timer) to refresh the aggregator dashboard.
+# After push, the script runs the ECS-side referee/apply/dashboard chain by
+# default. Set SA_ECS_AFTER_SYNC=0 to push files only.
 
 set -euo pipefail
 
@@ -28,6 +27,17 @@ EOF
 fi
 
 LOCAL_REPO="${SA_ECS_LOCAL_REPO:-$(pwd)}"
+AFTER_SYNC="${SA_ECS_AFTER_SYNC:-1}"
+REMOTE_HOST="${SA_ECS_SSH_HOST:-}"
+REMOTE_PATH="${SA_ECS_REMOTE_PATH:-}"
+
+if [[ -z "$REMOTE_HOST" || -z "$REMOTE_PATH" ]]; then
+  remote_no_slash="${SA_ECS_REMOTE%/}"
+  if [[ "$remote_no_slash" == *:* ]]; then
+    REMOTE_HOST="${REMOTE_HOST:-${remote_no_slash%%:*}}"
+    REMOTE_PATH="${REMOTE_PATH:-${remote_no_slash#*:}}"
+  fi
+fi
 
 agents=()
 for dir in "$LOCAL_REPO"/data/*/; do
@@ -56,6 +66,37 @@ for agent in "${agents[@]}"; do
   fi
 done
 
-echo "Done. On the ECS side, run:"
-echo "  python3 -m stock_analyze competition-dashboard"
-echo "to refresh the aggregator dashboard with the new notes."
+if [[ "$AFTER_SYNC" == "0" ]]; then
+  echo "Done. Skipped ECS post-sync commands because SA_ECS_AFTER_SYNC=0."
+  exit 0
+fi
+
+if [[ -z "$REMOTE_HOST" || -z "$REMOTE_PATH" ]]; then
+  cat >&2 <<EOF
+warning: could not parse an SSH target from SA_ECS_REMOTE.
+Set SA_ECS_SSH_HOST and SA_ECS_REMOTE_PATH, then run on ECS:
+  python3 -m stock_analyze agent-judge-proposals
+  python3 -m stock_analyze agent-apply-approved-proposals
+  python3 -m stock_analyze competition-dashboard
+EOF
+  exit 0
+fi
+
+python_bin="${SA_ECS_PYTHON:-/opt/stock-analyze/venv/bin/python}"
+logs_dir="${SA_ECS_LOGS_DIR:-/opt/stock-analyze/logs}"
+month_suffix=""
+if [[ -n "${SA_ECS_MONTH:-}" ]]; then
+  month_suffix=" --month $(printf '%q' "$SA_ECS_MONTH")"
+fi
+
+quoted_remote_path="$(printf '%q' "$REMOTE_PATH")"
+quoted_python="$(printf '%q' "$python_bin")"
+quoted_logs="$(printf '%q' "$logs_dir")"
+remote_cmd="cd $quoted_remote_path"
+remote_cmd+=" && $quoted_python -m stock_analyze.cli --logs-dir $quoted_logs agent-judge-proposals$month_suffix"
+remote_cmd+=" && $quoted_python -m stock_analyze.cli --logs-dir $quoted_logs agent-apply-approved-proposals$month_suffix"
+remote_cmd+=" && $quoted_python -m stock_analyze.cli --logs-dir $quoted_logs competition-dashboard"
+
+echo "Running ECS post-sync referee/apply/dashboard chain on $REMOTE_HOST ..."
+ssh ${SA_ECS_SSH_OPTS:-} "$REMOTE_HOST" "$remote_cmd"
+echo "Done. ECS dashboard refreshed."

@@ -145,8 +145,8 @@ When the operator says "do monthly strategy for codex":
      (strict JSON per the schema in `# 输出契约`). If you decide not to
      change anything, output `no_change=true` with empty `patch`.
 4. **Do NOT directly edit `configs/agents/codex.yaml`.** The proposal is
-   reviewed by the human operator; Phase 2 will introduce automated
-   patch application.
+   reviewed by the deterministic referee. Only a separate
+   `agent-apply-approved-proposals` run may apply an approved patch.
 
 The locked baseline still applies: `patch` must not contain any field
 listed in the briefing's "锁字段或路径会被拒绝" block, and you must not
@@ -175,15 +175,12 @@ this automatically; you can also run it on demand):
    - `comparison.divergent_factor_drivers` — what's the other side leaning
      on that I'm not?
 
-3. The MVP does NOT auto-apply patches. Do not edit
-   `configs/agents/codex.yaml` directly during monthly review. Write the
-   strategy proposal JSON described in §5b instead; the human operator reviews
-   and applies accepted changes. This keeps the JSON-syntax overlay valid and
-   prevents accidental baseline override.
-
-A future change (`enable-monthly-config-evolution`) may introduce a formal
-patch protocol with rollback support. Until then, strategy changes are
-proposal-first and human-applied.
+3. Strategy changes remain proposal-first. After monthly strategy proposals
+   exist, `python3 -m stock_analyze agent-judge-proposals --month YYYY-MM`
+   writes referee decisions to `data/competition/decisions/`, and
+   `python3 -m stock_analyze agent-apply-approved-proposals --month YYYY-MM`
+   applies only `approved` patches with history and `config_evolution.csv`
+   audit rows. `rejected` and `needs_human` decisions are not applied.
 
 ## 7. Forbidden actions
 
@@ -234,8 +231,8 @@ project.
   a rolling 3-month window.
 - No data corruption in your own `data/codex/` directory.
 - No reach across the fairness boundary.
-- Strategy diffs in `configs/agents/codex.yaml` come with comments that a
-  human reading the git log can understand.
+- Strategy changes have matching proposal, decision, and `config_evolution.csv`
+  audit rows a human can understand.
 
 Have fun. Lose some weeks, win some. The point is to learn what your
 strategy actually trades — not to chase last week's winner.
