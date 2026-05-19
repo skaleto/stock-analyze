@@ -149,5 +149,55 @@ class DashboardAggregatorTests(unittest.TestCase):
             self.assertIn("monthly_review_2026-05.md", html)
 
 
+class ObservationPairingTests(unittest.TestCase):
+    def _seed_minimal(self, tmp: Path) -> None:
+        _seed_repo(tmp)
+        for agent, cum in (("claude", 0.04), ("codex", 0.03)):
+            _seed_agent_for_dashboard(
+                tmp,
+                agent,
+                fragment=f'<section class="agent-dashboard" data-agent="{agent}"><p>{agent} sentinel</p></section>',
+                cumulative=cum,
+                nav_rows=[("2026-05-01", 1000000)],
+                positions=["000001"],
+            )
+
+    def test_both_agents_have_weekly_notes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_minimal(tmp_path)
+            for agent, body in (("claude", "claude weekly observation"), ("codex", "codex weekly observation")):
+                notes_dir = tmp_path / "data" / agent / "notes"
+                notes_dir.mkdir(parents=True, exist_ok=True)
+                (notes_dir / "2026-05-22-weekly-review.md").write_text(body, encoding="utf-8")
+            out_path = generate_competition_dashboard(agents=["claude", "codex"], repo_root=tmp_path)
+            html = out_path.read_text(encoding="utf-8")
+            self.assertIn("本周双方观察对照", html)
+            self.assertIn("claude weekly observation", html)
+            self.assertIn("codex weekly observation", html)
+            self.assertIn("observation-grid", html)
+
+    def test_only_one_agent_has_note(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_minimal(tmp_path)
+            notes_dir = tmp_path / "data" / "claude" / "notes"
+            notes_dir.mkdir(parents=True, exist_ok=True)
+            (notes_dir / "2026-05-22-weekly-review.md").write_text("only claude wrote", encoding="utf-8")
+            out_path = generate_competition_dashboard(agents=["claude", "codex"], repo_root=tmp_path)
+            html = out_path.read_text(encoding="utf-8")
+            self.assertIn("only claude wrote", html)
+            self.assertIn("Codex 本周无笔记", html)
+
+    def test_no_notes_shows_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            self._seed_minimal(tmp_path)
+            out_path = generate_competition_dashboard(agents=["claude", "codex"], repo_root=tmp_path)
+            html = out_path.read_text(encoding="utf-8")
+            self.assertIn("本周双方观察对照", html)
+            self.assertIn("尚未生成 agent 周笔记", html)
+
+
 if __name__ == "__main__":
     unittest.main()

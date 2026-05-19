@@ -2,6 +2,8 @@
 
 一个面向 A 股的前向模拟交易系统。它只做模拟交易、净值追踪、报告和 dashboard，不接券商接口，不真实下单，也不构成投资建议。
 
+> **新人入门**：先读 [docs/system-overview.md](docs/system-overview.md) —— 一页完整的系统总览。
+>
 > **双 agent 竞赛模式**：仓库支持让 Claude 与 Codex（或任意两个策略 overlay）共享起跑线、独立运行、月度对比；详见 [docs/competition-runbook.md](docs/competition-runbook.md)。
 > 本地 agent 分析（无需 API key）的工作流见 [CLAUDE.md](CLAUDE.md) / [AGENTS.md](AGENTS.md) §5b。
 
@@ -11,7 +13,7 @@
 - 基准：沪深300指数、中证500指数
 - 资金：模拟总资金 100 万，两个账户各 50 万
 - 调仓：每周生成信号，下一交易日模拟成交
-- 持仓：每个账户选前 10 只，等权
+- 持仓：竞赛模式每个账户选前 50 只（双账户合计 100 只），单 agent 模式 strategy_v1 仍为 10 只等权
 - 目标：扣除成本后，观察是否能跑出年化超额收益
 - 报告：CSV/JSON、Markdown 周报、静态 HTML dashboard
 

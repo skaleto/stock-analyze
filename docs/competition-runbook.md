@@ -1,5 +1,7 @@
 # 双 Agent 竞赛运维手册
 
+> 更概括的系统视角见 [docs/system-overview.md](system-overview.md)。本手册聚焦运维细节。
+
 本手册面向运营者（人类）。Agent 自己的工作流见 `AGENTS.md`（Codex）与
 `configs/agents/claude.yaml` 上方说明（Claude）。
 

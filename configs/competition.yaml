@@ -9,14 +9,14 @@
       "scope": "hs300",
       "benchmark": "000300",
       "cash": 500000,
-      "top_n": 10
+      "top_n": 50
     },
     {
       "id": "zz500",
       "scope": "zz500",
       "benchmark": "000905",
       "cash": 500000,
-      "top_n": 10
+      "top_n": 50
     }
   ],
   "schedule": {
@@ -30,7 +30,7 @@
     "min_commission": 5,
     "stamp_tax_rate": 0.0005,
     "slippage_rate": 0.0005,
-    "max_single_weight": 0.10
+    "max_single_weight": 0.05
   },
   "performance": {
     "risk_free_rate": 0.02,

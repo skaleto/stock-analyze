@@ -307,6 +307,9 @@ def generate_dashboard(
     dashboard_path = Path(reports_dir) / dashboard_filename
     agent_id = str(config.get("agent_id") or "agent")
     notes_html = render_agent_notes_panel(store.data_dir)
+    leaderboard_path = store.data_dir.parent / "competition" / "leaderboard.csv"
+    strategy_evolution_html = render_strategy_evolution_panel(store.data_dir, leaderboard_path=leaderboard_path)
+    latest_briefing_html = render_latest_briefing_panel(store.data_dir)
 
     nav_json = nav.to_json(orient="records", force_ascii=False) if not nav.empty else "[]"
     price_json = json.dumps(price_panels, ensure_ascii=False)
@@ -391,6 +394,9 @@ def generate_dashboard(
     .tag-success {{ display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; background: #e8f3ef; color: var(--green); font-size: 12px; }}
     .tag-failed {{ display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; background: #fde2e1; color: var(--red); font-size: 12px; }}
     .tag-running {{ display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; background: #fff1cc; color: var(--amber); font-size: 12px; }}
+    table.strategy-evolution {{ font-size: 12px; }}
+    table.strategy-evolution td {{ vertical-align: top; max-width: 320px; white-space: normal; }}
+    table.strategy-evolution tr.proposal-no-change td {{ color: var(--muted); }}
     @media (max-width: 900px) {{ .split {{ grid-template-columns: 1fr; }} .panel-row {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
@@ -451,6 +457,10 @@ def generate_dashboard(
     <div class="panel">{runs_html}</div>
     <h2>近期 agent 笔记</h2>
     <div class="panel">{notes_html}</div>
+    <h2>策略演进时间线</h2>
+    <div class="panel">{strategy_evolution_html}</div>
+    <h2>本期分析任务包</h2>
+    <div class="panel">{latest_briefing_html}</div>
   </main>
   <script>
     const nav = {nav_json};
@@ -1111,6 +1121,195 @@ def format_days(value: Any) -> str:
     if number is None:
         return "-"
     return f"{int(number)} d"
+
+
+MAX_PANEL_CONTENT_BYTES = 16 * 1024
+
+
+def _escape_html(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _truncate(text: str, limit: int = MAX_PANEL_CONTENT_BYTES) -> str:
+    if len(text.encode("utf-8")) <= limit:
+        return text
+    encoded = text.encode("utf-8")[:limit]
+    return encoded.decode("utf-8", errors="ignore") + "\n…(truncated)"
+
+
+def read_agent_proposals(data_dir: str | Path) -> list[dict[str, Any]]:
+    """Return all monthly proposals from ``data/<agent>/proposals/*-strategy.json``
+    sorted by month descending. Each item is the raw proposal dict plus a
+    ``month`` key extracted from the file name (``YYYY-MM-strategy.json``).
+    Malformed JSON is skipped silently.
+    """
+
+    proposals_dir = Path(data_dir) / "proposals"
+    if not proposals_dir.exists():
+        return []
+    results: list[dict[str, Any]] = []
+    for path in sorted(proposals_dir.glob("*-strategy.json"), reverse=True):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        month = path.stem.replace("-strategy", "")
+        payload.setdefault("month", month)
+        payload.setdefault("_source_path", str(path))
+        results.append(payload)
+    return results
+
+
+def _load_leaderboard_by_month(leaderboard_path: Path) -> dict[str, dict[str, Any]]:
+    if not leaderboard_path.exists():
+        return {}
+    try:
+        df = pd.read_csv(leaderboard_path)
+    except Exception:  # noqa: BLE001
+        return {}
+    if df.empty or "month" not in df.columns:
+        return {}
+    return {str(row["month"]): row.to_dict() for _, row in df.iterrows()}
+
+
+def _summarise_patch_keys(patch: Any) -> list[str]:
+    if not isinstance(patch, dict):
+        return []
+    keys: list[str] = []
+    for top, sub in patch.items():
+        if isinstance(sub, dict) and sub:
+            for inner in sub:
+                keys.append(f"{top}.{inner}")
+        else:
+            keys.append(str(top))
+    return keys
+
+
+def _next_month(month: str) -> str | None:
+    try:
+        year, mo = month.split("-")
+        year_i = int(year)
+        mo_i = int(mo)
+    except (ValueError, AttributeError):
+        return None
+    if mo_i == 12:
+        year_i += 1
+        mo_i = 1
+    else:
+        mo_i += 1
+    return f"{year_i:04d}-{mo_i:02d}"
+
+
+def _agent_from_data_dir(data_dir: Path) -> str:
+    return data_dir.name or "agent"
+
+
+def _leaderboard_return_cell(row: dict[str, Any] | None, agent: str) -> str:
+    if not row:
+        return "-"
+    column = f"{agent}_return"
+    value = safe_float(row.get(column))
+    if value is None:
+        return "-"
+    return format_pct(value)
+
+
+def render_strategy_evolution_panel(
+    data_dir: str | Path,
+    leaderboard_path: str | Path | None = None,
+) -> str:
+    """Render the per-agent strategy-evolution timeline panel."""
+
+    proposals = read_agent_proposals(data_dir)
+    agent = _agent_from_data_dir(Path(data_dir))
+    if not proposals:
+        return (
+            '<p class="empty">尚未生成策略提案。月度 <code>/monthly-strategy '
+            f"{agent}</code> 跑完后会出现。</p>"
+        )
+
+    leaderboard_lookup: dict[str, dict[str, Any]] = {}
+    if leaderboard_path is not None:
+        leaderboard_lookup = _load_leaderboard_by_month(Path(leaderboard_path))
+
+    rows_html: list[str] = []
+    for proposal in proposals:
+        month = str(proposal.get("month", "-"))
+        no_change = bool(proposal.get("no_change"))
+        row_class = "proposal-no-change" if no_change else "proposal-change"
+        status_text = "本月维持" if no_change else "提议调整"
+        rationale = _escape_html(_truncate(str(proposal.get("rationale", "")), limit=600))
+        if len(rationale) > 200:
+            rationale = rationale[:200] + "…"
+        expected = _escape_html(str(proposal.get("expected_effect", "") or "-"))
+        risks = proposal.get("risks") or []
+        if isinstance(risks, list):
+            risks_html = "<br>".join(_escape_html(str(item)) for item in risks[:3]) or "-"
+        else:
+            risks_html = _escape_html(str(risks))
+        patch_keys = _summarise_patch_keys(proposal.get("patch"))
+        patch_html = (
+            ", ".join(_escape_html(key) for key in patch_keys) if patch_keys else "（无）"
+        )
+        current_row = leaderboard_lookup.get(month)
+        next_row = leaderboard_lookup.get(_next_month(month) or "")
+        rows_html.append(
+            f'<tr class="{row_class}">'
+            f"<td>{_escape_html(month)}</td>"
+            f"<td>{status_text}</td>"
+            f"<td>{rationale or '-'}</td>"
+            f"<td>{patch_html}</td>"
+            f"<td>{risks_html}</td>"
+            f"<td>{_leaderboard_return_cell(current_row, agent)}</td>"
+            f"<td>{_leaderboard_return_cell(next_row, agent)}</td>"
+            "</tr>"
+        )
+    return (
+        '<table class="table strategy-evolution"><thead>'
+        "<tr><th>月份</th><th>状态</th><th>理由摘要</th><th>改了哪些键</th>"
+        "<th>风险</th><th>当月收益</th><th>次月收益</th></tr></thead>"
+        f"<tbody>{''.join(rows_html)}</tbody></table>"
+    )
+
+
+def render_latest_briefing_panel(data_dir: str | Path) -> str:
+    """Render the latest weekly and (if present) latest monthly briefing as
+    collapsible details blocks.
+    """
+
+    briefings_dir = Path(data_dir) / "notes" / "briefings"
+    if not briefings_dir.exists():
+        return (
+            '<p class="empty">ECS 还没生成 briefing。下次 <code>run-weekly --agent '
+            f"{_agent_from_data_dir(Path(data_dir))}</code> 跑完会出现。</p>"
+        )
+    weekly = sorted(briefings_dir.glob("*-weekly.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+    monthly = sorted(briefings_dir.glob("*-monthly.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+    blocks: list[str] = []
+    for path, label in ((weekly[:1], "周度"), (monthly[:1], "月度")):
+        for entry in path:
+            try:
+                text = entry.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            safe = _escape_html(_truncate(text))
+            blocks.append(
+                f"<details><summary>{label} · {entry.name}</summary>"
+                f"<pre style=\"white-space:pre-wrap;font-family:inherit\">{safe}</pre>"
+                "</details>"
+            )
+    if not blocks:
+        return (
+            '<p class="empty">briefings 目录存在但暂无内容。运行 '
+            f"<code>agent-prepare-weekly --agent {_agent_from_data_dir(Path(data_dir))}</code> 后再看。</p>"
+        )
+    return "\n".join(blocks)
 
 
 def render_agent_notes_panel(data_dir: str | Path, limit: int = 5) -> str:

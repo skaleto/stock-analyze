@@ -61,7 +61,16 @@ def generate_competition_dashboard(
     out_path = out_dir / "dashboard.html"
 
     tabs_nav = _render_tabs_nav(agents)
-    tab_sections = _render_tab_sections(agents, fragments, summary_cards, comparison_table, positions_overlap, leaderboard, monthly_links)
+    tab_sections = _render_tab_sections(
+        agents,
+        fragments,
+        summary_cards,
+        comparison_table,
+        positions_overlap,
+        leaderboard,
+        monthly_links,
+        paths_by_agent,
+    )
 
     html = _render_page(tabs_nav, tab_sections, nav_json, leaderboard_json)
     out_path.write_text(html, encoding="utf-8")
@@ -284,6 +293,7 @@ def _render_tab_sections(
     positions_overlap: dict[str, Any],
     leaderboard: list[dict[str, Any]],
     monthly_links: list[dict[str, str]],
+    paths_by_agent: dict[str, Any] | None = None,
 ) -> str:
     sections: list[str] = []
     for agent in agents:
@@ -322,6 +332,10 @@ def _render_tab_sections(
     overlap_html = _render_overlap_bar(positions_overlap)
     leaderboard_html = _render_leaderboard_strip(leaderboard)
     monthly_html = _render_monthly_links(monthly_links)
+    if paths_by_agent:
+        observation_html = _render_observation_pairing(agents, {agent: paths_by_agent[agent].data_dir for agent in agents if agent in paths_by_agent})
+    else:
+        observation_html = _render_observation_pairing(agents, {})
 
     compare_section = (
         '<section id="tab-compare" class="tab-section">\n'
@@ -338,10 +352,80 @@ def _render_tab_sections(
         f'<div class="panel"><section class="leaderboard-strip">{leaderboard_html}</section></div>\n'
         '<h2>月度报告</h2>\n'
         f'<div class="panel">{monthly_html}</div>\n'
+        '<h2>本周双方观察对照</h2>\n'
+        f'<div class="panel observation-pairing">{observation_html}</div>\n'
         '</section>'
     )
     sections.append(compare_section)
     return "\n".join(sections)
+
+
+MAX_OBSERVATION_BYTES = 12 * 1024
+
+
+def _escape_html(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _truncate_text(text: str, limit: int = MAX_OBSERVATION_BYTES) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    return encoded[:limit].decode("utf-8", errors="ignore") + "\n…(truncated)"
+
+
+def _latest_weekly_note(data_dir: Path) -> Path | None:
+    notes_dir = data_dir / "notes"
+    if not notes_dir.exists():
+        return None
+    candidates = sorted(
+        [path for path in notes_dir.glob("*-weekly-review.md") if path.is_file()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def _render_observation_pairing(agents: list[str], data_dirs: dict[str, Path]) -> str:
+    """Render side-by-side latest weekly observations for the given agents."""
+
+    if len(agents) < 2 or not data_dirs:
+        return '<p class="empty">尚未生成 agent 周笔记。运行 <code>/weekly-review claude</code> / <code>do weekly review for codex</code> 后会出现。</p>'
+
+    panels: list[str] = []
+    have_any = False
+    for agent in agents:
+        path = _latest_weekly_note(data_dirs.get(agent, Path("/dev/null/missing")))
+        label = agent.capitalize()
+        if path is None:
+            panels.append(
+                f'<div class="observation-cell"><h3>{label}</h3>'
+                f'<p class="empty">{label} 本周无笔记</p></div>'
+            )
+            continue
+        have_any = True
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            panels.append(
+                f'<div class="observation-cell"><h3>{label}</h3>'
+                f'<p class="empty">{label}: 读取失败</p></div>'
+            )
+            continue
+        safe = _escape_html(_truncate_text(text))
+        panels.append(
+            f'<div class="observation-cell"><h3>{label}</h3>'
+            f'<details open><summary>{_escape_html(path.name)}</summary>'
+            f'<pre style="white-space:pre-wrap;font-family:inherit">{safe}</pre>'
+            '</details></div>'
+        )
+
+    if not have_any:
+        return '<p class="empty">尚未生成 agent 周笔记。运行 <code>/weekly-review claude</code> / <code>do weekly review for codex</code> 后会出现。</p>'
+
+    return (
+        '<div class="observation-grid">' + "".join(panels) + "</div>"
+    )
 
 
 def _render_overlap_bar(overlap: dict[str, Any]) -> str:
@@ -444,6 +528,11 @@ def _render_page(tabs_nav: str, tab_sections: str, nav_json: str, leaderboard_js
     .monthly-review-links {{ margin: 0; padding-left: 18px; }}
     .empty {{ color: var(--muted); }}
     .hint {{ color: var(--muted); font-size: 12px; margin-top: 6px; }}
+    .observation-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
+    .observation-cell {{ border: 1px solid var(--line); border-radius: 6px; padding: 10px; background: #f9fafb; }}
+    .observation-cell h3 {{ margin: 0 0 8px; font-size: 14px; color: var(--ink); }}
+    .observation-cell pre {{ margin: 6px 0 0; font-size: 12px; }}
+    @media (max-width: 900px) {{ .observation-grid {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
 <body>
