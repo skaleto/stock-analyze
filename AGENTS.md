@@ -175,19 +175,15 @@ this automatically; you can also run it on demand):
    - `comparison.divergent_factor_drivers` — what's the other side leaning
      on that I'm not?
 
-3. The MVP does NOT auto-apply patches. If you want to change your strategy
-   for next month, edit `configs/agents/codex.yaml` directly, but ONLY:
-   - When the human operator explicitly invites a revision, OR
-   - When the monthly review indicates the change is justified AND the diff
-     is small (changes one or two weights, not a wholesale rewrite).
-
-   When you edit `configs/agents/codex.yaml`, always add a comment at the
-   top describing what changed and why (a one-liner is fine; the
-   `config_hash` will diverge automatically and the run ledger captures it).
+3. The MVP does NOT auto-apply patches. Do not edit
+   `configs/agents/codex.yaml` directly during monthly review. Write the
+   strategy proposal JSON described in §5b instead; the human operator reviews
+   and applies accepted changes. This keeps the JSON-syntax overlay valid and
+   prevents accidental baseline override.
 
 A future change (`enable-monthly-config-evolution`) may introduce a formal
-patch protocol with rollback support. Until then, edits are simple and
-manual.
+patch protocol with rollback support. Until then, strategy changes are
+proposal-first and human-applied.
 
 ## 7. Forbidden actions
 

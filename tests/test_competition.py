@@ -53,6 +53,14 @@ class _RepoFixture:
 
 
 class CompetitionLoaderTests(unittest.TestCase):
+    def test_agent_mode_rejects_explicit_config(self) -> None:
+        from stock_analyze.cli import _resolve_runtime, build_parser
+
+        args = build_parser().parse_args(["--agent", "codex", "--config", "configs/strategy_v1.yaml", "init"])
+        with self.assertRaises(CompetitionBaselineLocked) as ctx:
+            _resolve_runtime(args)
+        self.assertEqual(ctx.exception.field, "agent_config_override")
+
     def test_locked_initial_cash_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             fixture = _RepoFixture(Path(tmp))

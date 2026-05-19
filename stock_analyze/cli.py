@@ -81,12 +81,14 @@ def _resolve_runtime(args: argparse.Namespace) -> tuple[dict | None, str, str, P
 
     explicit_config = args.config is not None
     if args.agent:
-        paths = competition.resolve_agent_paths(args.agent)
         if explicit_config:
-            cfg = load_config(args.config)
-            print(f"warning: --agent {args.agent} ignored because --config is explicit", file=sys.stderr)
-        else:
-            cfg = competition.load(args.agent)
+            raise CompetitionBaselineLocked(
+                field="agent_config_override",
+                baseline_value=f"configs/agents/{args.agent}.yaml",
+                overlay_value=args.config,
+            )
+        paths = competition.resolve_agent_paths(args.agent)
+        cfg = competition.load(args.agent)
         data_dir = args.data_dir or str(paths.data_dir)
         reports_dir = args.reports_dir or str(paths.reports_dir)
         cache_dir = paths.shared_cache_dir
@@ -105,6 +107,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "serve-dashboard":
         reports_dir = args.reports_dir or "reports"
+        if args.agent and args.reports_dir is None:
+            reports_dir = str(competition.resolve_agent_paths(args.agent).reports_dir)
         ensure_dirs(reports_dir, args.logs_dir)
         return serve_dashboard(reports_dir, args.host, args.port)
     if args.command == "competition-init":
