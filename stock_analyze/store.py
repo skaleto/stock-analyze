@@ -15,6 +15,33 @@ POSITIONS_FILE = "positions.csv"
 PENDING_FILE = "pending_orders.json"
 SIGNALS_FILE = "latest_signals.csv"
 PERFORMANCE_FILE = "performance_summary.json"
+FACTOR_RUNS_DIR = "factor_runs"
+FACTOR_DIAGNOSTICS_DIR = "factor_diagnostics"
+FACTOR_COVERAGE_FILE = "coverage.csv"
+FACTOR_FORWARD_IC_FILE = "forward_ic.csv"
+
+FACTOR_COVERAGE_COLUMNS = [
+    "signal_date",
+    "account_id",
+    "factor",
+    "coverage_pct",
+    "missing_count",
+    "mean",
+    "p5",
+    "p50",
+    "p95",
+    "std",
+]
+
+FORWARD_IC_COLUMNS = [
+    "signal_date",
+    "account_id",
+    "factor",
+    "ic",
+    "sample_size",
+    "ic_status",
+    "computed_at",
+]
 
 
 class PortfolioStore:
@@ -129,10 +156,12 @@ class PortfolioStore:
             "account_id",
             "code",
             "name",
+            "industry",
             "shares",
             "available_shares",
             "avg_cost",
             "last_buy_date",
+            "hold_since",
             "last_price",
             "market_value",
             "unrealized_pnl",
@@ -142,6 +171,57 @@ class PortfolioStore:
         ]
         path = self.data_dir / POSITIONS_FILE
         pd.DataFrame(rows, columns=columns).to_csv(path, index=False, encoding="utf-8-sig")
+
+    def write_factor_snapshot(self, df: pd.DataFrame, run_id: str) -> Path:
+        target_dir = self.data_dir / FACTOR_RUNS_DIR
+        ensure_dirs(target_dir)
+        path = target_dir / f"{run_id}.csv"
+        df.to_csv(path, index=False, encoding="utf-8-sig")
+        return path
+
+    def append_factor_coverage(self, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        target_dir = self.data_dir / FACTOR_DIAGNOSTICS_DIR
+        ensure_dirs(target_dir)
+        append_csv(target_dir / FACTOR_COVERAGE_FILE, rows, FACTOR_COVERAGE_COLUMNS)
+
+    def append_forward_ic(self, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        target_dir = self.data_dir / FACTOR_DIAGNOSTICS_DIR
+        ensure_dirs(target_dir)
+        append_csv(target_dir / FACTOR_FORWARD_IC_FILE, rows, FORWARD_IC_COLUMNS)
+
+    def read_factor_coverage(self) -> pd.DataFrame:
+        path = self.data_dir / FACTOR_DIAGNOSTICS_DIR / FACTOR_COVERAGE_FILE
+        if not path.exists() or path.stat().st_size == 0:
+            return pd.DataFrame(columns=FACTOR_COVERAGE_COLUMNS)
+        try:
+            return pd.read_csv(path)
+        except pd.errors.EmptyDataError:
+            return pd.DataFrame(columns=FACTOR_COVERAGE_COLUMNS)
+
+    def read_forward_ic(self) -> pd.DataFrame:
+        path = self.data_dir / FACTOR_DIAGNOSTICS_DIR / FACTOR_FORWARD_IC_FILE
+        if not path.exists() or path.stat().st_size == 0:
+            return pd.DataFrame(columns=FORWARD_IC_COLUMNS)
+        try:
+            return pd.read_csv(path)
+        except pd.errors.EmptyDataError:
+            return pd.DataFrame(columns=FORWARD_IC_COLUMNS)
+
+    def list_factor_runs(self) -> list[Path]:
+        target_dir = self.data_dir / FACTOR_RUNS_DIR
+        if not target_dir.exists():
+            return []
+        return sorted(target_dir.glob("*.csv"))
+
+    def read_factor_run(self, run_id: str) -> pd.DataFrame:
+        path = self.data_dir / FACTOR_RUNS_DIR / f"{run_id}.csv"
+        if not path.exists():
+            return pd.DataFrame()
+        return pd.read_csv(path, dtype={"code": str})
 
     def read_nav(self) -> pd.DataFrame:
         path = self.data_dir / DAILY_NAV_FILE

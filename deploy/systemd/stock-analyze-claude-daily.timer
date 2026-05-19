@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Claude agent daily after A-share close
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:30:00 UTC
+Persistent=true
+Unit=stock-analyze-claude-daily.service
+
+[Install]
+WantedBy=timers.target

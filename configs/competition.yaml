@@ -1,0 +1,45 @@
+{
+  "competition_id": "claude_vs_codex_2026",
+  "version": 1,
+  "start_date": "2026-05-26",
+  "initial_cash": 1000000,
+  "accounts": [
+    {
+      "id": "hs300",
+      "scope": "hs300",
+      "benchmark": "000300",
+      "cash": 500000,
+      "top_n": 10
+    },
+    {
+      "id": "zz500",
+      "scope": "zz500",
+      "benchmark": "000905",
+      "cash": 500000,
+      "top_n": 10
+    }
+  ],
+  "schedule": {
+    "rebalance": "weekly_after_close",
+    "signal_day": "last_trading_day_of_week",
+    "execution": "next_trading_day_open"
+  },
+  "trading": {
+    "lot_size": 100,
+    "commission_rate": 0.0003,
+    "min_commission": 5,
+    "stamp_tax_rate": 0.0005,
+    "slippage_rate": 0.0005,
+    "max_single_weight": 0.10
+  },
+  "performance": {
+    "risk_free_rate": 0.02,
+    "trading_days_per_year": 252,
+    "forward_ic_horizon_days": 5,
+    "low_coverage_threshold": 0.5
+  },
+  "objective": {
+    "annual_excess_return_target": 0.05,
+    "max_drawdown_vs_benchmark": 1.2
+  }
+}

@@ -6,7 +6,17 @@ from typing import Any
 
 import pandas as pd
 
-from .store import PERFORMANCE_FILE, PENDING_FILE, SIGNALS_FILE, PortfolioStore
+from .config import config_hash
+from .performance import compute_account_performance
+from .run_ledger import code_version, read_runs
+from .store import (
+    FACTOR_COVERAGE_COLUMNS,
+    FORWARD_IC_COLUMNS,
+    PENDING_FILE,
+    PERFORMANCE_FILE,
+    SIGNALS_FILE,
+    PortfolioStore,
+)
 from .utils import ensure_dirs, format_money, format_pct, safe_float, today_str, write_json
 
 
@@ -95,6 +105,8 @@ STATUS_LABELS = {
     "pending": "待执行",
     "partial": "部分成交",
     "filled": "已完成",
+    "running": "运行中",
+    "success": "成功",
 }
 
 REASON_LABELS = {
@@ -156,38 +168,32 @@ SOURCE_LABELS = {
 
 def compute_performance(config: dict[str, Any], store: PortfolioStore) -> dict[str, Any]:
     nav = store.read_nav()
+    trades = store.read_trades()
+    perf_cfg = config.get("performance", {}) or {}
+    accounts = compute_account_performance(
+        nav,
+        trades,
+        risk_free_rate=float(perf_cfg.get("risk_free_rate", 0.02) or 0.0),
+        trading_days_per_year=int(perf_cfg.get("trading_days_per_year", 252) or 252),
+    )
     summary: dict[str, Any] = {
         "strategy_id": config.get("strategy_id"),
         "generated_at": today_str(),
-        "accounts": {},
+        "config_hash": config_hash(config),
+        "code_version": code_version(),
+        "accounts": accounts,
         "objective": config.get("objective", {}),
     }
-    if nav.empty:
-        write_json(store.data_dir / PERFORMANCE_FILE, summary)
-        return summary
-
-    for account_id, group in nav.groupby("account_id"):
-        group = group.sort_values("date")
-        initial = safe_float(group.iloc[0]["total_value"]) or 0
-        latest = safe_float(group.iloc[-1]["total_value"]) or 0
-        cumulative = (latest / initial - 1) if initial else None
-        rolling_peak = group["total_value"].cummax()
-        drawdowns = group["total_value"] / rolling_peak - 1
-        max_drawdown = float(drawdowns.min()) if not drawdowns.empty else None
-        summary["accounts"][account_id] = {
-            "start_date": str(group.iloc[0]["date"]),
-            "latest_date": str(group.iloc[-1]["date"]),
-            "initial_value": round(initial, 2),
-            "latest_value": round(latest, 2),
-            "cumulative_return": cumulative,
-            "max_drawdown": max_drawdown,
-            "nav_points": int(len(group)),
-        }
     write_json(store.data_dir / PERFORMANCE_FILE, summary)
     return summary
 
 
-def generate_weekly_report(config: dict[str, Any], store: PortfolioStore, reports_dir: str | Path) -> Path:
+def generate_weekly_report(
+    config: dict[str, Any],
+    store: PortfolioStore,
+    reports_dir: str | Path,
+    run_id: str | None = None,
+) -> Path:
     ensure_dirs(reports_dir)
     summary = compute_performance(config, store)
     positions = store.read_positions()
@@ -200,19 +206,25 @@ def generate_weekly_report(config: dict[str, Any], store: PortfolioStore, report
         "",
         "本报告只来自模拟交易数据，不构成投资建议。",
         "",
+        f"`run_id={run_id or '-'}` · `config_hash={summary.get('config_hash')}` · `code_version={summary.get('code_version')}`",
+        "",
         "## 绩效概览",
         "",
-        "| 账户 | 最新资产 | 累计收益 | 最大回撤 | 净值点数 |",
-        "|---|---:|---:|---:|---:|",
+        "| 账户 | 最新资产 | 累计收益 | 年化收益 | 年化波动 | Sharpe | Sortino | 最大回撤 | 年化超额 | 信息比率 | 换手率 | 成本(bps) | Win Rate | 净值点数 |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     accounts = summary.get("accounts", {})
     if not accounts:
-        lines.append("| 暂无绩效数据 | - | - | - | 0 |")
+        lines.append("| 暂无绩效数据 | - | - | - | - | - | - | - | - | - | - | - | - | 0 |")
     for account_id, item in accounts.items():
         lines.append(
             f"| {account_id} | {format_money(item.get('latest_value'))} | "
-            f"{format_pct(item.get('cumulative_return'))} | {format_pct(item.get('max_drawdown'))} | "
-            f"{item.get('nav_points', 0)} |"
+            f"{format_pct(item.get('cumulative_return'))} | {format_pct(item.get('annualized_return'))} | "
+            f"{format_pct(item.get('annualized_volatility'))} | {format_ratio(item.get('sharpe_ratio'))} | "
+            f"{format_ratio(item.get('sortino_ratio'))} | {format_pct(item.get('max_drawdown'))} | "
+            f"{format_pct(item.get('annualized_excess_return'))} | {format_ratio(item.get('information_ratio'))} | "
+            f"{format_pct(item.get('weekly_turnover_avg'))} | {format_bps(item.get('cost_bps'))} | "
+            f"{format_pct(item.get('round_trip_win_rate'))} | {item.get('nav_points', 0)} |"
         )
 
     lines.extend(["", "## 当前持仓", ""])
@@ -257,7 +269,23 @@ def generate_weekly_report(config: dict[str, Any], store: PortfolioStore, report
     return path
 
 
-def generate_dashboard(config: dict[str, Any], store: PortfolioStore, reports_dir: str | Path) -> Path:
+def generate_dashboard(
+    config: dict[str, Any],
+    store: PortfolioStore,
+    reports_dir: str | Path,
+    mode: str = "page",
+) -> Path:
+    """Render the per-agent dashboard.
+
+    ``mode="page"`` (default) writes a full ``dashboard.html`` document.
+    ``mode="fragment"`` writes ``dashboard_fragment.html`` containing the
+    embeddable ``<section class="agent-dashboard">`` block plus its inline
+    `<style>` and `<script>` tags, so the aggregator can splice multiple
+    agents into a single page without a full document boundary.
+    """
+
+    if mode not in {"page", "fragment"}:
+        raise ValueError(f"unknown dashboard mode: {mode}")
     ensure_dirs(reports_dir)
     summary = compute_performance(config, store)
     nav = store.read_nav()
@@ -268,17 +296,31 @@ def generate_dashboard(config: dict[str, Any], store: PortfolioStore, reports_di
     pending_orders = read_pending_orders(store)
     price_panels = load_price_panels(store, signals)
     factor_summary = build_factor_summary(signals)
-    dashboard_path = Path(reports_dir) / "dashboard.html"
+    coverage = read_coverage(store)
+    forward_ic = read_forward_ic_df(store)
+    runs = read_runs(store.data_dir)
+    perf_cfg = config.get("performance", {}) or {}
+    low_threshold = float(perf_cfg.get("low_coverage_threshold", 0.5) or 0.5)
+    coverage_panel = build_coverage_panel(coverage, low_threshold=low_threshold)
+    forward_ic_panel = build_forward_ic_panel(forward_ic)
+    dashboard_filename = "dashboard_fragment.html" if mode == "fragment" else "dashboard.html"
+    dashboard_path = Path(reports_dir) / dashboard_filename
+    agent_id = str(config.get("agent_id") or "agent")
+    notes_html = render_agent_notes_panel(store.data_dir)
 
     nav_json = nav.to_json(orient="records", force_ascii=False) if not nav.empty else "[]"
     price_json = json.dumps(price_panels, ensure_ascii=False)
     factor_json = json.dumps(factor_summary, ensure_ascii=False)
+    coverage_json = json.dumps(coverage_panel, ensure_ascii=False)
+    forward_ic_json = json.dumps(forward_ic_panel, ensure_ascii=False)
     positions_html = dataframe_html(display_positions(positions), POSITION_COLUMNS, "暂无持仓。请先运行周度信号，等待下一交易日模拟成交后再观察。")
     trades_html = dataframe_html(display_trades(trades.tail(30)), TRADE_COLUMNS, "暂无交易。周度任务会先生成待执行订单，下一交易日由日度任务模拟成交。")
     health_html = dataframe_html(display_health(health.tail(40)), HEALTH_COLUMNS, "暂无数据源状态。运行周度或日度任务后会显示接口、缓存和降级情况。")
     signals_html = dataframe_html(display_signals(signals), SIGNAL_COLUMNS, "暂无选股信号。请先运行 run-weekly。")
     pending_html = dataframe_html(display_pending_orders(pending_orders), PENDING_COLUMNS, "暂无待执行订单。请先运行 run-weekly 生成调仓计划。")
     execution_hint = pending_execution_hint(pending_orders)
+    performance_cards_html = render_performance_cards(summary)
+    runs_html = render_runs_table(runs)
     cards = []
     for account_id, item in summary.get("accounts", {}).items():
         status = "模拟观察中"
@@ -338,7 +380,18 @@ def generate_dashboard(config: dict[str, Any], store: PortfolioStore, reports_di
     .mini-chart canvas {{ height: 180px; }}
     .hint {{ color: var(--muted); font-size: 13px; margin-top: 8px; }}
     .warning {{ color: var(--amber); }}
-    @media (max-width: 900px) {{ .split {{ grid-template-columns: 1fr; }} }}
+    .metric-deep {{ font-size: 13px; }}
+    .metric-deep .metric-row {{ margin: 4px 0; color: var(--muted); display: flex; justify-content: space-between; }}
+    .metric-deep .metric-row strong {{ color: var(--ink); font-weight: 650; }}
+    .panel-row {{ display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; }}
+    .heatmap {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
+    .heatmap th, .heatmap td {{ border: 1px solid #edf0f3; padding: 4px 6px; text-align: center; }}
+    .heatmap th {{ background: #f1f4f8; color: #344054; font-weight: 600; }}
+    .heatmap td.low {{ background: #fde2e1; color: #b42318; font-weight: 600; }}
+    .tag-success {{ display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; background: #e8f3ef; color: var(--green); font-size: 12px; }}
+    .tag-failed {{ display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; background: #fde2e1; color: var(--red); font-size: 12px; }}
+    .tag-running {{ display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; background: #fff1cc; color: var(--amber); font-size: 12px; }}
+    @media (max-width: 900px) {{ .split {{ grid-template-columns: 1fr; }} .panel-row {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
 <body>
@@ -353,6 +406,8 @@ def generate_dashboard(config: dict[str, Any], store: PortfolioStore, reports_di
       <canvas id="navChart" width="1200" height="340"></canvas>
       <div class="hint">曲线基于模拟账户净值生成；如果只有一个净值点，图上会显示为水平参考线。</div>
     </div>
+    <h2>绩效解释</h2>
+    <section class="grid">{performance_cards_html}</section>
     <section class="split">
       <div>
         <h2>本期选股信号</h2>
@@ -373,17 +428,36 @@ def generate_dashboard(config: dict[str, Any], store: PortfolioStore, reports_di
     </div>
     <h2>候选股价格走势</h2>
     <div class="price-grid" id="priceGrid"></div>
+    <h2>因子诊断</h2>
+    <div class="panel-row">
+      <div class="panel">
+        <p class="chart-title">最近 12 周因子覆盖率</p>
+        <div id="coveragePanel"></div>
+        <div class="hint">覆盖率低于阈值的格子高亮，提示该因子在该周缺失严重；阈值在 <code>performance.low_coverage_threshold</code> 控制。</div>
+      </div>
+      <div class="panel">
+        <p class="chart-title">最近 12 周前向 5 日 RankIC</p>
+        <canvas id="forwardIcChart" width="640" height="260"></canvas>
+        <div class="hint">RankIC 使用 Spearman；当 NAV 历史不足 5 个交易日时会出现 <code>insufficient_history</code> 占位点。</div>
+      </div>
+    </div>
     <h2>当前持仓</h2>
     <div class="panel">{positions_html}</div>
     <h2>近期交易</h2>
     <div class="panel">{trades_html}</div>
     <h2>数据源状态</h2>
     <div class="panel">{health_html}</div>
+    <h2>最近运行</h2>
+    <div class="panel">{runs_html}</div>
+    <h2>近期 agent 笔记</h2>
+    <div class="panel">{notes_html}</div>
   </main>
   <script>
     const nav = {nav_json};
     const factorSummary = {factor_json};
     const pricePanels = {price_json};
+    const coveragePanel = {coverage_json};
+    const forwardIcPanel = {forward_ic_json};
     const canvas = document.getElementById('navChart');
     const ctx = canvas.getContext('2d');
     function drawChart(rows) {{
@@ -518,12 +592,138 @@ def generate_dashboard(config: dict[str, Any], store: PortfolioStore, reports_di
 
     drawFactorChart(factorSummary);
     drawPricePanels(pricePanels);
+
+    function renderCoveragePanel(rows) {{
+      const root = document.getElementById('coveragePanel');
+      if (!rows.length) {{
+        root.innerHTML = '<p class="empty">尚无因子诊断数据，跑过至少一次 run-weekly 后再观察。</p>';
+        return;
+      }}
+      const allDates = Array.from(new Set(rows.flatMap(row => row.items.map(item => item.signal_date)))).sort();
+      let html = '<table class="heatmap"><thead><tr><th>因子</th>';
+      allDates.forEach(date => {{ html += `<th>${{date.slice(5)}}</th>`; }});
+      html += '</tr></thead><tbody>';
+      rows.forEach(row => {{
+        html += `<tr><td style="text-align:left">${{row.label}}</td>`;
+        const map = new Map(row.items.map(item => [item.signal_date, item]));
+        allDates.forEach(date => {{
+          const cell = map.get(date);
+          if (!cell) {{
+            html += '<td>-</td>';
+          }} else {{
+            const cls = cell.low ? 'low' : '';
+            html += `<td class="${{cls}}">${{(cell.coverage_pct * 100).toFixed(0)}}%</td>`;
+          }}
+        }});
+        html += '</tr>';
+      }});
+      html += '</tbody></table>';
+      root.innerHTML = html;
+    }}
+
+    function renderForwardIc(panels) {{
+      const chart = document.getElementById('forwardIcChart');
+      const c = chart.getContext('2d');
+      c.clearRect(0, 0, chart.width, chart.height);
+      c.font = '12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+      if (!panels.length) {{
+        c.fillStyle = '#667085';
+        c.fillText('暂无前向 RankIC 数据。等待 5 个交易日后会自动累积。', 24, 40);
+        return;
+      }}
+      const allDates = Array.from(new Set(panels.flatMap(p => p.series.map(s => s.signal_date)))).sort();
+      const xStep = (chart.width - 90) / Math.max(allDates.length - 1, 1);
+      const yPad = 18;
+      const usable = chart.height - yPad * 2;
+      const drawAxis = () => {{
+        c.strokeStyle = '#d8dee8';
+        c.lineWidth = 1;
+        c.beginPath();
+        c.moveTo(50, yPad);
+        c.lineTo(50, chart.height - yPad);
+        c.lineTo(chart.width - 12, chart.height - yPad);
+        c.stroke();
+        const zeroY = yPad + usable * 0.5;
+        c.strokeStyle = '#e3e8ee';
+        c.beginPath();
+        c.moveTo(50, zeroY);
+        c.lineTo(chart.width - 12, zeroY);
+        c.stroke();
+        c.fillStyle = '#667085';
+        c.fillText('+1', 28, yPad + 4);
+        c.fillText('0', 36, zeroY + 4);
+        c.fillText('-1', 28, chart.height - yPad);
+      }};
+      drawAxis();
+      const colors = ['#2457a7', '#147d64', '#b76e00', '#b42318', '#7c3aed', '#0ea5e9', '#dc2626', '#14b8a6'];
+      panels.slice(0, 6).forEach((panel, idx) => {{
+        c.strokeStyle = colors[idx % colors.length];
+        c.fillStyle = colors[idx % colors.length];
+        c.lineWidth = 2;
+        c.beginPath();
+        let started = false;
+        panel.series.forEach((point, i) => {{
+          const date = point.signal_date;
+          const dateIdx = allDates.indexOf(date);
+          const x = 50 + dateIdx * xStep;
+          if (point.status !== 'ok' || point.ic == null) {{
+            c.fillStyle = '#aab2bd';
+            c.fillRect(x - 1, yPad + usable * 0.5 - 1, 2, 2);
+            c.fillStyle = colors[idx % colors.length];
+            started = false;
+            return;
+          }}
+          const y = yPad + usable * (1 - (Number(point.ic) + 1) / 2);
+          if (!started) {{
+            c.moveTo(x, y);
+            started = true;
+          }} else {{
+            c.lineTo(x, y);
+          }}
+        }});
+        c.stroke();
+        c.fillText(panel.label, chart.width - 110, yPad + idx * 16 + 12);
+      }});
+    }}
+
+    renderCoveragePanel(coveragePanel);
+    renderForwardIc(forwardIcPanel);
   </script>
 </body>
 </html>
 """
+    if mode == "fragment":
+        html = _to_fragment(html, agent_id)
     dashboard_path.write_text(html, encoding="utf-8")
     return dashboard_path
+
+
+def _to_fragment(page_html: str, agent_id: str) -> str:
+    """Strip the outer HTML shell and rename element IDs so multiple fragments
+    can be inlined into one container page without collisions.
+    """
+
+    import re as _re
+
+    body_match = _re.search(r"<body>(.*)</body>", page_html, _re.S)
+    inner = body_match.group(1) if body_match else page_html
+    style_match = _re.search(r"<style>(.*?)</style>", page_html, _re.S)
+    style_block = f"<style>{style_match.group(1)}</style>" if style_match else ""
+    fragment_ids = [
+        "navChart",
+        "factorChart",
+        "priceGrid",
+        "coveragePanel",
+        "forwardIcChart",
+    ]
+    for token in fragment_ids:
+        scoped = f"{token}-{agent_id}"
+        inner = inner.replace(f"id=\"{token}\"", f"id=\"{scoped}\"")
+        inner = inner.replace(f"getElementById('{token}')", f"getElementById('{scoped}')")
+    return (
+        f"<section class=\"agent-dashboard\" data-agent=\"{agent_id}\">\n"
+        f"{style_block}\n{inner}\n</section>\n"
+    )
 
 
 def dataframe_html(df: pd.DataFrame, columns: dict[str, str], empty_text: str) -> str:
@@ -759,6 +959,196 @@ def format_rows(value: Any) -> str:
     if number is None:
         return "-"
     return str(int(number))
+
+
+def format_ratio(value: Any) -> str:
+    number = safe_float(value)
+    if number is None:
+        return "-"
+    return f"{number:.2f}"
+
+
+def format_bps(value: Any) -> str:
+    number = safe_float(value)
+    if number is None:
+        return "-"
+    return f"{number:.1f}"
+
+
+def format_duration_ms(value: Any) -> str:
+    number = safe_float(value)
+    if number is None:
+        return "-"
+    if number < 1000:
+        return f"{int(number)} ms"
+    return f"{number / 1000:.1f} s"
+
+
+def read_coverage(store: PortfolioStore) -> pd.DataFrame:
+    df = store.read_factor_coverage()
+    if df.empty:
+        return pd.DataFrame(columns=FACTOR_COVERAGE_COLUMNS)
+    return df
+
+
+def read_forward_ic_df(store: PortfolioStore) -> pd.DataFrame:
+    df = store.read_forward_ic()
+    if df.empty:
+        return pd.DataFrame(columns=FORWARD_IC_COLUMNS)
+    return df
+
+
+def build_coverage_panel(coverage: pd.DataFrame, low_threshold: float = 0.5, max_weeks: int = 12) -> list[dict[str, Any]]:
+    if coverage.empty:
+        return []
+    coverage = coverage.copy()
+    coverage["signal_date"] = pd.to_datetime(coverage["signal_date"], errors="coerce")
+    coverage = coverage.dropna(subset=["signal_date"]).sort_values("signal_date")
+    recent_dates = sorted(coverage["signal_date"].unique())[-max_weeks:]
+    rows = coverage[coverage["signal_date"].isin(recent_dates)]
+    panel: list[dict[str, Any]] = []
+    for (factor,), group in rows.groupby(["factor"]):
+        items = []
+        for signal_date, week_rows in group.groupby("signal_date"):
+            mean_cov = float(week_rows["coverage_pct"].mean())
+            items.append(
+                {
+                    "signal_date": pd.to_datetime(signal_date).date().isoformat(),
+                    "coverage_pct": round(mean_cov, 4),
+                    "low": mean_cov < low_threshold,
+                }
+            )
+        panel.append({"factor": str(factor), "label": FACTOR_LABELS.get(str(factor), str(factor)), "items": items})
+    panel.sort(key=lambda item: item["label"])
+    return panel
+
+
+def build_forward_ic_panel(forward_ic: pd.DataFrame, max_weeks: int = 12) -> list[dict[str, Any]]:
+    if forward_ic.empty:
+        return []
+    forward_ic = forward_ic.copy()
+    forward_ic["signal_date"] = pd.to_datetime(forward_ic["signal_date"], errors="coerce")
+    forward_ic = forward_ic.dropna(subset=["signal_date"]).sort_values("signal_date")
+    recent_dates = sorted(forward_ic["signal_date"].unique())[-max_weeks:]
+    rows = forward_ic[forward_ic["signal_date"].isin(recent_dates)]
+    panel: list[dict[str, Any]] = []
+    for factor, group in rows.groupby("factor"):
+        series = []
+        for signal_date, sub in group.groupby("signal_date"):
+            status_values = sub["ic_status"].astype(str).tolist()
+            if "ok" in status_values:
+                ok_row = sub[sub["ic_status"] == "ok"].iloc[0]
+                series.append(
+                    {
+                        "signal_date": pd.to_datetime(signal_date).date().isoformat(),
+                        "ic": round(float(ok_row["ic"]), 4) if pd.notna(ok_row["ic"]) else None,
+                        "status": "ok",
+                    }
+                )
+            else:
+                series.append(
+                    {
+                        "signal_date": pd.to_datetime(signal_date).date().isoformat(),
+                        "ic": None,
+                        "status": "insufficient_history",
+                    }
+                )
+        panel.append({"factor": str(factor), "label": FACTOR_LABELS.get(str(factor), str(factor)), "series": series})
+    panel.sort(key=lambda item: item["label"])
+    return panel
+
+
+def render_performance_cards(summary: dict[str, Any]) -> str:
+    accounts = summary.get("accounts") or {}
+    if not accounts:
+        return '<p class="empty">绩效数据不足。请等待至少 2 个净值日。</p>'
+    cards: list[str] = []
+    for account_id, item in accounts.items():
+        cards.append(
+            f"""
+            <section class="metric-card metric-deep">
+              <div class="card-label">{account_id}</div>
+              <p class="metric-row" title="日收益年化均值 × 252">年化收益 <strong>{format_pct(item.get('annualized_return'))}</strong></p>
+              <p class="metric-row" title="日收益样本标准差 × √252">年化波动 <strong>{format_pct(item.get('annualized_volatility'))}</strong></p>
+              <p class="metric-row" title="(年化收益 − rf) / 年化波动">Sharpe <strong>{format_ratio(item.get('sharpe_ratio'))}</strong></p>
+              <p class="metric-row" title="(年化收益 − rf) / 年化下行波动">Sortino <strong>{format_ratio(item.get('sortino_ratio'))}</strong></p>
+              <p class="metric-row" title="(组合 − 基准) 复利差">累计超额 <strong>{format_pct(item.get('cumulative_excess_return'))}</strong></p>
+              <p class="metric-row" title="日超额收益均值 × 252">年化超额 <strong>{format_pct(item.get('annualized_excess_return'))}</strong></p>
+              <p class="metric-row" title="日超额样本标准差 × √252">跟踪误差 <strong>{format_pct(item.get('tracking_error'))}</strong></p>
+              <p class="metric-row" title="年化超额 / 跟踪误差">信息比率 <strong>{format_ratio(item.get('information_ratio'))}</strong></p>
+              <p class="metric-row" title="单周双边换手 = (买额 + 卖额) / 期初组合市值">换手率(周) <strong>{format_pct(item.get('weekly_turnover_avg'))}</strong></p>
+              <p class="metric-row" title="累计成本 / 累计成交金额 × 10000">成本 <strong>{format_bps(item.get('cost_bps'))} bps</strong></p>
+              <p class="metric-row" title="FIFO 配对完成 round-trip 中收益为正的比例">Win Rate <strong>{format_pct(item.get('round_trip_win_rate'))}</strong></p>
+              <p class="metric-row" title="最大回撤持续日数">最大回撤天数 <strong>{format_days(item.get('max_drawdown_days'))}</strong></p>
+            </section>
+            """
+        )
+    return "".join(cards)
+
+
+def render_runs_table(runs: list[dict[str, Any]], limit: int = 10) -> str:
+    if not runs:
+        return '<p class="empty">尚无运行账本。第一次跑 init 或 run-weekly 后会出现。</p>'
+    rows = runs[:limit]
+    parts = [
+        '<table class="table"><thead><tr><th>run_id</th><th>命令</th><th>状态</th><th>耗时</th><th>config_hash</th><th>code_version</th><th>开始</th></tr></thead><tbody>'
+    ]
+    for row in rows:
+        status = str(row.get("status") or "")
+        tag_class = "tag-success" if status == "success" else "tag-failed" if status == "failed" else "tag-running"
+        parts.append(
+            f"<tr><td>{row.get('run_id', '-') }</td><td>{row.get('command', '-')}</td>"
+            f"<td><span class=\"{tag_class}\">{STATUS_LABELS.get(status, status) or '-'}</span></td>"
+            f"<td>{format_duration_ms(row.get('duration_ms'))}</td><td>{row.get('config_hash') or '-'}</td>"
+            f"<td>{row.get('code_version') or '-'}</td><td>{row.get('started_at') or '-'}</td></tr>"
+        )
+    parts.append("</tbody></table>")
+    return "".join(parts)
+
+
+def format_days(value: Any) -> str:
+    number = safe_float(value)
+    if number is None:
+        return "-"
+    return f"{int(number)} d"
+
+
+def render_agent_notes_panel(data_dir: str | Path, limit: int = 5) -> str:
+    """Render the most recent ``data/<agent>/notes/*.md`` files (excluding
+    ``notes/briefings/`` and ``proposals/``) as collapsible ``<details>``.
+
+    Returns an empty-state placeholder when the directory is missing or
+    contains no eligible files.
+    """
+
+    notes_dir = Path(data_dir) / "notes"
+    if not notes_dir.exists():
+        return '<p class="empty">尚无 agent 笔记。跑过 /weekly-review 后会出现。</p>'
+    candidates = sorted(
+        [path for path in notes_dir.glob("*.md") if path.is_file()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )[:limit]
+    if not candidates:
+        return '<p class="empty">尚无 agent 笔记。跑过 /weekly-review 后会出现。</p>'
+    parts = []
+    for path in candidates:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        size_kb = max(1, path.stat().st_size // 1024)
+        safe_text = (
+            text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        parts.append(
+            f"<details><summary>{path.name} · {size_kb} KB</summary>"
+            f"<pre style=\"white-space:pre-wrap;font-family:inherit\">{safe_text}</pre>"
+            f"</details>"
+        )
+    return "\n".join(parts)
 
 
 def read_health(store: PortfolioStore) -> pd.DataFrame:

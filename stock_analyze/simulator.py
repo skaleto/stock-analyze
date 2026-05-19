@@ -6,6 +6,8 @@ from typing import Any
 import pandas as pd
 
 from .data_provider import AkshareProvider, ExecutionQuote
+from .factor_pipeline import UNCLASSIFIED
+from .portfolio_controls import annotate_industries, select_top_n_with_controls
 from .store import PortfolioStore
 from .strategy import build_signals
 from .utils import next_business_day, now_iso, safe_float, write_json
@@ -20,9 +22,12 @@ def generate_rebalance_orders(
     store: PortfolioStore,
     provider: AkshareProvider,
     as_of: str | None = None,
+    run_id: str | None = None,
 ) -> list[dict[str, Any]]:
     state = store.initialize(config)
     all_selected: list[pd.DataFrame] = []
+    all_factor_tables: list[pd.DataFrame] = []
+    coverage_rows: list[dict[str, Any]] = []
     pending_batches: list[dict[str, Any]] = []
     run_date = as_of or date.today().isoformat()
     execute_after = provider.next_trading_day(run_date) if hasattr(provider, "next_trading_day") else next_business_day(run_date)
@@ -30,12 +35,32 @@ def generate_rebalance_orders(
     for account in config.get("accounts", []):
         account_id = str(account["id"])
         signal = build_signals(config, account, provider, as_of=as_of)
-        selected = signal.selected.copy()
+        scored = signal.candidates.copy()
+        account_state = state["accounts"][account_id]
+        top_n = int(account.get("top_n", 10))
+        selected, control_warnings = select_top_n_with_controls(scored, account_state, config, top_n, run_date=run_date)
+        warnings = list(signal.warnings) + control_warnings
+        if not selected.empty:
+            selected = selected.copy()
+            selected["account_id"] = account_id
+            selected["pool"] = account["scope"]
         all_selected.append(selected)
-        orders = build_target_orders(config, state["accounts"][account_id], selected)
+        annotate_industries(account_state.get("positions", {}), scored)
+
+        factor_table = signal.factor_table
+        if not factor_table.empty:
+            factor_table = factor_table.copy()
+            factor_table["signal_date"] = run_date
+            selected_codes = set(str(code).zfill(6) for code in selected.get("code", pd.Series([], dtype=str)).tolist())
+            factor_table["selected"] = factor_table["code"].map(lambda code: str(code).zfill(6) in selected_codes)
+            all_factor_tables.append(factor_table)
+
+        coverage_rows.extend(_coverage_rows(scored, config.get("factors", {}), account_id, run_date))
+
+        orders = build_target_orders(config, account_state, selected)
         pending_batches.append(
             {
-                "run_id": f"{config.get('strategy_id', 'strategy')}-{account_id}-{run_date}",
+                "run_id": run_id or f"{config.get('strategy_id', 'strategy')}-{account_id}-{run_date}",
                 "strategy_id": config.get("strategy_id", "strategy"),
                 "account_id": account_id,
                 "scope": account["scope"],
@@ -43,15 +68,51 @@ def generate_rebalance_orders(
                 "execute_after": execute_after,
                 "created_at": now_iso(),
                 "orders": orders,
-                "warnings": signal.warnings,
+                "warnings": warnings,
             }
         )
 
     existing = [batch for batch in store.load_pending() if batch.get("signal_date") != run_date]
     store.save_pending(existing + pending_batches)
     if all_selected:
-        store.save_signals(pd.concat(all_selected, ignore_index=True))
+        non_empty_selected = [df for df in all_selected if not df.empty]
+        if non_empty_selected:
+            store.save_signals(pd.concat(non_empty_selected, ignore_index=True))
+    if all_factor_tables:
+        factor_snapshot = pd.concat(all_factor_tables, ignore_index=True)
+        store.write_factor_snapshot(factor_snapshot, run_id or _fallback_run_id(config, run_date))
+    if coverage_rows:
+        store.append_factor_coverage(coverage_rows)
     return pending_batches
+
+
+def _fallback_run_id(config: dict[str, Any], run_date: str) -> str:
+    return f"{config.get('strategy_id', 'strategy')}-rebalance-{run_date}"
+
+
+def _coverage_rows(scored: pd.DataFrame, factors: dict[str, Any], account_id: str, signal_date: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    total = max(len(scored), 1)
+    for factor in factors:
+        if factor not in scored.columns:
+            continue
+        column = pd.to_numeric(scored[factor], errors="coerce")
+        valid = column.dropna()
+        rows.append(
+            {
+                "signal_date": signal_date,
+                "account_id": account_id,
+                "factor": factor,
+                "coverage_pct": round(len(valid) / total, 4),
+                "missing_count": int(total - len(valid)),
+                "mean": float(valid.mean()) if not valid.empty else None,
+                "p5": float(valid.quantile(0.05)) if not valid.empty else None,
+                "p50": float(valid.quantile(0.50)) if not valid.empty else None,
+                "p95": float(valid.quantile(0.95)) if not valid.empty else None,
+                "std": float(valid.std(ddof=0)) if not valid.empty else None,
+            }
+        )
+    return rows
 
 
 def build_target_orders(config: dict[str, Any], account_state: dict[str, Any], selected: pd.DataFrame) -> list[dict[str, Any]]:
@@ -73,6 +134,7 @@ def build_target_orders(config: dict[str, Any], account_state: dict[str, Any], s
         targets[str(row["code"]).zfill(6)] = {
             "code": str(row["code"]).zfill(6),
             "name": row.get("name", ""),
+            "industry": row.get("industry") or UNCLASSIFIED,
             "target_shares": target_shares,
             "target_value": round(target_shares * price, 2),
             "target_weight": round((target_shares * price / total_value), 6) if total_value else None,
@@ -87,6 +149,7 @@ def build_target_orders(config: dict[str, Any], account_state: dict[str, Any], s
             {
                 "code": code,
                 "name": position.get("name", ""),
+                "industry": position.get("industry") or UNCLASSIFIED,
                 "target_shares": 0,
                 "target_value": 0,
                 "target_weight": 0,
@@ -107,6 +170,7 @@ def build_target_orders(config: dict[str, Any], account_state: dict[str, Any], s
             {
                 "code": code,
                 "name": target.get("name", ""),
+                "industry": target.get("industry") or UNCLASSIFIED,
                 "side": side,
                 "current_shares": current_shares,
                 "target_shares": target_shares,
@@ -248,12 +312,16 @@ def execute_order(
         old_cost = float(current.get("avg_cost", execution_price)) * current_shares
         avg_cost = (old_cost + gross + commission) / new_shares
         available_shares = int(current.get("available_shares", current_shares))
+        preserved_industry = current.get("industry") or order.get("industry") or UNCLASSIFIED
+        preserved_hold_since = current.get("hold_since") or trade_date
         account.setdefault("positions", {})[code] = {
             "name": order.get("name", code),
+            "industry": preserved_industry,
             "shares": new_shares,
             "available_shares": min(available_shares, new_shares),
             "avg_cost": round(avg_cost, 4),
             "last_buy_date": trade_date,
+            "hold_since": preserved_hold_since,
             "last_price": execution_price,
             "market_value": round(new_shares * execution_price, 2),
             "unrealized_pnl": round((execution_price - avg_cost) * new_shares, 2),

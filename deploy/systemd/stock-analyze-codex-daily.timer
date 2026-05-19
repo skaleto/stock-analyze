@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Codex agent daily after A-share close (offset 5 min from Claude)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:35:00 UTC
+Persistent=true
+Unit=stock-analyze-codex-daily.service
+
+[Install]
+WantedBy=timers.target

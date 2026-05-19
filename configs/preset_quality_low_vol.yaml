@@ -1,0 +1,79 @@
+{
+  "strategy_id": "preset_quality_low_vol",
+  "name": "weekly_quality_low_volatility_preset",
+  "version": 2,
+  "created_at": "2026-05-19",
+  "initial_cash": 1000000,
+  "accounts": [
+    {
+      "id": "hs300_qlv",
+      "name": "CSI 300 Quality+LowVol",
+      "scope": "hs300",
+      "benchmark": "000300",
+      "cash": 500000,
+      "top_n": 10
+    },
+    {
+      "id": "zz500_qlv",
+      "name": "CSI 500 Quality+LowVol",
+      "scope": "zz500",
+      "benchmark": "000905",
+      "cash": 500000,
+      "top_n": 10
+    }
+  ],
+  "schedule": {
+    "rebalance": "weekly_after_close",
+    "signal_day": "last_trading_day_of_week",
+    "execution": "next_trading_day_open"
+  },
+  "factors": {
+    "roe": {"weight": 0.30, "direction": "high"},
+    "gross_margin": {"weight": 0.15, "direction": "high"},
+    "debt_ratio": {"weight": 0.10, "direction": "low"},
+    "low_volatility_60": {"weight": 0.25, "direction": "low"},
+    "dividend_yield": {"weight": 0.15, "direction": "high"},
+    "momentum_60": {"weight": 0.05, "direction": "high"}
+  },
+  "factor_processing": {
+    "enabled": true,
+    "winsorize_lower": 0.02,
+    "winsorize_upper": 0.98,
+    "neutralize_industry": true,
+    "min_factor_coverage": 0.5
+  },
+  "portfolio_controls": {
+    "max_industry_weight": 0.25,
+    "hold_buffer_pct": 0.6,
+    "max_holding_days": 90,
+    "industry_unclassified_label": "未分类"
+  },
+  "filters": {
+    "exclude_st": true,
+    "max_fetch_candidates": 200,
+    "min_listing_days": 365,
+    "min_pe": 0,
+    "min_avg_amount_20": 80000000,
+    "min_market_cap_yi": 50,
+    "require_fields": ["roe", "gross_margin", "debt_ratio", "low_volatility_60"],
+    "fallback_require_fields": ["roe", "low_volatility_60"]
+  },
+  "trading": {
+    "lot_size": 100,
+    "commission_rate": 0.0003,
+    "min_commission": 5,
+    "stamp_tax_rate": 0.0005,
+    "slippage_rate": 0.0005,
+    "max_single_weight": 0.12
+  },
+  "performance": {
+    "risk_free_rate": 0.02,
+    "trading_days_per_year": 252,
+    "forward_ic_horizon_days": 5,
+    "low_coverage_threshold": 0.5
+  },
+  "objective": {
+    "annual_excess_return_target": 0.04,
+    "max_drawdown_vs_benchmark": 1.0
+  }
+}

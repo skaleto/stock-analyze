@@ -1,0 +1,12 @@
+[Unit]
+Description=Stock Analyze daily simulation run (Codex agent)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --agent codex --logs-dir /opt/stock-analyze/logs run-daily
+StandardOutput=append:/opt/stock-analyze/logs/codex-daily.log
+StandardError=append:/opt/stock-analyze/logs/codex-daily.err

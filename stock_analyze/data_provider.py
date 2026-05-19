@@ -55,6 +55,7 @@ class PriceSnapshot:
     momentum_20: float | None
     momentum_60: float | None
     avg_amount_20: float | None
+    low_volatility_60: float | None = None
     paused: bool = False
     limit_up: bool = False
     limit_down: bool = False
@@ -395,6 +396,11 @@ class AkshareProvider:
         momentum_20 = pct_change(float(closes.iloc[-21]), float(closes.iloc[-1])) if len(closes) >= 21 else None
         momentum_60 = pct_change(float(closes.iloc[-61]), float(closes.iloc[-1])) if len(closes) >= 61 else None
         avg_amount_20 = float(amounts.tail(20).mean()) if len(amounts) else None
+        if len(closes) >= 61:
+            returns = closes.pct_change().tail(60).dropna()
+            low_volatility_60 = float(returns.std(ddof=0)) if not returns.empty else None
+        else:
+            low_volatility_60 = None
         return PriceSnapshot(
             code=code,
             trade_date=str(latest.get("日期")),
@@ -406,9 +412,52 @@ class AkshareProvider:
             momentum_20=momentum_20,
             momentum_60=momentum_60,
             avg_amount_20=avg_amount_20,
+            low_volatility_60=low_volatility_60,
             paused=is_truthy(latest.get("停牌")),
             source=str(latest.get("source", "")),
         )
+
+    def dividend_yield(self, code: str, as_of: str | None = None) -> float | None:
+        """Return TTM dividend yield as a percent number (e.g. 2.5 == 2.5%).
+
+        Tries AkShare `stock_a_indicator_lg` first; falls back to `None` if
+        the public endpoint is unavailable. Cached per code to keep weekly
+        runs fast.
+        """
+
+        cache_name = f"dividend_yield_{code}"
+        cached = self.load_cache(cache_name)
+        if not cached.empty:
+            value = safe_float(cached.iloc[0].get("dividend_yield"))
+            return value
+        try:
+            df = self.fallback_retry(
+                f"dividend_yield_{code}",
+                lambda: ak.stock_a_indicator_lg(symbol=code),
+            )
+            if df is None or df.empty:
+                return None
+            df = df.copy()
+            if "trade_date" in df.columns:
+                df = df.sort_values("trade_date")
+            elif "date" in df.columns:
+                df = df.sort_values("date")
+            if as_of:
+                target = pd.to_datetime(as_of).date()
+                date_col = "trade_date" if "trade_date" in df.columns else "date"
+                df = df[pd.to_datetime(df[date_col]).dt.date <= target]
+            if df.empty:
+                return None
+            row = df.iloc[-1]
+            value = safe_float(row.get("dv_ttm")) or safe_float(row.get("dv_ratio"))
+            if value is None:
+                return None
+            normalized = value if abs(value) > 1 else value * 100
+            self.save_cache(cache_name, pd.DataFrame([{"code": code, "dividend_yield": normalized}]))
+            return normalized
+        except Exception as exc:  # noqa: BLE001
+            self.record_health(f"dividend_yield_{code}", "failed", str(exc))
+            return None
 
     def execution_quote(self, code: str, execute_after: str, side: str, as_of: str | None = None) -> ExecutionQuote:
         visible_as_of = as_of or execute_after

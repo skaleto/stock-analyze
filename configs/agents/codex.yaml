@@ -1,0 +1,39 @@
+{
+  "agent_id": "codex",
+  "strategy_id": "codex_quality_lowvol_dividend_v1",
+  "name": "Codex · Quality + LowVol + Dividend",
+  "factors": {
+    "pe": {"weight": 0.08, "direction": "low"},
+    "pb": {"weight": 0.08, "direction": "low"},
+    "roe": {"weight": 0.25, "direction": "high"},
+    "gross_margin": {"weight": 0.15, "direction": "high"},
+    "debt_ratio": {"weight": 0.10, "direction": "low"},
+    "momentum_20": {"weight": 0.0, "direction": "high"},
+    "momentum_60": {"weight": 0.07, "direction": "high"},
+    "low_volatility_60": {"weight": 0.17, "direction": "low"},
+    "dividend_yield": {"weight": 0.10, "direction": "high"}
+  },
+  "factor_processing": {
+    "enabled": true,
+    "winsorize_lower": 0.02,
+    "winsorize_upper": 0.98,
+    "neutralize_industry": true,
+    "min_factor_coverage": 0.55
+  },
+  "portfolio_controls": {
+    "max_industry_weight": 0.25,
+    "hold_buffer_pct": 0.6,
+    "max_holding_days": 90,
+    "industry_unclassified_label": "未分类"
+  },
+  "filters": {
+    "exclude_st": true,
+    "max_fetch_candidates": 200,
+    "min_listing_days": 365,
+    "min_pe": 0,
+    "min_avg_amount_20": 80000000,
+    "min_market_cap_yi": 50,
+    "require_fields": ["roe", "gross_margin", "debt_ratio", "low_volatility_60"],
+    "fallback_require_fields": ["roe", "low_volatility_60"]
+  }
+}

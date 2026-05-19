@@ -1,0 +1,10 @@
+[Unit]
+Description=Run monthly competition review on the 1st of each month
+
+[Timer]
+OnCalendar=*-*-01 01:00:00 UTC
+Persistent=true
+Unit=stock-analyze-monthly-review.service
+
+[Install]
+WantedBy=timers.target

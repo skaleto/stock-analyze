@@ -1,0 +1,13 @@
+[Unit]
+Description=Stock Analyze monthly competition review (claude vs codex)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --logs-dir /opt/stock-analyze/logs competition-monthly-review
+ExecStartPost=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --logs-dir /opt/stock-analyze/logs competition-dashboard
+StandardOutput=append:/opt/stock-analyze/logs/monthly-review.log
+StandardError=append:/opt/stock-analyze/logs/monthly-review.err

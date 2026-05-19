@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pandas as pd
 
 from .data_provider import AkshareProvider
+from .factor_pipeline import UNCLASSIFIED, process_factors
 from .utils import now_iso, safe_float
 
 
@@ -17,6 +18,7 @@ class SignalResult:
     candidates: pd.DataFrame
     selected: pd.DataFrame
     warnings: list[str]
+    factor_table: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def build_signals(config: dict[str, Any], account: dict[str, Any], provider: AkshareProvider, as_of: str | None = None) -> SignalResult:
@@ -35,11 +37,12 @@ def build_signals(config: dict[str, Any], account: dict[str, Any], provider: Aks
         if filters.get("exclude_st") and "ST" in name.upper():
             continue
 
-        basic = provider.basic_info(code) if not name or name == "nan" else {}
+        basic = provider.basic_info(code)
         valuation = provider.valuation_metrics(code)
         metrics = provider.financial_metrics(code)
         snapshot = provider.price_snapshot(code, as_of=as_of, spot_row=stock.to_dict())
-        data_warnings = []
+        dividend_yield = provider.dividend_yield(code, as_of=as_of)
+        data_warnings: list[str] = []
         if valuation.get("pe") is None and safe_float(stock.get("pe")) is None:
             data_warnings.append("pe_missing")
         if valuation.get("pb") is None and safe_float(stock.get("pb")) is None:
@@ -48,19 +51,23 @@ def build_signals(config: dict[str, Any], account: dict[str, Any], provider: Aks
             data_warnings.append("financial_fetch_failed")
         if snapshot.warning:
             data_warnings.append(snapshot.warning)
+        market_cap_yi = safe_float(stock.get("market_cap_yi")) or safe_float(basic.get("market_cap_yi"))
         row = {
             "code": code,
             "name": name if name and name != "nan" else basic.get("name", ""),
+            "industry": (basic.get("industry") or UNCLASSIFIED),
             "latest_price": safe_float(stock.get("latest_price")) or snapshot.close,
             "pe": safe_float(stock.get("pe")) or valuation.get("pe"),
             "pb": safe_float(stock.get("pb")) or valuation.get("pb"),
-            "market_cap_yi": safe_float(stock.get("market_cap_yi")) or safe_float(basic.get("market_cap_yi")),
+            "market_cap_yi": market_cap_yi,
             "roe": safe_float(metrics.get("roe")),
             "gross_margin": safe_float(metrics.get("gross_margin")),
             "debt_ratio": safe_float(metrics.get("debt_ratio")),
             "net_profit_growth": safe_float(metrics.get("net_profit_growth")),
             "momentum_20": snapshot.momentum_20,
             "momentum_60": snapshot.momentum_60,
+            "low_volatility_60": snapshot.low_volatility_60,
+            "dividend_yield": dividend_yield,
             "avg_amount_20": snapshot.avg_amount_20,
             "paused": snapshot.paused,
             "data_warnings": ";".join(data_warnings),
@@ -79,18 +86,29 @@ def build_signals(config: dict[str, Any], account: dict[str, Any], provider: Aks
     if candidates.empty:
         raise RuntimeError(f"No candidates left after hard filters for {scope}")
 
-    candidates = score_candidates(candidates, config.get("factors", {}))
-    selected = candidates.sort_values("score", ascending=False).head(int(account.get("top_n", 10))).copy()
-    selected["account_id"] = account["id"]
-    selected["pool"] = scope
+    scored, factor_table = process_factors(candidates, config.get("factors", {}), config.get("factor_processing"))
+    if scored.get("insufficient_factor_coverage", pd.Series([], dtype=bool)).any():
+        scored = scored[~scored["insufficient_factor_coverage"]].copy()
+    if scored.empty:
+        raise RuntimeError(f"No candidates left after factor coverage filtering for {scope}")
+
+    scored = scored.sort_values("score", ascending=False).reset_index(drop=True)
+    initial_selected = scored.head(int(account.get("top_n", 10))).copy()
+    initial_selected["account_id"] = account["id"]
+    initial_selected["pool"] = scope
+    if not factor_table.empty:
+        factor_table = factor_table.copy()
+        factor_table["account_id"] = account["id"]
+        factor_table["signal_date"] = as_of or ""
 
     return SignalResult(
         account_id=str(account["id"]),
         pool=scope,
         generated_at=now_iso(),
-        candidates=candidates,
-        selected=selected,
+        candidates=scored,
+        selected=initial_selected,
         warnings=warnings,
+        factor_table=factor_table,
     )
 
 
@@ -134,12 +152,20 @@ def apply_hard_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.DataFram
     if min_amount is not None and "avg_amount_20" in out:
         out = out[(out["avg_amount_20"].isna()) | (out["avg_amount_20"] >= min_amount)]
 
+    min_cap = safe_float(filters.get("min_market_cap_yi"))
+    if min_cap is not None and "market_cap_yi" in out:
+        out = out[(out["market_cap_yi"].isna()) | (out["market_cap_yi"] >= min_cap)]
+
+    max_cap = safe_float(filters.get("max_market_cap_yi"))
+    if max_cap is not None and "market_cap_yi" in out:
+        out = out[(out["market_cap_yi"].isna()) | (out["market_cap_yi"] <= max_cap)]
+
     if "paused" in out:
         out = out[~out["paused"].fillna(False)]
 
-    for field in filters.get("require_fields", []):
-        if field in out:
-            out = out[out[field].notna()]
+    for field_name in filters.get("require_fields", []):
+        if field_name in out:
+            out = out[out[field_name].notna()]
     return out
 
 
@@ -151,35 +177,18 @@ def apply_relaxed_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.DataF
     if "paused" in out:
         out = out[~out["paused"].fillna(False)]
     fallback_fields = filters.get("fallback_require_fields") or ["pe", "pb", "momentum_20", "momentum_60"]
-    for field in fallback_fields:
-        if field in out:
-            out = out[out[field].notna()]
+    for field_name in fallback_fields:
+        if field_name in out:
+            out = out[out[field_name].notna()]
     return out
 
 
-def score_candidates(df: pd.DataFrame, factors: dict[str, Any]) -> pd.DataFrame:
-    out = df.copy()
-    out["score"] = 0.0
-    factor_notes: list[list[str]] = [[] for _ in range(len(out))]
+def score_candidates(df: pd.DataFrame, factors: dict[str, Any], factor_processing: dict[str, Any] | None = None) -> pd.DataFrame:
+    """Legacy entry-point that delegates to the new pipeline.
 
-    for factor, spec in factors.items():
-        if factor not in out:
-            continue
-        weight = float(spec.get("weight", 0))
-        direction = spec.get("direction", "high")
-        numeric = pd.to_numeric(out[factor], errors="coerce")
-        valid = numeric.notna()
-        if valid.sum() == 0:
-            continue
-        pct_rank = numeric.rank(pct=True)
-        if direction == "low":
-            pct_rank = 1 - pct_rank
-        score_part = pct_rank.fillna(0) * weight * 100
-        out["score"] += score_part
-        for index, value in enumerate(score_part.tolist()):
-            if value > 0:
-                factor_notes[index].append(f"{factor}:{value:.1f}")
+    Kept for compatibility with prior callers and unit tests that scored
+    candidates outside of `build_signals`.
+    """
 
-    out["score"] = out["score"].round(2)
-    out["score_detail"] = ["; ".join(items) for items in factor_notes]
-    return out
+    scored, _ = process_factors(df, factors, factor_processing)
+    return scored

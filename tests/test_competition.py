@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+
+from stock_analyze import competition
+from stock_analyze.competition import (
+    CompetitionBaselineLocked,
+    UnknownAgent,
+    list_agents,
+    load,
+    resolve_agent_paths,
+)
+
+
+BASELINE_CONFIG = {
+    "competition_id": "test_competition",
+    "version": 1,
+    "start_date": "2026-05-26",
+    "initial_cash": 1000000,
+    "accounts": [
+        {"id": "hs300", "scope": "hs300", "benchmark": "000300", "cash": 500000, "top_n": 10},
+        {"id": "zz500", "scope": "zz500", "benchmark": "000905", "cash": 500000, "top_n": 10},
+    ],
+    "schedule": {"rebalance": "weekly_after_close", "signal_day": "last_trading_day_of_week", "execution": "next_trading_day_open"},
+    "trading": {
+        "lot_size": 100,
+        "commission_rate": 0.0003,
+        "min_commission": 5,
+        "stamp_tax_rate": 0.0005,
+        "slippage_rate": 0.0005,
+        "max_single_weight": 0.10,
+    },
+    "performance": {"risk_free_rate": 0.02, "trading_days_per_year": 252},
+}
+
+
+class _RepoFixture:
+    """Builds a minimal repo layout under a tmp dir for competition tests."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        (root / "configs" / "agents").mkdir(parents=True, exist_ok=True)
+        (root / "configs" / "competition.yaml").write_text(json.dumps(BASELINE_CONFIG), encoding="utf-8")
+
+    def write_overlay(self, agent_id: str, overlay: dict) -> None:
+        path = self.root / "configs" / "agents" / f"{agent_id}.yaml"
+        payload = {"agent_id": agent_id, "strategy_id": f"{agent_id}_v1", **overlay}
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+class CompetitionLoaderTests(unittest.TestCase):
+    def test_locked_initial_cash_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = _RepoFixture(Path(tmp))
+            fixture.write_overlay("codex", {"initial_cash": 2000000, "factors": {"pe": {"weight": 1.0, "direction": "low"}}})
+            with self.assertRaises(CompetitionBaselineLocked) as ctx:
+                load("codex", repo_root=tmp)
+            self.assertEqual(ctx.exception.field, "overlay_top_level:initial_cash")
+
+    def test_locked_trading_commission_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = _RepoFixture(Path(tmp))
+            fixture.write_overlay("codex", {"factors": {"pe": {"weight": 1.0, "direction": "low"}}})
+            # Manually inject a disallowed top-level key bypassing helper.
+            path = Path(tmp) / "configs" / "agents" / "codex.yaml"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["trading"] = {"commission_rate": 0}
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(CompetitionBaselineLocked):
+                load("codex", repo_root=tmp)
+
+    def test_factors_overlay_is_merged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = _RepoFixture(Path(tmp))
+            fixture.write_overlay(
+                "claude",
+                {
+                    "factors": {"pe": {"weight": 0.5, "direction": "low"}, "roe": {"weight": 0.5, "direction": "high"}},
+                    "factor_processing": {"enabled": True, "winsorize_lower": 0.02},
+                    "portfolio_controls": {"max_industry_weight": 0.25},
+                    "filters": {"min_market_cap_yi": 40},
+                },
+            )
+            merged = load("claude", repo_root=tmp)
+            self.assertEqual(merged["agent_id"], "claude")
+            self.assertEqual(merged["initial_cash"], 1000000)
+            self.assertEqual(merged["factors"]["pe"]["weight"], 0.5)
+            self.assertEqual(merged["factor_processing"]["winsorize_lower"], 0.02)
+            self.assertEqual(merged["portfolio_controls"]["max_industry_weight"], 0.25)
+            self.assertEqual(merged["filters"]["min_market_cap_yi"], 40)
+
+    def test_overlay_top_level_must_be_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = _RepoFixture(Path(tmp))
+            fixture.write_overlay("codex", {"factors": {"pe": {"weight": 1.0, "direction": "low"}}})
+            path = Path(tmp) / "configs" / "agents" / "codex.yaml"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["accounts"] = [{"id": "hs300", "cash": 600000}]
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(CompetitionBaselineLocked):
+                load("codex", repo_root=tmp)
+
+    def test_unknown_agent_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _RepoFixture(Path(tmp))
+            with self.assertRaises(UnknownAgent):
+                resolve_agent_paths("unknown", repo_root=tmp)
+
+    def test_list_agents_finds_overlay_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = _RepoFixture(Path(tmp))
+            fixture.write_overlay("claude", {"factors": {}})
+            fixture.write_overlay("codex", {"factors": {}})
+            agents = list_agents(tmp)
+            self.assertEqual(agents, ["claude", "codex"])
+
+    def test_resolve_agent_paths_returns_expected_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = _RepoFixture(Path(tmp))
+            fixture.write_overlay("claude", {"factors": {}})
+            paths = resolve_agent_paths("claude", repo_root=tmp)
+            self.assertEqual(paths.config_path, Path(tmp) / "configs" / "agents" / "claude.yaml")
+            self.assertEqual(paths.data_dir, Path(tmp) / "data" / "claude")
+            self.assertEqual(paths.reports_dir, Path(tmp) / "reports" / "claude")
+            self.assertEqual(paths.shared_cache_dir, Path(tmp) / "data" / "shared" / "cache")
+            self.assertEqual(paths.competition_data_dir, Path(tmp) / "data" / "competition")
+
+
+class CompetitionInitSmokeTests(unittest.TestCase):
+    """Smoke-style: run cli._command_competition_init in a clean cwd."""
+
+    def test_init_creates_directories_and_state(self) -> None:
+        import importlib
+        from stock_analyze import cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = _RepoFixture(Path(tmp))
+            fixture.write_overlay("claude", {"factors": {"pe": {"weight": 1.0, "direction": "low"}}})
+            fixture.write_overlay("codex", {"factors": {"roe": {"weight": 1.0, "direction": "high"}}})
+            cwd = os.getcwd()
+            try:
+                os.chdir(tmp)
+                rc = cli._command_competition_init()
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(rc, 0)
+            for sub in ("shared", "claude", "codex", "competition"):
+                self.assertTrue((Path(tmp) / "data" / sub).is_dir())
+            for sub in ("claude", "codex", "competition"):
+                self.assertTrue((Path(tmp) / "reports" / sub).is_dir())
+            claude_state = json.loads((Path(tmp) / "data" / "claude" / "state.json").read_text())
+            self.assertEqual(claude_state["accounts"]["hs300"]["cash"], 500000.0)
+            metadata = json.loads((Path(tmp) / "data" / "competition" / "competition_metadata.json").read_text())
+            self.assertEqual(metadata["competition_id"], "test_competition")
+            self.assertEqual(metadata["start_date"], "2026-05-26")
+            self.assertEqual(metadata["agents"], ["claude", "codex"])
+            self.assertTrue(metadata["baseline_hash"])
+
+
+if __name__ == "__main__":
+    unittest.main()
