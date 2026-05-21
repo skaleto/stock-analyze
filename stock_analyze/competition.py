@@ -127,6 +127,34 @@ def load_baseline(repo_root: str | Path | None = None) -> dict[str, Any]:
     return load_config(root / COMPETITION_CONFIG_FILE)
 
 
+def validate_overlay(
+    agent_id: str,
+    overlay: dict[str, Any],
+    repo_root: str | Path | None = None,
+    baseline: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate an in-memory overlay and return the merged config.
+
+    Same checks as :func:`load` (top-level whitelist, baseline-locked paths,
+    config migration) but **never touches disk** beyond reading the baseline.
+    Use this to test hypothetical overlays (e.g. proposed monthly patches)
+    without leaving a temporary file that concurrent readers could observe.
+    """
+
+    root = Path(repo_root) if repo_root else Path.cwd()
+    if baseline is None:
+        baseline = load_baseline(root)
+
+    _validate_overlay_top_level(overlay, agent_id)
+    _validate_locked_paths(baseline, overlay)
+
+    merged = _deep_merge(baseline, overlay)
+    merged.setdefault("agent_id", agent_id)
+    merged.setdefault("strategy_id", overlay.get("strategy_id", agent_id))
+    migrate_strategy_config(merged)
+    return merged
+
+
 def load(agent_id: str, repo_root: str | Path | None = None) -> dict[str, Any]:
     """Load a merged config = baseline + agent overlay.
 

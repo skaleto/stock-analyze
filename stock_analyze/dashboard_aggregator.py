@@ -25,7 +25,7 @@ from typing import Any
 import pandas as pd
 
 from .competition import resolve_agent_paths
-from .utils import ensure_dirs, format_money, format_pct, safe_float
+from .utils import ensure_dirs, format_pct, safe_float
 
 
 AGENT_COLORS = {

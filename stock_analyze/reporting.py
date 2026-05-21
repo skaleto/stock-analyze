@@ -397,6 +397,7 @@ def generate_dashboard(
     table.strategy-evolution {{ font-size: 12px; }}
     table.strategy-evolution td {{ vertical-align: top; max-width: 320px; white-space: normal; }}
     table.strategy-evolution tr.proposal-no-change td {{ color: var(--muted); }}
+    table.strategy-evolution tr.proposal-drift td.decision-cell {{ color: var(--red); font-weight: 600; }}
     @media (max-width: 900px) {{ .split {{ grid-template-columns: 1fr; }} .panel-row {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
@@ -1245,6 +1246,29 @@ def _decision_status_text(decision: dict[str, Any] | None) -> str:
     return f"{text} / {risk}" if risk else text
 
 
+def _proposal_hash_drift(proposal: dict[str, Any], decision: dict[str, Any] | None) -> bool:
+    """Return True when the decision was made against an older proposal version.
+
+    Compares the decision's recorded ``proposal_hash`` against a fresh hash of
+    the current proposal. Returns False when either side is missing.
+    """
+
+    if not decision:
+        return False
+    expected = str(decision.get("proposal_hash") or "")
+    if not expected:
+        return False
+    try:
+        from .proposal_judge import _hash_mapping  # local import to avoid cycle at module load
+    except ImportError:
+        return False
+    # Strip our local-only annotation keys before hashing so the comparison
+    # matches what the referee computed at decision time.
+    snapshot = {key: value for key, value in proposal.items() if not str(key).startswith("_") and key != "month"}
+    actual = _hash_mapping(snapshot)
+    return actual != expected
+
+
 def render_strategy_evolution_panel(
     data_dir: str | Path,
     leaderboard_path: str | Path | None = None,
@@ -1272,9 +1296,16 @@ def render_strategy_evolution_panel(
         rationale = _escape_html(_truncate(str(proposal.get("rationale", "")), limit=600))
         if len(rationale) > 200:
             rationale = rationale[:200] + "…"
-        expected = _escape_html(str(proposal.get("expected_effect", "") or "-"))
+        expected_raw = proposal.get("expected_effect")
+        expected_text = str(expected_raw).strip() if expected_raw else ""
+        expected_html = _escape_html(_truncate(expected_text, limit=400)) if expected_text else "-"
         decision = _load_decision(agent, month, Path(data_dir))
-        decision_status = _escape_html(_decision_status_text(decision))
+        decision_text = _decision_status_text(decision)
+        drift = _proposal_hash_drift(proposal, decision)
+        if drift:
+            decision_text = f"{decision_text} · 提案已变"
+        decision_status = _escape_html(decision_text)
+        decision_class = " proposal-drift" if drift else ""
         risks = proposal.get("risks") or []
         if isinstance(risks, list):
             risks_html = "<br>".join(_escape_html(str(item)) for item in risks[:3]) or "-"
@@ -1287,11 +1318,12 @@ def render_strategy_evolution_panel(
         current_row = leaderboard_lookup.get(month)
         next_row = leaderboard_lookup.get(_next_month(month) or "")
         rows_html.append(
-            f'<tr class="{row_class}">'
+            f'<tr class="{row_class}{decision_class}">'
             f"<td>{_escape_html(month)}</td>"
             f"<td>{status_text}</td>"
-            f"<td>{decision_status}</td>"
+            f'<td class="decision-cell">{decision_status}</td>'
             f"<td>{rationale or '-'}</td>"
+            f"<td>{expected_html}</td>"
             f"<td>{patch_html}</td>"
             f"<td>{risks_html}</td>"
             f"<td>{_leaderboard_return_cell(current_row, agent)}</td>"
@@ -1300,7 +1332,7 @@ def render_strategy_evolution_panel(
         )
     return (
         '<table class="table strategy-evolution"><thead>'
-        "<tr><th>月份</th><th>提案状态</th><th>裁判结论</th><th>理由摘要</th><th>改了哪些键</th>"
+        "<tr><th>月份</th><th>提案状态</th><th>裁判结论</th><th>理由摘要</th><th>预期效果</th><th>改了哪些键</th>"
         "<th>风险</th><th>当月收益</th><th>次月收益</th></tr></thead>"
         f"<tbody>{''.join(rows_html)}</tbody></table>"
     )

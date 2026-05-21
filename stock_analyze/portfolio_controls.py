@@ -4,7 +4,6 @@ factor scoring. Pure pandas + dict logic so it stays trivial to unit-test.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
 from typing import Any
 
 import pandas as pd

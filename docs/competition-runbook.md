@@ -157,6 +157,8 @@ ssh -L 8765:127.0.0.1:8765 user@your-server
 
 ## systemd 部署
 
+> ⚠️ **二选一**：仓库同时包含两套 systemd 单元——单 agent 老路径（`stock-analyze-{daily,weekly}.{service,timer}`，从 `configs/strategy_v1.yaml` 跑）和双 agent 竞赛新路径（`stock-analyze-{claude,codex}-{daily,weekly}.{service,timer}` + `monthly-review.{service,timer}`）。**只 enable 一套**。同时启用会重复拉行情、写两份不相关的 NAV，但不会 corruption。
+
 模板放在 `deploy/systemd/`：
 
 - `stock-analyze-claude-daily.{service,timer}`（周一到周五 16:30）
@@ -166,12 +168,17 @@ ssh -L 8765:127.0.0.1:8765 user@your-server
 - `stock-analyze-monthly-review.{service,timer}`（每月 1 号 09:00）
 - `stock-analyze-dashboard.service`（常驻 127.0.0.1:8765，指向 `reports/competition`）
 
-安装：
+安装（**双 agent 模式**）：
 
 ```bash
 sudo cp deploy/systemd/stock-analyze-*.service /etc/systemd/system/
 sudo cp deploy/systemd/stock-analyze-*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
+
+# 若之前启用过单 agent 老 timer，先停掉避免冲突
+sudo systemctl disable --now stock-analyze-daily.timer 2>/dev/null || true
+sudo systemctl disable --now stock-analyze-weekly.timer 2>/dev/null || true
+
 sudo systemctl enable --now stock-analyze-dashboard.service
 sudo systemctl enable --now stock-analyze-claude-daily.timer
 sudo systemctl enable --now stock-analyze-claude-weekly.timer
@@ -181,6 +188,16 @@ sudo systemctl enable --now stock-analyze-monthly-review.timer
 ```
 
 模板里假设代码部署到 `/opt/stock-analyze/app/`，虚拟环境在 `/opt/stock-analyze/venv/`，日志写到 `/opt/stock-analyze/logs/`。按需调整。
+
+### `configs/agents/_history/` 是什么
+
+`agent-apply-approved-proposals` 每次应用 patch 之前会把当前 overlay 备份到 `configs/agents/_history/<config_hash>.yaml`（哈希内容是 sha256[:12]）。这些文件**进入 git**，作为审计轨迹。可以：
+
+- 在任意 clone 上跑 `python3 -m stock_analyze agent-rollback --agent <id> --to <hash>` 回滚。
+- 通过 `git log configs/agents/_history/` 查看历次 apply 时间线。
+- 累计大约每月每 agent 1 个文件 (~1KB)；不需要清理。
+
+不要手动编辑这些文件——`agent-rollback` 是唯一受支持的恢复路径。
 
 ## 故障排查
 

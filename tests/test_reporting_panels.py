@@ -80,6 +80,61 @@ class StrategyEvolutionPanelTests(unittest.TestCase):
             html = render_strategy_evolution_panel(data_dir)
             self.assertIn("裁判通过 / low", html)
 
+    def test_expected_effect_column_is_rendered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "claude"
+            proposals = data_dir / "proposals"
+            _write_proposal(
+                proposals,
+                "2026-05",
+                {
+                    "rationale": "本月数据稳定",
+                    "expected_effect": "提高 ROE 暴露",
+                    "patch": {},
+                    "no_change": True,
+                    "risks": [],
+                },
+            )
+            html = render_strategy_evolution_panel(data_dir)
+            self.assertIn("预期效果", html)  # header
+            self.assertIn("提高 ROE 暴露", html)  # cell content
+
+    def test_proposal_hash_drift_is_flagged(self) -> None:
+        from stock_analyze.proposal_judge import _hash_mapping
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "claude"
+            proposals = data_dir / "proposals"
+            original = {
+                "rationale": "原版理由",
+                "expected_effect": "保持稳定",
+                "patch": {},
+                "no_change": True,
+                "risks": [],
+            }
+            _write_proposal(proposals, "2026-05", original)
+            decisions = Path(tmp) / "competition" / "decisions"
+            decisions.mkdir(parents=True)
+            (decisions / "2026-05-claude.json").write_text(
+                json.dumps(
+                    {
+                        "decision": "approved",
+                        "risk_level": "low",
+                        "proposal_hash": _hash_mapping(original),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            html = render_strategy_evolution_panel(data_dir)
+            self.assertNotIn("提案已变", html)
+
+            # Modify proposal after decision was recorded.
+            _write_proposal(proposals, "2026-05", {**original, "rationale": "新理由"})
+            html = render_strategy_evolution_panel(data_dir)
+            self.assertIn("提案已变", html)
+            self.assertIn("proposal-drift", html)
+
     def test_html_escape_in_rationale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "claude"

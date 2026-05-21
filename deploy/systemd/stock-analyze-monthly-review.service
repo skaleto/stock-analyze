@@ -8,8 +8,11 @@ Type=oneshot
 WorkingDirectory=/opt/stock-analyze/app
 Environment=TZ=Asia/Shanghai
 ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --logs-dir /opt/stock-analyze/logs competition-monthly-review
-ExecStartPost=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --logs-dir /opt/stock-analyze/logs agent-judge-proposals
-ExecStartPost=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --logs-dir /opt/stock-analyze/logs agent-apply-approved-proposals
+# judge / apply are best-effort — failures here MUST NOT skip the dashboard refresh below.
+# systemd ExecStartPost stops at the first non-zero exit unless `-` prefix is used.
+# Failures are still recorded in data/<agent>/runs.csv via RunLedger.
+ExecStartPost=-/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --logs-dir /opt/stock-analyze/logs agent-judge-proposals
+ExecStartPost=-/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --logs-dir /opt/stock-analyze/logs agent-apply-approved-proposals
 ExecStartPost=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --logs-dir /opt/stock-analyze/logs competition-dashboard
 StandardOutput=append:/opt/stock-analyze/logs/monthly-review.log
 StandardError=append:/opt/stock-analyze/logs/monthly-review.err

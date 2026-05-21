@@ -142,7 +142,6 @@ class CompetitionInitSmokeTests(unittest.TestCase):
     """Smoke-style: run cli._command_competition_init in a clean cwd."""
 
     def test_init_creates_directories_and_state(self) -> None:
-        import importlib
         from stock_analyze import cli
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -167,6 +166,52 @@ class CompetitionInitSmokeTests(unittest.TestCase):
             self.assertEqual(metadata["start_date"], "2026-05-26")
             self.assertEqual(metadata["agents"], ["claude", "codex"])
             self.assertTrue(metadata["baseline_hash"])
+
+
+class ValidateOverlayPureMemoryTests(unittest.TestCase):
+    def test_validate_overlay_does_not_touch_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixture = _RepoFixture(root)
+            fixture.write_overlay(
+                "claude",
+                {"factors": {"pe": {"weight": 1.0, "direction": "low"}}},
+            )
+            overlay_path = root / "configs" / "agents" / "claude.yaml"
+            mtime_before = overlay_path.stat().st_mtime_ns
+            history_dir = root / "configs" / "agents" / "_history"
+            history_before = sorted(history_dir.glob("*")) if history_dir.exists() else []
+
+            proposed = {
+                "agent_id": "claude",
+                "strategy_id": "claude_v1",
+                "factors": {
+                    "pe": {"weight": 0.4, "direction": "low"},
+                    "roe": {"weight": 0.6, "direction": "high"},
+                },
+            }
+            merged = competition.validate_overlay("claude", proposed, repo_root=root)
+
+            self.assertEqual(overlay_path.stat().st_mtime_ns, mtime_before)
+            self.assertEqual(merged["initial_cash"], 1000000)
+            self.assertAlmostEqual(merged["factors"]["roe"]["weight"], 0.6)
+            history_after = sorted(history_dir.glob("*")) if history_dir.exists() else []
+            self.assertEqual(history_before, history_after)
+
+    def test_validate_overlay_rejects_locked_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixture = _RepoFixture(root)
+            fixture.write_overlay("codex", {"factors": {"pe": {"weight": 1.0, "direction": "low"}}})
+            overlay_path = root / "configs" / "agents" / "codex.yaml"
+            mtime_before = overlay_path.stat().st_mtime_ns
+            with self.assertRaises(CompetitionBaselineLocked):
+                competition.validate_overlay(
+                    "codex",
+                    {"initial_cash": 9_999_999, "factors": {"pe": {"weight": 1.0, "direction": "low"}}},
+                    repo_root=root,
+                )
+            self.assertEqual(overlay_path.stat().st_mtime_ns, mtime_before)
 
 
 if __name__ == "__main__":

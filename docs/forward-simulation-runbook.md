@@ -235,6 +235,8 @@ v1 → v2 配置自动迁移由 `stock_analyze.config.migrate_strategy_config()`
 
 ## Linux/systemd 部署
 
+> ⚠️ **二选一**：本节描述的是**单 agent 老路径**（`stock-analyze-{daily,weekly}.{service,timer}`）。如果你要跑**双 agent 竞赛模式**，按 [`docs/competition-runbook.md` § systemd 部署](competition-runbook.md#systemd-部署) 启用 `stock-analyze-{claude,codex}-{daily,weekly}.timer` + `monthly-review.timer`，并停掉本节的老 timer。两套不要同时启用。
+
 推荐服务器目录：
 
 ```text

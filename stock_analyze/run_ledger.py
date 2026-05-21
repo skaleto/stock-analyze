@@ -8,11 +8,8 @@ the row with the latest `finished_at`/`started_at`.
 
 from __future__ import annotations
 
-import json
-import os
 import random
 import string
-import traceback
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path

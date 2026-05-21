@@ -1,6 +1,8 @@
 outputs/
 .DS_Store
-.claude/
+.claude/worktrees/
+.claude/cache/
+.claude/agents-cache/
 __pycache__/
 *.pyc
 .venv/

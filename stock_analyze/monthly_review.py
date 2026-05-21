@@ -24,7 +24,7 @@ import pandas as pd
 
 from .competition import AgentPaths, resolve_agent_paths
 from .store import PortfolioStore
-from .utils import ensure_dirs, format_money, format_pct, safe_float, write_json
+from .utils import ensure_dirs, format_pct, safe_float, write_json
 
 
 LEADERBOARD_COLUMNS = [
@@ -342,7 +342,6 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         )
 
     fmt_pct = format_pct
-    fmt_money = format_money
 
     def fmt_ratio(value: Any) -> str:
         number = safe_float(value)

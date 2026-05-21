@@ -12,7 +12,6 @@ import pandas as pd
 from stock_analyze.agent_briefing import (
     build_monthly_briefing,
     build_weekly_briefing,
-    monthly_briefing_path,
     weekly_briefing_path,
     write_briefing,
 )

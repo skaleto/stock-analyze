@@ -318,13 +318,16 @@ def _validate_portfolio_changes(
 
 
 def _validate_merged_overlay(agent_id: str, overlay: dict[str, Any], root: Path) -> None:
-    paths = competition.resolve_agent_paths(agent_id, repo_root=root)
-    original_text = paths.config_path.read_text(encoding="utf-8")
-    try:
-        paths.config_path.write_text(json.dumps(overlay, ensure_ascii=False, indent=2), encoding="utf-8")
-        competition.load(agent_id, repo_root=root)
-    finally:
-        paths.config_path.write_text(original_text, encoding="utf-8")
+    """Validate the merged overlay in memory.
+
+    Uses :func:`competition.validate_overlay`, which performs the same checks
+    as `competition.load` but never writes to disk. The previous
+    write-then-load-then-restore pattern introduced a file-level TOCTOU race
+    that any concurrent ``competition.load`` (e.g. a manual ``run-weekly``
+    invocation) could observe.
+    """
+
+    competition.validate_overlay(agent_id, overlay, repo_root=root)
 
 
 def _monthly_review_exists(root: Path, month: str) -> bool:

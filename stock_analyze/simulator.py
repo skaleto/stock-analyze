@@ -10,7 +10,7 @@ from .factor_pipeline import UNCLASSIFIED
 from .portfolio_controls import annotate_industries, select_top_n_with_controls
 from .store import PortfolioStore
 from .strategy import build_signals
-from .utils import next_business_day, now_iso, safe_float, write_json
+from .utils import next_business_day, now_iso, safe_float
 
 
 def initialize(config: dict[str, Any], store: PortfolioStore, force: bool = False) -> dict[str, Any]:

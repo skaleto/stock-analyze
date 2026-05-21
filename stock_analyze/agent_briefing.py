@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import pandas as pd
 
@@ -23,7 +23,6 @@ from .competition import (
     resolve_agent_paths,
 )
 from .monthly_review import default_month_for
-from .utils import safe_float
 
 
 BRIEFINGS_SUBDIR = "notes/briefings"

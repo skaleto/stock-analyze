@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import unittest
 
 import pandas as pd
@@ -28,7 +27,6 @@ class PerformanceMetricTests(unittest.TestCase):
     def test_sharpe_uses_configured_risk_free_rate(self) -> None:
         nav = make_nav([("2026-01-01", 100.0, 1.0), ("2026-01-02", 101.0, 1.0), ("2026-01-03", 102.0, 1.0)])
         result = compute_account_performance(nav, pd.DataFrame(), risk_free_rate=0.0)
-        ann_ret_zero_rf = result["acc"]["annualized_return"]
         result_with_rf = compute_account_performance(nav, pd.DataFrame(), risk_free_rate=0.5)
         # With higher rf, Sharpe should be lower
         sharpe_zero = result["acc"]["sharpe_ratio"]
