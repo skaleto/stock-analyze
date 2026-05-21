@@ -2,7 +2,7 @@
 Description=Run Codex agent weekly after Friday close (offset 5 min from Claude)
 
 [Timer]
-OnCalendar=Fri *-*-* 09:05:00 UTC
+OnCalendar=Fri *-*-* 09:45:00 UTC
 Persistent=true
 Unit=stock-analyze-codex-weekly.service
 

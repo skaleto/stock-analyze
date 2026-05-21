@@ -161,10 +161,12 @@ ssh -L 8765:127.0.0.1:8765 user@your-server
 
 模板放在 `deploy/systemd/`：
 
-- `stock-analyze-claude-daily.{service,timer}`（周一到周五 16:30）
-- `stock-analyze-claude-weekly.{service,timer}`（周五 17:00）
-- `stock-analyze-codex-daily.{service,timer}`（周一到周五 16:35，错峰 5 分钟）
-- `stock-analyze-codex-weekly.{service,timer}`（周五 17:05）
+- `stock-analyze-claude-daily.{service,timer}`（周一到周五 17:30）
+- `stock-analyze-claude-weekly.{service,timer}`（周五 17:40）
+- `stock-analyze-codex-daily.{service,timer}`（周一到周五 17:35，错峰 5 分钟）
+- `stock-analyze-codex-weekly.{service,timer}`（周五 17:45）
+
+> 选择 17:30+ 而非更早，是为了让公开数据源（东方财富 / 腾讯 / 新浪）有足够时间在 A 股 15:00 收盘后刷新当天的日 K 与基准指数收盘价。早于 17:00 可能踩到部分源未刷新的窗口，导致两侧 agent 拿到不同的"原始数据"。
 - `stock-analyze-monthly-review.{service,timer}`（每月 1 号 09:00）
 - `stock-analyze-dashboard.service`（常驻 127.0.0.1:8765，指向 `reports/competition`）
 
@@ -364,8 +366,8 @@ python3 -m stock_analyze agent-prepare-monthly --agent codex --month 2026-05
 
 | 频率 | 命令 | 谁触发 |
 | --- | --- | --- |
-| 每个交易日 16:30 / 16:35 | `--agent claude/codex run-daily` | ECS systemd timer |
-| 每周五 17:00 / 17:05 | `--agent claude/codex run-weekly`（自带 briefing） | ECS systemd timer |
+| 每个交易日 17:30 / 17:35 | `--agent claude/codex run-daily` | ECS systemd timer |
+| 每周五 17:40 / 17:45 | `--agent claude/codex run-weekly`（自带 briefing） | ECS systemd timer |
 | 周五晚 | sync-from-ecs → `/weekly-review claude` + 同步 codex → sync-to-ecs | 本地人工 + agent |
 | 每月 1 号 09:00 | `competition-monthly-review` + `agent-judge-proposals` + `agent-apply-approved-proposals` + `competition-dashboard` | ECS systemd timer |
 | 每月 1-2 号 | sync-from-ecs → `/monthly-strategy claude` + 同步 codex → sync-to-ecs 自动裁判/应用 | 本地人工 + agent + ECS |

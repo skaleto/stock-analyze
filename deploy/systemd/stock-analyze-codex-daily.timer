@@ -2,7 +2,7 @@
 Description=Run Codex agent daily after A-share close (offset 5 min from Claude)
 
 [Timer]
-OnCalendar=Mon..Fri *-*-* 08:35:00 UTC
+OnCalendar=Mon..Fri *-*-* 09:35:00 UTC
 Persistent=true
 Unit=stock-analyze-codex-daily.service
 

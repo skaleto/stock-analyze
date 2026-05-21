@@ -2,7 +2,7 @@
 Description=Run Claude agent daily after A-share close
 
 [Timer]
-OnCalendar=Mon..Fri *-*-* 08:30:00 UTC
+OnCalendar=Mon..Fri *-*-* 09:30:00 UTC
 Persistent=true
 Unit=stock-analyze-claude-daily.service
 

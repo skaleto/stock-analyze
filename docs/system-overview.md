@@ -128,14 +128,14 @@ reports/                    # 渲染产物（gitignored）
 ### 4a. 每日（周一到周五）
 
 ```
-T 日 16:30 (ECS systemd timer)
+T 日 17:30 (ECS systemd timer)
   ┌─ stock-analyze-claude-daily.service
   │    python3 -m stock_analyze --agent claude run-daily
   │    └─ execute_due_orders → 把 T-1 的待执行单按 T 日开盘价模拟成交
   │       update_nav         → 按 T 日收盘价更新净值
   │       compute_pending_forward_ic → 补算 5 日前向 RankIC
   │       generate_dashboard → 刷 reports/claude/dashboard.html
-  └─ 16:35 codex 同理（错峰）
+  └─ 17:35 codex 同理（错峰）
 ```
 
 执行规则保守：
@@ -148,7 +148,7 @@ T 日 16:30 (ECS systemd timer)
 ### 4b. 每周五（信号日）
 
 ```
-T 日 17:00 ECS
+T 日 17:40 ECS
   ┌─ stock-analyze-claude-weekly.service
   │    run-weekly
   │    └─ generate_rebalance_orders
@@ -162,7 +162,7 @@ T 日 17:00 ECS
   │       generate_weekly_report → reports/claude/weekly_report.md
   │       generate_dashboard
   │       build_weekly_briefing → data/claude/notes/briefings/<date>-weekly.md  ← agent 待办
-  └─ 17:05 codex 同理
+  └─ 17:45 codex 同理
 ```
 
 下个交易日（T+1）开盘价被用作模拟成交价。
@@ -438,8 +438,8 @@ CSS `:target` 切 tab，纯静态，无 JS 框架。
 
 | 频率 | 谁触发 | 命令 / 动作 |
 | --- | --- | --- |
-| 每个交易日 16:30 / 16:35 | ECS systemd | `--agent claude/codex run-daily` |
-| 每周五 17:00 / 17:05 | ECS systemd | `--agent claude/codex run-weekly`（自带 briefing） |
+| 每个交易日 17:30 / 17:35 | ECS systemd | `--agent claude/codex run-daily` |
+| 每周五 17:40 / 17:45 | ECS systemd | `--agent claude/codex run-weekly`（自带 briefing） |
 | 周五晚 / 周末 | 你 + agent CLI | sync-from-ecs → `/weekly-review claude` + `do weekly review for codex` → sync-to-ecs |
 | 每月 1 号 09:00 CST | ECS systemd | `competition-monthly-review` + `agent-judge-proposals` + `agent-apply-approved-proposals` + `competition-dashboard` |
 | 每月 1-2 号 | 你 + agent CLI + ECS | sync-from-ecs → `/monthly-strategy claude` + `do monthly strategy for codex` → sync-to-ecs 自动裁判/应用 |
