@@ -20,6 +20,15 @@
 #   - Home broadband egress (no VPN/proxy, IP not in cloud blocklists).
 #   - .venv with requirements.txt installed.
 #   - ~/.ssh/ai_baby_aliyun present and authorized on ECS.
+#
+# Rate-limit knobs (env vars, override as needed):
+#   MAX_WORKERS      ThreadPoolExecutor size inside one prepare-market-data run.
+#                    Default 2. Lower (1) if push2 starts RST-blocking mid-day.
+#   INTER_DAY_DELAY  Seconds to sleep between consecutive trading days.
+#                    Default 30. Set 0 to disable.
+#
+# Example for a very gentle run when push2 is touchy:
+#   MAX_WORKERS=1 INTER_DAY_DELAY=60 ./scripts/home-backfill.sh --month 2026-05
 
 set -euo pipefail
 
@@ -33,7 +42,8 @@ ECS_USER_HOST="${ECS_USER_HOST:-root@120.55.188.242}"
 ECS_REMOTE_PATH="${ECS_REMOTE_PATH:-/opt/stock-analyze/app/data/shared}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/ai_baby_aliyun}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-MAX_WORKERS="${MAX_WORKERS:-5}"
+MAX_WORKERS="${MAX_WORKERS:-2}"
+INTER_DAY_DELAY="${INTER_DAY_DELAY:-30}"
 
 MONTH=""
 DATES=""
@@ -104,7 +114,7 @@ fi
 
 echo "==> Target days (${#TARGET_DAYS[@]}): ${TARGET_DAYS[*]}"
 echo "==> ECS:        ${ECS_USER_HOST}:${ECS_REMOTE_PATH}"
-echo "==> Force:      $FORCE / No-sync: $NO_SYNC / Max-workers: $MAX_WORKERS"
+echo "==> Force:      $FORCE / No-sync: $NO_SYNC / Max-workers: $MAX_WORKERS / Inter-day-delay: ${INTER_DAY_DELAY}s"
 echo
 
 # --------------------------------------------------------------------------
@@ -155,6 +165,9 @@ declare -a FAILED_DAYS=()
 declare -a PARTIAL_DAYS=()
 declare -a SUCCESS_DAYS=()
 
+DAY_INDEX=0
+LAST_INDEX=$((${#TARGET_DAYS[@]} - 1))
+
 for day in "${TARGET_DAYS[@]}"; do
   echo "===================================================================="
   echo "==> $day"
@@ -197,6 +210,14 @@ def pct(col): return f'{df[col].notna().mean()*100:.0f}%' if col in df.columns e
 print(f'    spot rows={len(df)} | pe={pct(\"pe\")} | pb={pct(\"pb\")} | market_cap_yi={pct(\"market_cap_yi\")}')
 " 2>/dev/null || true
   fi
+
+  # Inter-day rate limiting: pause before the next iteration to give push2 time to cool.
+  # Skip the pause if this was the last day.
+  if [[ "$DAY_INDEX" -lt "$LAST_INDEX" && "$INTER_DAY_DELAY" -gt 0 ]]; then
+    echo "    sleeping ${INTER_DAY_DELAY}s before next day…"
+    sleep "$INTER_DAY_DELAY"
+  fi
+  DAY_INDEX=$((DAY_INDEX + 1))
   echo
 done
 
