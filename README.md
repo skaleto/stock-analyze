@@ -8,6 +8,8 @@
 > 本地 agent 分析（无需 API key）的工作流见 [CLAUDE.md](CLAUDE.md) / [AGENTS.md](AGENTS.md) §5b。
 >
 > ⚠️ **systemd timer 二选一**：单 agent 用 `stock-analyze-{daily,weekly}.timer`；双 agent 竞赛 pipeline 用 `stock-analyze-market-data.timer`（Mon-Fri 17:25 拉数据 + 触发 daily agent）+ `stock-analyze-weekly-trigger.timer`（Sat 10:00 触发 weekly agent，复用周五 cache）+ `stock-analyze-monthly-review.timer`。agent service **不再有独立 timer**，全部走 pipeline + `--offline`。两套不要同时启用。
+>
+> 🏠 **家宽端数据回填**：因东方财富对云数据中心 IP 段做了反爬封禁，ECS 上 `push2.eastmoney.com` 不可达。需要 PE/PB/市值字段完整时，在家用宽带机器上跑 `./scripts/home-backfill.sh --month 2026-05` 把 cache 拉齐后 rsync 回 ECS。详见 [docs/home-backfill-runbook.md](docs/home-backfill-runbook.md)。
 
 ## 第一版目标
 
