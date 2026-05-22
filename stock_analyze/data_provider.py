@@ -75,15 +75,50 @@ class ExecutionQuote:
     reason: str = ""
 
 
+class CacheMiss(RuntimeError):
+    """Raised when an offline AkshareProvider call finds no cached entry.
+
+    Carries enough metadata for callers / RunLedger to identify which method
+    and which cache key failed without scraping the message text.
+    """
+
+    def __init__(self, method: str, cache_name: str) -> None:
+        super().__init__(f"cache_miss:{method}:{cache_name}")
+        self.method = method
+        self.cache_name = cache_name
+
+
 class AkshareProvider:
-    def __init__(self, cache_dir: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        cache_dir: str | Path | None = None,
+        *,
+        offline: bool = False,
+        as_of: str | None = None,
+    ) -> None:
         self.cache_dir = Path(cache_dir) if cache_dir else None
         if self.cache_dir:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.offline = bool(offline)
+        self.as_of = as_of
         self._spot: pd.DataFrame | None = None
         self._history_cache: dict[str, pd.DataFrame] = {}
         self.health: list[dict[str, Any]] = []
         self._baostock_logged_in = False
+
+    def _date_stamp(self, as_of: str | None = None) -> str:
+        """Return YYYYMMDD for cache filenames.
+
+        Resolution order: explicit ``as_of`` arg → ``self.as_of`` → today.
+        """
+
+        return ak_date(as_of or self.as_of)
+
+    def _raise_cache_miss(self, method: str, cache_name: str) -> None:
+        """In offline mode, surface a structured CacheMiss for the run ledger."""
+
+        self.record_health(method, "cache_miss", f"offline lookup failed for {cache_name}")
+        raise CacheMiss(method=method, cache_name=cache_name)
 
     def record_health(self, source: str, status: str, message: str = "", rows: int | None = None) -> None:
         self.health.append(
@@ -145,6 +180,15 @@ class AkshareProvider:
         if self._spot is not None:
             return self._spot.copy()
 
+        cache_name = f"spot_{self._date_stamp()}"
+        cached = self.load_cache(cache_name)
+        if not cached.empty:
+            self._spot = normalize_spot(cached)
+            return self._spot.copy()
+
+        if self.offline:
+            self._raise_cache_miss("spot", cache_name)
+
         sources: list[tuple[str, Callable[[], pd.DataFrame]]] = [
             ("spot_eastmoney", lambda: self.eastmoney_retry("spot_eastmoney", ak.stock_zh_a_spot_em)),
             ("spot_sina", ak.stock_zh_a_spot),
@@ -154,23 +198,25 @@ class AkshareProvider:
                 df = fetch() if name == "spot_eastmoney" else self.retry(name, fetch)
                 normalized = normalize_spot(df)
                 if not normalized.empty:
-                    self.save_cache("spot_latest", normalized)
+                    self.save_cache(cache_name, normalized)
                     self._spot = normalized
                     return normalized.copy()
             except Exception as exc:  # noqa: BLE001
                 self.record_health(name, "failed", str(exc))
-
-        cached = self.load_cache("spot_latest")
-        if not cached.empty:
-            self._spot = normalize_spot(cached)
-            return self._spot.copy()
 
         self.record_health("spot", "failed", "all realtime spot sources failed")
         return pd.DataFrame(columns=["code", "name", "latest_price", "pe", "pb", "market_cap_yi"])
 
     def index_constituents(self, scope: str) -> pd.DataFrame:
         index_code = INDEX_CODES.get(scope, scope)
-        cache_name = f"constituents_{index_code}"
+        cache_name = f"constituents_{index_code}_{self._date_stamp()}"
+        cached = self.load_cache(cache_name)
+        if not cached.empty:
+            return normalize_constituents(cached)
+
+        if self.offline:
+            self._raise_cache_miss("index_constituents", cache_name)
+
         sources = [
             ("index_cons_csindex", lambda: ak.index_stock_cons_csindex(symbol=index_code)),
             ("index_cons_weight_csindex", lambda: ak.index_stock_cons_weight_csindex(symbol=index_code)),
@@ -187,9 +233,6 @@ class AkshareProvider:
             except Exception as exc:  # noqa: BLE001
                 self.record_health(f"{name}_{index_code}", "failed", str(exc))
 
-        cached = self.load_cache(cache_name)
-        if not cached.empty:
-            return normalize_constituents(cached)
         return pd.DataFrame(columns=["code", "name"])
 
     def universe(self, scope: str) -> pd.DataFrame:
@@ -214,6 +257,14 @@ class AkshareProvider:
 
     def trading_calendar(self) -> list[str]:
         cache_name = "trading_calendar"
+        cached = self.load_cache(cache_name)
+        dates = normalize_trading_calendar(cached)
+        if dates:
+            return dates
+
+        if self.offline:
+            self._raise_cache_miss("trading_calendar", cache_name)
+
         try:
             df = self.retry("trading_calendar_sina", ak.tool_trade_date_hist_sina, delays=[0.5])
             dates = normalize_trading_calendar(df)
@@ -222,11 +273,6 @@ class AkshareProvider:
                 return dates
         except Exception as exc:  # noqa: BLE001
             self.record_health("trading_calendar_sina", "failed", str(exc))
-
-        cached = self.load_cache(cache_name)
-        dates = normalize_trading_calendar(cached)
-        if dates:
-            return dates
 
         return []
 
@@ -245,10 +291,14 @@ class AkshareProvider:
         return fallback
 
     def basic_info(self, code: str) -> dict[str, Any]:
-        cache_name = f"basic_{code}"
+        cache_name = f"basic_{code}_{self._date_stamp()}"
         cached = self.load_cache(cache_name)
         if not cached.empty:
             return cached.iloc[0].to_dict()
+
+        if self.offline:
+            self._raise_cache_miss("basic_info", cache_name)
+
         try:
             df = self.eastmoney_retry(
                 f"basic_{code}",
@@ -271,11 +321,14 @@ class AkshareProvider:
             return {}
 
     def valuation_metrics(self, code: str) -> dict[str, float | None]:
-        cache_name = f"valuation_{code}"
+        cache_name = f"valuation_{code}_{self._date_stamp()}"
         cached = self.load_cache(cache_name)
         if not cached.empty:
             row = cached.iloc[0]
             return {"pe": safe_float(row.get("pe")), "pb": safe_float(row.get("pb"))}
+
+        if self.offline:
+            self._raise_cache_miss("valuation_metrics", cache_name)
 
         result: dict[str, float | None] = {"pe": None, "pb": None}
         indicator_map = {"pe": "市盈率(TTM)", "pb": "市净率"}
@@ -298,10 +351,13 @@ class AkshareProvider:
         return result
 
     def financial_metrics(self, code: str) -> dict[str, Any]:
-        cache_name = f"financial_{code}"
+        cache_name = f"financial_{code}_{self._date_stamp()}"
         cached = self.load_cache(cache_name)
         if not cached.empty:
             return cached.iloc[0].to_dict()
+
+        if self.offline:
+            self._raise_cache_miss("financial_metrics", cache_name)
 
         try:
             indicators = self.fallback_retry(f"financial_abstract_{code}", lambda: ak.stock_financial_abstract(symbol=code))
@@ -336,6 +392,15 @@ class AkshareProvider:
             return self._history_cache[cache_key].copy()
 
         cache_name = f"history_{code}_{ak_date(as_of)}_{days}"
+        cached = self.load_cache(cache_name)
+        if not cached.empty:
+            normalized = normalize_history(cached)
+            self._history_cache[cache_key] = normalized
+            return normalized.copy()
+
+        if self.offline:
+            self._raise_cache_miss("price_history", cache_name)
+
         end_date = ak_date(as_of)
         start_date = previous_calendar_date(days, as_of)
         symbol = market_symbol(code)
@@ -372,8 +437,8 @@ class AkshareProvider:
             except Exception as exc:  # noqa: BLE001
                 self.record_health(name, "failed", str(exc))
 
-        cached = self.load_cache(cache_name)
-        normalized = normalize_history(cached)
+        # All network sources failed; return empty (memoize to avoid retry storm)
+        normalized = normalize_history(pd.DataFrame())
         self._history_cache[cache_key] = normalized
         return normalized.copy()
 
@@ -421,15 +486,20 @@ class AkshareProvider:
         """Return TTM dividend yield as a percent number (e.g. 2.5 == 2.5%).
 
         Tries AkShare `stock_a_indicator_lg` first; falls back to `None` if
-        the public endpoint is unavailable. Cached per code to keep weekly
-        runs fast.
+        the public endpoint is unavailable. Cached per code-and-date so two
+        runs on the same day share data but a stale day's snapshot doesn't
+        leak forward.
         """
 
-        cache_name = f"dividend_yield_{code}"
+        cache_name = f"dividend_yield_{code}_{self._date_stamp(as_of)}"
         cached = self.load_cache(cache_name)
         if not cached.empty:
             value = safe_float(cached.iloc[0].get("dividend_yield"))
             return value
+
+        if self.offline:
+            self._raise_cache_miss("dividend_yield", cache_name)
+
         try:
             df = self.fallback_retry(
                 f"dividend_yield_{code}",
@@ -508,6 +578,22 @@ class AkshareProvider:
         return quote.price, quote.trade_date
 
     def benchmark_close(self, benchmark_code: str, as_of: str | None = None) -> tuple[float | None, str | None]:
+        """Return (close, trade_date) for ``benchmark_code`` at ``as_of``.
+
+        Cached per benchmark-and-date so the two agents read identical bytes.
+        prepare-market-data writes one CSV per benchmark per day; agents in
+        ``offline`` mode never reach the network.
+        """
+
+        cache_name = f"benchmark_{benchmark_code}_{self._date_stamp(as_of)}"
+        cached = self.load_cache(cache_name)
+        if not cached.empty:
+            row = cached.iloc[0]
+            return safe_float(row.get("close")), str(row.get("trade_date"))
+
+        if self.offline:
+            self._raise_cache_miss("benchmark_close", cache_name)
+
         eastmoney_symbol = EASTMONEY_BENCHMARK_SYMBOLS.get(benchmark_code, f"sh{benchmark_code}")
         fallback_symbol = FALLBACK_BENCHMARK_SYMBOLS.get(benchmark_code, f"sh{benchmark_code}")
         sources = [
@@ -534,7 +620,11 @@ class AkshareProvider:
                 if normalized.empty:
                     continue
                 row = normalized.iloc[-1]
-                return safe_float(row.get("收盘")), str(row.get("日期"))
+                close = safe_float(row.get("收盘"))
+                trade_date = str(row.get("日期"))
+                if close is not None and trade_date:
+                    self.save_cache(cache_name, pd.DataFrame([{"benchmark_code": benchmark_code, "close": close, "trade_date": trade_date}]))
+                return close, trade_date
             except Exception as exc:  # noqa: BLE001
                 self.record_health(f"{name}_{benchmark_code}", "failed", str(exc))
         return None, None

@@ -7,6 +7,6 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/stock-analyze/app
 Environment=TZ=Asia/Shanghai
-ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --agent claude --logs-dir /opt/stock-analyze/logs run-daily
+ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --agent claude --logs-dir /opt/stock-analyze/logs run-daily --offline
 StandardOutput=append:/opt/stock-analyze/logs/claude-daily.log
 StandardError=append:/opt/stock-analyze/logs/claude-daily.err

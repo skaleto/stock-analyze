@@ -7,6 +7,6 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/stock-analyze/app
 Environment=TZ=Asia/Shanghai
-ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --agent codex --logs-dir /opt/stock-analyze/logs run-weekly
+ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --agent codex --logs-dir /opt/stock-analyze/logs run-weekly --offline
 StandardOutput=append:/opt/stock-analyze/logs/codex-weekly.log
 StandardError=append:/opt/stock-analyze/logs/codex-weekly.err

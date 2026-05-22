@@ -7,7 +7,7 @@
 > **双 agent 竞赛模式**：仓库支持让 Claude 与 Codex（或任意两个策略 overlay）共享起跑线、独立运行、月度对比；详见 [docs/competition-runbook.md](docs/competition-runbook.md)。
 > 本地 agent 分析（无需 API key）的工作流见 [CLAUDE.md](CLAUDE.md) / [AGENTS.md](AGENTS.md) §5b。
 >
-> ⚠️ **systemd timer 二选一**：单 agent 用 `stock-analyze-{daily,weekly}.timer`；双 agent 竞赛用 `stock-analyze-{claude,codex}-{daily,weekly}.timer` + `stock-analyze-monthly-review.timer`。两套不要同时启用。
+> ⚠️ **systemd timer 二选一**：单 agent 用 `stock-analyze-{daily,weekly}.timer`；双 agent 竞赛 pipeline 用 `stock-analyze-market-data.timer`（Mon-Fri 17:25 拉数据 + 触发 daily agent）+ `stock-analyze-weekly-trigger.timer`（Sat 10:00 触发 weekly agent，复用周五 cache）+ `stock-analyze-monthly-review.timer`。agent service **不再有独立 timer**，全部走 pipeline + `--offline`。两套不要同时启用。
 
 ## 第一版目标
 

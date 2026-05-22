@@ -27,8 +27,10 @@
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │ ECS (Linux + systemd)                                        │
-│  · 每个交易日跑 run-daily（模拟成交、NAV、刷 dashboard）     │
-│  · 每周五跑 run-weekly（生成信号 + 待执行订单 + 周 briefing）│
+│  · Mon-Fri 17:25 prepare-market-data（共享数据拉取）         │
+│      → ExecStartPost 触发两 agent daily 并行（--offline）    │
+│  · Sat 10:00 weekly-trigger（复用周五 cache）                │
+│      → ExecStartPost 触发两 agent weekly 并行（--offline）   │
 │  · 每月 1 号跑 monthly-review + referee/apply + dashboard    │
 │  · 不调 LLM API；只产数据 + 输出"待 agent 看的任务包"        │
 └──────────────────────────────────────────────────────────────┘
@@ -37,7 +39,7 @@
                             ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ 本地开发机                                                    │
-│  · 周五晚：sync → 在 Claude Code 跑 /weekly-review claude    │
+│  · 周六上午：sync → 在 Claude Code 跑 /weekly-review claude  │
 │             同时在 Codex CLI 让 codex 跑 weekly review       │
 │             → agent 写笔记到 data/<agent>/notes/             │
 │             → scripts/sync-to-ecs.sh 推回并刷新 dashboard    │
@@ -128,14 +130,25 @@ reports/                    # 渲染产物（gitignored）
 ### 4a. 每日（周一到周五）
 
 ```
-T 日 17:30 (ECS systemd timer)
-  ┌─ stock-analyze-claude-daily.service
-  │    python3 -m stock_analyze --agent claude run-daily
+T 日 17:25 (ECS systemd timer)
+  ┌─ stock-analyze-market-data.service  ← 唯一允许打外网的进程
+  │    python3 -m stock_analyze prepare-market-data
+  │    └─ trading_calendar / spot / index_constituents / preselect
+  │       └─ ThreadPoolExecutor(5) 并发拉每只候选的 5 个接口
+  │       benchmark_close(000300) + benchmark_close(000905)
+  │       写 data/shared/cache/*.csv + market_snapshot_<date>.json
+  │    ExecStartPost (ExecStart 成功后)：
+  │       └─ systemctl start --no-block stock-analyze-claude-daily.service
+  │       └─ systemctl start --no-block stock-analyze-codex-daily.service
+  │
+  ├─ ~17:35 stock-analyze-claude-daily.service (--offline)
   │    └─ execute_due_orders → 把 T-1 的待执行单按 T 日开盘价模拟成交
   │       update_nav         → 按 T 日收盘价更新净值
   │       compute_pending_forward_ic → 补算 5 日前向 RankIC
   │       generate_dashboard → 刷 reports/claude/dashboard.html
-  └─ 17:35 codex 同理（错峰）
+  │       (任何 cache miss → raise CacheMiss → service failed)
+  └─ ~17:35 stock-analyze-codex-daily.service (--offline)
+       └─ 同上，读同一份 cache，两 agent 看到字节级相同的原始数据
 ```
 
 执行规则保守：
@@ -145,27 +158,32 @@ T 日 17:30 (ECS systemd timer)
 - 现金不足或可卖股不足 → 部分成交 + 残单保留。
 - 无可见行情 → 不成交。
 
-### 4b. 每周五（信号日）
+### 4b. 每周六（信号日，复用周五 cache）
 
 ```
-T 日 17:40 ECS
-  ┌─ stock-analyze-claude-weekly.service
-  │    run-weekly
+Sat 10:00 CST (ECS systemd timer)
+  ┌─ stock-analyze-weekly-trigger.service  ← /bin/true，不再次拉数据
+  │    ExecStartPost：
+  │       └─ systemctl start --no-block stock-analyze-claude-weekly.service
+  │       └─ systemctl start --no-block stock-analyze-codex-weekly.service
+  │
+  ├─ stock-analyze-claude-weekly.service (--offline，读周五 cache)
+  │    run-weekly --offline
   │    └─ generate_rebalance_orders
-  │         · 拉股票池（hs300 + zz500 共 ~800 只）
+  │         · 从 cache 取股票池（hs300 + zz500 共 ~800 只）
   │         · 跑因子流水线（winsorize → z-score → 行业中性化 → 归一化加权）
   │         · 应用组合控制（行业上限 / 持仓缓冲 / max_holding_days）
   │         · 选前 50 名 × 2 账户 = 100 只目标持仓
-  │         · 对照当前持仓 diff 出买卖订单 → 写 pending_orders.json
+  │         · 对照当前持仓 diff 出买卖订单 → 写 pending_orders.json (execute_on=下周一)
   │       update_nav
   │       compute_pending_forward_ic
   │       generate_weekly_report → reports/claude/weekly_report.md
   │       generate_dashboard
-  │       build_weekly_briefing → data/claude/notes/briefings/<date>-weekly.md  ← agent 待办
-  └─ 17:45 codex 同理
+  │       build_weekly_briefing → data/claude/notes/briefings/<sat-date>-weekly.md  ← agent 待办
+  └─ stock-analyze-codex-weekly.service (--offline) 同理
 ```
 
-下个交易日（T+1）开盘价被用作模拟成交价。
+下周一 daily 跑时，execute_due_orders 把周六生成的订单按周一开盘价成交。
 
 ### 4c. 每月 1 号
 
@@ -194,7 +212,7 @@ T 日 17:40 ECS
 ### 4d. 本地分析闭环（你 + agent CLI）
 
 ```
-周五晚 / 月初
+周六上午 / 月初
   ./scripts/sync-from-ecs.sh --exclude-cache
     └─ 拉 data/、configs/、reports/ 到本地
 
@@ -248,7 +266,7 @@ ECS:
 
 ---
 
-## 6. 因子流水线（每周五跑一次）
+## 6. 因子流水线（每周六跑一次）
 
 ```
 原始候选池
@@ -438,9 +456,9 @@ CSS `:target` 切 tab，纯静态，无 JS 框架。
 
 | 频率 | 谁触发 | 命令 / 动作 |
 | --- | --- | --- |
-| 每个交易日 17:30 / 17:35 | ECS systemd | `--agent claude/codex run-daily` |
-| 每周五 17:40 / 17:45 | ECS systemd | `--agent claude/codex run-weekly`（自带 briefing） |
-| 周五晚 / 周末 | 你 + agent CLI | sync-from-ecs → `/weekly-review claude` + `do weekly review for codex` → sync-to-ecs |
+| Mon-Fri 17:25 | ECS systemd | `prepare-market-data`（pipeline）→ ExecStartPost 触发两 agent `run-daily --offline` 并行 |
+| Sat 10:00 | ECS systemd | `weekly-trigger`（占位）→ ExecStartPost 触发两 agent `run-weekly --offline` 并行（读周五 cache，自带 briefing） |
+| 周六上午 / 周末 | 你 + agent CLI | sync-from-ecs → `/weekly-review claude` + `do weekly review for codex` → sync-to-ecs |
 | 每月 1 号 09:00 CST | ECS systemd | `competition-monthly-review` + `agent-judge-proposals` + `agent-apply-approved-proposals` + `competition-dashboard` |
 | 每月 1-2 号 | 你 + agent CLI + ECS | sync-from-ecs → `/monthly-strategy claude` + `do monthly strategy for codex` → sync-to-ecs 自动裁判/应用 |
 | 季度 | 你 | 翻 leaderboard 与 monthly reviews，决定是否调整 baseline 或新增 OpenSpec change |

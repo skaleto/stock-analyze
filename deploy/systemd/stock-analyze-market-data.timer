@@ -1,0 +1,12 @@
+[Unit]
+Description=Mon-Fri 17:25 Asia/Shanghai market-data fetch + agent dispatch
+# 09:25 UTC == 17:25 Asia/Shanghai (no DST)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09:25:00 UTC
+Persistent=false
+AccuracySec=30s
+Unit=stock-analyze-market-data.service
+
+[Install]
+WantedBy=timers.target

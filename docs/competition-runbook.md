@@ -157,39 +157,77 @@ ssh -L 8765:127.0.0.1:8765 user@your-server
 
 ## systemd 部署
 
-> ⚠️ **二选一**：仓库同时包含两套 systemd 单元——单 agent 老路径（`stock-analyze-{daily,weekly}.{service,timer}`，从 `configs/strategy_v1.yaml` 跑）和双 agent 竞赛新路径（`stock-analyze-{claude,codex}-{daily,weekly}.{service,timer}` + `monthly-review.{service,timer}`）。**只 enable 一套**。同时启用会重复拉行情、写两份不相关的 NAV，但不会 corruption。
+> ⚠️ **二选一**：仓库同时包含两套 systemd 单元——单 agent 老路径（`stock-analyze-{daily,weekly}.{service,timer}`，从 `configs/strategy_v1.yaml` 跑）和**双 agent 竞赛 pipeline 路径**（`stock-analyze-market-data.{service,timer}` + `stock-analyze-weekly-trigger.{service,timer}` + 4 个 agent service + `monthly-review.{service,timer}` + `dashboard.service`）。**只 enable 一套**。同时启用会重复拉行情、写两份不相关的 NAV，但不会 corruption。
+
+### 双 agent pipeline 模式（推荐）
+
+一条 pipeline timer 每天 17:25 拉一次共享数据，然后并行触发两 agent；周六单独一条 timer 触发 weekly。两个 agent **永远 `--offline`**——任何 cache miss 即 fail-fast，不偷打网络。
 
 模板放在 `deploy/systemd/`：
 
-- `stock-analyze-claude-daily.{service,timer}`（周一到周五 17:30）
-- `stock-analyze-claude-weekly.{service,timer}`（周五 17:40）
-- `stock-analyze-codex-daily.{service,timer}`（周一到周五 17:35，错峰 5 分钟）
-- `stock-analyze-codex-weekly.{service,timer}`（周五 17:45）
+- `stock-analyze-market-data.{service,timer}`（Mon-Fri 17:25 CST = `Mon..Fri *-*-* 09:25:00 UTC`）
+  - ExecStart 跑 `prepare-market-data`，写 `data/shared/cache/*.csv` + `data/shared/market_snapshot_<date>.json`
+  - ExecStartPost 通过 `systemctl start --no-block` 拉起两个 daily agent service
+  - ExecStart 失败时 ExecStartPost **不执行**，agent 不会跑出脏数据
+- `stock-analyze-weekly-trigger.{service,timer}`（Sat 10:00 CST = `Sat *-*-* 02:00:00 UTC`）
+  - ExecStart=/bin/true（占位，**不再次拉数据**）
+  - ExecStartPost 拉起两个 weekly agent service，它们读周五 17:25 写入的 cache
+- `stock-analyze-{claude,codex}-{daily,weekly}.service`（**没有对应的 timer**，只能被上面两个 trigger 拉起）
+  - `ExecStart` 末尾带 `--offline`
+- `stock-analyze-monthly-review.{service,timer}`（每月 1 号 09:00，与本变更独立）
+- `stock-analyze-dashboard.service`（常驻 127.0.0.1:8765）
 
-> 选择 17:30+ 而非更早，是为了让公开数据源（东方财富 / 腾讯 / 新浪）有足够时间在 A 股 15:00 收盘后刷新当天的日 K 与基准指数收盘价。早于 17:00 可能踩到部分源未刷新的窗口，导致两侧 agent 拿到不同的"原始数据"。
-- `stock-analyze-monthly-review.{service,timer}`（每月 1 号 09:00）
-- `stock-analyze-dashboard.service`（常驻 127.0.0.1:8765，指向 `reports/competition`）
-
-安装（**双 agent 模式**）：
+安装：
 
 ```bash
 sudo cp deploy/systemd/stock-analyze-*.service /etc/systemd/system/
 sudo cp deploy/systemd/stock-analyze-*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 
-# 若之前启用过单 agent 老 timer，先停掉避免冲突
+# 1) 若之前启用过单 agent 老 timer，先停掉避免冲突
 sudo systemctl disable --now stock-analyze-daily.timer 2>/dev/null || true
 sudo systemctl disable --now stock-analyze-weekly.timer 2>/dev/null || true
 
+# 2) 若之前启用过老版 per-agent timer（已被本变更替换），全部停掉并清理
+for unit in stock-analyze-claude-daily.timer stock-analyze-claude-weekly.timer \
+            stock-analyze-codex-daily.timer  stock-analyze-codex-weekly.timer; do
+  sudo systemctl disable --now "$unit" 2>/dev/null || true
+  sudo rm -f "/etc/systemd/system/$unit"
+done
+sudo systemctl daemon-reload
+
+# 3) 启用新 pipeline timer + dashboard + monthly-review
 sudo systemctl enable --now stock-analyze-dashboard.service
-sudo systemctl enable --now stock-analyze-claude-daily.timer
-sudo systemctl enable --now stock-analyze-claude-weekly.timer
-sudo systemctl enable --now stock-analyze-codex-daily.timer
-sudo systemctl enable --now stock-analyze-codex-weekly.timer
+sudo systemctl enable --now stock-analyze-market-data.timer
+sudo systemctl enable --now stock-analyze-weekly-trigger.timer
 sudo systemctl enable --now stock-analyze-monthly-review.timer
+
+# 4) 验证 timer 列表只显示 market-data + weekly-trigger + monthly-review
+systemctl list-timers stock-analyze-*
 ```
 
 模板里假设代码部署到 `/opt/stock-analyze/app/`，虚拟环境在 `/opt/stock-analyze/venv/`，日志写到 `/opt/stock-analyze/logs/`。按需调整。
+
+### 一周节拍
+
+```
+周一 17:25  market-data.service  → ExecStartPost → claude-daily + codex-daily 并行
+周二 17:25  同上
+周三 17:25  同上
+周四 17:25  同上
+周五 17:25  同上（仍是 daily，不再混合 weekly）
+周六 10:00  weekly-trigger.service → ExecStartPost → claude-weekly + codex-weekly 并行（读周五 cache）
+周日       无任务
+```
+
+### 故障路径速查
+
+| 现象 | 原因 | 处置 |
+| --- | --- | --- |
+| `data/shared/runs.csv` 当天 status=failed | prepare-market-data 内部 fatal（spot 全失败 / 全部 benchmark 失败） | `journalctl -u stock-analyze-market-data.service`；修复后 `systemctl start stock-analyze-market-data.service` 手动重跑，ExecStartPost 会接力 |
+| `data/claude/runs.csv` 当天 status=failed 且 error_summary 含 `cache_miss:` | prepare-market-data 没把该方法的 cache 写出来（partial 失败 / 接口超时） | 先看 market_snapshot.json 的 errors 段；缺哪个方法补哪个方法，要么 `--force` 重跑 prepare 要么改 overlay filter 把该股剔除 |
+| 周六 weekly 全挂 CacheMiss | 周五 prepare-market-data 失败且未补 | `prepare-market-data --as-of <周五> --force`；再 `systemctl start stock-analyze-{claude,codex}-weekly.service` |
+| `systemctl list-timers` 出现 `stock-analyze-{claude,codex}-{daily,weekly}.timer` | 老 timer 没清干净 | 重跑安装脚本第 2 步 |
 
 ### `configs/agents/_history/` 是什么
 

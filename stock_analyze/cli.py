@@ -49,8 +49,34 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("update-nav", help="Update account NAV")
     sub.add_parser("report", help="Generate weekly report")
     sub.add_parser("dashboard", help="Generate dashboard HTML (page mode)")
-    sub.add_parser("run-daily", help="Execute due orders, update NAV, refresh dashboard")
-    sub.add_parser("run-weekly", help="Generate signals, update NAV, report, and dashboard")
+    prepare = sub.add_parser(
+        "prepare-market-data",
+        help="Fetch shared market data once for the day; both agents subsequently run --offline",
+    )
+    prepare.add_argument("--scopes", nargs="*", help="Index scopes to fetch (default: union of baseline accounts)")
+    prepare.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-fetch even if today's snapshot already exists",
+    )
+    prepare.add_argument(
+        "--max-workers",
+        type=int,
+        default=5,
+        help="ThreadPoolExecutor size for per-candidate fetch (default: 5)",
+    )
+    daily = sub.add_parser("run-daily", help="Execute due orders, update NAV, refresh dashboard")
+    daily.add_argument(
+        "--offline",
+        action="store_true",
+        help="Forbid the provider from reaching the network — cache miss raises CacheMiss and fails the run.",
+    )
+    weekly = sub.add_parser("run-weekly", help="Generate signals, update NAV, report, and dashboard")
+    weekly.add_argument(
+        "--offline",
+        action="store_true",
+        help="Forbid the provider from reaching the network — cache miss raises CacheMiss and fails the run.",
+    )
     sub.add_parser("competition-init", help="Initialize all competition agents and shared directories")
     review = sub.add_parser("competition-monthly-review", help="Compute and persist the monthly comparison review")
     review.add_argument("--month", help="Target month in YYYY-MM (default: previous calendar month)")
@@ -147,6 +173,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "agent-rollback":
         ensure_dirs(args.logs_dir)
         return _command_agent_rollback(args)
+    if args.command == "prepare-market-data":
+        ensure_dirs(args.logs_dir)
+        return _command_prepare_market_data(args)
 
     try:
         config, data_dir, reports_dir, cache_dir = _resolve_runtime(args)
@@ -156,7 +185,8 @@ def main(argv: list[str] | None = None) -> int:
     ensure_dirs(data_dir, reports_dir, args.logs_dir)
 
     store = PortfolioStore(data_dir)
-    provider = AkshareProvider(cache_dir=cache_dir)
+    offline = bool(getattr(args, "offline", False))
+    provider = AkshareProvider(cache_dir=cache_dir, offline=offline, as_of=args.as_of)
     ledger = RunLedger(data_dir)
     migration_notes = (config or {}).get("_migration_notes") or []
     if migration_notes:
@@ -364,6 +394,30 @@ def _command_agent_rollback(args: argparse.Namespace) -> int:
         f"from={result.get('from_hash', '-')} to={result.get('to_hash', '-')}"
     )
     return 0
+
+
+def _command_prepare_market_data(args: argparse.Namespace) -> int:
+    from .market_data import prepare_market_data_via_ledger
+
+    try:
+        snapshot = prepare_market_data_via_ledger(
+            scopes=args.scopes,
+            as_of=args.as_of,
+            repo_root=Path.cwd(),
+            force=args.force,
+            max_workers=args.max_workers,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: prepare-market-data failed: {exc}", file=sys.stderr)
+        return 2
+    print(
+        "Prepare market-data: "
+        f"as_of={snapshot.get('as_of')} status={snapshot.get('status')} "
+        f"candidates={snapshot.get('candidates_fetched')} "
+        f"errors={len(snapshot.get('errors') or [])} "
+        f"duration_ms={snapshot.get('duration_ms')}"
+    )
+    return 0 if snapshot.get("status") != "failed" else 2
 
 
 def _auto_write_weekly_briefing(agent_id: str | None, as_of: str | None) -> str | None:

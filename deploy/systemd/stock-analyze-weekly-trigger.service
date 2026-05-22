@@ -1,0 +1,16 @@
+[Unit]
+Description=Stock Analyze weekly trigger (Sat 10:00 CST, uses Friday's shared cache)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+# This service intentionally does NOT fetch market data — weekly agents read
+# data/shared/cache/ written by Friday's stock-analyze-market-data.service.
+ExecStart=/bin/true
+ExecStartPost=/bin/systemctl start --no-block stock-analyze-claude-weekly.service
+ExecStartPost=/bin/systemctl start --no-block stock-analyze-codex-weekly.service
+StandardOutput=append:/opt/stock-analyze/logs/weekly-trigger.log
+StandardError=append:/opt/stock-analyze/logs/weekly-trigger.err

@@ -1,0 +1,17 @@
+[Unit]
+Description=Stock Analyze shared market-data fetch (writes data/shared/cache/ once per weekday)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --logs-dir /opt/stock-analyze/logs prepare-market-data
+# When ExecStart succeeds, fire both daily agent services in parallel via --no-block.
+# If ExecStart fails (e.g. spot empty), ExecStartPost is skipped and agents do NOT run —
+# this prevents agents from running on stale or absent cache.
+ExecStartPost=/bin/systemctl start --no-block stock-analyze-claude-daily.service
+ExecStartPost=/bin/systemctl start --no-block stock-analyze-codex-daily.service
+StandardOutput=append:/opt/stock-analyze/logs/market-data.log
+StandardError=append:/opt/stock-analyze/logs/market-data.err
