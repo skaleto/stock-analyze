@@ -104,6 +104,31 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_offline_as_of(cache_dir: Path) -> str | None:
+    """Find the latest ``spot_<YYYYMMDD>.csv`` in ``cache_dir`` and return its date.
+
+    Returns YYYY-MM-DD or None if no cache yet. Mirrors
+    ``AkshareProvider._resolve_default_date`` but produces an ISO date the
+    rest of the simulator wants (NAV ``date`` column, ``next_trading_day``).
+    """
+
+    cache_path = Path(cache_dir)
+    if not cache_path.exists():
+        return None
+    today = date.today().strftime("%Y%m%d")
+    latest: str | None = None
+    for path in cache_path.glob("spot_*.csv"):
+        stem = path.stem  # spot_20260529
+        parts = stem.split("_")
+        if len(parts) != 2 or not parts[1].isdigit() or len(parts[1]) != 8:
+            continue
+        if parts[1] <= today and (latest is None or parts[1] > latest):
+            latest = parts[1]
+    if not latest:
+        return None
+    return f"{latest[:4]}-{latest[4:6]}-{latest[6:]}"
+
+
 def _resolve_runtime(args: argparse.Namespace) -> tuple[dict | None, str, str, Path]:
     """Return (config, data_dir, reports_dir, cache_dir).
 
@@ -186,6 +211,10 @@ def main(argv: list[str] | None = None) -> int:
 
     store = PortfolioStore(data_dir)
     offline = bool(getattr(args, "offline", False))
+    # When offline and no explicit --as-of, resolve to the latest cache date
+    # so Saturday weekly runs (no daily that day) naturally pick Friday's snapshot.
+    if offline and not args.as_of:
+        args.as_of = _resolve_offline_as_of(cache_dir)
     provider = AkshareProvider(cache_dir=cache_dir, offline=offline, as_of=args.as_of)
     ledger = RunLedger(data_dir)
     migration_notes = (config or {}).get("_migration_notes") or []

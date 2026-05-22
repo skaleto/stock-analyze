@@ -100,6 +100,45 @@ class CacheMissBehaviorTests(unittest.TestCase):
         self.assertFalse([h for h in provider.health if h.get("source", "").startswith("spot_eastmoney")])
 
 
+class WeekendCacheResolutionTests(unittest.TestCase):
+    def test_offline_provider_auto_resolves_to_latest_cache_date(self) -> None:
+        """Saturday agent runs (no as_of given) read Friday's cache files."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            # Use past dates so the "must be <= today" filter accepts them.
+            # Simulate prepare-market-data writing Friday's snapshot, then a
+            # Saturday agent run picking it up automatically.
+            pd.DataFrame([{"code": "600519", "name": "T", "latest_price": 100.0, "pe": 10, "pb": 1, "market_cap_yi": 100}]).to_csv(cache / "spot_20260515.csv", index=False, encoding="utf-8-sig")
+            pd.DataFrame([{"benchmark_code": "000300", "close": 3850.0, "trade_date": "2026-05-15"}]).to_csv(cache / "benchmark_000300_20260515.csv", index=False, encoding="utf-8-sig")
+
+            provider = AkshareProvider(cache_dir=cache, offline=True, as_of=None)
+            self.assertEqual(provider._date_stamp(), "20260515")
+
+            close, trade_date = provider.benchmark_close("000300")
+            self.assertEqual(close, 3850.0)
+            self.assertEqual(trade_date, "2026-05-15")
+
+    def test_explicit_as_of_overrides_auto_detect(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            pd.DataFrame([{"code": "600519"}]).to_csv(cache / "spot_20260515.csv", index=False, encoding="utf-8-sig")
+
+            provider = AkshareProvider(cache_dir=cache, offline=True, as_of="2026-05-10")
+            self.assertEqual(provider._date_stamp(), "20260510")
+
+    def test_auto_detect_skips_future_dates(self) -> None:
+        """Past cache files should be picked over future-dated ones."""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            pd.DataFrame([{"code": "600519"}]).to_csv(cache / "spot_20260515.csv", index=False, encoding="utf-8-sig")
+            pd.DataFrame([{"code": "600519"}]).to_csv(cache / "spot_20300101.csv", index=False, encoding="utf-8-sig")
+
+            provider = AkshareProvider(cache_dir=cache, offline=True, as_of=None)
+            self.assertEqual(provider._date_stamp(), "20260515")
+
+
 class MergedFiltersTests(unittest.TestCase):
     def test_takes_max_max_fetch_and_min_other(self) -> None:
         agents = [

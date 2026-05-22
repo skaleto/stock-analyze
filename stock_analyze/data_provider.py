@@ -109,10 +109,43 @@ class AkshareProvider:
     def _date_stamp(self, as_of: str | None = None) -> str:
         """Return YYYYMMDD for cache filenames.
 
-        Resolution order: explicit ``as_of`` arg → ``self.as_of`` → today.
+        Resolution order:
+        1. Explicit ``as_of`` arg (typed-through from caller)
+        2. ``self.as_of`` set at construction time
+        3. Auto-detect: the most recent ``spot_<YYYYMMDD>.csv`` in
+           ``cache_dir`` whose date is ``<= today``.
+           (This lets Saturday agent runs naturally read Friday's cache
+           without ECS having to compute Friday's date in shell.)
+        4. Today's date as a last resort.
+
+        Auto-detect runs at most once per provider lifetime (memoized to
+        ``self._resolved_default_date``).
         """
 
-        return ak_date(as_of or self.as_of)
+        explicit = as_of or self.as_of
+        if explicit:
+            return ak_date(explicit)
+        resolved = getattr(self, "_resolved_default_date", None)
+        if resolved is None:
+            resolved = self._resolve_default_date()
+            self._resolved_default_date = resolved
+        return resolved
+
+    def _resolve_default_date(self) -> str:
+        """Scan ``cache_dir`` for the newest ``spot_<YYYYMMDD>.csv`` <= today."""
+
+        today_stamp = ak_date()
+        if not self.cache_dir or not self.cache_dir.exists():
+            return today_stamp
+        candidates: list[str] = []
+        for path in self.cache_dir.glob("spot_*.csv"):
+            stem = path.stem  # spot_20260529
+            parts = stem.split("_")
+            if len(parts) != 2 or not parts[1].isdigit() or len(parts[1]) != 8:
+                continue
+            if parts[1] <= today_stamp:
+                candidates.append(parts[1])
+        return max(candidates) if candidates else today_stamp
 
     def _raise_cache_miss(self, method: str, cache_name: str) -> None:
         """In offline mode, surface a structured CacheMiss for the run ledger."""
@@ -387,11 +420,14 @@ class AkshareProvider:
             return {"fetch_error": str(exc)}
 
     def price_history(self, code: str, as_of: str | None = None, days: int = 180) -> pd.DataFrame:
-        cache_key = f"{code}:{as_of}:{days}"
+        # Use the resolved date stamp for both memory and disk cache keys so
+        # Saturday agent runs (as_of=None) hit Friday's cache uniformly.
+        stamp = self._date_stamp(as_of)
+        cache_key = f"{code}:{stamp}:{days}"
         if cache_key in self._history_cache:
             return self._history_cache[cache_key].copy()
 
-        cache_name = f"history_{code}_{ak_date(as_of)}_{days}"
+        cache_name = f"history_{code}_{stamp}_{days}"
         cached = self.load_cache(cache_name)
         if not cached.empty:
             normalized = normalize_history(cached)
@@ -401,8 +437,10 @@ class AkshareProvider:
         if self.offline:
             self._raise_cache_miss("price_history", cache_name)
 
-        end_date = ak_date(as_of)
-        start_date = previous_calendar_date(days, as_of)
+        # Use the resolved stamp for network query bounds so prepare-market-data
+        # and the agent both look at the same date window.
+        end_date = stamp
+        start_date = previous_calendar_date(days, as_of or self.as_of)
         symbol = market_symbol(code)
         sources = [
             (
