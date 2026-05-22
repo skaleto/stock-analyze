@@ -3,6 +3,9 @@ outputs/
 .claude/worktrees/
 .claude/cache/
 .claude/agents-cache/
+# Local-only secrets: eastmoney/akshare cookies, API tokens, etc.
+# Never commit. Read by deploy scripts via $EASTMONEY_COOKIE etc.
+token/
 __pycache__/
 *.pyc
 .venv/
