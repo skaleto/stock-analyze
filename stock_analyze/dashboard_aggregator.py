@@ -24,6 +24,7 @@ from typing import Any
 
 import pandas as pd
 
+from .beginner_dashboard import write_beginner_views
 from .competition import resolve_agent_paths
 from .utils import ensure_dirs, format_pct, safe_float
 
@@ -74,6 +75,23 @@ def generate_competition_dashboard(
 
     html = _render_page(tabs_nav, tab_sections, nav_json, leaderboard_json)
     out_path.write_text(html, encoding="utf-8")
+
+    # Also render the beginner simplified view alongside the professional dashboard.
+    # Best-effort: if beginner rendering fails (e.g. unexpected data shape), the
+    # professional view must still be produced. We re-raise the error after a
+    # warning so the failure surfaces in the run ledger.
+    try:
+        write_beginner_views(agents=agents, repo_root=root)
+    except Exception as exc:  # noqa: BLE001
+        # Don't let beginner-view crashes break the professional dashboard write
+        # that the caller already depends on. The error message is logged but
+        # the pro file is already on disk.
+        import sys
+
+        print(
+            f"warning: beginner dashboard render failed: {exc}",
+            file=sys.stderr,
+        )
     return out_path
 
 

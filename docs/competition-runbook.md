@@ -159,20 +159,34 @@ python3 -m stock_analyze agent-rollback --agent codex --to <config_hash>
 python3 -m stock_analyze competition-dashboard
 ```
 
-输出 `reports/competition/dashboard.html`，三 tab：
+一次产出两份视图(同一份 `data/*`,不同渲染层):
 
-- `Claude` — 嵌入 `reports/claude/dashboard_fragment.html`
-- `Codex`  — 嵌入 `reports/codex/dashboard_fragment.html`
-- `对比`   — 4 张顶部卡片、双线 NAV 曲线、9 行关键指标横向对比表、最近一期持仓重叠条、滚动战绩条、月度报告链接
+| 文件 | 视图 | 说明 |
+|---|---|---|
+| `reports/competition/dashboard.html` | 专业版,三 tab | `Claude` / `Codex` / `对比`,完整因子覆盖率 / 前向 IC / 运行账本 |
+| `reports/competition/simple.html`    | 新手简化版    | 总资产 / 双 AI 成绩 / 净值曲线 / 持仓 Top10 / 持仓重叠 / 最近 5 笔成交 / 本月策略调整摘要 |
+| `reports/competition/simple/claude.html` | Claude 单 agent 简化版 |   |
+| `reports/competition/simple/codex.html`  | Codex 单 agent 简化版  |   |
 
-本地查看：
+`serve-dashboard` 路由:
 
-```bash
-python3 -m stock_analyze --reports-dir reports/competition serve-dashboard --host 127.0.0.1 --port 8765
-# 然后浏览器打开 http://127.0.0.1:8765/dashboard.html
+```
+GET /                    → reports/competition/simple.html   (默认新手)
+GET /pro.html            → reports/competition/dashboard.html (专业版别名)
+GET /simple/claude.html  → reports/competition/simple/claude.html
+GET /simple/codex.html   → reports/competition/simple/codex.html
+GET /competition/dashboard.html   (向后兼容,不变)
 ```
 
-服务器场景建议通过 SSH 隧道：
+本地查看(默认新手视图):
+
+```bash
+python3 -m stock_analyze serve-dashboard --host 127.0.0.1 --port 8765
+# 浏览器打开 http://127.0.0.1:8765/         → 新手简化版
+# 浏览器打开 http://127.0.0.1:8765/pro.html → 专业版(原 dashboard.html)
+```
+
+服务器场景建议通过 SSH 隧道:
 
 ```bash
 ssh -L 8765:127.0.0.1:8765 user@your-server

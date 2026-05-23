@@ -367,41 +367,82 @@ Dashboard 渲染最近 12 周的 forward IC 折线，让你一眼看出哪些因
 
 ---
 
-## 11. Dashboard 三 tab
+## 11. Dashboard 三 tab + 简化版
 
-入口：`reports/competition/dashboard.html`（ECS 上由 systemd 持续服务 127.0.0.1:8765；本地通过 SSH 隧道访问）。
+竞赛 dashboard 一次 `competition-dashboard` 同时产出**专业版**和**简化版**两份 HTML,共享 `data/*` 输入,渲染层不同:
+
+```
+reports/competition/
+├── dashboard.html        ← 专业版 (3 tab,~270 KB)
+├── simple.html           ← 新手简化版 (~12 KB)
+└── simple/
+    ├── claude.html       ← Claude 单 agent 简化版
+    └── codex.html        ← Codex 单 agent 简化版
+```
+
+`serve-dashboard` HTTP 路由别名:
+
+```
+GET /                          → reports/competition/simple.html  (默认新手)
+GET /simple.html               → reports/competition/simple.html
+GET /simple/claude.html        → reports/competition/simple/claude.html
+GET /simple/codex.html         → reports/competition/simple/codex.html
+GET /pro.html                  → reports/competition/dashboard.html  (别名)
+GET /competition/dashboard.html → reports/competition/dashboard.html  (向后兼容)
+GET /claude/dashboard.html     → reports/claude/dashboard.html       (单 agent fragment 页)
+```
+
+### 专业版 (`dashboard.html`,3 tab)
 
 ```
 ┌─[ Claude ]─[ Codex ]─[ 对比 ]──────────────────────────┐
 │                                                       │
-│ Claude tab（嵌入 reports/claude/dashboard_fragment.html）│
-│  · 4 张账户卡片（最新资产）                            │
+│ Claude tab(嵌入 reports/claude/dashboard_fragment.html)│
+│  · 4 张账户卡片(最新资产)                              │
 │  · 净值曲线                                            │
-│  · 绩效解释 4×3 卡片矩阵（年化/Sharpe/IR/成本…）       │
+│  · 绩效解释 4×3 卡片矩阵(年化/Sharpe/IR/成本…)         │
 │  · 本期选股信号                                        │
 │  · 因子贡献均值                                        │
 │  · 待执行订单                                          │
 │  · 候选股价格走势                                      │
-│  · 因子诊断（覆盖率热力图 + 前向 IC 折线）             │
+│  · 因子诊断(覆盖率热力图 + 前向 IC 折线)               │
 │  · 当前持仓 / 近期交易 / 数据源 / 最近运行             │
-│  · 近期 agent 笔记（最近 5 篇 markdown 折叠）          │
-│  · 策略演进时间线（每月 proposal + 当月与次月实际收益）│
-│  · 本期分析任务包（最新 weekly + monthly briefing）   │
+│  · 近期 agent 笔记(最近 5 篇 markdown 折叠)            │
+│  · 策略演进时间线(每月 proposal + 当月与次月实际收益)  │
+│  · 本期分析任务包(最新 weekly + monthly briefing)      │
 │                                                       │
 │ Codex tab 同结构                                       │
 │                                                       │
-│ 对比 tab                                              │
-│  · 4 张卡片（双方累计 / 累计差 / 最近一月胜方）        │
+│ 对比 tab                                               │
+│  · 4 张卡片(双方累计 / 累计差 / 最近一月胜方)          │
 │  · 累计净值双线                                        │
-│  · 9 行横向指标对比表                                 │
-│  · 持仓重叠条（独占 / 共有 / 独占 三段宽度）           │
-│  · 滚动战绩（按月色块）                                │
+│  · 9 行横向指标对比表                                  │
+│  · 持仓重叠条(独占 / 共有 / 独占 三段宽度)             │
+│  · 滚动战绩(按月色块)                                  │
 │  · 月度报告链接列表                                    │
-│  · 本周双方观察对照（两侧最新周笔记并列）             │
+│  · 本周双方观察对照(两侧最新周笔记并列)                │
 └───────────────────────────────────────────────────────┘
 ```
 
-CSS `:target` 切 tab，纯静态，无 JS 框架。
+CSS `:target` 切 tab,纯静态,无 JS 框架。
+
+### 简化版 (`simple.html`)
+
+面向新手,只 8 个 section,文件 ≤ 80 KB:
+
+```
+[简化版] [专业版] [策略演进]                       ← 顶部 tab bar
+👤 我的账户         总资产 / 今日 / 本月            ← Section 1
+📊 两位 AI 的成绩   Claude / Codex 各一卡片         ← Section 2
+📈 净值曲线        双线 + 沪深300 + 中证500 (SVG)   ← Section 3
+📦 Claude 持仓 Top10                              ← Section 4
+📦 Codex 持仓 Top10                               ← Section 5
+🔍 持仓重叠       两位都持有 / 仅 Claude / 仅 Codex ← Section 6
+🔄 最近 5 笔模拟成交                              ← Section 7
+🧭 本月策略调整摘要(可选,从 evolution_log 读)     ← Section 8
+```
+
+简化版**不包含**因子覆盖率、前向 IC、因子贡献明细、运行账本、数据源状态、agent 笔记内容、factor_runs/* — 这些只在专业版。
 
 ---
 
