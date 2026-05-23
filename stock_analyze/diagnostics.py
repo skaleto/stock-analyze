@@ -7,7 +7,7 @@ from typing import Any
 
 import pandas as pd
 
-from .data_provider import AkshareProvider
+from .data_provider import DataProvider
 from .store import PortfolioStore
 from .utils import now_iso
 
@@ -15,7 +15,7 @@ from .utils import now_iso
 def compute_pending_forward_ic(
     config: dict[str, Any],
     store: PortfolioStore,
-    provider: AkshareProvider,
+    provider: DataProvider,
     as_of: str | None = None,
 ) -> list[dict[str, Any]]:
     """Compute forward Spearman rank IC for past snapshots whose forward horizon
@@ -99,7 +99,7 @@ def _insufficient_row(signal_date: Any, account_id: Any, factor: Any, reason: st
 
 def _compute_ic(
     factor_rows: pd.DataFrame,
-    provider: AkshareProvider,
+    provider: DataProvider,
     signal_date: str,
     horizon: int,
 ) -> tuple[float | None, int]:
@@ -134,7 +134,7 @@ def _spearman_corr(a: pd.Series, b: pd.Series) -> float | None:
     return float(ranks_a.corr(ranks_b))  # Pearson on ranks == Spearman
 
 
-def _forward_return_for_code(code: str, provider: AkshareProvider, signal_date: str, horizon: int) -> float | None:
+def _forward_return_for_code(code: str, provider: DataProvider, signal_date: str, horizon: int) -> float | None:
     history = provider.price_history(code, as_of=None, days=260)
     if history.empty:
         return None

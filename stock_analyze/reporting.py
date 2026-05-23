@@ -140,9 +140,19 @@ FACTOR_LABELS = {
 }
 
 SOURCE_LABELS = {
+    # Current sources (Tushare Pro primary + Baostock fallback)
+    "spot_daily_basic": "Tushare daily_basic",
+    "spot_daily": "Tushare daily",
+    "spot_stock_basic": "Tushare stock_basic",
+    "stock_basic": "Tushare 股票基础信息",
+    "trade_cal": "Tushare 交易日历",
+    "baostock_login": "Baostock 登录",
+    "spot": "实时行情",
+    "universe": "股票池",
+    "basic": "个股基础信息",
+    # Legacy labels kept so old data_health.json files still render
     "spot_eastmoney": "东方财富实时行情",
     "spot_sina": "新浪实时行情",
-    "spot": "实时行情",
     "index_cons_csindex": "中证指数成分",
     "index_cons_weight_csindex": "中证权重成分",
     "index_cons_default": "AkShare 默认成分",
@@ -160,9 +170,6 @@ SOURCE_LABELS = {
     "valuation_baostock": "Baostock 估值",
     "valuation_市盈率(TTM)": "百度估值 PE",
     "valuation_市净率": "百度估值 PB",
-    "baostock_login": "Baostock 登录",
-    "universe": "股票池",
-    "basic": "个股基础信息",
 }
 
 
