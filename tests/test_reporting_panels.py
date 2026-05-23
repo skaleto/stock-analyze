@@ -10,17 +10,35 @@ from pathlib import Path
 import pandas as pd
 
 from stock_analyze.reporting import (
+    read_agent_evolutions,
     read_agent_proposals,
     render_latest_briefing_panel,
     render_strategy_evolution_panel,
 )
 
 
-def _write_proposal(target_dir: Path, month: str, payload: dict) -> Path:
-    target_dir.mkdir(parents=True, exist_ok=True)
-    path = target_dir / f"{month}-strategy.json"
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    return path
+def _write_evolution(
+    data_dir: Path,
+    month: str,
+    diff_payload: dict,
+    log_text: str | None = None,
+) -> tuple[Path, Path]:
+    """Write a pair of evolution_diff/<month>.json + evolution_log/<month>.md.
+
+    Mirrors what :mod:`stock_analyze.evolution_writer` would produce.
+    """
+
+    diff_dir = data_dir / "evolution_diff"
+    log_dir = data_dir / "evolution_log"
+    diff_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    diff_path = diff_dir / f"{month}.json"
+    diff_path.write_text(json.dumps(diff_payload, ensure_ascii=False), encoding="utf-8")
+    log_path = log_dir / f"{month}.md"
+    if log_text is None:
+        log_text = f"# {month} 演化记录\n\n_测试用占位 markdown_"
+    log_path.write_text(log_text, encoding="utf-8")
+    return diff_path, log_path
 
 
 def _write_leaderboard(path: Path, rows: list[dict]) -> None:
@@ -29,31 +47,63 @@ def _write_leaderboard(path: Path, rows: list[dict]) -> None:
 
 
 class StrategyEvolutionPanelTests(unittest.TestCase):
-    def test_empty_state_when_no_proposals(self) -> None:
+    def test_empty_state_when_no_evolutions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             html = render_strategy_evolution_panel(tmp)
-            self.assertIn("尚未生成策略提案", html)
+            self.assertIn("尚未生成策略演化记录", html)
 
-    def test_lists_proposals_in_descending_month(self) -> None:
+    def test_lists_evolutions_in_descending_month(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "claude"
-            proposals = data_dir / "proposals"
-            _write_proposal(proposals, "2026-04", {"rationale": "april reason", "patch": {"factors": {"pe": {"weight": 0.1}}}, "risks": ["r1"], "no_change": False, "expected_effect": "保持收益"})
-            _write_proposal(proposals, "2026-05", {"rationale": "may reason", "patch": {}, "no_change": True, "risks": []})
+            _write_evolution(
+                data_dir,
+                "2026-04",
+                {
+                    "agent_id": "claude",
+                    "month": "2026-04",
+                    "from_config_hash": "aaaaaaaaaaaa",
+                    "to_config_hash": "bbbbbbbbbbbb",
+                    "diff": {"factors.pe.weight": {"from": 0.17, "to": 0.20}},
+                },
+                log_text="april reasoning",
+            )
+            _write_evolution(
+                data_dir,
+                "2026-05",
+                {
+                    "agent_id": "claude",
+                    "month": "2026-05",
+                    "from_config_hash": "bbbbbbbbbbbb",
+                    "to_config_hash": "cccccccccccc",
+                    "diff": {},
+                },
+                log_text="may reasoning (no change)",
+            )
             html = render_strategy_evolution_panel(data_dir)
             idx_may = html.find("2026-05")
             idx_apr = html.find("2026-04")
-            self.assertGreater(idx_apr, idx_may)  # April appears later (descending)
-            self.assertIn("proposal-no-change", html)
-            self.assertIn("proposal-change", html)
-            self.assertIn("factors.pe", html)
+            self.assertGreater(idx_apr, idx_may)  # 2026-04 appears below 2026-05
+            self.assertIn("proposal-no-change", html)  # May has empty diff
+            self.assertIn("proposal-change", html)  # April has a diff entry
+            self.assertIn("factors.pe.weight", html)
             self.assertIn("本月维持", html)
+            self.assertIn("已演化", html)
+            self.assertIn("aaaaaaaaaaaa", html)
 
     def test_leaderboard_pairing_fills_current_and_next_month_columns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "claude"
-            proposals = data_dir / "proposals"
-            _write_proposal(proposals, "2026-04", {"rationale": "x", "patch": {}, "no_change": True, "risks": []})
+            _write_evolution(
+                data_dir,
+                "2026-04",
+                {
+                    "agent_id": "claude",
+                    "month": "2026-04",
+                    "from_config_hash": "aaaa",
+                    "to_config_hash": "bbbb",
+                    "diff": {},
+                },
+            )
             leaderboard = Path(tmp) / "competition" / "leaderboard.csv"
             _write_leaderboard(
                 leaderboard,
@@ -66,88 +116,62 @@ class StrategyEvolutionPanelTests(unittest.TestCase):
             self.assertIn("4.00%", html)
             self.assertIn("6.00%", html)
 
-    def test_decision_status_is_rendered_when_present(self) -> None:
+    def test_log_excerpt_is_rendered_when_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "claude"
-            proposals = data_dir / "proposals"
-            _write_proposal(proposals, "2026-05", {"rationale": "x", "patch": {}, "no_change": True, "risks": []})
-            decisions = Path(tmp) / "competition" / "decisions"
-            decisions.mkdir(parents=True)
-            (decisions / "2026-05-claude.json").write_text(
-                json.dumps({"decision": "approved", "risk_level": "low"}, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            html = render_strategy_evolution_panel(data_dir)
-            self.assertIn("裁判通过 / low", html)
-
-    def test_expected_effect_column_is_rendered(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            data_dir = Path(tmp) / "claude"
-            proposals = data_dir / "proposals"
-            _write_proposal(
-                proposals,
+            _write_evolution(
+                data_dir,
                 "2026-05",
                 {
-                    "rationale": "本月数据稳定",
-                    "expected_effect": "提高 ROE 暴露",
-                    "patch": {},
-                    "no_change": True,
-                    "risks": [],
+                    "agent_id": "claude",
+                    "month": "2026-05",
+                    "from_config_hash": "1234567890ab",
+                    "to_config_hash": "abcdef123456",
+                    "diff": {"factors.pe.weight": {"from": 0.17, "to": 0.20}},
                 },
+                log_text="本月 pe 因子领涨，加权",
             )
             html = render_strategy_evolution_panel(data_dir)
-            self.assertIn("预期效果", html)  # header
-            self.assertIn("提高 ROE 暴露", html)  # cell content
+            self.assertIn("本月 pe 因子领涨", html)
+            self.assertIn("阅读", html)
+            self.assertIn("1234567890ab", html)
+            self.assertIn("abcdef123456", html)
 
-    def test_proposal_hash_drift_is_flagged(self) -> None:
-        from stock_analyze.proposal_judge import _hash_mapping
-
+    def test_diff_summary_truncates_when_many_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "claude"
-            proposals = data_dir / "proposals"
-            original = {
-                "rationale": "原版理由",
-                "expected_effect": "保持稳定",
-                "patch": {},
-                "no_change": True,
-                "risks": [],
+            diff = {
+                f"factors.f{i}.weight": {"from": 0.0, "to": 0.1}
+                for i in range(10)
             }
-            _write_proposal(proposals, "2026-05", original)
-            decisions = Path(tmp) / "competition" / "decisions"
-            decisions.mkdir(parents=True)
-            (decisions / "2026-05-claude.json").write_text(
-                json.dumps(
-                    {
-                        "decision": "approved",
-                        "risk_level": "low",
-                        "proposal_hash": _hash_mapping(original),
-                    },
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-            html = render_strategy_evolution_panel(data_dir)
-            self.assertNotIn("提案已变", html)
-
-            # Modify proposal after decision was recorded.
-            _write_proposal(proposals, "2026-05", {**original, "rationale": "新理由"})
-            html = render_strategy_evolution_panel(data_dir)
-            self.assertIn("提案已变", html)
-            self.assertIn("proposal-drift", html)
-
-    def test_html_escape_in_rationale(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            data_dir = Path(tmp) / "claude"
-            proposals = data_dir / "proposals"
-            _write_proposal(
-                proposals,
+            _write_evolution(
+                data_dir,
                 "2026-05",
                 {
-                    "rationale": "本月调整 <动量> 因子",
-                    "patch": {},
-                    "no_change": True,
-                    "risks": [],
+                    "agent_id": "claude",
+                    "month": "2026-05",
+                    "from_config_hash": "x",
+                    "to_config_hash": "y",
+                    "diff": diff,
                 },
+            )
+            html = render_strategy_evolution_panel(data_dir)
+            self.assertIn("…", html)
+
+    def test_html_escape_in_log_excerpt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "claude"
+            _write_evolution(
+                data_dir,
+                "2026-05",
+                {
+                    "agent_id": "claude",
+                    "month": "2026-05",
+                    "from_config_hash": "x",
+                    "to_config_hash": "y",
+                    "diff": {},
+                },
+                log_text="本月调整 <动量> 因子",
             )
             html = render_strategy_evolution_panel(data_dir)
             self.assertIn("&lt;动量&gt;", html)
@@ -194,17 +218,45 @@ class LatestBriefingPanelTests(unittest.TestCase):
             self.assertIn("…(truncated)", html)
 
 
-class ReadAgentProposalsTests(unittest.TestCase):
+class ReadAgentEvolutionsTests(unittest.TestCase):
     def test_skips_malformed_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "claude"
-            proposals = data_dir / "proposals"
-            proposals.mkdir(parents=True)
-            (proposals / "2026-04-strategy.json").write_text("not-json", encoding="utf-8")
-            _write_proposal(proposals, "2026-05", {"rationale": "good", "patch": {}, "no_change": True, "risks": []})
-            results = read_agent_proposals(data_dir)
+            diff_dir = data_dir / "evolution_diff"
+            diff_dir.mkdir(parents=True)
+            (diff_dir / "2026-04.json").write_text("not-json", encoding="utf-8")
+            _write_evolution(
+                data_dir,
+                "2026-05",
+                {
+                    "agent_id": "claude",
+                    "month": "2026-05",
+                    "from_config_hash": "x",
+                    "to_config_hash": "y",
+                    "diff": {},
+                },
+            )
+            results = read_agent_evolutions(data_dir)
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0]["month"], "2026-05")
+
+    def test_alias_read_agent_proposals(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "claude"
+            _write_evolution(
+                data_dir,
+                "2026-05",
+                {
+                    "agent_id": "claude",
+                    "month": "2026-05",
+                    "from_config_hash": "x",
+                    "to_config_hash": "y",
+                    "diff": {},
+                },
+            )
+            # alias should return same payload
+            results = read_agent_proposals(data_dir)
+            self.assertEqual(len(results), 1)
 
 
 if __name__ == "__main__":

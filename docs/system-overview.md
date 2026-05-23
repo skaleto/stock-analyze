@@ -187,6 +187,9 @@ Sat 10:00 CST (ECS systemd timer)
 
 ### 4c. 每月 1 号
 
+> 由 OpenSpec change `enable-llm-direct-strategy-evolution` 实施：referee
+> 退化为锁字段守卫，LLM 在本地直接改 yaml + 写 evolution_log，无 ECS 端 apply。
+
 ```
 09:00 CST / 01:00 UTC ECS
   competition-monthly-review --month <prev>
@@ -200,14 +203,13 @@ Sat 10:00 CST (ECS systemd timer)
        · data/competition/leaderboard.csv（upsert）
     └─ build_monthly_briefing for each agent
        · data/<agent>/notes/briefings/<month>-monthly.md  ← agent 月度待办
-    └─ agent-judge-proposals
-       · data/competition/decisions/<month>-<agent>.json
-    └─ agent-apply-approved-proposals
-       · 只应用 approved patch，并记录 config_evolution.csv
+       · 含 "对手 overlay 摘要" + "对手历史改动(近 3 个月)" 两段
 
 01:10 competition-dashboard
   生成三 tab 聚合页 reports/competition/dashboard.html
 ```
+
+ECS 端不再跑 `agent-judge-proposals` / `agent-apply-approved-proposals` —— 这两个命令已经在源码里删除。
 
 ### 4d. 本地分析闭环（你 + agent CLI）
 
@@ -218,18 +220,23 @@ Sat 10:00 CST (ECS systemd timer)
 
   Claude Code:  /weekly-review claude   (or  /monthly-strategy claude 2026-05)
   Codex CLI:    do weekly review for codex (or do monthly strategy for codex)
-    └─ agent 自己读 CLAUDE.md / AGENTS.md → 找最新 briefing → 写笔记/提案
-    └─ 周度只写 markdown 笔记；月度还写 JSON proposal
+    └─ agent 自己读 CLAUDE.md / AGENTS.md → 找最新 briefing → 写笔记/演化
+    └─ 周度只写 markdown 笔记
+    └─ 月度直接改 configs/agents/<agent>.yaml + 写 evolution_log + evolution_diff
+        + 追加 config_evolution.csv（由 evolution_writer.write_evolution 原子化执行）
+    └─ 跑 `validate-overlay --agent <agent>` 通过
 
   ./scripts/sync-to-ecs.sh
-    └─ 推 data/<agent>/notes/ 与 data/<agent>/proposals/ 回 ECS
-    └─ 默认远端运行 judge → apply approved → competition-dashboard
+    └─ 推 data/<agent>/notes/、data/<agent>/evolution_log/、data/<agent>/evolution_diff/、
+       data/<agent>/config_evolution.csv、configs/agents/<agent>.yaml、_history/ 回 ECS
+    └─ 远端仅刷 dashboard，无 referee/apply 步骤
 
 ECS:
-  dashboard 显示新笔记、新提案和裁判结论；approved patch 进入下一周期
+  dashboard 显示新的演化时间线（month / from→to hash / diff 摘要 / evolution_log 链接 /
+  当月 + 次月实际收益）；新 overlay 进入下一周期的 daily/weekly 运行
 ```
 
-月度 proposal 不再要求你判断策略是否该合入。确定性裁判只做安全/合规/小步审查：`approved` 自动应用，`rejected` 与 `needs_human` 保留在 dashboard 里供人工查看。
+月度策略变化的好坏由 LLM 自负——守卫只确认 schema 合法、不踩 baseline 锁字段、factor 名在白名单、weight 在 `[0, 1]`。
 
 ---
 
@@ -434,10 +441,11 @@ CSS `:target` 切 tab，纯静态，无 JS 框架。
 | `data/<agent>/factor_diagnostics/forward_ic.csv` | diagnostics | 前向 5 日 RankIC 累积 |
 | `data/<agent>/notes/briefings/*.md` | ECS（agent_briefing） | agent 待办任务包 |
 | `data/<agent>/notes/*.md` | agent | 周/月分析笔记 |
-| `data/<agent>/proposals/*-strategy.json` | agent | 月度策略提案 |
-| `data/<agent>/config_evolution.csv` | proposal_apply | 策略应用 / 回滚审计 |
+| `data/<agent>/evolution_log/<YYYY-MM>.md` | agent | 月度策略演化思考记录（LLM 直接写） |
+| `data/<agent>/evolution_diff/<YYYY-MM>.json` | evolution_writer | 月度策略演化结构化 diff |
+| `data/<agent>/config_evolution.csv` | evolution_writer | 策略演化 / 回滚审计行 |
+| `configs/agents/_history/<config_hash>.yaml` | evolution_writer | 上版 overlay 备份（每次演化前） |
 | `data/competition/competition_metadata.json` | competition-init | 起跑日 / baseline_hash |
-| `data/competition/decisions/<month>-<agent>.json` | proposal_judge | 裁判结论 |
 | `data/competition/monthly_reviews/<month>.json` | monthly_review | 机器可读对比 |
 | `data/competition/leaderboard.csv` | monthly_review | 按月滚动战绩 |
 | `data/shared/cache/*.csv` | data_provider | 公开数据缓存（两侧共用） |
@@ -459,8 +467,8 @@ CSS `:target` 切 tab，纯静态，无 JS 框架。
 | Mon-Fri 17:25 | ECS systemd | `prepare-market-data`（pipeline）→ ExecStartPost 触发两 agent `run-daily --offline` 并行 |
 | Sat 10:00 | ECS systemd | `weekly-trigger`（占位）→ ExecStartPost 触发两 agent `run-weekly --offline` 并行（读周五 cache，自带 briefing） |
 | 周六上午 / 周末 | 你 + agent CLI | sync-from-ecs → `/weekly-review claude` + `do weekly review for codex` → sync-to-ecs |
-| 每月 1 号 09:00 CST | ECS systemd | `competition-monthly-review` + `agent-judge-proposals` + `agent-apply-approved-proposals` + `competition-dashboard` |
-| 每月 1-2 号 | 你 + agent CLI + ECS | sync-from-ecs → `/monthly-strategy claude` + `do monthly strategy for codex` → sync-to-ecs 自动裁判/应用 |
+| 每月 1 号 09:00 CST | ECS systemd | `competition-monthly-review` + `competition-dashboard`（无 referee/apply 步骤） |
+| 每月 1-2 号 | 你 + agent CLI | sync-from-ecs → `/monthly-strategy claude` + `do monthly strategy for codex` → `validate-overlay` → sync-to-ecs |
 | 季度 | 你 | 翻 leaderboard 与 monthly reviews，决定是否调整 baseline 或新增 OpenSpec change |
 | 任意时刻 | 你 | `competition-dashboard` 刷新；`openspec list` 看变更状态 |
 
@@ -474,7 +482,7 @@ CSS `:target` 切 tab，纯静态，无 JS 框架。
 | top_n / 股票池 / 基准 一致 | 同上 |
 | agent 不能跨写对方目录 | `CLAUDE.md` / `AGENTS.md` 行为约束 + slash command 禁止条款 |
 | agent 不能改 `stock_analyze/`、`configs/competition.yaml`、operating manual | 同上 |
-| 月度 proposal 自动应用边界 | 只有 referee 判定为 `approved` 的小步 patch 会应用；`needs_human` / `rejected` 不改配置 |
+| 月度策略演化边界 | `overlay_guard.validate` 只校验 schema + 锁字段 + factor 白名单 + weight 范围；策略好坏 LLM 自负（人类授权 2026-05-23） |
 | 无 LLM API 依赖 | 整个 stack 没有任何 HTTP 调用到 anthropic.com / openai.com |
 | 真单 | 不可能。代码里没有任何券商 SDK 也没有任何下单链路 |
 | 敏感凭据 | 仅 `EASTMONEY_COOKIE` 环境变量；不写入仓库、配置、日志；systemd 用 EnvironmentFile 隔离权限 |

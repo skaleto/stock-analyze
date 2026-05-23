@@ -131,6 +131,8 @@ def _weekly_data_snapshot(paths: AgentPaths, as_of: str) -> list[str]:
 def _monthly_data_snapshot(paths: AgentPaths, month: str, root: Path) -> list[str]:
     lines = ["# 数据快照", ""]
     lines += _render_monthly_review_excerpt(root, month)
+    lines += _render_opponent_overlay_snapshot(paths.agent_id, root)
+    lines += _render_opponent_evolution_history(paths.agent_id, root, months=3)
     lines += _render_recent_runs(paths, limit=10)
     lines += _render_monthly_nav(paths, month)
     lines += _render_current_positions(paths)
@@ -195,23 +197,29 @@ def _monthly_task_section(agent_id: str, month: str) -> list[str]:
     return [
         "# 任务",
         "",
-        f"基于上方 `{month}` 月度对比与近期周笔记，做两件事：",
+        f"基于上方 `{month}` 月度对比、近期周笔记，以及对手 overlay / 历史改动，做两件事：",
         "",
-        "1. **写一份月度策略思考笔记**（中文 markdown，≤1500 字）。结构：",
-        "   - 月度表现复盘（数据驱动，不情绪化）。",
-        "   - 与对手的差异化分析（持仓重叠 / 风格相关性 / 共同与分歧因子驱动）。",
-        "   - 策略调整方向与理由（1-3 条，每条一句话）。",
+        "1. **写一份月度策略演化记录**（中文 markdown，≤2000 字）。",
+        "   - 路径见 `# 输出契约`。",
+        "   - 结构：月度复盘 / 与对手差异化分析 / 改动列表 / 改动理由 / 预期效果 / 风险。",
         "",
-        "2. **产出一份月度策略提案 JSON**。",
-        "   - 这是结构化输出，用户审核后才会被自动应用（Phase 2）。",
-        "   - 若决定本月不调，仍要输出 JSON 但 `no_change=true`、`patch={}`。",
+        "2. **直接改 `configs/agents/<agent>.yaml`** —— 不再写 JSON proposal，",
+        "   也不再等 referee。守卫只校验锁字段与 schema，策略好坏由你负责。",
+        "   - 若本月维持不变，仍要写演化记录说明为什么。",
+        "",
+        "3. **跑守卫检查**：",
+        "   ```bash",
+        f"   python3 -m stock_analyze validate-overlay --agent {agent_id}",
+        "   ```",
+        "   exit code 0 = 通过；≠ 0 = 改回去再跑。",
         "",
     ]
 
 
 def _monthly_output_contract(agent_id: str, month: str, baseline: dict[str, Any] | None) -> list[str]:
     notes_target = f"data/{agent_id}/notes/{month}-monthly-review.md"
-    proposal_target = f"data/{agent_id}/proposals/{month}-strategy.json"
+    log_target = f"data/{agent_id}/evolution_log/{month}.md"
+    overlay_target = f"configs/agents/{agent_id}.yaml"
     locked_lines = [f"- `{path}`" for path in BASELINE_LOCKED_PATHS]
     baseline_excerpt: list[str] = []
     if baseline:
@@ -236,43 +244,24 @@ def _monthly_output_contract(agent_id: str, month: str, baseline: dict[str, Any]
     return [
         "# 输出契约",
         "",
-        f"1. 月度笔记写到 **`{notes_target}`**（中文 markdown）。",
-        f"2. 月度提案写到 **`{proposal_target}`**，严格 JSON。Schema 如下：",
+        f"1. **月度笔记** 写到 `{notes_target}`（≤1500 中文字 markdown）。",
+        f"2. **策略演化记录** 写到 `{log_target}`（≤2000 中文字 markdown，作为 evolution_writer 的 reasoning_md 输入）。",
+        f"3. **直接修改 `{overlay_target}`**（JSON 语法）。",
+        f"4. 调用 `evolution_writer.write_evolution(agent_id=\"{agent_id}\", old_overlay=..., new_overlay=..., reasoning_md=...)` 一并落 history + log + diff + csv。",
+        f"5. 最后跑 `python3 -m stock_analyze validate-overlay --agent {agent_id}` 通过。",
         "",
-        "```json",
-        json.dumps(
-            {
-                "agent_id": agent_id,
-                "based_on_config_hash": "<当前 overlay 的 config_hash，可在 data/<agent>/runs.csv 最近一行找到>",
-                "proposed_at": "<YYYY-MM-DD>",
-                "rationale": "<300 字内中文>",
-                "expected_effect": "<一句话>",
-                "risks": ["<风险 1>", "<风险 2>"],
-                "no_change": False,
-                "patch": {
-                    "factors": {"<factor_name>": {"weight": 0.15, "direction": "low"}},
-                    "factor_processing": {"<field>": "<value>"},
-                    "portfolio_controls": {"<field>": "<value>"},
-                    "filters": {"<field>": "<value>"},
-                },
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        "```",
-        "",
-        "**`patch` 中包含以下锁字段或路径会被拒绝**：",
+        "**不要碰以下锁字段**（守卫会 raise `OverlayBaselineLocked`）：",
         "",
         *locked_lines,
         *baseline_excerpt,
         "",
-        "其它路径不要写入。**不要**修改 `configs/`、`stock_analyze/`、`tests/`、`reports/`。",
+        "其它路径不要写入。**不要**修改 `configs/competition.yaml`、`stock_analyze/`、`tests/`、`reports/`。",
         "",
     ]
 
 
 def _monthly_references_section(paths: AgentPaths) -> list[str]:
-    proposals_dir = paths.data_dir / "proposals"
+    log_dir = paths.data_dir / "evolution_log"
     notes_dir = paths.data_dir / "notes"
     lines = ["# 可选参考", ""]
     notes_recent: list[Path] = []
@@ -288,21 +277,21 @@ def _monthly_references_section(paths: AgentPaths) -> list[str]:
         for path in notes_recent:
             lines.append(f"- `{path.relative_to(paths.data_dir.parents[1])}`")
         lines.append("")
-    proposals_recent: list[Path] = []
-    if proposals_dir.exists():
-        proposals_recent = sorted(
-            [path for path in proposals_dir.glob("*-strategy.json") if path.is_file()],
+    log_recent: list[Path] = []
+    if log_dir.exists():
+        log_recent = sorted(
+            [path for path in log_dir.glob("*.md") if path.is_file()],
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )[:3]
-    if proposals_recent:
-        lines.append("最近 3 份历史提案：")
+    if log_recent:
+        lines.append("最近 3 份演化记录：")
         lines.append("")
-        for path in proposals_recent:
+        for path in log_recent:
             lines.append(f"- `{path.relative_to(paths.data_dir.parents[1])}`")
         lines.append("")
-    if not notes_recent and not proposals_recent:
-        lines.append("无历史笔记或提案。本月首次策略提案。")
+    if not notes_recent and not log_recent:
+        lines.append("无历史笔记或演化记录。本月首次策略演化。")
         lines.append("")
     return lines
 
@@ -510,6 +499,129 @@ def _render_monthly_review_excerpt(root: Path, month: str) -> list[str]:
         lines.append(_df_to_markdown_table(pd.DataFrame(table_rows), precision=4))
     lines.append("")
     return lines
+
+
+def _render_opponent_overlay_snapshot(agent_id: str, root: Path) -> list[str]:
+    """Render the opponent's current overlay summary in the briefing.
+
+    Reads the opponent's ``configs/agents/<other>.yaml`` directly. Per
+    transparency rules in ``CLAUDE.md §7`` / ``AGENTS.md §7``, agents may
+    read the opponent overlay but NOT their evolution_log or notes.
+    """
+
+    other_agents = _list_other_agents(agent_id, root)
+    if not other_agents:
+        return []
+    blocks: list[str] = []
+    for other in other_agents:
+        overlay_path = root / "configs" / "agents" / f"{other}.yaml"
+        if not overlay_path.exists():
+            continue
+        try:
+            overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            blocks.append(f"## 对手 {other} 当前 overlay 摘要")
+            blocks.append("")
+            blocks.append("_overlay JSON 解析失败_")
+            blocks.append("")
+            continue
+        blocks.append(f"## 对手 {other} 当前 overlay 摘要")
+        blocks.append("")
+        blocks.append(f"`{overlay_path.relative_to(root)}`")
+        blocks.append("")
+        factors = overlay.get("factors")
+        if isinstance(factors, dict) and factors:
+            blocks.append("**factors:**")
+            blocks.append("")
+            blocks.append("| factor | weight | direction |")
+            blocks.append("| --- | --- | --- |")
+            for name, spec in factors.items():
+                if not isinstance(spec, dict):
+                    continue
+                weight = spec.get("weight")
+                direction = spec.get("direction", "-")
+                weight_text = f"{float(weight):.3f}" if isinstance(weight, (int, float)) else "-"
+                blocks.append(f"| `{name}` | {weight_text} | {direction} |")
+            blocks.append("")
+        pc = overlay.get("portfolio_controls")
+        if isinstance(pc, dict) and pc:
+            blocks.append("**portfolio_controls:**")
+            blocks.append("")
+            for key, value in pc.items():
+                blocks.append(f"- `{key}`: `{value}`")
+            blocks.append("")
+        filters = overlay.get("filters")
+        if isinstance(filters, dict) and filters:
+            blocks.append("**filters:**")
+            blocks.append("")
+            for key, value in filters.items():
+                blocks.append(f"- `{key}`: `{value}`")
+            blocks.append("")
+    return blocks
+
+
+def _render_opponent_evolution_history(agent_id: str, root: Path, months: int = 3) -> list[str]:
+    """Render the opponent's recent config_evolution.csv rows.
+
+    Reads only the CSV summary (allowed by transparency rules). The
+    accompanying evolution_log markdown remains off-limits.
+    """
+
+    other_agents = _list_other_agents(agent_id, root)
+    if not other_agents:
+        return []
+    blocks: list[str] = []
+    for other in other_agents:
+        csv_path = root / "data" / other / "config_evolution.csv"
+        if not csv_path.exists():
+            blocks.append(f"## 对手 {other} 历史改动（近 {months} 个月）")
+            blocks.append("")
+            blocks.append("_尚无 `config_evolution.csv`，对手未进行过演化。_")
+            blocks.append("")
+            continue
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception:  # noqa: BLE001
+            blocks.append(f"## 对手 {other} 历史改动（近 {months} 个月）")
+            blocks.append("")
+            blocks.append("_`config_evolution.csv` 解析失败。_")
+            blocks.append("")
+            continue
+        if df.empty:
+            blocks.append(f"## 对手 {other} 历史改动（近 {months} 个月）")
+            blocks.append("")
+            blocks.append("_`config_evolution.csv` 为空。_")
+            blocks.append("")
+            continue
+        recent = df.tail(months)
+        # Limit to public-safe columns; intentionally omit reasoning_file
+        # contents (we link the path but the file is opponent-private).
+        public_cols = [
+            col
+            for col in ["event", "event_at", "month", "from_hash", "to_hash", "diff_summary", "reviewer"]
+            if col in recent.columns
+        ]
+        blocks.append(f"## 对手 {other} 历史改动（近 {months} 个月）")
+        blocks.append("")
+        blocks.append(f"`{csv_path.relative_to(root)}`")
+        blocks.append("")
+        blocks.append(_df_to_markdown_table(recent[public_cols]))
+        blocks.append("")
+    return blocks
+
+
+def _list_other_agents(agent_id: str, root: Path) -> list[str]:
+    agents_dir = root / "configs" / "agents"
+    if not agents_dir.exists():
+        return []
+    others: list[str] = []
+    for path in sorted(agents_dir.glob("*.yaml")):
+        if path.name.startswith("_"):
+            continue
+        other = path.stem
+        if other != agent_id:
+            others.append(other)
+    return others
 
 
 def _render_recent_weekly_notes(paths: AgentPaths, limit: int) -> list[str]:
