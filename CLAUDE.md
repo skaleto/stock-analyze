@@ -37,7 +37,7 @@ Higher-level context:
 - **reports directory:** `reports/claude/`
 - **run ledger:** `data/claude/runs.csv`
 - **notes (your output):** `data/claude/notes/`
-- **proposals (your output):** `data/claude/proposals/`
+- **evolution log (your output):** `data/claude/evolution_log/`
 - **briefings (your input):** `data/claude/notes/briefings/`
 
 You are NOT `codex`. Do not read, write, or move anything under
@@ -68,9 +68,11 @@ You MUST NOT modify, in any circumstance:
 
 You MAY modify, when explicitly invited by the human operator:
 
-- `configs/agents/claude.yaml` (your strategy overlay)
+- `configs/agents/claude.yaml` (your strategy overlay, monthly)
 - `data/claude/notes/*.md` (your analytical writing)
-- `data/claude/proposals/*.json` (your monthly strategy proposals)
+- `data/claude/evolution_log/<YYYY-MM>.md` (your monthly evolution reasoning)
+- `data/claude/evolution_diff/<YYYY-MM>.json` (written by `evolution_writer`)
+- `data/claude/config_evolution.csv` (appended by `evolution_writer`)
 
 ## 4. What you control
 
@@ -128,7 +130,11 @@ Steps (the human operator invokes the slash command):
 5. **Do NOT modify `configs/agents/claude.yaml` during weekly review.**
    Weekly is observation-only. Strategy edits happen at monthly review.
 
-### 5b. Monthly strategy proposal
+### 5b. Monthly strategy evolution (LLM-direct)
+
+> Human operator 2026-05-23 明确授权:"所有优化的内容全部由 LLM 全权代理执行,
+> 不需要审核,只要让我看到修改了什么。"
+> 由 OpenSpec change `enable-llm-direct-strategy-evolution` 实施。
 
 Frequency: 1st of each month after the operator runs
 `competition-monthly-review` and `competition-dashboard`.
@@ -139,28 +145,48 @@ Steps:
    `data/claude/notes/briefings/<YYYY-MM>-monthly.md`. ECS auto-generates
    this after `competition-monthly-review` finishes.
 
-2. Read the briefing. The monthly briefing includes:
+2. Read the briefing top-to-bottom. It includes:
    - The full `data/competition/monthly_reviews/<month>.json` excerpt.
+   - **`## 对手 codex 当前 overlay 摘要`** — codex 的 yaml(factors /
+     portfolio_controls / filters)。允许读对手 overlay。
+   - **`## 对手 codex 历史改动(近 3 个月)`** — 摘自
+     `data/codex/config_evolution.csv`。允许读对手 csv。
    - Last 4 weeks of your own notes.
-   - Baseline locked fields (you MUST NOT include these in `patch`).
+   - Baseline locked fields (the guard rejects any change to these).
 
 3. Read 2-3 of your most recent weekly notes (referenced in
    `# 可选参考`) to ground your reasoning.
 
-4. Write two outputs:
+4. Produce four outputs in one atomic step (the slash command body wires
+   `evolution_writer.write_evolution` to do all of this):
 
    a. **Monthly note** at `data/claude/notes/<YYYY-MM>-monthly-review.md`.
       Markdown, ≤1500 字. Three sections: 月度复盘 / 与对手差异化分析 /
       策略调整方向与理由.
 
-   b. **Strategy proposal** at `data/claude/proposals/<YYYY-MM>-strategy.json`.
-      Strict JSON per the schema in the briefing's `# 输出契约`. If you
-      decide not to change anything, output `no_change=true` with empty
-      `patch`.
+   b. **Evolution log** at `data/claude/evolution_log/<YYYY-MM>.md`.
+      Markdown, ≤2000 字. Six sections per `design.md` §3: 月度复盘(数据驱动)
+      / 与对手差异化分析 / 改动列表 / 改动理由 / 预期效果 / 风险.
 
-5. **Do NOT directly edit `configs/agents/claude.yaml`.** The proposal is
-   reviewed by the deterministic referee. Only a separate
-   `agent-apply-approved-proposals` run may apply an approved patch.
+   c. **Directly rewrite `configs/agents/claude.yaml`** with the new
+      overlay. JSON syntax (project convention). Only the 7 permitted
+      top-level keys: `agent_id`, `strategy_id`, `name`, `factors`,
+      `factor_processing`, `portfolio_controls`, `filters`.
+
+   d. `evolution_writer.write_evolution` also writes
+      `data/claude/evolution_diff/<YYYY-MM>.json`, appends a row to
+      `data/claude/config_evolution.csv`, and backs the prior overlay up
+      to `configs/agents/_history/<from_hash>.yaml`.
+
+5. **Run the guard.** Exit code reports outcome:
+   ```bash
+   python3 -m stock_analyze validate-overlay --agent claude
+   ```
+   - 0 = OK, ready to commit.
+   - 1 = schema / factor / weight error → fix the yaml.
+   - 2 = baseline-lock violation → fix the yaml.
+
+6. Human operator triggers `./scripts/sync-to-ecs.sh` to push the change.
 
 ## 6. Slash commands
 
@@ -172,7 +198,7 @@ above flows:
   do the codex-side review on its behalf (the human operator will use this
   when Codex CLI isn't available).
 - `/monthly-strategy <agent_id>` — same, for the monthly strategy
-  proposal.
+  evolution (LLM-direct flow).
 
 The slash command bodies live in `.claude/commands/`; they are themselves
 prompts that direct you to read `CLAUDE.md` (or `AGENTS.md`) and the
@@ -180,15 +206,44 @@ latest briefing.
 
 ## 7. Forbidden actions
 
+### 7.0 不变的硬约束
+
 - Modify any file under `stock_analyze/`, `tests/`, `openspec/`.
 - Modify `configs/competition.yaml`, `configs/agents/codex.yaml`, the
   `CLAUDE.md` / `AGENTS.md` operating manuals, or any `docs/*.md`.
-- Read or write anything under `data/codex/`, `reports/codex/`.
 - Override baseline-locked fields in `configs/agents/claude.yaml`.
 - Delete `runs.csv`, `daily_nav.csv`, `trades.csv`, `state.json` to "reset"
   a bad week. Losses are part of the simulation.
 - Place real orders. This is paper trading, full stop.
 - Call any LLM API from inside the repo.
+
+### 7.1 对手透明度规则
+
+你**可以读取**对手 codex 的以下路径:
+
+- ✅ `configs/agents/codex.yaml`(对手当前 overlay)
+- ✅ `data/codex/config_evolution.csv`(对手历史改动摘要)
+- ✅ `data/competition/monthly_reviews/*.json`
+- ✅ `reports/competition/monthly_review_*.md`
+
+你**不可以读取**对手 codex 的以下路径:
+
+- ❌ `data/codex/evolution_log/*.md`(对手的思考过程)
+- ❌ `data/codex/notes/*.md`(对手的周笔记)
+- ❌ `data/codex/state.json`、`positions.csv`、`daily_nav.csv`、`trades.csv`
+- ❌ `data/codex/factor_runs/*`
+- ❌ `data/codex/proposals/*`(旧 proposal 文件)
+- ❌ `reports/codex/*`
+
+→ "你能看到对手的阵型(yaml),看不到对手的思考(evolution_log)。"
+
+### 7.2 月度演化的硬约束
+
+无论何时改 `configs/agents/claude.yaml`,你 **必须**:
+
+1. 跑 `python3 -m stock_analyze validate-overlay --agent claude` 通过
+2. 同时写好 `data/claude/evolution_log/<month>.md` + `evolution_diff/<month>.json`
+3. 不要单独改 yaml 而不留 log(否则 dashboard "策略演进时间线" 会出现 hash mismatch 红高亮)
 
 ## 8. Allowed exploration
 
@@ -197,9 +252,11 @@ You may freely:
 - Read anything under `data/shared/`, `data/competition/`, your own
   `data/claude/`, your own `reports/claude/`.
 - Read public source files under `stock_analyze/` (read-only).
-- Read codex's monthly snapshot ONLY through
-  `data/competition/monthly_reviews/<month>.json` and
-  `reports/competition/monthly_review_<month>.md`.
+- Read codex's monthly snapshot ONLY through:
+  - `data/competition/monthly_reviews/<month>.json`
+  - `reports/competition/monthly_review_<month>.md`
+  - `configs/agents/codex.yaml`
+  - `data/codex/config_evolution.csv`
 - Run tests: `python3 -m unittest discover -s tests`.
 - Run `openspec list`, `openspec show <change-id>`, `openspec validate <change-id>`.
 - Inspect logs under `logs/` (read-only).
@@ -212,9 +269,12 @@ of slurping multi-megabyte files. Briefings already summarize what you
 need; pull additional raw data only when the briefing summary is
 insufficient.
 
-When you produce JSON proposals, validate the structure mentally before
-writing: ensure `patch` does not contain any baseline-locked path; ensure
-`no_change` is a boolean; ensure `rationale` is concise.
+When you rewrite `configs/agents/claude.yaml`, validate the structure
+mentally before writing: only the 7 permitted top-level keys; factor names
+in the whitelist (see `stock_analyze.overlay_guard.AVAILABLE_FACTORS`);
+factor weights in `[0, 1]`; no baseline-locked nested fields. Then run
+`python3 -m stock_analyze validate-overlay --agent claude` — the guard
+catches the mistakes you missed.
 
 ## 10. How to escalate
 
@@ -235,8 +295,8 @@ paper trading project.
   a rolling 3-month window.
 - No data corruption in your own `data/claude/` directory.
 - No reach across the fairness boundary.
-- Strategy changes have matching proposal, decision, and `config_evolution.csv`
-  audit rows a human can understand.
+- Strategy changes have matching `evolution_log`, `evolution_diff`, and
+  `config_evolution.csv` audit rows a human can understand.
 
 Have fun. Lose some weeks, win some. The point is to learn what your
 strategy actually trades — not to chase last week's winner.

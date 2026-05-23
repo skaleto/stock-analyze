@@ -104,10 +104,12 @@ class MonthlyBriefingTests(unittest.TestCase):
             for path in BASELINE_LOCKED_PATHS:
                 self.assertIn(path, text)
             self.assertIn("data/claude/notes/2026-05-monthly-review.md", text)
-            self.assertIn("data/claude/proposals/2026-05-strategy.json", text)
-            # JSON proposal schema is described.
-            self.assertIn("based_on_config_hash", text)
-            self.assertIn("no_change", text)
+            # New LLM-direct flow writes evolution_log + edits overlay directly,
+            # not a JSON proposal.
+            self.assertIn("data/claude/evolution_log/2026-05.md", text)
+            self.assertIn("configs/agents/claude.yaml", text)
+            self.assertIn("evolution_writer.write_evolution", text)
+            self.assertIn("validate-overlay", text)
 
     def test_baseline_excerpt_includes_initial_cash(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

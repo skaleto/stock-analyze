@@ -117,18 +117,41 @@ python3 -m stock_analyze competition-monthly-review --month 2026-05 --agents cla
 - `reports/competition/monthly_review_<month>.md` — 人类可读，含双方指标横向对比表、共同/分歧驱动因子、自动生成的差异化建议（不构成投资建议）。
 - `data/competition/leaderboard.csv` — 每月一行，按累计收益和信息比率分别记录胜方；同月再跑会 upsert。
 
-## 策略 proposal 裁判与应用
+## 月度策略演化（LLM 全权代理）
+
+> Human operator 2026-05-23 明确授权: "所有优化的内容全部由 LLM 全权代理执行,
+> 不需要审核,只要让我看到修改了什么。"
+> 由 OpenSpec change `enable-llm-direct-strategy-evolution` 实施。
+
+月度流程现在是 **LLM 直接改 yaml + 守卫只校验锁字段** 一步走，不再有 referee
+判 approved/rejected/needs_human。
 
 ```bash
-python3 -m stock_analyze agent-judge-proposals --month 2026-05
-python3 -m stock_analyze agent-apply-approved-proposals --month 2026-05
+# 守卫纯检查（LLM 改完 yaml 后必跑一次）
+python3 -m stock_analyze validate-overlay --agent codex
+
+# 应急回滚（人类操作员手动触发）
+python3 -m stock_analyze agent-rollback --agent codex --to <config_hash>
 ```
 
-- `agent-judge-proposals` 读取 `data/<agent>/proposals/<month>-strategy.json`，写 `data/competition/decisions/<month>-<agent>.json`。
-- 裁判结论只有三类：`approved` 自动应用，`rejected` 拒绝，`needs_human` 保留给人工看但不自动应用。
-- `agent-apply-approved-proposals` 只处理 `approved`，会先把旧 overlay 存到 `configs/agents/_history/<config_hash>.yaml`，再合并 patch，并追加 `data/<agent>/config_evolution.csv`。
-- `scripts/sync-to-ecs.sh` 默认在推回 notes/proposals 后自动在 ECS 上跑上述两条命令并刷新 dashboard；如只想同步文件，设置 `SA_ECS_AFTER_SYNC=0`。
-- 回滚用 `python3 -m stock_analyze agent-rollback --agent codex --to <config_hash>`。
+详见 `docs/llm-evolution-flow.md`。核心步骤:
+
+1. ECS 每月 1 号 09:00 跑 `competition-monthly-review`,产生 monthly_reviews + briefing。
+2. 本地操作员 `./scripts/sync-from-ecs.sh` 拉数据。
+3. 本地操作员触发 `/monthly-strategy claude`（或 `/monthly-strategy codex`）。
+   LLM 在 slash command 内自主:
+   - 读 briefing（含对手 overlay 摘要 + 历史改动）
+   - 思考并直接改 `configs/agents/<agent>.yaml`
+   - 调 `evolution_writer.write_evolution` 落 history backup + evolution_log + evolution_diff + config_evolution.csv
+   - 跑 `validate-overlay` 通过
+4. 操作员 `./scripts/sync-to-ecs.sh` 推回（ECS 端无 referee/apply 步骤，dashboard 自动刷新）。
+
+守卫只看两件事:
+
+- **schema 合法**: 顶层键 ⊂ `{agent_id, strategy_id, name, factors, factor_processing, portfolio_controls, filters}`; factor 名 ⊂ AVAILABLE_FACTORS; factor weight ∈ `[0, 1]`。
+- **baseline 锁字段不被侵入**: `initial_cash` / `accounts.*` / `schedule.*` / `trading.*` 全部禁动。
+
+策略好坏 LLM 自负。`agent-judge-proposals` / `agent-apply-approved-proposals` 已删除。
 
 ## 聚合 Dashboard
 
@@ -231,10 +254,10 @@ systemctl list-timers stock-analyze-*
 
 ### `configs/agents/_history/` 是什么
 
-`agent-apply-approved-proposals` 每次应用 patch 之前会把当前 overlay 备份到 `configs/agents/_history/<config_hash>.yaml`（哈希内容是 sha256[:12]）。这些文件**进入 git**，作为审计轨迹。可以：
+`evolution_writer.write_evolution` 每次直接改 yaml 之前会把当前 overlay 备份到 `configs/agents/_history/<config_hash>.yaml`（哈希内容是 sha256[:12]）。这些文件**进入 git**，作为审计轨迹。可以：
 
 - 在任意 clone 上跑 `python3 -m stock_analyze agent-rollback --agent <id> --to <hash>` 回滚。
-- 通过 `git log configs/agents/_history/` 查看历次 apply 时间线。
+- 通过 `git log configs/agents/_history/` 查看历次演化时间线。
 - 累计大约每月每 agent 1 个文件 (~1KB)；不需要清理。
 
 不要手动编辑这些文件——`agent-rollback` 是唯一受支持的恢复路径。
@@ -363,14 +386,14 @@ do monthly strategy for codex for 2026-05
 
 # 2. 检查产物
 ls data/claude/notes/2026-05-monthly-review.md
-ls data/claude/proposals/2026-05-strategy.json
+ls data/claude/evolution_log/2026-05.md
+ls data/claude/evolution_diff/2026-05.json
 ls data/codex/notes/2026-05-monthly-review.md
-ls data/codex/proposals/2026-05-strategy.json
+ls data/codex/evolution_log/2026-05.md
+ls data/codex/evolution_diff/2026-05.json
+git diff configs/agents/  # 看 LLM 改了什么
 
-# 3. 推回 ECS。默认会自动运行：
-#    agent-judge-proposals → agent-apply-approved-proposals → competition-dashboard
-#    如果只想同步文件：SA_ECS_AFTER_SYNC=0 ./scripts/sync-to-ecs.sh
-
+# 3. 推回 ECS。无需 referee/apply 步骤：
 ./scripts/sync-to-ecs.sh
 ```
 
@@ -379,16 +402,16 @@ ls data/codex/proposals/2026-05-strategy.json
 | 段 | 作用 |
 | --- | --- |
 | `# 角色` | 你是谁、目录边界、不可改清单 |
-| `# 数据快照` | 本周/本月的 runs / NAV / 信号 / 交易 / 持仓 / 待执行 / 覆盖率 / IC，markdown 表格形式 |
-| `# 任务` | 明确说"做 X，不做 Y"（周度不改 config；月度可提案） |
-| `# 输出契约` | 写到哪个路径、什么格式、JSON schema（月度） |
-| `# 可选参考` | 历史笔记/提案的路径，agent 可选择性读入 |
+| `# 数据快照` | 本周/本月的 runs / NAV / 信号 / 交易 / 持仓 / 待执行 / 覆盖率 / IC + 对手 overlay 快照 + 对手历史改动，markdown 表格形式 |
+| `# 任务` | 明确说"做 X，不做 Y"（周度不改 config；月度直接改 yaml + 写 evolution_log） |
+| `# 输出契约` | 写到哪个路径、什么格式 |
+| `# 可选参考` | 历史笔记 / 演化记录的路径，agent 可选择性读入 |
 
 ### 关键边界
 
 - 周度 agent **只写笔记**，不改 config。
-- 月度 agent 写 markdown 笔记 + JSON proposal；proposal 先由确定性裁判写 decision，只有 `approved` 会自动合入 overlay。
-- agent 不能跨写对方目录（CLAUDE.md / AGENTS.md 强约束）；月度只能通过 `data/competition/monthly_reviews/<month>.json` 看到对手公开数据。
+- 月度 agent 直接改 `configs/agents/<agent>.yaml` 并写 `evolution_log/<month>.md`；守卫只校验锁字段，不评判策略好坏。
+- agent 不能跨写对方目录（CLAUDE.md / AGENTS.md 强约束）；月度可以读对手 `configs/agents/<other>.yaml` 与 `data/<other>/config_evolution.csv`，但不能读对手 `evolution_log/*` 与 `notes/*`。
 - 不要把 LLM API key 放到这个仓库里——本工作流不需要。
 
 ### 手动重新生成 briefing
@@ -407,8 +430,8 @@ python3 -m stock_analyze agent-prepare-monthly --agent codex --month 2026-05
 | 每个交易日 17:30 / 17:35 | `--agent claude/codex run-daily` | ECS systemd timer |
 | 每周五 17:40 / 17:45 | `--agent claude/codex run-weekly`（自带 briefing） | ECS systemd timer |
 | 周五晚 | sync-from-ecs → `/weekly-review claude` + 同步 codex → sync-to-ecs | 本地人工 + agent |
-| 每月 1 号 09:00 | `competition-monthly-review` + `agent-judge-proposals` + `agent-apply-approved-proposals` + `competition-dashboard` | ECS systemd timer |
-| 每月 1-2 号 | sync-from-ecs → `/monthly-strategy claude` + 同步 codex → sync-to-ecs 自动裁判/应用 | 本地人工 + agent + ECS |
+| 每月 1 号 09:00 | `competition-monthly-review` + `competition-dashboard` | ECS systemd timer |
+| 每月 1-2 号 | sync-from-ecs → `/monthly-strategy claude` + 同步 codex → sync-to-ecs | 本地人工 + agent |
 | 任意时刻 | `competition-dashboard` | 人或 timer |
 
 ## 风险与边界

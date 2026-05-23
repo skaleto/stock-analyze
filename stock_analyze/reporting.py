@@ -1149,29 +1149,49 @@ def _truncate(text: str, limit: int = MAX_PANEL_CONTENT_BYTES) -> str:
     return encoded.decode("utf-8", errors="ignore") + "\n…(truncated)"
 
 
-def read_agent_proposals(data_dir: str | Path) -> list[dict[str, Any]]:
-    """Return all monthly proposals from ``data/<agent>/proposals/*-strategy.json``
-    sorted by month descending. Each item is the raw proposal dict plus a
-    ``month`` key extracted from the file name (``YYYY-MM-strategy.json``).
-    Malformed JSON is skipped silently.
+def read_agent_evolutions(data_dir: str | Path) -> list[dict[str, Any]]:
+    """Return monthly evolutions from the new LLM-direct flow.
+
+    Reads ``data/<agent>/evolution_diff/<YYYY-MM>.json`` (machine-readable
+    diff) and stitches in the matching ``evolution_log/<YYYY-MM>.md`` text
+    if present. Sorted by month descending.
+
+    The new sources, written by :mod:`evolution_writer`, replace the old
+    ``data/<agent>/proposals/*-strategy.json`` source.
     """
 
-    proposals_dir = Path(data_dir) / "proposals"
-    if not proposals_dir.exists():
+    data_root = Path(data_dir)
+    diff_dir = data_root / "evolution_diff"
+    log_dir = data_root / "evolution_log"
+    if not diff_dir.exists():
         return []
     results: list[dict[str, Any]] = []
-    for path in sorted(proposals_dir.glob("*-strategy.json"), reverse=True):
+    for path in sorted(diff_dir.glob("*.json"), reverse=True):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
         if not isinstance(payload, dict):
             continue
-        month = path.stem.replace("-strategy", "")
+        month = path.stem
         payload.setdefault("month", month)
         payload.setdefault("_source_path", str(path))
+        log_path = log_dir / f"{month}.md"
+        if log_path.exists():
+            try:
+                payload["_log_text"] = log_path.read_text(encoding="utf-8")
+            except OSError:
+                payload["_log_text"] = ""
+            payload["_log_path"] = str(log_path)
         results.append(payload)
     return results
+
+
+# Backwards-compat alias for callers that still use the old name (e.g.
+# tests that pre-date this rewrite). New code should call
+# :func:`read_agent_evolutions`.
+def read_agent_proposals(data_dir: str | Path) -> list[dict[str, Any]]:
+    return read_agent_evolutions(data_dir)
 
 
 def _load_leaderboard_by_month(leaderboard_path: Path) -> dict[str, dict[str, Any]]:
@@ -1184,19 +1204,6 @@ def _load_leaderboard_by_month(leaderboard_path: Path) -> dict[str, dict[str, An
     if df.empty or "month" not in df.columns:
         return {}
     return {str(row["month"]): row.to_dict() for _, row in df.iterrows()}
-
-
-def _summarise_patch_keys(patch: Any) -> list[str]:
-    if not isinstance(patch, dict):
-        return []
-    keys: list[str] = []
-    for top, sub in patch.items():
-        if isinstance(sub, dict) and sub:
-            for inner in sub:
-                keys.append(f"{top}.{inner}")
-        else:
-            keys.append(str(top))
-    return keys
 
 
 def _next_month(month: str) -> str | None:
@@ -1228,65 +1235,45 @@ def _leaderboard_return_cell(row: dict[str, Any] | None, agent: str) -> str:
     return format_pct(value)
 
 
-def _load_decision(agent: str, month: str, data_dir: Path) -> dict[str, Any] | None:
-    path = data_dir.parent / "competition" / "decisions" / f"{month}-{agent}.json"
-    if not path.exists():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
+def _hash_drift_flag(agent: str, month: str, data_dir: Path, to_hash: str) -> bool:
+    """Return True when the live overlay hash diverges from the recorded ``to_hash``.
 
-
-def _decision_status_text(decision: dict[str, Any] | None) -> str:
-    if not decision:
-        return "待裁判"
-    value = str(decision.get("decision") or "-")
-    mapping = {
-        "approved": "裁判通过",
-        "rejected": "裁判拒绝",
-        "needs_human": "需要人工",
-    }
-    risk = decision.get("risk_level")
-    text = mapping.get(value, value)
-    return f"{text} / {risk}" if risk else text
-
-
-def _proposal_hash_drift(proposal: dict[str, Any], decision: dict[str, Any] | None) -> bool:
-    """Return True when the decision was made against an older proposal version.
-
-    Compares the decision's recorded ``proposal_hash`` against a fresh hash of
-    the current proposal. Returns False when either side is missing.
+    Replaces the old proposal-hash drift check. The new contract is: if the
+    `config_evolution.csv` row for this month says we evolved to hash X,
+    but the live `configs/agents/<agent>.yaml` now hashes to Y ≠ X, the
+    timeline shows a red highlight because either someone touched the
+    overlay outside the slash command, or a later evolution overwrote
+    this row without removing it.
     """
 
-    if not decision:
+    if not to_hash:
         return False
-    expected = str(decision.get("proposal_hash") or "")
-    if not expected:
-        return False
+    repo_root = data_dir.parent.parent  # data/<agent> → repo_root
     try:
-        from .proposal_judge import _hash_mapping  # local import to avoid cycle at module load
-    except ImportError:
+        from . import competition
+        from .config import config_hash
+        actual = config_hash(competition.load(agent, repo_root=repo_root))
+    except Exception:  # noqa: BLE001
         return False
-    # Strip our local-only annotation keys before hashing so the comparison
-    # matches what the referee computed at decision time.
-    snapshot = {key: value for key, value in proposal.items() if not str(key).startswith("_") and key != "month"}
-    actual = _hash_mapping(snapshot)
-    return actual != expected
+    return actual != to_hash
 
 
 def render_strategy_evolution_panel(
     data_dir: str | Path,
     leaderboard_path: str | Path | None = None,
 ) -> str:
-    """Render the per-agent strategy-evolution timeline panel."""
+    """Render the per-agent strategy-evolution timeline panel.
 
-    proposals = read_agent_proposals(data_dir)
+    Reads the new ``evolution_diff/*.json`` + ``evolution_log/*.md`` sources
+    written by :mod:`evolution_writer`, replacing the deleted
+    ``proposals/*-strategy.json`` + ``decisions/*.json`` chain.
+    """
+
+    evolutions = read_agent_evolutions(data_dir)
     agent = _agent_from_data_dir(Path(data_dir))
-    if not proposals:
+    if not evolutions:
         return (
-            '<p class="empty">尚未生成策略提案。月度 <code>/monthly-strategy '
+            '<p class="empty">尚未生成策略演化记录。月度 <code>/monthly-strategy '
             f"{agent}</code> 跑完后会出现。</p>"
         )
 
@@ -1295,54 +1282,65 @@ def render_strategy_evolution_panel(
         leaderboard_lookup = _load_leaderboard_by_month(Path(leaderboard_path))
 
     rows_html: list[str] = []
-    for proposal in proposals:
-        month = str(proposal.get("month", "-"))
-        no_change = bool(proposal.get("no_change"))
+    for evolution in evolutions:
+        month = str(evolution.get("month", "-"))
+        diff = evolution.get("diff") if isinstance(evolution.get("diff"), dict) else {}
+        no_change = not diff
         row_class = "proposal-no-change" if no_change else "proposal-change"
-        status_text = "本月维持" if no_change else "提议调整"
-        rationale = _escape_html(_truncate(str(proposal.get("rationale", "")), limit=600))
-        if len(rationale) > 200:
-            rationale = rationale[:200] + "…"
-        expected_raw = proposal.get("expected_effect")
-        expected_text = str(expected_raw).strip() if expected_raw else ""
-        expected_html = _escape_html(_truncate(expected_text, limit=400)) if expected_text else "-"
-        decision = _load_decision(agent, month, Path(data_dir))
-        decision_text = _decision_status_text(decision)
-        drift = _proposal_hash_drift(proposal, decision)
+        status_text = "本月维持" if no_change else "已演化"
+        from_hash = str(evolution.get("from_config_hash") or "-")
+        to_hash = str(evolution.get("to_config_hash") or "-")
+        drift = _hash_drift_flag(agent, month, Path(data_dir), to_hash)
+        hash_text = f"{from_hash[:12]} → {to_hash[:12]}"
         if drift:
-            decision_text = f"{decision_text} · 提案已变"
-        decision_status = _escape_html(decision_text)
-        decision_class = " proposal-drift" if drift else ""
-        risks = proposal.get("risks") or []
-        if isinstance(risks, list):
-            risks_html = "<br>".join(_escape_html(str(item)) for item in risks[:3]) or "-"
-        else:
-            risks_html = _escape_html(str(risks))
-        patch_keys = _summarise_patch_keys(proposal.get("patch"))
-        patch_html = (
-            ", ".join(_escape_html(key) for key in patch_keys) if patch_keys else "（无）"
+            hash_text += " · overlay 已变"
+        hash_class = " proposal-drift" if drift else ""
+        diff_summary = _summarise_diff_keys(diff)
+        diff_summary_html = (
+            ", ".join(_escape_html(item) for item in diff_summary) if diff_summary else "（无变化）"
+        )
+        log_text = str(evolution.get("_log_text") or "").strip()
+        log_excerpt = _truncate(log_text, limit=400) if log_text else "-"
+        log_excerpt_html = _escape_html(log_excerpt) if log_excerpt != "-" else "-"
+        log_path_rel = evolution.get("_log_path")
+        log_link_html = (
+            f'<a href="{_escape_html(str(log_path_rel))}">阅读</a>'
+            if log_path_rel
+            else "-"
         )
         current_row = leaderboard_lookup.get(month)
         next_row = leaderboard_lookup.get(_next_month(month) or "")
         rows_html.append(
-            f'<tr class="{row_class}{decision_class}">'
+            f'<tr class="{row_class}{hash_class}">'
             f"<td>{_escape_html(month)}</td>"
             f"<td>{status_text}</td>"
-            f'<td class="decision-cell">{decision_status}</td>'
-            f"<td>{rationale or '-'}</td>"
-            f"<td>{expected_html}</td>"
-            f"<td>{patch_html}</td>"
-            f"<td>{risks_html}</td>"
+            f'<td class="hash-cell">{_escape_html(hash_text)}</td>'
+            f"<td>{diff_summary_html}</td>"
+            f"<td>{log_excerpt_html}</td>"
+            f"<td>{log_link_html}</td>"
             f"<td>{_leaderboard_return_cell(current_row, agent)}</td>"
             f"<td>{_leaderboard_return_cell(next_row, agent)}</td>"
             "</tr>"
         )
     return (
         '<table class="table strategy-evolution"><thead>'
-        "<tr><th>月份</th><th>提案状态</th><th>裁判结论</th><th>理由摘要</th><th>预期效果</th><th>改了哪些键</th>"
-        "<th>风险</th><th>当月收益</th><th>次月收益</th></tr></thead>"
+        "<tr><th>月份</th><th>状态</th><th>from → to hash</th><th>diff 摘要</th>"
+        "<th>思考摘要</th><th>evolution_log</th><th>当月收益</th><th>次月收益</th></tr></thead>"
         f"<tbody>{''.join(rows_html)}</tbody></table>"
     )
+
+
+def _summarise_diff_keys(diff: Any, limit: int = 6) -> list[str]:
+    """Return at most ``limit`` short labels summarising changed keys."""
+
+    if not isinstance(diff, dict):
+        return []
+    keys = list(diff.keys())
+    if not keys:
+        return []
+    if len(keys) <= limit:
+        return keys
+    return keys[: limit - 1] + [f"…+{len(keys) - limit + 1}"]
 
 
 def render_latest_briefing_panel(data_dir: str | Path) -> str:

@@ -22,8 +22,11 @@ from .data_provider import make_provider
 from .dashboard_aggregator import generate_competition_dashboard
 from .diagnostics import compute_pending_forward_ic
 from .monthly_review import compute_review, default_month_for, write_review
-from .proposal_apply import apply_approved_proposals
-from .proposal_judge import judge_all
+from .overlay_guard import (
+    OverlayBaselineLocked,
+    OverlayGuardError,
+    validate as validate_overlay_guard,
+)
 from .reporting import generate_dashboard, generate_weekly_report
 from .run_ledger import RunLedger
 from .simulator import execute_due_orders, generate_rebalance_orders, initialize, update_nav
@@ -88,13 +91,11 @@ def build_parser() -> argparse.ArgumentParser:
     prep_monthly = sub.add_parser("agent-prepare-monthly", help="Write the monthly briefing markdown for an agent")
     prep_monthly.add_argument("--agent", required=True)
     prep_monthly.add_argument("--month", help="Target month YYYY-MM (default: previous calendar month)")
-    judge = sub.add_parser("agent-judge-proposals", help="Judge monthly strategy proposals with deterministic guardrails")
-    judge.add_argument("--month", help="Target month YYYY-MM (default: previous calendar month)")
-    judge.add_argument("--agents", nargs="*", help="Subset of agent ids to judge (default: all)")
-    judge.add_argument("--reviewer", default="referee", help="Reviewer label written to decision JSON")
-    apply_cmd = sub.add_parser("agent-apply-approved-proposals", help="Apply referee-approved monthly strategy proposals")
-    apply_cmd.add_argument("--month", help="Target month YYYY-MM (default: previous calendar month)")
-    apply_cmd.add_argument("--agents", nargs="*", help="Subset of agent ids to apply (default: all)")
+    validate = sub.add_parser(
+        "validate-overlay",
+        help="Run overlay_guard checks on configs/agents/<agent>.yaml (schema + lock fields only).",
+    )
+    validate.add_argument("--agent", required=True, help="Agent overlay to validate (claude|codex).")
     rollback = sub.add_parser("agent-rollback", help="Rollback an agent overlay to a historical config hash")
     rollback.add_argument("--agent", required=True)
     rollback.add_argument("--to", required=True, help="Config hash saved under configs/agents/_history/")
@@ -189,12 +190,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "agent-prepare-monthly":
         ensure_dirs(args.logs_dir)
         return _command_agent_prepare_monthly(args)
-    if args.command == "agent-judge-proposals":
+    if args.command == "validate-overlay":
         ensure_dirs(args.logs_dir)
-        return _command_agent_judge_proposals(args)
-    if args.command == "agent-apply-approved-proposals":
-        ensure_dirs(args.logs_dir)
-        return _command_agent_apply_approved_proposals(args)
+        return _command_validate_overlay(args)
     if args.command == "agent-rollback":
         ensure_dirs(args.logs_dir)
         return _command_agent_rollback(args)
@@ -374,38 +372,52 @@ def _command_agent_prepare_monthly(args: argparse.Namespace) -> int:
     return 0
 
 
-def _command_agent_judge_proposals(args: argparse.Namespace) -> int:
-    repo_root = Path.cwd()
-    month = args.month or default_month_for()
-    agents = args.agents or competition.list_agents(repo_root)
-    results = judge_all(month=month, agents=agents, repo_root=repo_root, reviewer=args.reviewer)
-    if not results:
-        print(f"No proposals found for month={month}")
-        return 0
-    for result in results:
-        print(
-            "Judge result: "
-            f"agent={result['agent_id']} month={result['month']} "
-            f"decision={result['decision']} risk={result['risk_level']} "
-            f"warnings={len(result.get('warnings') or [])} violations={len(result.get('violations') or [])}"
-        )
-    return 0
+def _command_validate_overlay(args: argparse.Namespace) -> int:
+    """Run overlay_guard on the on-disk overlay; exit code reflects outcome.
 
+    - 0 = overlay passes all guard checks.
+    - 1 = schema / factor / weight error (or unknown agent).
+    - 2 = baseline-lock violation (cannot live with current competition.yaml).
+    """
 
-def _command_agent_apply_approved_proposals(args: argparse.Namespace) -> int:
+    import json
+
     repo_root = Path.cwd()
-    month = args.month or default_month_for()
-    agents = args.agents or competition.list_agents(repo_root)
-    results = apply_approved_proposals(month=month, agents=agents, repo_root=repo_root)
-    if not results:
-        print(f"No decisions found for month={month}")
-        return 0
-    for result in results:
+    agent_id = args.agent
+    try:
+        paths = competition.resolve_agent_paths(agent_id, repo_root=repo_root)
+    except competition.UnknownAgent as exc:
+        print(f"错误：未知 agent: {exc}", file=sys.stderr)
+        return 1
+    if not paths.config_path.exists():
         print(
-            "Apply result: "
-            f"agent={result['agent_id']} month={result.get('month', month)} "
-            f"status={result['status']} from={result.get('from_hash', '-')} to={result.get('to_hash', '-')}"
+            f"错误：overlay 文件不存在 — {paths.config_path}",
+            file=sys.stderr,
         )
+        return 1
+    try:
+        overlay = json.loads(paths.config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        print(
+            f"错误：overlay JSON 解析失败 — {paths.config_path}: {exc.msg}",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        validate_overlay_guard(agent_id, overlay, repo_root=repo_root)
+    except OverlayBaselineLocked as exc:
+        print(
+            f"错误：overlay 改动了基线锁字段 `{exc.field}`（baseline={exc.baseline_value!r}, "
+            f"overlay={exc.overlay_value!r}）。请回退该字段。",
+            file=sys.stderr,
+        )
+        return 2
+    except OverlayGuardError as exc:
+        print(f"错误：overlay 守卫检查失败 — {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"OK: agent={agent_id} overlay 通过守卫检查 ({paths.config_path})"
+    )
     return 0
 
 
