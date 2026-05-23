@@ -5,7 +5,7 @@ from typing import Any
 
 import pandas as pd
 
-from .data_provider import AkshareProvider, ExecutionQuote
+from .data_provider import DataProvider, ExecutionQuote
 from .factor_pipeline import UNCLASSIFIED
 from .portfolio_controls import annotate_industries, select_top_n_with_controls
 from .store import PortfolioStore
@@ -20,7 +20,7 @@ def initialize(config: dict[str, Any], store: PortfolioStore, force: bool = Fals
 def generate_rebalance_orders(
     config: dict[str, Any],
     store: PortfolioStore,
-    provider: AkshareProvider,
+    provider: DataProvider,
     as_of: str | None = None,
     run_id: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -189,7 +189,7 @@ def build_target_orders(config: dict[str, Any], account_state: dict[str, Any], s
 def execute_due_orders(
     config: dict[str, Any],
     store: PortfolioStore,
-    provider: AkshareProvider,
+    provider: DataProvider,
     as_of: str | None = None,
 ) -> list[dict[str, Any]]:
     state = store.initialize(config)
@@ -230,7 +230,7 @@ def execute_order(
     config: dict[str, Any],
     account: dict[str, Any],
     order: dict[str, Any],
-    provider: AkshareProvider,
+    provider: DataProvider,
     execute_after: str,
     account_id: str,
     run_date: str | None = None,
@@ -352,7 +352,7 @@ def execute_order(
 def update_nav(
     config: dict[str, Any],
     store: PortfolioStore,
-    provider: AkshareProvider,
+    provider: DataProvider,
     as_of: str | None = None,
     notes: str = "",
 ) -> list[dict[str, Any]]:
@@ -396,7 +396,7 @@ def account_total_value(account_state: dict[str, Any]) -> float:
     return cash + market_value
 
 
-def execution_quote(provider: AkshareProvider, code: str, execute_after: str, side: str, run_date: str) -> ExecutionQuote:
+def execution_quote(provider: DataProvider, code: str, execute_after: str, side: str, run_date: str) -> ExecutionQuote:
     if hasattr(provider, "execution_quote"):
         return provider.execution_quote(code, execute_after, side, as_of=run_date)
     price, trade_date = provider.execution_price(code, execute_after, side)

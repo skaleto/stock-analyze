@@ -18,7 +18,7 @@ from .agent_briefing import (
 )
 from .competition import CompetitionBaselineLocked
 from .config import load_config
-from .data_provider import AkshareProvider
+from .data_provider import make_provider
 from .dashboard_aggregator import generate_competition_dashboard
 from .diagnostics import compute_pending_forward_ic
 from .monthly_review import compute_review, default_month_for, write_review
@@ -108,7 +108,7 @@ def _resolve_offline_as_of(cache_dir: Path) -> str | None:
     """Find the latest ``spot_<YYYYMMDD>.csv`` in ``cache_dir`` and return its date.
 
     Returns YYYY-MM-DD or None if no cache yet. Mirrors
-    ``AkshareProvider._resolve_default_date`` but produces an ISO date the
+    ``DataProvider._resolve_default_date`` but produces an ISO date the
     rest of the simulator wants (NAV ``date`` column, ``next_trading_day``).
     """
 
@@ -215,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     # so Saturday weekly runs (no daily that day) naturally pick Friday's snapshot.
     if offline and not args.as_of:
         args.as_of = _resolve_offline_as_of(cache_dir)
-    provider = AkshareProvider(cache_dir=cache_dir, offline=offline, as_of=args.as_of)
+    provider = make_provider(cache_dir=cache_dir, offline=offline, as_of=args.as_of)
     ledger = RunLedger(data_dir)
     migration_notes = (config or {}).get("_migration_notes") or []
     if migration_notes:

@@ -26,7 +26,7 @@ from typing import Any, Iterable
 import pandas as pd
 
 from . import competition
-from .data_provider import AkshareProvider, INDEX_CODES
+from .data_provider import DataProvider, INDEX_CODES, make_provider
 from .run_ledger import RunLedger
 from .strategy import preselect_universe
 from .utils import ensure_dirs, parse_date
@@ -100,7 +100,7 @@ def _resolve_scopes_and_benchmarks(repo_root: Path, scopes: list[str] | None) ->
 
 
 def _fetch_one_candidate(
-    provider: AkshareProvider,
+    provider: DataProvider,
     code: str,
     errors: list[dict[str, Any]],
 ) -> dict[str, int]:
@@ -135,7 +135,7 @@ def _fetch_one_candidate(
     return counts
 
 
-def _build_universe(provider: AkshareProvider, scopes: list[str], errors: list[dict[str, Any]]) -> pd.DataFrame:
+def _build_universe(provider: DataProvider, scopes: list[str], errors: list[dict[str, Any]]) -> pd.DataFrame:
     """Pull spot + constituents for each scope and return the merged universe."""
 
     spot = provider.spot()
@@ -181,9 +181,9 @@ def prepare_market_data(
       error / row counters.
     - Appends one row to ``data/shared/runs.csv`` describing this run.
 
-    The function is **online-only**: it uses ``AkshareProvider(offline=False)``
-    intentionally. Agents read what this writes; do not call this from an
-    agent service.
+    The function is **online-only**: it constructs a provider via
+    ``make_provider(offline=False)`` intentionally. Agents read what this
+    writes; do not call this from an agent service.
 
     Returns the snapshot dict.
     """
@@ -210,7 +210,7 @@ def prepare_market_data(
     errors: list[dict[str, Any]] = []
     counters: dict[str, int] = {"spot": 0, "trading_calendar": 0}
 
-    provider = AkshareProvider(cache_dir=cache_dir, offline=False, as_of=as_of_str)
+    provider = make_provider(cache_dir=cache_dir, offline=False, as_of=as_of_str)
 
     # 1. trading_calendar
     try:

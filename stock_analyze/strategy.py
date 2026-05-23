@@ -5,7 +5,7 @@ from typing import Any
 
 import pandas as pd
 
-from .data_provider import AkshareProvider
+from .data_provider import DataProvider
 from .factor_pipeline import UNCLASSIFIED, process_factors
 from .utils import now_iso, safe_float
 
@@ -21,7 +21,7 @@ class SignalResult:
     factor_table: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
-def build_signals(config: dict[str, Any], account: dict[str, Any], provider: AkshareProvider, as_of: str | None = None) -> SignalResult:
+def build_signals(config: dict[str, Any], account: dict[str, Any], provider: DataProvider, as_of: str | None = None) -> SignalResult:
     warnings: list[str] = []
     scope = str(account["scope"])
     universe = provider.universe(scope)

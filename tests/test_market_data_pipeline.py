@@ -155,12 +155,12 @@ class PrepareMarketDataTests(unittest.TestCase):
     def _patch_provider(self, fake: FakeProvider) -> None:
         from stock_analyze import market_data
 
-        self._original = market_data.AkshareProvider
-        market_data.AkshareProvider = lambda **kwargs: fake  # type: ignore[assignment]
+        self._original = market_data.make_provider
+        market_data.make_provider = lambda **kwargs: fake  # type: ignore[assignment]
         self.addCleanup(self._restore, market_data)
 
     def _restore(self, module) -> None:  # type: ignore[no-untyped-def]
-        module.AkshareProvider = self._original
+        module.make_provider = self._original
 
     def _scaffold(self, root: Path) -> None:
         configs = root / "configs"
