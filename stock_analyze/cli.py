@@ -479,11 +479,50 @@ def _auto_write_weekly_briefing(agent_id: str | None, as_of: str | None) -> str 
         return None
 
 
+# Logical-to-physical URL aliases for the beginner / pro / competition views.
+# ``serve_dashboard`` interprets these when serving the ``reports/`` directory:
+#
+# - ``GET /``                       → reports/competition/simple.html  (beginner default)
+# - ``GET /simple.html``            → reports/competition/simple.html
+# - ``GET /simple/claude.html``     → reports/competition/simple/claude.html
+# - ``GET /simple/codex.html``      → reports/competition/simple/codex.html
+# - ``GET /pro.html``               → reports/competition/dashboard.html (alias)
+# - ``GET /competition/...``        → reports/competition/...          (unchanged)
+DASHBOARD_ROUTES: dict[str, str] = {
+    "/": "/competition/simple.html",
+    "/index.html": "/competition/simple.html",
+    "/simple.html": "/competition/simple.html",
+    "/simple/claude.html": "/competition/simple/claude.html",
+    "/simple/codex.html": "/competition/simple/codex.html",
+    "/pro.html": "/competition/dashboard.html",
+}
+
+
+class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
+    """SimpleHTTPRequestHandler with logical-path aliases for the dashboard.
+
+    Falls back to the parent's static-file behaviour for any path not in
+    ``DASHBOARD_ROUTES``; this keeps direct links like
+    ``/claude/dashboard.html`` and ``/competition/dashboard.html`` working
+    unchanged.
+    """
+
+    def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+        # Strip query / fragment for routing decisions; preserve them when
+        # rewriting so deep links keep their parameters.
+        path, _, suffix = self.path.partition("?")
+        target = DASHBOARD_ROUTES.get(path)
+        if target is not None:
+            self.path = target + (("?" + suffix) if suffix else "")
+        super().do_GET()
+
+
 def serve_dashboard(reports_dir: str, host: str, port: int) -> int:
     directory = Path(reports_dir).resolve()
-    handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(directory))
+    handler = partial(_DashboardRequestHandler, directory=str(directory))
     with socketserver.TCPServer((host, port), handler) as httpd:
         print(f"Serving {directory} at http://{host}:{port}")
+        print("Routes: / → /competition/simple.html (beginner), /pro.html → /competition/dashboard.html")
         httpd.serve_forever()
     return 0
 

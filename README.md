@@ -95,6 +95,22 @@ python3 -m stock_analyze serve-dashboard --host 127.0.0.1 --port 8765
 
 浏览器打开 `http://127.0.0.1:8765/dashboard.html`。
 
+### 简化版 vs 专业版
+
+竞赛 dashboard 同时输出两份视图,共享同一份 `data/*` 但渲染层不同:
+
+| 路径 | 视图 | 适合谁 |
+|---|---|---|
+| `http://127.0.0.1:8765/` | 简化版 (`reports/competition/simple.html`) | 新手 / 不想看因子细节 |
+| `http://127.0.0.1:8765/pro.html` | 专业版 (`reports/competition/dashboard.html`) | 量化老手 / 调参 |
+| `http://127.0.0.1:8765/simple/claude.html` | Claude 单 agent 简化版 | 只关心其中一个 agent |
+| `http://127.0.0.1:8765/simple/codex.html` | Codex 单 agent 简化版 |   |
+| `http://127.0.0.1:8765/competition/dashboard.html` | 同 `/pro.html`(向后兼容) |   |
+
+- 简化版只显示总资产 / 今日变动 / 双 agent 卡片 / 净值曲线 / 持仓 Top10 / 持仓重叠 / 最近 5 笔成交 / 本月策略调整摘要,**不**包含因子覆盖率、前向 IC、因子贡献明细、运行账本等。
+- 简化版文件大小受 80 KB 上限约束,以确保打开足够快。
+- 跑 `python3 -m stock_analyze competition-dashboard` 一次同时生成专业版 + 简化版,不需要额外指令。
+
 ## 运行输出
 
 运行数据默认写到本地目录，不提交进 Git：
