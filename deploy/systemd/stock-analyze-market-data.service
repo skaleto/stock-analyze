@@ -7,6 +7,10 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/stock-analyze/app
 Environment=TZ=Asia/Shanghai
+# Tushare Pro token is injected via this file (chmod 600, root-owned).
+# Missing file -> service fails to start with clear "EnvironmentFile not found".
+# See docs/tushare-token-setup.md for provisioning.
+EnvironmentFile=/etc/stock-analyze/secrets.env
 ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --logs-dir /opt/stock-analyze/logs prepare-market-data
 # When ExecStart succeeds, fire both daily agent services in parallel via --no-block.
 # If ExecStart fails (e.g. spot empty), ExecStartPost is skipped and agents do NOT run —
