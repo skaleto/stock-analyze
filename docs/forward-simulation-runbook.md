@@ -36,10 +36,11 @@ backups/                     部署备份目录，除 .gitkeep 外不提交
 
 Python 依赖在 `requirements.txt` 中声明：
 
-- `akshare>=1.18.62`
+- `tushare>=1.4.0`
 - `baostock>=0.9.1`
 - `pandas>=2.0.0`
 - `numpy>=1.24.0`
+- `PyYAML>=6.0`
 
 从新电脑拉取并安装：
 
@@ -50,17 +51,21 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-python -c "import akshare, baostock, pandas, numpy; print(akshare.__version__)"
+python -c "import tushare, baostock, pandas, numpy; print(tushare.__version__)"
 python -m py_compile stock_analyze/*.py
 ```
 
-如果东方财富实时或历史接口被当前网络/风控断开，可以从浏览器开发者工具里复制东财行情请求的 Cookie，并只通过环境变量传入运行进程：
+主数据源是 Tushare Pro(2000 积分起步,需注册并实名)。token 通过环境变量传入：
 
 ```bash
-export EASTMONEY_COOKIE='ct=...; ut=...'
+export TUSHARE_TOKEN='your_32_char_token_here'
 ```
 
-`EASTMONEY_COOKIE` 是敏感会话信息。不要提交到 Git，不要写入 `configs/`，不要打印到日志；服务器部署时应放在 systemd EnvironmentFile 或受权限保护的 shell 环境中。
+`TUSHARE_TOKEN` 是敏感凭据。不要提交到 Git,不要写入 `configs/`,不要打印到日志;服务器部署时应放在 systemd `EnvironmentFile=/etc/stock-analyze/secrets.env`(`chmod 600 root:root`)。
+
+完整注册流程 + ECS 注入步骤见 [docs/tushare-token-setup.md](tushare-token-setup.md)。
+
+如果不设 token,代码自动 fallback 到 Baostock(免费,但单股查询,慢)。
 
 如果使用 HTTPS 克隆，替换成你自己的 GitHub 克隆地址即可。不要把个人 SSH key 路径、服务器 IP、用户名、token、本机绝对路径提交进仓库。
 
@@ -193,15 +198,16 @@ v1 → v2 配置自动迁移由 `stock_analyze.config.migrate_strategy_config()`
 
 实时行情：
 
-- 优先 AkShare 东方财富实时行情。
-- 失败后尝试 AkShare 新浪实时行情。
-- 再失败则使用本地 `data/cache/spot_latest.csv`。
-- Baostock 不作为全市场实时行情替代源。
-- 如设置 `EASTMONEY_COOKIE`，系统会在东方财富请求上附加浏览器式 `User-Agent`、`Referer` 和 Cookie；未设置时仍按无 Cookie 请求并保留降级路径。
+- 主源 Tushare Pro `pro.daily` + `pro.daily_basic`(`TUSHARE_TOKEN` 注入)。一次调用拿全 A 股 5400+ 只票的 OHLCV + PE_TTM + PB + 总市值 + 股息率。
+- 失败(token 缺失 / Tushare 临时不可达 / 限频)自动 fallback Baostock(单股循环,慢但稳)。
+- 再失败则使用 `data/shared/cache/spot_<YYYYMMDD>.csv` 本地缓存。
+- AkShare / 东方财富 push2 / Sina 路径已在 2026-05-23 的 OpenSpec change `migrate-data-source-to-tushare-pro` 删除。
 
-指数成分：
+指数成分:
 
-- 中证指数成分接口。
+- Tushare `pro.index_weight(index_code='000300.SH', trade_date=...)` / `000905.SH`。
+- 失败则 Baostock `query_hs300_stocks` / `query_zz500_stocks`。
+- 再失败则中证指数成分本地缓存。
 - 中证指数权重成分接口。
 - AkShare 默认成分接口。
 - Baostock 支持的成分接口。
@@ -311,7 +317,7 @@ http://127.0.0.1:8765/dashboard.html
 
 ```bash
 python -m py_compile stock_analyze/*.py
-python -c "import akshare, baostock, pandas, numpy; print(akshare.__version__)"
+python -c "import tushare, baostock, pandas, numpy; print(tushare.__version__)"
 python -m stock_analyze --data-dir /tmp/stock-analyze-data --reports-dir /tmp/stock-analyze-reports init
 python -m stock_analyze --data-dir /tmp/stock-analyze-data --reports-dir /tmp/stock-analyze-reports run-weekly
 test -f /tmp/stock-analyze-reports/dashboard.html

@@ -526,7 +526,7 @@ CSS `:target` 切 tab,纯静态,无 JS 框架。
 | 月度策略演化边界 | `overlay_guard.validate` 只校验 schema + 锁字段 + factor 白名单 + weight 范围；策略好坏 LLM 自负（人类授权 2026-05-23） |
 | 无 LLM API 依赖 | 整个 stack 没有任何 HTTP 调用到 anthropic.com / openai.com |
 | 真单 | 不可能。代码里没有任何券商 SDK 也没有任何下单链路 |
-| 敏感凭据 | 仅 `EASTMONEY_COOKIE` 环境变量；不写入仓库、配置、日志；systemd 用 EnvironmentFile 隔离权限 |
+| 敏感凭据 | `TUSHARE_TOKEN` 环境变量(注入 `/etc/stock-analyze/secrets.env`,`chmod 600 root:root`);不写入仓库、配置、日志;systemd 用 `EnvironmentFile=` 隔离权限。详见 [docs/tushare-token-setup.md](tushare-token-setup.md)。 |
 
 ---
 
