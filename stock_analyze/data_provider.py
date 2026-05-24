@@ -459,14 +459,19 @@ class DataProvider(ABC):
         # Spot already carries PE/PB at the daily-basic level. Pull it from
         # there to avoid an extra HTTP call.
         spot_df = self.spot()
-        if spot_df.empty:
-            return {"pe": None, "pb": None}
-        row = spot_df[spot_df["code"] == normalize_code(code)]
-        if row.empty:
-            return {"pe": None, "pb": None}
-        result = {"pe": safe_float(row.iloc[0].get("pe")), "pb": safe_float(row.iloc[0].get("pb"))}
-        if result["pe"] is not None or result["pb"] is not None:
-            self.save_cache(cache_name, pd.DataFrame([{"code": normalize_code(code), **result}]))
+        result: dict[str, float | None] = {"pe": None, "pb": None}
+        if not spot_df.empty:
+            row = spot_df[spot_df["code"] == normalize_code(code)]
+            if not row.empty:
+                result = {
+                    "pe": safe_float(row.iloc[0].get("pe")),
+                    "pb": safe_float(row.iloc[0].get("pb")),
+                }
+        # Always persist the result — including the "we asked and got nothing"
+        # outcome — so offline run-weekly can distinguish "never fetched"
+        # (CacheMiss → crash) from "fetched, no data" (returns None pe/pb).
+        # On read-back the safe_float reload of NaN yields None again.
+        self.save_cache(cache_name, pd.DataFrame([{"code": normalize_code(code), **result}]))
         return result
 
     def financial_metrics(self, code: str) -> dict[str, Any]:
@@ -478,30 +483,39 @@ class DataProvider(ABC):
         if self.offline:
             self._raise_cache_miss("financial_metrics", cache_name)
 
+        result: dict[str, Any] = {}
         try:
             df = self.fina_indicator(code)
         except Exception as exc:  # noqa: BLE001
             self.record_health(f"financial_{code}", "failed", str(exc))
+            # Persist sentinel so offline run-weekly doesn't crash on stocks
+            # whose fina_indicator failed (rate-limited, code unsupported,
+            # etc.). The empty row pattern matches "stock has no financial
+            # signal" — apply_hard_filters' require_fields check drops it.
+            self.save_cache(
+                cache_name,
+                pd.DataFrame([{"code": normalize_code(code), "fetch_error": str(exc)[:200]}]),
+            )
             return {"fetch_error": str(exc)}
 
-        if df is None or df.empty:
-            return {}
-        row = df.iloc[0]
-        result: dict[str, Any] = {}
-        roe = safe_float(row.get("roe"))
-        gross_margin = safe_float(row.get("grossprofit_margin"))
-        debt_ratio = safe_float(row.get("debt_to_assets"))
-        net_profit_growth = safe_float(row.get("netprofit_yoy"))
-        if roe is not None:
-            result["roe"] = roe
-        if gross_margin is not None:
-            result["gross_margin"] = gross_margin
-        if debt_ratio is not None:
-            result["debt_ratio"] = debt_ratio
-        if net_profit_growth is not None:
-            result["net_profit_growth"] = net_profit_growth
-        if result:
-            self.save_cache(cache_name, pd.DataFrame([{"code": normalize_code(code), **result}]))
+        if df is not None and not df.empty:
+            row = df.iloc[0]
+            roe = safe_float(row.get("roe"))
+            gross_margin = safe_float(row.get("grossprofit_margin"))
+            debt_ratio = safe_float(row.get("debt_to_assets"))
+            net_profit_growth = safe_float(row.get("netprofit_yoy"))
+            if roe is not None:
+                result["roe"] = roe
+            if gross_margin is not None:
+                result["gross_margin"] = gross_margin
+            if debt_ratio is not None:
+                result["debt_ratio"] = debt_ratio
+            if net_profit_growth is not None:
+                result["net_profit_growth"] = net_profit_growth
+        # Always persist — see valuation_metrics for the reasoning. Missing
+        # factor keys remain absent in the row so apply_hard_filters' field
+        # check naturally drops the stock instead of crashing the run.
+        self.save_cache(cache_name, pd.DataFrame([{"code": normalize_code(code), **result}]))
         return result
 
     def price_history(self, code: str, as_of: str | None = None, days: int = 180) -> pd.DataFrame:
@@ -513,6 +527,14 @@ class DataProvider(ABC):
         cache_name = f"history_{code}_{stamp}_{days}"
         cached = self.load_cache(cache_name)
         if not cached.empty:
+            # Sentinel row written by the online path when the API returned
+            # no bars (delisted / new IPO / long suspension). Surface as
+            # empty so downstream filters drop the stock — same semantics
+            # as if Tushare itself had returned an empty payload at run time.
+            if "_no_data" in cached.columns:
+                empty = normalize_history(pd.DataFrame())
+                self._history_cache[cache_key] = empty
+                return empty.copy()
             normalized = normalize_history(cached)
             self._history_cache[cache_key] = normalized
             return normalized.copy()
@@ -532,6 +554,10 @@ class DataProvider(ABC):
         normalized = normalize_history(df)
         if not normalized.empty:
             self.save_cache(cache_name, normalized)
+        else:
+            # Persist the "we asked and got nothing" outcome so offline
+            # run-weekly doesn't crash on stocks Tushare can't serve.
+            self.save_cache(cache_name, pd.DataFrame([{"_no_data": True}]))
         self._history_cache[cache_key] = normalized
         return normalized.copy()
 
@@ -592,15 +618,19 @@ class DataProvider(ABC):
             self._raise_cache_miss("dividend_yield", cache_name)
 
         spot_df = self.spot()
-        if spot_df.empty:
-            return None
-        row = spot_df[spot_df["code"] == normalize_code(code)]
-        if row.empty:
-            return None
-        value = safe_float(row.iloc[0].get("dividend_yield"))
-        if value is None:
-            return None
-        self.save_cache(cache_name, pd.DataFrame([{"code": normalize_code(code), "dividend_yield": value}]))
+        value: float | None = None
+        if not spot_df.empty:
+            row = spot_df[spot_df["code"] == normalize_code(code)]
+            if not row.empty:
+                value = safe_float(row.iloc[0].get("dividend_yield"))
+        # Always persist — even when the source has no TTM dividend (growth
+        # stocks, recent IPOs, Baostock fallback). Offline run-weekly reads
+        # the NaN back via safe_float and treats it as missing, instead of
+        # tripping CacheMiss because the file was never written.
+        self.save_cache(
+            cache_name,
+            pd.DataFrame([{"code": normalize_code(code), "dividend_yield": value}]),
+        )
         return value
 
     def execution_quote(self, code: str, execute_after: str, side: str, as_of: str | None = None) -> ExecutionQuote:
