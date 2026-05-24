@@ -7,7 +7,12 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/stock-analyze/app
 Environment=TZ=Asia/Shanghai
-ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --reports-dir /opt/stock-analyze/app/reports/competition serve-dashboard --host 127.0.0.1 --port 8765
+# serve-dashboard expects ``reports/`` (root reports dir) so it can resolve
+# /pro.html → reports/competition/dashboard.html and /simple/<agent>.html
+# under reports/competition/simple/. Previous --reports-dir pointing at the
+# competition subdir made the path joins double-nest. Omit the flag and let
+# WorkingDirectory anchor the lookup at reports/competition/* relatively.
+ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli serve-dashboard --host 127.0.0.1 --port 8765
 Restart=on-failure
 RestartSec=10
 StandardOutput=append:/opt/stock-analyze/logs/dashboard.log
