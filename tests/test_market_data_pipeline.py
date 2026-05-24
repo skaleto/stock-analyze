@@ -243,6 +243,53 @@ class PrepareMarketDataTests(unittest.TestCase):
         self.assertEqual(first["status"], "success")
         self.assertEqual(second.get("skipped"), "snapshot_exists")
 
+    def test_force_invalidates_stale_universe_caches(self) -> None:
+        # Reproduces the 2026-05-24 bootstrap bug: a stale spot/stock_basic/
+        # constituents/trading_calendar CSV on disk caused TushareProvider's
+        # load_cache short-circuit to re-serve the bad data even with --force.
+        # The fix deletes those CSVs at the top of prepare_market_data when
+        # force=True, so the provider falls through to a real fetch.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._scaffold(root)
+            cache_dir = root / "data" / "shared" / "cache"
+            cache_dir.mkdir(parents=True)
+
+            stale_marker = pd.DataFrame([{"STALE_MARKER": 1}])
+            stale_files = [
+                cache_dir / "spot_20260522.csv",
+                cache_dir / "stock_basic_20260522.csv",
+                cache_dir / "constituents_000300.SH_20260522.csv",
+                cache_dir / "trading_calendar.csv",
+            ]
+            for path in stale_files:
+                stale_marker.to_csv(path, index=False, encoding="utf-8-sig")
+                self.assertTrue(path.exists())  # sanity-check the seed
+
+            # Untouched-by-fix caches: per-stock files must NOT get nuked, since
+            # --force is scoped to universe-level staleness. Use yesterday's stamp
+            # so the file isn't relevant to this run but proves the glob doesn't
+            # over-match.
+            untouched = cache_dir / "basic_600519_20260521.csv"
+            stale_marker.to_csv(untouched, index=False, encoding="utf-8-sig")
+
+            fake = FakeProvider(cache_dir=cache_dir)
+            self._patch_provider(fake)
+
+            snapshot = prepare_market_data(
+                as_of="2026-05-22", repo_root=root, force=True, max_workers=1
+            )
+
+            self.assertEqual(snapshot["status"], "success")
+            # FakeProvider does not save_cache, so any file deleted by the fix
+            # stays gone; if the fix is absent the file still has STALE_MARKER.
+            for path in stale_files:
+                self.assertFalse(
+                    path.exists(),
+                    f"--force should have deleted stale cache {path.name}",
+                )
+            self.assertTrue(untouched.exists(), "per-stock caches must not be deleted")
+
 
 if __name__ == "__main__":
     unittest.main()
