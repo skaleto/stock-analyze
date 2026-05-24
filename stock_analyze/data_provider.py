@@ -787,11 +787,13 @@ class TushareProvider(DataProvider):
             self._spot_df = pd.DataFrame(columns=["code", "name", "latest_price", "pe", "pb", "market_cap_yi"])
             return self._spot_df.copy()
 
-        merged = daily.merge(daily_basic, on=["ts_code", "trade_date"], how="outer", suffixes=("_daily", "_basic"))
+        # Drop daily.close before merging — daily_basic.close is the same EOD
+        # value (post-settlement) and avoids the close_daily / close_basic
+        # suffix split that breaks downstream `.get("close")` lookups.
+        daily_no_close = daily.drop(columns=["close"], errors="ignore")
+        merged = daily_no_close.merge(daily_basic, on=["ts_code", "trade_date"], how="outer")
         merged["code"] = merged["ts_code"].map(strip_ts_suffix)
-        merged["latest_price"] = merged.get("close").combine_first(merged.get("close_basic")) if "close_basic" in merged.columns else merged.get("close")
-        if merged["latest_price"] is None:
-            merged["latest_price"] = merged.get("close_daily")
+        merged["latest_price"] = pd.to_numeric(merged.get("close"), errors="coerce")
         # pe_ttm is the TTM PE we want; fall back to plain pe when missing.
         merged["pe"] = merged.get("pe_ttm").where(merged.get("pe_ttm").notna(), merged.get("pe"))
         # Tushare total_mv is in 万元; convert to 亿元.
