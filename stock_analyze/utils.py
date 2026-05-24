@@ -122,6 +122,35 @@ def format_money(value: Any) -> str:
     return f"{number:,.2f}"
 
 
+def dashboard_fragment_path(reports_dir: str | Path) -> Path:
+    """Where the per-agent dashboard fragment HTML should live.
+
+    Fragments are an internal build artifact consumed by
+    ``dashboard_aggregator.py`` when assembling
+    ``reports/competition/dashboard.html``. They are NOT a user-facing
+    page, so they must not pollute ``reports/`` (where the operator
+    expects only viewable HTML).
+
+    Convention (introduced 2026-05-24, §7.0 override):
+
+    * Competition mode (``reports/<agent>/``) → ``data/_dashboard_build/<agent>/fragment.html``
+    * Single-agent / legacy mode (``reports/``) → ``data/_dashboard_build/_default/fragment.html``
+
+    Caller is responsible for creating the parent directory (use
+    ``ensure_dirs(path.parent)``).
+    """
+
+    reports_path = Path(reports_dir)
+    if reports_path.name == "reports":
+        repo_root = reports_path.parent
+        agent_dir = "_default"
+    else:
+        # Expected: <repo_root>/reports/<agent>
+        repo_root = reports_path.parent.parent
+        agent_dir = reports_path.name
+    return repo_root / "data" / "_dashboard_build" / agent_dir / "fragment.html"
+
+
 def unique_rows(rows: Iterable[dict[str, Any]], keys: list[str]) -> list[dict[str, Any]]:
     seen: set[tuple[Any, ...]] = set()
     result: list[dict[str, Any]] = []

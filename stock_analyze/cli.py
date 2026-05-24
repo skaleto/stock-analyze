@@ -487,6 +487,8 @@ def _auto_write_weekly_briefing(agent_id: str | None, as_of: str | None) -> str 
 # - ``GET /simple/claude.html``     → reports/competition/simple/claude.html
 # - ``GET /simple/codex.html``      → reports/competition/simple/codex.html
 # - ``GET /pro.html``               → reports/competition/dashboard.html (alias)
+# - ``GET /pro/claude.html``        → reports/claude/dashboard.html     (alias, NEW 2026-05-24)
+# - ``GET /pro/codex.html``         → reports/codex/dashboard.html      (alias, NEW 2026-05-24)
 # - ``GET /competition/...``        → reports/competition/...          (unchanged)
 DASHBOARD_ROUTES: dict[str, str] = {
     "/": "/competition/simple.html",
@@ -495,6 +497,8 @@ DASHBOARD_ROUTES: dict[str, str] = {
     "/simple/claude.html": "/competition/simple/claude.html",
     "/simple/codex.html": "/competition/simple/codex.html",
     "/pro.html": "/competition/dashboard.html",
+    "/pro/claude.html": "/claude/dashboard.html",
+    "/pro/codex.html": "/codex/dashboard.html",
 }
 
 

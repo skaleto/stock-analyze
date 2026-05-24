@@ -97,19 +97,38 @@ python3 -m stock_analyze serve-dashboard --host 127.0.0.1 --port 8765
 
 ### 简化版 vs 专业版
 
-竞赛 dashboard 同时输出两份视图,共享同一份 `data/*` 但渲染层不同:
+竞赛 dashboard 同时输出两份视图,共享同一份 `data/*` 但渲染层不同。2026-05-24 重构后,路由对称、视觉统一深色 Bloomberg 风、每页都有跨页 nav + 双时间戳:
 
 | 路径 | 视图 | 适合谁 |
 |---|---|---|
-| `http://127.0.0.1:8765/` | 简化版 (`reports/competition/simple.html`) | 新手 / 不想看因子细节 |
-| `http://127.0.0.1:8765/pro.html` | 专业版 (`reports/competition/dashboard.html`) | 量化老手 / 调参 |
-| `http://127.0.0.1:8765/simple/claude.html` | Claude 单 agent 简化版 | 只关心其中一个 agent |
-| `http://127.0.0.1:8765/simple/codex.html` | Codex 单 agent 简化版 |   |
-| `http://127.0.0.1:8765/competition/dashboard.html` | 同 `/pro.html`(向后兼容) |   |
+| `http://127.0.0.1:8765/` | 简化版合并 (`reports/competition/simple.html`) | 新手 / 不想看因子细节 |
+| `http://127.0.0.1:8765/simple/claude.html` | Claude 单 agent 简化 | 只关心其中一个 agent |
+| `http://127.0.0.1:8765/simple/codex.html` | Codex 单 agent 简化 |   |
+| `http://127.0.0.1:8765/pro.html` | 专业版合并 (`reports/competition/dashboard.html`) | 量化老手 / 调参 |
+| `http://127.0.0.1:8765/pro/claude.html` | Claude 单 agent 专业版 (NEW) | Claude 深度看 |
+| `http://127.0.0.1:8765/pro/codex.html` | Codex 单 agent 专业版 (NEW) | Codex 深度看 |
+| `http://127.0.0.1:8765/competition/dashboard.html` | 同 `/pro.html`(向后兼容)   |   |
 
-- 简化版只显示总资产 / 今日变动 / 双 agent 卡片 / 净值曲线 / 持仓 Top10 / 持仓重叠 / 最近 5 笔成交 / 本月策略调整摘要,**不**包含因子覆盖率、前向 IC、因子贡献明细、运行账本等。
-- 简化版文件大小受 80 KB 上限约束,以确保打开足够快。
-- 跑 `python3 -m stock_analyze competition-dashboard` 一次同时生成专业版 + 简化版,不需要额外指令。
+**简化版内容** (7 个 card,合计 ≤ 80 KB):
+1. 👤 我的账户 (总资产 / 今日 / 本月)
+2. 📊 两位 AI 的成绩 (累计收益 / vs 基准 / 信息比率)
+3. 📈 净值曲线
+4. 🌐 市场环境 — 沪深300 / 中证500 近 12 周 sparkline (NEW 2026-05-24)
+5. 🎯 差异化雷达 — Claude vs Codex 6 因子持仓均值 (NEW 2026-05-24)
+6. 📦 持仓 Top 10 × 2
+7. 🔍 持仓重叠 / 🔄 最近 5 笔成交 / 🧭 本月策略调整摘要
+
+**专业版内容** (4 个二级 Tab,每 Tab 3-5 section):
+- **📊 结果**: 净值曲线 / 绩效解释 / 待执行订单 / 当前持仓 / 近期交易
+- **💡 洞察**: 本期信号 + 因子贡献 / 候选股走势 / 因子覆盖率 + 前向 IC
+- **🩺 健康**: 数据源状态 / 最近运行 / 本期分析任务包
+- **📜 演化**: agent 笔记 / 策略演进时间线
+
+**构建产物位置**:
+- 用户面向 HTML 仅在 `reports/` 下
+- Per-agent fragment 编译中间产物在 `data/_dashboard_build/<agent>/fragment.html`,不污染 `reports/`
+
+跑 `python3 -m stock_analyze competition-dashboard` 一次同时生成专业版 + 简化版,不需要额外指令。
 
 ## 运行输出
 

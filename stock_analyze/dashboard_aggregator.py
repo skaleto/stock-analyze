@@ -24,14 +24,17 @@ from typing import Any
 
 import pandas as pd
 
+from ._dashboard_assets import BASE_CSS, NAV_CSS, render_nav_html
 from .beginner_dashboard import write_beginner_views
 from .competition import resolve_agent_paths
-from .utils import ensure_dirs, format_pct, safe_float
+from .utils import dashboard_fragment_path, ensure_dirs, format_pct, safe_float
 
 
 AGENT_COLORS = {
-    "claude": "#2457a7",
-    "codex": "#b76e00",
+    # Dark Bloomberg palette — must agree with _dashboard_assets BASE_CSS
+    # token values (--claude / --codex).
+    "claude": "#f59e0b",
+    "codex": "#06b6d4",
 }
 DEFAULT_AGENT_ORDER = ("claude", "codex")
 
@@ -100,7 +103,9 @@ def generate_competition_dashboard(
 
 
 def _read_fragment(reports_dir: Path) -> str | None:
-    path = reports_dir / "dashboard_fragment.html"
+    # Fragments live under data/_dashboard_build/<agent>/, NOT in reports/.
+    # See utils.dashboard_fragment_path docstring for rationale (2026-05-24).
+    path = dashboard_fragment_path(reports_dir)
     if not path.exists():
         return None
     try:
@@ -487,76 +492,30 @@ def _render_monthly_links(links: list[dict[str, str]]) -> str:
 
 
 def _render_page(tabs_nav: str, tab_sections: str, nav_json: str, leaderboard_json: str) -> str:
-    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    color_claude = AGENT_COLORS.get("claude", "#2457a7")
-    color_codex = AGENT_COLORS.get("codex", "#b76e00")
+    generated = datetime.now()
+    generated_at = generated.strftime("%Y-%m-%d %H:%M:%S")
+    color_claude = AGENT_COLORS.get("claude", "#f59e0b")
+    color_codex = AGENT_COLORS.get("codex", "#06b6d4")
+    top_nav = render_nav_html(active="pro", generated_at=generated)
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Claude vs Codex Competition · Dashboard</title>
-  <style>
-    :root {{
-      --ink: #17202a;
-      --muted: #667085;
-      --line: #d9e0e8;
-      --panel: #ffffff;
-      --bg: #f4f6f8;
-      --claude: {color_claude};
-      --codex: {color_codex};
-      --tie: #667085;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--ink); }}
-    header {{ padding: 18px 32px 14px; background: #0f253f; color: white; }}
-    header h1 {{ margin: 0; font-size: 22px; }}
-    .subhead {{ margin-top: 4px; color: #c9d7e8; font-size: 13px; }}
-    .tabs {{ display: flex; gap: 8px; padding: 12px 32px; background: #143350; }}
-    .tab-link {{ color: white; text-decoration: none; padding: 6px 14px; border-radius: 6px; background: rgba(255,255,255,0.08); font-size: 14px; }}
-    .tab-link:hover {{ background: rgba(255,255,255,0.18); }}
-    main {{ padding: 24px 32px 48px; max-width: 1440px; margin: 0 auto; }}
-    .tab-section {{ display: none; }}
-    .tab-section:target {{ display: block; }}
-    /* Default to compare tab when no anchor is set. */
-    main > .tab-section:nth-of-type(3) {{ display: block; }}
-    main:has(:target) > .tab-section:nth-of-type(3) {{ display: none; }}
-    main:has(:target) > .tab-section:target {{ display: block; }}
-    .tab-title {{ margin: 0 0 12px; font-size: 22px; }}
-    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }}
-    .metric-card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }}
-    .metric-card .card-label {{ color: var(--muted); font-size: 13px; margin-bottom: 8px; }}
-    .metric-card .metric {{ font-size: 26px; font-weight: 700; }}
-    .panel {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }}
-    canvas {{ width: 100%; height: 320px; background: #fff; border: 1px solid #edf0f3; border-radius: 6px; }}
-    table.comparison {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
-    table.comparison th, table.comparison td {{ padding: 8px 10px; border-bottom: 1px solid #edf0f3; text-align: right; }}
-    table.comparison th.metric-label, table.comparison th:first-child {{ text-align: left; background: #f1f4f8; }}
-    table.comparison thead th {{ background: #f1f4f8; }}
-    .overlap-bar {{ display: flex; height: 28px; border-radius: 6px; overflow: hidden; }}
-    .overlap-bar .seg {{ display: flex; align-items: center; justify-content: center; color: white; font-size: 12px; }}
-    .seg-a {{ background: var(--claude); }}
-    .seg-b {{ background: var(--codex); }}
-    .seg-shared {{ background: #344054; }}
-    .leaderboard-strip {{ display: flex; flex-wrap: wrap; gap: 6px; }}
-    .month-block {{ display: inline-block; padding: 6px 10px; border-radius: 6px; color: white; font-size: 12px; }}
-    .win-claude {{ background: var(--claude); }}
-    .win-codex {{ background: var(--codex); }}
-    .win-tie {{ background: var(--tie); }}
-    .monthly-review-links {{ margin: 0; padding-left: 18px; }}
-    .empty {{ color: var(--muted); }}
-    .hint {{ color: var(--muted); font-size: 12px; margin-top: 6px; }}
-    .observation-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
-    .observation-cell {{ border: 1px solid var(--line); border-radius: 6px; padding: 10px; background: #f9fafb; }}
-    .observation-cell h3 {{ margin: 0 0 8px; font-size: 14px; color: var(--ink); }}
-    .observation-cell pre {{ margin: 6px 0 0; font-size: 12px; }}
-    @media (max-width: 900px) {{ .observation-grid {{ grid-template-columns: 1fr; }} }}
-  </style>
+  <title>Claude vs Codex · Competition Dashboard</title>
+  <style>{BASE_CSS}
+{NAV_CSS}
+{_COMPETITION_CSS}
+:root {{
+  --claude: {color_claude};
+  --codex: {color_codex};
+}}</style>
 </head>
 <body>
-  <header>
-    <h1>Claude vs Codex · Paper Trading Competition</h1>
-    <div class="subhead">生成时间 {generated_at} · 仅模拟交易，不构成投资建议</div>
+  {top_nav}
+  <header class="page-header">
+    <h1>Claude <span class="vs">vs</span> Codex · Paper Trading Competition</h1>
+    <div class="subhead">生成时间 {generated_at} · 仅模拟交易，不构成任何投资建议</div>
   </header>
   {tabs_nav}
   <main>
@@ -576,27 +535,27 @@ def _render_page(tabs_nav: str, tab_sections: str, nav_json: str, leaderboard_js
       const agents = Object.keys(navPanel);
       const allValues = agents.flatMap(a => navPanel[a].map(r => Number(r.total_value))).filter(Number.isFinite);
       if (!allValues.length) {{
-        ctx.fillStyle = '#667085';
+        ctx.fillStyle = '#8b95a7';
         ctx.fillText('暂无对比净值数据，等两侧都跑过至少 2 个 NAV 日。', 24, 40);
         return;
       }}
       const min = Math.min(...allValues);
       const max = Math.max(...allValues);
       const pad = 42;
-      ctx.strokeStyle = '#d8dee8';
+      ctx.strokeStyle = '#2a3145';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(pad, pad);
       ctx.lineTo(pad, canvas.height - pad);
       ctx.lineTo(canvas.width - pad, canvas.height - pad);
       ctx.stroke();
-      ctx.fillStyle = '#667085';
+      ctx.fillStyle = '#8b95a7';
       ctx.fillText(max.toLocaleString('zh-CN', {{ maximumFractionDigits: 0 }}), 8, pad + 4);
       ctx.fillText(min.toLocaleString('zh-CN', {{ maximumFractionDigits: 0 }}), 8, canvas.height - pad);
       agents.forEach((agent, idx) => {{
         const series = navPanel[agent];
         if (!series.length) return;
-        ctx.strokeStyle = colors[agent] || '#344054';
+        ctx.strokeStyle = colors[agent] || '#5a6478';
         ctx.lineWidth = 2.5;
         ctx.beginPath();
         series.forEach((row, i) => {{
@@ -605,7 +564,7 @@ def _render_page(tabs_nav: str, tab_sections: str, nav_json: str, leaderboard_js
           if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
         }});
         ctx.stroke();
-        ctx.fillStyle = colors[agent] || '#344054';
+        ctx.fillStyle = colors[agent] || '#5a6478';
         ctx.fillText(agent, canvas.width - 130, 28 + idx * 20);
       }});
     }}
@@ -614,4 +573,87 @@ def _render_page(tabs_nav: str, tab_sections: str, nav_json: str, leaderboard_js
   </script>
 </body>
 </html>
+"""
+
+
+# ---------------------------------------------------------------------------
+# Dark Bloomberg theme for the competition page. Class names preserved.
+# Color/spacing tokens pull from _dashboard_assets.BASE_CSS.
+
+_COMPETITION_CSS = """
+.page-header { padding: var(--space-md) var(--space-xl) var(--space-sm); background: var(--bg-elevated); border-bottom: 1px solid var(--border-subtle); }
+.page-header h1 { margin: 0; font-size: 22px; font-weight: 600; color: var(--text-primary); letter-spacing: 0.02em; }
+.page-header h1 .vs { color: var(--text-tertiary); font-weight: 400; padding: 0 6px; font-size: 18px; }
+.page-header .subhead { margin-top: 4px; color: var(--text-tertiary); font-size: 12px; font-family: var(--font-mono); }
+
+/* Competition tab bar (per-agent + compare) — separate from the global top nav */
+.tabs { display: flex; gap: var(--space-xs); padding: var(--space-sm) var(--space-xl); background: var(--bg-elevated); border-bottom: 1px solid var(--border-subtle); }
+.tab-link { color: var(--text-secondary); text-decoration: none; padding: 6px 14px; border-radius: var(--radius-sm); background: var(--bg-overlay); font-size: 13px; font-weight: 500; letter-spacing: 0.04em; transition: color 0.12s, background 0.12s; }
+.tab-link:hover { background: var(--bg-base); color: var(--text-primary); text-decoration: none; }
+
+/* Tab sections (CSS-only :target switching) */
+main { padding: var(--space-lg) var(--space-xl) var(--space-xl); max-width: 1600px; margin: 0 auto; }
+.tab-section { display: none; }
+.tab-section:target { display: block; }
+main > .tab-section:nth-of-type(3) { display: block; }
+main:has(:target) > .tab-section:nth-of-type(3) { display: none; }
+main:has(:target) > .tab-section:target { display: block; }
+.tab-title { margin: 0 0 var(--space-md); font-size: 18px; font-weight: 600; color: var(--text-primary); text-transform: uppercase; letter-spacing: 0.06em; }
+
+h2 { margin: var(--space-xl) 0 var(--space-md); font-size: 13px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.08em; }
+
+/* KPI / metric cards */
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-md); }
+.metric-card { background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-md); }
+.metric-card .card-label { color: var(--text-tertiary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: var(--space-sm); }
+.metric-card .metric { font-size: 24px; font-weight: 600; font-family: var(--font-mono); color: var(--text-primary); font-variant-numeric: tabular-nums; }
+
+/* Panels */
+.panel { background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-md); }
+canvas { width: 100%; height: 320px; background: var(--bg-overlay); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); }
+
+/* Comparison table */
+table.comparison { width: 100%; border-collapse: collapse; font-size: 12px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+table.comparison th, table.comparison td { padding: var(--space-sm) var(--space-md); border-bottom: 1px solid var(--border-subtle); text-align: right; color: var(--text-primary); }
+table.comparison thead th { background: var(--bg-overlay); color: var(--text-tertiary); font-weight: 500; text-transform: uppercase; font-size: 11px; letter-spacing: 0.06em; }
+table.comparison th.metric-label, table.comparison th:first-child { text-align: left; background: var(--bg-overlay); }
+table.comparison strong { color: var(--accent); font-weight: 600; }
+
+/* Overlap bar */
+.overlap-bar { display: flex; height: 28px; border-radius: var(--radius-sm); overflow: hidden; border: 1px solid var(--border-subtle); }
+.overlap-bar .seg { display: flex; align-items: center; justify-content: center; color: var(--bg-base); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.seg-a { background: var(--claude); }
+.seg-b { background: var(--codex); }
+.seg-shared { background: var(--text-secondary); }
+
+/* Leaderboard strip */
+.leaderboard-strip { display: flex; flex-wrap: wrap; gap: var(--space-xs); }
+.month-block { display: inline-block; padding: 4px 10px; border-radius: var(--radius-sm); color: var(--bg-base); font-size: 11px; font-weight: 600; font-family: var(--font-mono); }
+.win-claude { background: var(--claude); }
+.win-codex { background: var(--codex); }
+.win-tie { background: var(--tie); }
+
+/* Monthly review links */
+.monthly-review-links { margin: 0; padding-left: var(--space-lg); }
+.monthly-review-links li { color: var(--text-secondary); margin: 4px 0; }
+
+/* Empty / hint */
+.empty { color: var(--text-tertiary); font-size: 13px; }
+.hint { color: var(--text-tertiary); font-size: 11px; margin-top: var(--space-xs); font-family: var(--font-mono); }
+
+/* Observation pairing (side-by-side weekly notes) */
+.observation-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-md); }
+.observation-cell { border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: var(--space-md); background: var(--bg-overlay); }
+.observation-cell h3 { margin: 0 0 var(--space-sm); font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.06em; }
+.observation-cell pre { margin: var(--space-xs) 0 0; font-size: 11px; color: var(--text-primary); white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+.observation-cell details summary { color: var(--text-tertiary); font-size: 11px; cursor: pointer; padding: 4px 0; }
+
+/* Code spans for command names */
+code { background: var(--bg-overlay); color: var(--accent); padding: 1px 5px; border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 11px; }
+
+/* Responsive */
+@media (max-width: 900px) {
+  .observation-grid { grid-template-columns: 1fr; }
+  main { padding: var(--space-md); }
+}
 """
