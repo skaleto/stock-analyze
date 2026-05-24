@@ -208,6 +208,16 @@ def prepare_market_data(
     cache_dir = repo_root / "data" / "shared" / "cache"
     ensure_dirs(cache_dir, repo_root / "data" / "shared")
 
+    if force:
+        # --force at the orchestration layer skipped the snapshot-existence check
+        # above, but the per-provider methods (spot, stock_basic, index_constituents,
+        # trading_calendar) all short-circuit on a non-empty load_cache(...) result —
+        # so stale universe CSVs from a prior bad run were silently re-served. Drop
+        # them here so the provider falls through to a real fetch.
+        for pattern in ("spot_*", "stock_basic_*", "constituents_*", "trading_calendar"):
+            for path in cache_dir.glob(f"{pattern}.csv"):
+                path.unlink(missing_ok=True)
+
     scopes, benchmarks = _resolve_scopes_and_benchmarks(repo_root, scopes)
     agents = [competition.load(agent_id, repo_root=repo_root) for agent_id in competition.list_agents(repo_root)]
     filters = _merged_filters(agents)
