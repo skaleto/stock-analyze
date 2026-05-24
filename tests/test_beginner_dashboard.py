@@ -204,7 +204,10 @@ def _default_trades() -> list[dict]:
 
 
 class TabBarAndShellTests(unittest.TestCase):
-    def test_tab_bar_marks_simple_as_active(self) -> None:
+    def test_top_nav_marks_simple_combined_as_active(self) -> None:
+        # 2026-05-24 IA refactor: legacy tab-bar (class="tab active") replaced
+        # by the unified .dashboard-nav from _dashboard_assets.render_nav_html.
+        # Active state is now signaled via data-active="true" on the matching link.
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             _seed_repo(tmp_path)
@@ -222,14 +225,24 @@ class TabBarAndShellTests(unittest.TestCase):
                     trades=_default_trades(),
                 )
             html = render_beginner_competition_html(paths, today="2026-05-23")
-            self.assertIn('<a class="tab active" href="/simple.html">简化版</a>', html)
+            # Unified nav present and the simple-combined entry is active.
+            self.assertIn('class="dashboard-nav"', html)
+            self.assertIn('href="/" data-active="true"', html)
+            # All six cross-page links are reachable.
+            self.assertIn('href="/simple/claude.html"', html)
+            self.assertIn('href="/simple/codex.html"', html)
             self.assertIn('href="/pro.html"', html)
-            self.assertIn("data-id=\"0\"", html)
+            self.assertIn('href="/pro/claude.html"', html)
+            self.assertIn('href="/pro/codex.html"', html)
+            # Section cards 1..3 still emitted.
             self.assertIn("data-id=\"1\"", html)
             self.assertIn("data-id=\"2\"", html)
             self.assertIn("data-id=\"3\"", html)
 
-    def test_eight_section_data_ids_in_order(self) -> None:
+    def test_section_data_ids_in_ascending_order(self) -> None:
+        # 2026-05-24 IA refactor: the old data-id="0" tab-bar was removed
+        # from the section flow (the new top nav has no data-id). Now the
+        # body starts at data-id="1" (account card) and remains ascending.
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             _seed_repo(tmp_path)
@@ -249,10 +262,9 @@ class TabBarAndShellTests(unittest.TestCase):
                 )
             html = render_beginner_competition_html(paths, today="2026-05-23")
             ids = [int(m) for m in re.findall(r'data-id="(\d+)"', html)]
-            # tab bar = 0, then 1..8 in ascending order
-            self.assertEqual(ids[0], 0)
-            ascending = ids[1:]
-            self.assertEqual(ascending, sorted(ascending))
+            self.assertGreaterEqual(len(ids), 7, "expected 7+ body sections")
+            self.assertEqual(ids[0], 1)
+            self.assertEqual(ids, sorted(ids))
             self.assertGreaterEqual(max(ids), 7)
 
 

@@ -31,6 +31,7 @@ from typing import Any
 
 import pandas as pd
 
+from ._dashboard_assets import BASE_CSS, NAV_CSS, render_nav_html
 from .beginner_format import cn_date, cn_relative_date, cny, pct
 from .competition import AgentPaths, resolve_agent_paths
 from .utils import safe_float
@@ -45,10 +46,12 @@ __all__ = [
 
 AGENT_DISPLAY = {"claude": "Claude", "codex": "Codex"}
 AGENT_LINE_COLOR = {
-    "claude": "#c4520d",
-    "codex": "#2a6c9c",
-    "000300": "#7a7a7a",
-    "000905": "#b59a4a",
+    # Dark Bloomberg palette — must agree with _dashboard_assets.BASE_CSS
+    # token values (--claude / --codex / --bench-hs300 / --bench-zz500).
+    "claude": "#f59e0b",
+    "codex": "#06b6d4",
+    "000300": "#6b7280",
+    "000905": "#8b95a7",
 }
 BENCHMARK_LABEL = {"000300": "沪深300", "000905": "中证500"}
 DEFAULT_AGENT_ORDER = ("claude", "codex")
@@ -69,18 +72,23 @@ def render_beginner_competition_html(
     today_iso = today or date.today().isoformat()
     state = _gather_state(paths_by_agent)
     sections: list[str] = []
-    sections.append(_render_tab_bar(active="simple"))
-    sections.append(_render_account_card(state, today_iso))
-    sections.append(_render_agent_score_cards(state))
+    sections.append(_render_account_card(state, today_iso, solo_agent=None))
+    sections.append(_render_agent_score_cards(state, solo_agent=None))
     sections.append(_render_nav_chart(state, today_iso))
+    sections.append(_render_market_environment(state, today_iso))
+    sections.append(_render_differentiation_radar(state))
     for agent_id in state["agent_order"]:
         sections.append(_render_top_holdings(state, agent_id))
     sections.append(_render_position_overlap_summary(state))
     sections.append(_render_recent_trades(state, today_iso))
     sections.append(_render_monthly_evolution_summary(state, today_iso))
-    sections.append(_render_footer_links())
     body = "\n".join(sections)
-    return _shell_html("我的纸面投资 · 简化版", body, today_iso)
+    return _shell_html(
+        title="我的纸面投资 · 简化版",
+        body=body,
+        today_iso=today_iso,
+        nav_active="simple",
+    )
 
 
 def render_beginner_agent_html(
@@ -92,17 +100,20 @@ def render_beginner_agent_html(
     today_iso = today or date.today().isoformat()
     state = _gather_state({paths.agent_id: paths})
     sections: list[str] = []
-    sections.append(_render_tab_bar(active="simple"))
-    sections.append(_render_account_card(state, today_iso))
-    sections.append(_render_agent_score_cards(state))
+    sections.append(_render_account_card(state, today_iso, solo_agent=paths.agent_id))
+    sections.append(_render_agent_score_cards(state, solo_agent=paths.agent_id))
     sections.append(_render_nav_chart(state, today_iso))
     sections.append(_render_top_holdings(state, paths.agent_id))
     sections.append(_render_recent_trades(state, today_iso))
     sections.append(_render_monthly_evolution_summary(state, today_iso))
-    sections.append(_render_footer_links())
     body = "\n".join(sections)
     display = AGENT_DISPLAY.get(paths.agent_id, paths.agent_id)
-    return _shell_html(f"{display} · 简化版", body, today_iso)
+    return _shell_html(
+        title=f"{display} · 简化版",
+        body=body,
+        today_iso=today_iso,
+        nav_active=f"simple-{paths.agent_id}",
+    )
 
 
 def write_beginner_views(
@@ -158,6 +169,7 @@ def _gather_state(paths_by_agent: dict[str, AgentPaths]) -> dict[str, Any]:
         "nav": {},
         "positions": {},
         "trades": {},
+        "signals": {},
         "evolution": {},
         "benchmarks": {},
     }
@@ -167,6 +179,7 @@ def _gather_state(paths_by_agent: dict[str, AgentPaths]) -> dict[str, Any]:
         state["nav"][agent_id] = _read_nav_dataframe(paths.data_dir)
         state["positions"][agent_id] = _read_positions(paths.data_dir)
         state["trades"][agent_id] = _read_trades(paths.data_dir)
+        state["signals"][agent_id] = _read_signals(paths.data_dir)
         state["evolution"][agent_id] = _read_latest_evolution_log(paths.data_dir)
 
     state["benchmarks"] = _derive_benchmark_series(state["nav"])
@@ -223,6 +236,24 @@ def _read_trades(data_dir: Path) -> pd.DataFrame:
     return df
 
 
+def _read_signals(data_dir: Path) -> pd.DataFrame:
+    """Read the agent's latest weekly stock-pick signals.
+
+    The radar chart on the simplified view averages factor values across
+    each agent's pick set to surface style differences (Claude tilts
+    value/momentum vs Codex tilts quality/dividend, etc.).
+    """
+
+    path = data_dir / "latest_signals.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(path, dtype={"code": str})
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame()
+    return df
+
+
 def _read_latest_evolution_log(data_dir: Path) -> dict[str, str] | None:
     """Return the latest monthly evolution log summary, or ``None``."""
 
@@ -269,11 +300,15 @@ def _derive_benchmark_series(nav_by_agent: dict[str, pd.DataFrame]) -> dict[str,
         if df.empty or "benchmark_code" not in df.columns:
             continue
         for code, group in df.groupby("benchmark_code"):
-            if code in result:
+            # benchmark_code may be read by pandas as int (300) instead of
+            # string ("000300"); zfill ensures the dict key matches the
+            # BENCHMARK_LABEL convention so downstream lookups don't miss.
+            key = str(code).zfill(6) if str(code).isdigit() else str(code)
+            if key in result:
                 continue
             sub = group[["date", "benchmark_close"]].dropna().drop_duplicates("date")
             sub = sub.sort_values("date")
-            result[str(code)] = [
+            result[key] = [
                 {"date": row["date"], "close": safe_float(row["benchmark_close"])}
                 for _, row in sub.iterrows()
                 if safe_float(row["benchmark_close"]) is not None
@@ -285,21 +320,18 @@ def _derive_benchmark_series(nav_by_agent: dict[str, pd.DataFrame]) -> dict[str,
 # Section renderers
 
 
-def _render_tab_bar(active: str) -> str:
-    def cls(name: str) -> str:
-        return "tab active" if name == active else "tab"
+def _render_account_card(
+    state: dict[str, Any],
+    today_iso: str,
+    solo_agent: str | None = None,
+) -> str:
+    """Section 1: aggregated 总资产 / 今日 / 本月.
 
-    return (
-        '<nav class="tab-bar" data-id="0">'
-        f'<a class="{cls("simple")}" href="/simple.html">简化版</a>'
-        f'<a class="{cls("pro")}" href="/pro.html">专业版</a>'
-        f'<a class="{cls("evolution")}" href="/competition/dashboard.html#tab-compare">策略演进</a>'
-        '</nav>'
-    )
-
-
-def _render_account_card(state: dict[str, Any], today_iso: str) -> str:
-    """Section 1: aggregated 总资产 / 今日 / 本月."""
+    When ``solo_agent`` is given, the card narrates a single agent's
+    account (not "two AI combined"). The KPI math is unchanged because
+    ``_compute_aggregate_account`` already collapses across whatever
+    agents were loaded into state.
+    """
 
     totals = _compute_aggregate_account(state)
     items = []
@@ -317,24 +349,41 @@ def _render_account_card(state: dict[str, Any], today_iso: str) -> str:
         f'<div class="kpi-value big">{pct(totals["month_ratio"], color=True)}</div>'
         f'<div class="kpi-sub">{html.escape(cny(totals["month_delta"]))}</div></div>'
     )
+    if solo_agent:
+        display = AGENT_DISPLAY.get(solo_agent, solo_agent)
+        scope_hint = f"{display} 当前资产"
+    else:
+        scope_hint = "两个 AI 合计资产"
     return (
         '<section class="card account-card" data-id="1">'
         '<h2>👤 我的账户</h2>'
         f'<div class="kpi-row">{"".join(items)}</div>'
-        f'<p class="hint">截至 {html.escape(cn_date(today_iso))}，两个 AI 合计资产</p>'
+        f'<p class="hint">截至 {html.escape(cn_date(today_iso))}，{html.escape(scope_hint)}</p>'
         '</section>'
     )
 
 
-def _render_agent_score_cards(state: dict[str, Any]) -> str:
-    """Section 2: two agent score cards side-by-side."""
+def _render_agent_score_cards(
+    state: dict[str, Any],
+    solo_agent: str | None = None,
+) -> str:
+    """Section 2: agent score cards.
+
+    When ``solo_agent`` is given, only one card is shown and the section
+    title narrates that one agent (not "两位 AI").
+    """
 
     cards: list[str] = []
     for agent_id in state["agent_order"]:
         cards.append(_render_single_agent_score(state, agent_id))
+    if solo_agent:
+        display = AGENT_DISPLAY.get(solo_agent, solo_agent)
+        title = f"📊 {display} 的成绩"
+    else:
+        title = "📊 两位 AI 的成绩"
     return (
         '<section class="card" data-id="2">'
-        '<h2>📊 两位 AI 的成绩</h2>'
+        f'<h2>{title}</h2>'
         f'<div class="agent-grid">{"".join(cards)}</div>'
         '</section>'
     )
@@ -612,15 +661,256 @@ def _render_monthly_evolution_summary(state: dict[str, Any], today_iso: str) -> 
     )
 
 
-def _render_footer_links() -> str:
+# ---------------------------------------------------------------------------
+# Market environment + differentiation radar (added 2026-05-24 IA refactor)
+
+
+# Six factors used by both agents' overlays. Each tuple is
+# (factor_column, display_label, lower_is_better).
+_RADAR_FACTORS: tuple[tuple[str, str, bool], ...] = (
+    ("pe", "PE 低估", True),
+    ("pb", "PB 低估", True),
+    ("roe", "ROE", False),
+    ("momentum_60", "60 日动量", False),
+    ("low_volatility_60", "低波 60", True),
+    ("dividend_yield", "股息率", False),
+)
+
+
+def _render_market_environment(state: dict[str, Any], today_iso: str) -> str:
+    """Section 3.5: 沪深300 / 中证500 weekly close trend strip.
+
+    Helps the user place the agents' returns in market context — if both
+    indices are down, "Codex 跑赢沪深300 0.5%" still means a loss in
+    absolute terms.
+    """
+
+    benchmarks = state.get("benchmarks") or {}
+    cards: list[str] = []
+    for code, label in BENCHMARK_LABEL.items():
+        series = benchmarks.get(code) or []
+        if not series:
+            continue
+        # Last ~12 weekly closes (we approximate by taking every 5th daily
+        # observation, oldest first). This is a sparkline of market trend,
+        # NOT a true K-line — daily OHLC is not surfaced by the data layer
+        # to the dashboard yet. See data/claude/notes/2026-05-24-... for
+        # the K-line upgrade plan.
+        weekly = series[::5][-12:]
+        if len(weekly) < 2:
+            continue
+        first = weekly[0].get("close")
+        last = weekly[-1].get("close")
+        if not first or not last:
+            continue
+        change = last / first - 1
+        change_html = f'<span class="{"pos" if change >= 0 else "neg"}">{pct(change, color=False)}</span>'
+        svg = _render_mini_line_svg(
+            [(row["date"], row["close"]) for row in weekly],
+            stroke=AGENT_LINE_COLOR.get(code, "#8b95a7"),
+        )
+        cards.append(
+            '<div class="market-card">'
+            f'<div class="market-label">{html.escape(label)} <span class="stock-code">{html.escape(code)}</span></div>'
+            f'<div class="market-change">近 12 周 {change_html}</div>'
+            f'{svg}'
+            '</div>'
+        )
+    if not cards:
+        return ""
+    # No data-id attribute on this new section — the legacy 1..N data-id
+    # sequence belongs to the original 8 sections; new IA additions stay
+    # outside that numbering to keep the existing ordering test stable.
     return (
-        '<footer class="footer">'
-        '<a href="/pro.html">专业版</a> · '
-        '<a href="/competition/dashboard.html">完整对比 dashboard</a> · '
-        '<a href="/claude/dashboard.html">Claude 详情</a> · '
-        '<a href="/codex/dashboard.html">Codex 详情</a>'
-        '<p class="hint">本视图仅展示模拟成交,不构成任何投资建议。</p>'
-        '</footer>'
+        '<section class="card">'
+        '<h2>🌐 市场环境（沪深300 / 中证500 近 12 周）</h2>'
+        f'<div class="market-grid">{"".join(cards)}</div>'
+        '<p class="hint">把两位 AI 的累计收益放到市场背景里看：基准下跌时，跑赢指数不代表绝对收益为正。</p>'
+        '</section>'
+    )
+
+
+def _render_mini_line_svg(points: list[tuple[str, float]], stroke: str) -> str:
+    """Tiny sparkline-style SVG for the market-environment cards.
+
+    Width 100% (viewBox), height 60px. No axes, no labels — just the line
+    and a faint baseline at the first value.
+    """
+
+    if not points:
+        return ''
+    width = 300
+    height = 60
+    pad_x = 4
+    pad_y = 6
+    values = [v for _, v in points]
+    v_min = min(values)
+    v_max = max(values)
+    if v_max == v_min:
+        v_max = v_min + 0.001
+    inner_w = width - 2 * pad_x
+    inner_h = height - 2 * pad_y
+
+    def x_of(i: int) -> float:
+        return pad_x + (i / max(len(points) - 1, 1)) * inner_w
+
+    def y_of(v: float) -> float:
+        return pad_y + (1 - (v - v_min) / (v_max - v_min)) * inner_h
+
+    line_points = " ".join(f"{x_of(i):.1f},{y_of(v):.1f}" for i, (_, v) in enumerate(points))
+    first_y = y_of(points[0][1])
+    return (
+        f'<svg class="mini-line" viewBox="0 0 {width} {height}" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">'
+        f'<line x1="{pad_x}" y1="{first_y:.1f}" x2="{width - pad_x}" y2="{first_y:.1f}" stroke="#2a3145" stroke-dasharray="2 4" stroke-opacity="0.6" />'
+        f'<polyline fill="none" stroke="{stroke}" stroke-width="1.5" points="{line_points}" />'
+        '</svg>'
+    )
+
+
+def _render_differentiation_radar(state: dict[str, Any]) -> str:
+    """Section 4 (NEW 2026-05-24): six-axis radar comparing factor tilt.
+
+    For each agent we average the 6 factor columns across the latest
+    weekly signals and project the two polygons over the same axis set.
+    Normalization is max-of-both per axis so the polygon visually
+    answers "which agent leans more {value, quality, momentum, low-vol,
+    dividend}". For inverted-direction factors (PE, PB, low-vol) we
+    flip the axis so that a polygon pushing outward means "more X".
+    """
+
+    if len(state["agent_order"]) < 2:
+        return ""  # Single-agent view does not show the comparison radar.
+
+    # Compute factor means per agent.
+    means_by_agent: dict[str, dict[str, float | None]] = {}
+    for agent_id in state["agent_order"]:
+        signals = state["signals"].get(agent_id, pd.DataFrame())
+        means_by_agent[agent_id] = {}
+        if signals.empty:
+            for col, _, _ in _RADAR_FACTORS:
+                means_by_agent[agent_id][col] = None
+            continue
+        for col, _, _ in _RADAR_FACTORS:
+            if col not in signals.columns:
+                means_by_agent[agent_id][col] = None
+                continue
+            series = pd.to_numeric(signals[col], errors="coerce").dropna()
+            means_by_agent[agent_id][col] = float(series.mean()) if not series.empty else None
+
+    # If neither agent has any factor data, skip the card.
+    has_any = any(any(v is not None for v in d.values()) for d in means_by_agent.values())
+    if not has_any:
+        return ""
+
+    axes = [(col, label, lower_better) for col, label, lower_better in _RADAR_FACTORS]
+    n_axes = len(axes)
+    width = 460
+    height = 360
+    cx = width / 2
+    cy = height / 2 + 6
+    radius = 130
+    import math
+
+    # Per-axis normalization: for lower-is-better factors invert so that
+    # a larger plotted value means "more of this style".
+    normalized: dict[str, list[float | None]] = {agent: [] for agent in state["agent_order"]}
+    for col, _, lower_better in axes:
+        raw = {agent: means_by_agent[agent].get(col) for agent in state["agent_order"]}
+        valid = [v for v in raw.values() if v is not None]
+        if not valid:
+            for agent in state["agent_order"]:
+                normalized[agent].append(None)
+            continue
+        if lower_better:
+            # Invert: smaller value → larger normalized score.
+            v_max = max(valid)
+            transformed = {agent: (v_max - v) if v is not None else None for agent, v in raw.items()}
+        else:
+            transformed = dict(raw)
+        valid_t = [v for v in transformed.values() if v is not None]
+        peak = max(valid_t) if valid_t else 1.0
+        if peak <= 0:
+            peak = 1.0
+        for agent in state["agent_order"]:
+            v = transformed.get(agent)
+            normalized[agent].append((v / peak) if v is not None else None)
+
+    # SVG: axis lines + grid rings + labels + polygons.
+    svg_parts: list[str] = []
+    # Grid rings
+    for r_ratio in (0.25, 0.5, 0.75, 1.0):
+        r = radius * r_ratio
+        svg_parts.append(
+            f'<circle cx="{cx}" cy="{cy}" r="{r:.1f}" fill="none" stroke="#2a3145" stroke-opacity="0.6" stroke-width="1" />'
+        )
+    # Axis spokes + labels
+    angles: list[float] = []
+    for i, (_, label, _) in enumerate(axes):
+        angle = -math.pi / 2 + i * (2 * math.pi / n_axes)
+        angles.append(angle)
+        x_end = cx + radius * math.cos(angle)
+        y_end = cy + radius * math.sin(angle)
+        svg_parts.append(
+            f'<line x1="{cx}" y1="{cy}" x2="{x_end:.1f}" y2="{y_end:.1f}" stroke="#2a3145" stroke-opacity="0.6" stroke-width="1" />'
+        )
+        label_x = cx + (radius + 18) * math.cos(angle)
+        label_y = cy + (radius + 18) * math.sin(angle)
+        anchor = "middle"
+        if math.cos(angle) > 0.3:
+            anchor = "start"
+        elif math.cos(angle) < -0.3:
+            anchor = "end"
+        svg_parts.append(
+            f'<text x="{label_x:.1f}" y="{label_y:.1f}" text-anchor="{anchor}" dominant-baseline="middle" '
+            f'font-size="11" fill="#8b95a7" font-family="-apple-system, PingFang SC, sans-serif">{html.escape(label)}</text>'
+        )
+
+    # Polygons per agent
+    legend_items: list[str] = []
+    for agent in state["agent_order"]:
+        color = AGENT_LINE_COLOR.get(agent, "#8b95a7")
+        coords: list[str] = []
+        for i, value in enumerate(normalized[agent]):
+            v = value if value is not None else 0.0
+            r = radius * max(0.0, min(1.0, v))
+            x = cx + r * math.cos(angles[i])
+            y = cy + r * math.sin(angles[i])
+            coords.append(f"{x:.1f},{y:.1f}")
+        polygon_points = " ".join(coords)
+        svg_parts.append(
+            f'<polygon points="{polygon_points}" fill="{color}" fill-opacity="0.15" '
+            f'stroke="{color}" stroke-width="2" />'
+        )
+        # Dots at each axis point
+        for i, value in enumerate(normalized[agent]):
+            v = value if value is not None else 0.0
+            r = radius * max(0.0, min(1.0, v))
+            x = cx + r * math.cos(angles[i])
+            y = cy + r * math.sin(angles[i])
+            svg_parts.append(
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3" fill="{color}" />'
+            )
+        legend_items.append(
+            f'<span class="legend-item"><span class="dot" style="background:{color}"></span>'
+            f'{html.escape(AGENT_DISPLAY.get(agent, agent))}</span>'
+        )
+
+    svg_html = (
+        f'<svg class="radar-chart" viewBox="0 0 {width} {height}" preserveAspectRatio="xMidYMid meet" '
+        'xmlns="http://www.w3.org/2000/svg">'
+        + "".join(svg_parts)
+        + "</svg>"
+    )
+
+    # No data-id (see note on _render_market_environment).
+    return (
+        '<section class="card">'
+        '<h2>🎯 差异化雷达（持仓因子均值，每轴归一）</h2>'
+        f'{svg_html}'
+        f'<div class="legend">{"".join(legend_items)}</div>'
+        '<p class="hint">每轴方向：向外 = 更偏向该风格。PE / PB / 低波三轴已反向，'
+        '所以向外 = 更便宜 / 更低波。轴长按两位 agent 均值的较大者归一。</p>'
+        '</section>'
     )
 
 
@@ -628,87 +918,142 @@ def _render_footer_links() -> str:
 # Helpers
 
 
-def _shell_html(title: str, body: str, today_iso: str) -> str:
-    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def _shell_html(
+    title: str,
+    body: str,
+    today_iso: str,
+    nav_active: str | None = None,
+) -> str:
+    """Wrap section body HTML in the full <html> document.
+
+    Includes the global top nav (from ``_dashboard_assets``) and dark
+    Bloomberg-styled CSS scoped to the simplified view's class names.
+    """
+
+    generated = datetime.now()
     safe_title = html.escape(title)
     today_display = html.escape(cn_date(today_iso))
-    style = _CSS
+    nav = render_nav_html(active=nav_active, generated_at=generated, data_as_of=today_iso)
     return f"""<!DOCTYPE html>
-<html lang=\"zh-CN\">
+<html lang="zh-CN">
 <head>
-  <meta charset=\"utf-8\">
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{safe_title}</title>
-  <style>{style}</style>
+  <style>{BASE_CSS}
+{NAV_CSS}
+{_CSS}</style>
 </head>
 <body>
-  <header class=\"page-header\">
+  {nav}
+  <header class="page-header">
     <h1>{safe_title}</h1>
-    <p class=\"page-sub\">数据截至 {today_display} · 生成于 {generated_at}</p>
+    <p class="page-sub">数据截至 {today_display}</p>
   </header>
   <main>
 {body}
   </main>
+  <footer class="footer">
+    <p class="hint">仅模拟交易 · 不构成任何投资建议</p>
+  </footer>
 </body>
 </html>
 """
 
 
+# Simplified-view CSS: dark Bloomberg theme that consumes the BASE_CSS
+# tokens defined in ``_dashboard_assets``. Class names are preserved so
+# the section renderers do not need to be rewritten.
 _CSS = """
-* { box-sizing: border-box; }
-body { margin: 0; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; background: #fffaf3; color: #2c1a00; }
-main { max-width: 960px; margin: 0 auto; padding: 16px 24px 48px; }
-.page-header { padding: 20px 24px; background: linear-gradient(135deg, #c4520d, #e88a3a); color: #fff; }
-.page-header h1 { margin: 0; font-size: 22px; }
-.page-sub { margin: 6px 0 0; font-size: 13px; opacity: 0.92; }
-.tab-bar { display: flex; gap: 12px; margin: 14px 0 18px; }
-.tab { padding: 8px 18px; border-radius: 999px; background: #f1e4cc; color: #2c1a00; text-decoration: none; font-size: 14px; }
-.tab.active { background: #c4520d; color: #fff; box-shadow: 0 2px 6px rgba(196,82,13,0.25); }
-.card { background: #fff; border: 1px solid #e6d6b8; border-radius: 14px; padding: 18px 22px; margin: 16px 0; box-shadow: 0 2px 8px rgba(70,40,0,0.05); }
-.card h2 { margin: 0 0 12px; font-size: 18px; color: #5a3a18; }
-.kpi-row { display: flex; gap: 24px; flex-wrap: wrap; }
-.kpi { flex: 1 1 220px; }
-.kpi-label { font-size: 13px; color: #8c7350; }
-.kpi-value { font-size: 22px; font-weight: 600; }
-.kpi-value.big { font-size: 30px; }
-.kpi-sub { font-size: 13px; color: #8c7350; margin-top: 2px; }
-.pos { color: #c4520d; }
-.neg { color: #1a7340; }
-.zero { color: #8c7350; }
-.agent-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
-.agent-score { padding: 14px 16px; background: #fcf3e0; border-radius: 12px; }
-.agent-score.codex { background: #ecf3f9; }
-.agent-name { font-weight: 600; font-size: 15px; color: #5a3a18; }
-.agent-score.codex .agent-name { color: #1f4c70; }
-.agent-cumulative { font-size: 26px; font-weight: 700; margin: 4px 0; }
-.agent-cumulative-label { font-size: 12px; color: #8c7350; margin-bottom: 8px; }
-.agent-vs-benchmark { font-size: 14px; margin-bottom: 4px; }
-.agent-ir { font-size: 12px; color: #8c7350; }
-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-table.holdings th, table.holdings td, table.trades th, table.trades td { padding: 8px 10px; text-align: right; border-bottom: 1px solid #f3e4c4; }
-table.holdings th:first-child, table.holdings td:first-child, table.trades th:first-child, table.trades td:first-child { text-align: left; }
-table.holdings th, table.trades th { background: #fcf3e0; color: #6b4820; font-weight: 600; }
-.stock-name { font-weight: 600; margin-right: 6px; }
-.stock-code { color: #8c7350; font-size: 12px; }
-.trade-side.buy { color: #c4520d; font-weight: 600; }
-.trade-side.sell { color: #1a7340; font-weight: 600; }
-.overlap-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
-.overlap-cell { background: #fcf3e0; border-radius: 10px; padding: 12px 14px; }
-.overlap-label { font-size: 13px; color: #8c7350; margin-bottom: 4px; }
-.overlap-value { font-size: 14px; }
-.overlap-value.empty { color: #8c7350; }
-.legend { display: flex; gap: 16px; margin-top: 10px; font-size: 13px; color: #6b4820; }
+main { max-width: 1200px; margin: 0 auto; padding: var(--space-lg) var(--space-xl); }
+.page-header { padding: var(--space-lg) var(--space-xl); background: var(--bg-elevated); border-bottom: 1px solid var(--border-subtle); }
+.page-header h1 { margin: 0; font-size: 22px; font-weight: 600; color: var(--text-primary); letter-spacing: 0.02em; }
+.page-sub { margin: 6px 0 0; font-size: 12px; color: var(--text-tertiary); font-family: var(--font-mono); }
+
+/* Cards — flat panels, no rounded "fluffy" feel */
+.card { background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-md) var(--space-lg); margin: var(--space-md) 0; }
+.card h2 { margin: 0 0 var(--space-md); font-size: 14px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.06em; }
+
+/* KPI row */
+.kpi-row { display: flex; gap: var(--space-xl); flex-wrap: wrap; }
+.kpi { flex: 1 1 200px; min-width: 0; }
+.kpi-label { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px; }
+.kpi-value { font-size: 22px; font-weight: 600; font-family: var(--font-mono); color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.kpi-value.big { font-size: 30px; line-height: 1.1; }
+.kpi-sub { font-size: 12px; color: var(--text-tertiary); font-family: var(--font-mono); margin-top: 4px; }
+
+/* P&L color tokens override (from BASE_CSS) */
+.pos { color: var(--pos); }
+.neg { color: var(--neg); }
+.zero { color: var(--text-tertiary); }
+
+/* Agent score panels — paint Claude amber, Codex cyan via left accent stripe */
+.agent-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--space-md); }
+.agent-score { padding: var(--space-md); background: var(--bg-overlay); border-radius: var(--radius-sm); border-left: 3px solid var(--text-tertiary); }
+.agent-score.claude { border-left-color: var(--claude); }
+.agent-score.codex { border-left-color: var(--codex); }
+.agent-name { font-weight: 600; font-size: 13px; color: var(--text-primary); text-transform: uppercase; letter-spacing: 0.06em; }
+.agent-score.claude .agent-name { color: var(--claude); }
+.agent-score.codex .agent-name { color: var(--codex); }
+.agent-cumulative { font-size: 28px; font-weight: 700; font-family: var(--font-mono); margin: 4px 0; font-variant-numeric: tabular-nums; }
+.agent-cumulative-label { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: var(--space-sm); }
+.agent-vs-benchmark { font-size: 13px; color: var(--text-secondary); margin-bottom: 4px; }
+.agent-ir { font-size: 12px; color: var(--text-tertiary); font-family: var(--font-mono); }
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.holdings th, table.holdings td,
+table.trades th, table.trades td { padding: var(--space-sm) var(--space-md); text-align: right; border-bottom: 1px solid var(--border-subtle); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+table.holdings th:first-child, table.holdings td:first-child,
+table.trades th:first-child, table.trades td:first-child,
+table.trades td:nth-child(2), table.trades td:nth-child(3),
+table.trades td:nth-child(4), table.trades th:nth-child(2),
+table.trades th:nth-child(3), table.trades th:nth-child(4) { text-align: left; font-family: var(--font-sans); }
+table.holdings td:nth-child(2), table.holdings th:nth-child(2) { text-align: left; font-family: var(--font-sans); }
+table.holdings th, table.trades th { background: var(--bg-overlay); color: var(--text-tertiary); font-weight: 500; text-transform: uppercase; font-size: 11px; letter-spacing: 0.06em; }
+.stock-name { font-weight: 500; margin-right: 6px; color: var(--text-primary); }
+.stock-code { color: var(--text-tertiary); font-size: 11px; font-family: var(--font-mono); }
+.trade-side.buy { color: var(--pos); font-weight: 600; }
+.trade-side.sell { color: var(--neg); font-weight: 600; }
+
+/* Position overlap */
+.overlap-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-sm); }
+.overlap-cell { background: var(--bg-overlay); border-radius: var(--radius-sm); padding: var(--space-sm) var(--space-md); }
+.overlap-label { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+.overlap-value { font-size: 13px; color: var(--text-primary); font-family: var(--font-mono); }
+.overlap-value.empty { color: var(--text-tertiary); }
+
+/* Chart legend */
+.legend { display: flex; gap: var(--space-md); margin-top: var(--space-sm); font-size: 12px; color: var(--text-secondary); }
 .legend-item { display: inline-flex; align-items: center; gap: 6px; }
 .legend .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-.empty { color: #8c7350; font-size: 14px; }
-.hint { color: #8c7350; font-size: 12px; margin: 6px 0 0; }
-.evolution-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
-.evolution-cell { background: #fcf3e0; border-radius: 10px; padding: 12px 14px; }
-.evolution-cell h3 { margin: 0 0 6px; font-size: 14px; color: #5a3a18; }
-.evolution-cell p { margin: 0; font-size: 13px; color: #4a3008; }
-.footer { text-align: center; color: #8c7350; font-size: 13px; margin: 24px 0; }
-.footer a { color: #c4520d; margin: 0 6px; text-decoration: none; }
-svg.nav-chart { width: 100%; height: 260px; background: #fff7e8; border-radius: 8px; }
+
+/* Empty / hint */
+.empty { color: var(--text-tertiary); font-size: 13px; }
+.hint { color: var(--text-tertiary); font-size: 12px; margin: var(--space-xs) 0 0; font-family: var(--font-mono); }
+
+/* Evolution summary */
+.evolution-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--space-sm); }
+.evolution-cell { background: var(--bg-overlay); border-radius: var(--radius-sm); padding: var(--space-sm) var(--space-md); border-left: 3px solid var(--accent-dim); }
+.evolution-cell h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.06em; }
+.evolution-cell p { margin: 0; font-size: 13px; color: var(--text-primary); line-height: 1.5; }
+
+/* Footer */
+.footer { text-align: center; color: var(--text-tertiary); font-size: 11px; padding: var(--space-lg) 0 var(--space-xl); border-top: 1px solid var(--border-subtle); margin-top: var(--space-xl); }
+.footer a { color: var(--accent); margin: 0 6px; }
+
+/* NAV chart — dark canvas, legible axes */
+svg.nav-chart { width: 100%; height: 280px; background: var(--bg-overlay); border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); }
+
+/* Market environment cards (沪深300 / 中证500 mini line) */
+.market-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--space-md); }
+.market-card { background: var(--bg-overlay); border-radius: var(--radius-sm); padding: var(--space-sm) var(--space-md); border-left: 3px solid var(--text-tertiary); }
+.market-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+.market-change { font-size: 18px; font-weight: 600; font-family: var(--font-mono); color: var(--text-primary); margin-bottom: var(--space-sm); }
+svg.mini-line { width: 100%; height: 60px; display: block; }
+
+/* Differentiation radar */
+svg.radar-chart { width: 100%; max-width: 460px; height: 360px; display: block; margin: 0 auto; }
 """
 
 
@@ -833,34 +1178,34 @@ def _render_nav_svg(series: list[tuple[str, str, list[tuple[str, float]]]]) -> s
         return pad_top + (1 - (v - y_min) / (y_max - y_min)) * inner_h
 
     lines: list[str] = []
-    # axis frame
+    # Dark-theme axis frame (matches --bg-overlay / --border-subtle).
     lines.append(
         f'<rect x="{pad_left}" y="{pad_top}" width="{inner_w}" height="{inner_h}" '
-        'fill="#fff7e8" stroke="#e6d6b8" />'
+        'fill="#1a1f2e" stroke="#2a3145" />'
     )
-    # baseline at 1.0
+    # baseline at 1.0 — dashed amber line
     if y_min <= 1.0 <= y_max:
         y1 = y_of(1.0)
         lines.append(
             f'<line x1="{pad_left}" y1="{y1:.1f}" x2="{pad_left + inner_w}" y2="{y1:.1f}" '
-            'stroke="#cdb98a" stroke-dasharray="4 4" />'
+            'stroke="#b87333" stroke-dasharray="4 4" stroke-opacity="0.55" />'
         )
         lines.append(
-            f'<text x="{pad_left - 8}" y="{y1 + 4:.1f}" text-anchor="end" font-size="10" fill="#8c7350">1.00</text>'
+            f'<text x="{pad_left - 8}" y="{y1 + 4:.1f}" text-anchor="end" font-size="10" fill="#8b95a7" font-family="JetBrains Mono, monospace">1.00</text>'
         )
-    # y labels min/max
+    # y labels min/max — secondary text color, mono font
     lines.append(
-        f'<text x="{pad_left - 8}" y="{pad_top + 4}" text-anchor="end" font-size="10" fill="#8c7350">{y_max:.3f}</text>'
+        f'<text x="{pad_left - 8}" y="{pad_top + 4}" text-anchor="end" font-size="10" fill="#8b95a7" font-family="JetBrains Mono, monospace">{y_max:.3f}</text>'
     )
     lines.append(
-        f'<text x="{pad_left - 8}" y="{pad_top + inner_h:.1f}" text-anchor="end" font-size="10" fill="#8c7350">{y_min:.3f}</text>'
+        f'<text x="{pad_left - 8}" y="{pad_top + inner_h:.1f}" text-anchor="end" font-size="10" fill="#8b95a7" font-family="JetBrains Mono, monospace">{y_min:.3f}</text>'
     )
     # x labels: first and last
     lines.append(
-        f'<text x="{pad_left}" y="{height - 12}" font-size="10" fill="#8c7350">{html.escape(cn_date(all_dates[0]))}</text>'
+        f'<text x="{pad_left}" y="{height - 12}" font-size="10" fill="#5a6478" font-family="JetBrains Mono, monospace">{html.escape(cn_date(all_dates[0]))}</text>'
     )
     lines.append(
-        f'<text x="{pad_left + inner_w}" y="{height - 12}" text-anchor="end" font-size="10" fill="#8c7350">'
+        f'<text x="{pad_left + inner_w}" y="{height - 12}" text-anchor="end" font-size="10" fill="#5a6478" font-family="JetBrains Mono, monospace">'
         f'{html.escape(cn_date(all_dates[-1]))}</text>'
     )
     for key, label, points in series:

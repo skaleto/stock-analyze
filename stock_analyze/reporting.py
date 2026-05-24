@@ -17,7 +17,8 @@ from .store import (
     SIGNALS_FILE,
     PortfolioStore,
 )
-from .utils import ensure_dirs, format_money, format_pct, safe_float, today_str, write_json
+from ._dashboard_assets import BASE_CSS, NAV_CSS, render_nav_html
+from .utils import dashboard_fragment_path, ensure_dirs, format_money, format_pct, safe_float, today_str, write_json
 
 
 POSITION_COLUMNS = {
@@ -310,8 +311,13 @@ def generate_dashboard(
     low_threshold = float(perf_cfg.get("low_coverage_threshold", 0.5) or 0.5)
     coverage_panel = build_coverage_panel(coverage, low_threshold=low_threshold)
     forward_ic_panel = build_forward_ic_panel(forward_ic)
-    dashboard_filename = "dashboard_fragment.html" if mode == "fragment" else "dashboard.html"
-    dashboard_path = Path(reports_dir) / dashboard_filename
+    if mode == "fragment":
+        # Build artifact: live in data/_dashboard_build/<agent>/, not reports/.
+        # See utils.dashboard_fragment_path docstring for rationale (2026-05-24).
+        dashboard_path = dashboard_fragment_path(reports_dir)
+        ensure_dirs(dashboard_path.parent)
+    else:
+        dashboard_path = Path(reports_dir) / "dashboard.html"
     agent_id = str(config.get("agent_id") or "agent")
     notes_html = render_agent_notes_panel(store.data_dir)
     leaderboard_path = store.data_dir.parent / "competition" / "leaderboard.csv"
@@ -345,130 +351,102 @@ def generate_dashboard(
             """
         )
 
+    # Nav and active key — fragments are embedded inside competition/dashboard.html
+    # by dashboard_aggregator, so they must not carry their own top nav.
+    if mode == "fragment":
+        nav_html = ""
+    else:
+        agent_key = f"pro-{agent_id}" if agent_id in ("claude", "codex") else None
+        nav_html = render_nav_html(active=agent_key, data_as_of=summary.get("generated_at"))
+
     html = f"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>模拟交易仪表盘</title>
-  <style>
-    :root {{
-      --ink: #17202a;
-      --muted: #667085;
-      --line: #d9e0e8;
-      --panel: #ffffff;
-      --bg: #f4f6f8;
-      --blue: #2457a7;
-      --green: #147d64;
-      --amber: #b76e00;
-      --red: #b42318;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--ink); }}
-    header {{ padding: 24px 32px 20px; background: #0f253f; color: white; border-bottom: 4px solid #2b7bbb; }}
-    main {{ padding: 24px 32px 48px; max-width: 1440px; margin: 0 auto; }}
-    h1 {{ margin: 0 0 8px; font-size: 28px; letter-spacing: 0; }}
-    h2 {{ margin: 28px 0 12px; font-size: 20px; letter-spacing: 0; }}
-    .subhead {{ color: #c9d7e8; font-size: 14px; }}
-    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }}
-    .metric-card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }}
-    .card-label {{ margin-bottom: 10px; font-size: 14px; color: var(--muted); }}
-    .metric {{ font-size: 30px; font-weight: 750; }}
-    .metric-card p {{ margin: 10px 0 12px; color: var(--muted); }}
-    .tag {{ display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border-radius: 6px; background: #e8f3ef; color: var(--green); font-size: 12px; }}
-    .panel {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; overflow: auto; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04); }}
-    .split {{ display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr); gap: 16px; }}
-    .price-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }}
-    .mini-chart {{ min-height: 230px; }}
-    .chart-title {{ margin: 0 0 8px; font-size: 14px; font-weight: 650; color: #344054; }}
-    .table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-    .table th, .table td {{ border-bottom: 1px solid #edf0f3; padding: 9px 10px; text-align: left; white-space: nowrap; }}
-    .table th {{ background: #f1f4f8; color: #344054; font-weight: 650; }}
-    .table td {{ max-width: 360px; overflow: hidden; text-overflow: ellipsis; }}
-    .empty {{ margin: 0; color: var(--muted); }}
-    canvas {{ width: 100%; height: 340px; border: 1px solid #edf0f3; border-radius: 6px; background: #fff; }}
-    .mini-chart canvas {{ height: 180px; }}
-    .hint {{ color: var(--muted); font-size: 13px; margin-top: 8px; }}
-    .warning {{ color: var(--amber); }}
-    .metric-deep {{ font-size: 13px; }}
-    .metric-deep .metric-row {{ margin: 4px 0; color: var(--muted); display: flex; justify-content: space-between; }}
-    .metric-deep .metric-row strong {{ color: var(--ink); font-weight: 650; }}
-    .panel-row {{ display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; }}
-    .heatmap {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
-    .heatmap th, .heatmap td {{ border: 1px solid #edf0f3; padding: 4px 6px; text-align: center; }}
-    .heatmap th {{ background: #f1f4f8; color: #344054; font-weight: 600; }}
-    .heatmap td.low {{ background: #fde2e1; color: #b42318; font-weight: 600; }}
-    .tag-success {{ display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; background: #e8f3ef; color: var(--green); font-size: 12px; }}
-    .tag-failed {{ display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; background: #fde2e1; color: var(--red); font-size: 12px; }}
-    .tag-running {{ display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; background: #fff1cc; color: var(--amber); font-size: 12px; }}
-    table.strategy-evolution {{ font-size: 12px; }}
-    table.strategy-evolution td {{ vertical-align: top; max-width: 320px; white-space: normal; }}
-    table.strategy-evolution tr.proposal-no-change td {{ color: var(--muted); }}
-    table.strategy-evolution tr.proposal-drift td.decision-cell {{ color: var(--red); font-weight: 600; }}
-    @media (max-width: 900px) {{ .split {{ grid-template-columns: 1fr; }} .panel-row {{ grid-template-columns: 1fr; }} }}
-  </style>
+  <title>模拟交易仪表盘 · {agent_id}</title>
+  <style>{BASE_CSS}
+{NAV_CSS}
+{_PRO_CSS}</style>
 </head>
 <body>
-  <header>
-    <h1>Stock Analyze Simulation</h1>
-    <div class="subhead">策略版本 {config.get('strategy_id')} · 生成日期 {summary.get('generated_at')} · 仅模拟交易，不构成投资建议</div>
+  {nav_html}
+  <header class="page-header">
+    <h1>{agent_id.capitalize()} · 专业版</h1>
+    <div class="subhead">策略 {config.get('strategy_id')} · 生成 {summary.get('generated_at')} · 仅模拟，不构成投资建议</div>
   </header>
   <main>
     <section class="grid">{''.join(cards) or '<p class="empty">暂无净值数据。请先运行初始化和周度任务。</p>'}</section>
-    <h2>净值曲线</h2>
-    <div class="panel">
-      <canvas id="navChart" width="1200" height="340"></canvas>
-      <div class="hint">曲线基于模拟账户净值生成；如果只有一个净值点，图上会显示为水平参考线。</div>
-    </div>
-    <h2>绩效解释</h2>
-    <section class="grid">{performance_cards_html}</section>
-    <section class="split">
-      <div>
-        <h2>本期选股信号</h2>
-        <div class="panel">{signals_html}</div>
-      </div>
-      <div>
-        <h2>因子贡献均值</h2>
+    <div class="sub-tabs-container">
+      <nav class="sub-tabs" data-active="results">
+        <button type="button" class="sub-tab-btn" data-target="results">📊 结果</button>
+        <button type="button" class="sub-tab-btn" data-target="insights">💡 洞察</button>
+        <button type="button" class="sub-tab-btn" data-target="health">🩺 健康</button>
+        <button type="button" class="sub-tab-btn" data-target="evolution">📜 演化</button>
+      </nav>
+      <section class="sub-content" data-tab="results">
+        <h2>净值曲线</h2>
         <div class="panel">
-          <canvas id="factorChart" width="680" height="340"></canvas>
-          <div class="hint">从 `score_detail` 解析各因子对入选股票的平均贡献。</div>
+          <canvas id="navChart" width="1200" height="340"></canvas>
+          <div class="hint">曲线基于模拟账户净值生成；如果只有一个净值点，图上会显示为水平参考线。</div>
         </div>
-      </div>
-    </section>
-    <h2>待执行模拟订单</h2>
-    <div class="panel">
-      {pending_html}
-      <div class="hint warning">{execution_hint}</div>
+        <h2>绩效解释</h2>
+        <section class="grid">{performance_cards_html}</section>
+        <h2>待执行模拟订单</h2>
+        <div class="panel">
+          {pending_html}
+          <div class="hint warning">{execution_hint}</div>
+        </div>
+        <h2>当前持仓</h2>
+        <div class="panel">{positions_html}</div>
+        <h2>近期交易</h2>
+        <div class="panel">{trades_html}</div>
+      </section>
+      <section class="sub-content" data-tab="insights" hidden>
+        <section class="split">
+          <div>
+            <h2>本期选股信号</h2>
+            <div class="panel">{signals_html}</div>
+          </div>
+          <div>
+            <h2>因子贡献均值</h2>
+            <div class="panel">
+              <canvas id="factorChart" width="680" height="340"></canvas>
+              <div class="hint">从 <code>score_detail</code> 解析各因子对入选股票的平均贡献。</div>
+            </div>
+          </div>
+        </section>
+        <h2>候选股价格走势</h2>
+        <div class="price-grid" id="priceGrid"></div>
+        <h2>因子诊断</h2>
+        <div class="panel-row">
+          <div class="panel">
+            <p class="chart-title">最近 12 周因子覆盖率</p>
+            <div id="coveragePanel"></div>
+            <div class="hint">覆盖率低于阈值的格子高亮；阈值在 <code>performance.low_coverage_threshold</code> 控制。</div>
+          </div>
+          <div class="panel">
+            <p class="chart-title">最近 12 周前向 5 日 RankIC</p>
+            <canvas id="forwardIcChart" width="640" height="260"></canvas>
+            <div class="hint">RankIC 使用 Spearman；NAV 历史不足 5 个交易日时会出现 <code>insufficient_history</code> 占位点。</div>
+          </div>
+        </div>
+      </section>
+      <section class="sub-content" data-tab="health" hidden>
+        <h2>数据源状态</h2>
+        <div class="panel">{health_html}</div>
+        <h2>最近运行</h2>
+        <div class="panel">{runs_html}</div>
+        <h2>本期分析任务包</h2>
+        <div class="panel">{latest_briefing_html}</div>
+      </section>
+      <section class="sub-content" data-tab="evolution" hidden>
+        <h2>近期 agent 笔记</h2>
+        <div class="panel">{notes_html}</div>
+        <h2>策略演进时间线</h2>
+        <div class="panel">{strategy_evolution_html}</div>
+      </section>
     </div>
-    <h2>候选股价格走势</h2>
-    <div class="price-grid" id="priceGrid"></div>
-    <h2>因子诊断</h2>
-    <div class="panel-row">
-      <div class="panel">
-        <p class="chart-title">最近 12 周因子覆盖率</p>
-        <div id="coveragePanel"></div>
-        <div class="hint">覆盖率低于阈值的格子高亮，提示该因子在该周缺失严重；阈值在 <code>performance.low_coverage_threshold</code> 控制。</div>
-      </div>
-      <div class="panel">
-        <p class="chart-title">最近 12 周前向 5 日 RankIC</p>
-        <canvas id="forwardIcChart" width="640" height="260"></canvas>
-        <div class="hint">RankIC 使用 Spearman；当 NAV 历史不足 5 个交易日时会出现 <code>insufficient_history</code> 占位点。</div>
-      </div>
-    </div>
-    <h2>当前持仓</h2>
-    <div class="panel">{positions_html}</div>
-    <h2>近期交易</h2>
-    <div class="panel">{trades_html}</div>
-    <h2>数据源状态</h2>
-    <div class="panel">{health_html}</div>
-    <h2>最近运行</h2>
-    <div class="panel">{runs_html}</div>
-    <h2>近期 agent 笔记</h2>
-    <div class="panel">{notes_html}</div>
-    <h2>策略演进时间线</h2>
-    <div class="panel">{strategy_evolution_html}</div>
-    <h2>本期分析任务包</h2>
-    <div class="panel">{latest_briefing_html}</div>
   </main>
   <script>
     const nav = {nav_json};
@@ -482,24 +460,25 @@ def generate_dashboard(
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.font = '13px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
       if (!rows.length) {{
-        ctx.fillStyle = '#667085';
+        ctx.fillStyle = '#8b95a7';
         ctx.fillText('暂无净值数据', 24, 40);
         return;
       }}
       const accounts = [...new Set(rows.map(r => r.account_id))];
-      const colors = ['#2457a7', '#147d64', '#b76e00'];
+      // Dark Bloomberg palette: amber (Claude side), cyan (Codex side), warm grey for any 3rd account.
+      const colors = ['#f59e0b', '#06b6d4', '#8b95a7'];
       const values = rows.map(r => Number(r.total_value)).filter(Number.isFinite);
       const min = Math.min(...values);
       const max = Math.max(...values);
       const pad = 42;
-      ctx.strokeStyle = '#d8dee8';
+      ctx.strokeStyle = '#2a3145';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(pad, pad);
       ctx.lineTo(pad, canvas.height - pad);
       ctx.lineTo(canvas.width - pad, canvas.height - pad);
       ctx.stroke();
-      ctx.fillStyle = '#667085';
+      ctx.fillStyle = '#8b95a7';
       ctx.fillText(max.toLocaleString('zh-CN', {{ maximumFractionDigits: 0 }}), 8, pad + 4);
       ctx.fillText(min.toLocaleString('zh-CN', {{ maximumFractionDigits: 0 }}), 8, canvas.height - pad);
       accounts.forEach((account, idx) => {{
@@ -528,7 +507,7 @@ def generate_dashboard(
       c.clearRect(0, 0, chart.width, chart.height);
       c.font = '13px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
       if (!items.length) {{
-        c.fillStyle = '#667085';
+        c.fillStyle = '#8b95a7';
         c.fillText('暂无因子贡献数据', 24, 40);
         return;
       }}
@@ -539,11 +518,11 @@ def generate_dashboard(
       items.slice(0, 8).forEach((item, idx) => {{
         const y = top + idx * rowH;
         const w = (chart.width - left - 70) * item.value / max;
-        c.fillStyle = '#344054';
+        c.fillStyle = '#5a6478';
         c.fillText(item.label, 12, y + 18);
         c.fillStyle = '#2457a7';
         c.fillRect(left, y, w, 18);
-        c.fillStyle = '#667085';
+        c.fillStyle = '#8b95a7';
         c.fillText(item.value.toFixed(1), left + w + 8, y + 15);
       }});
     }}
@@ -568,7 +547,7 @@ def generate_dashboard(
       c.clearRect(0, 0, chart.width, chart.height);
       const prices = rows.flatMap(r => [Number(r.high), Number(r.low), Number(r.close)]).filter(Number.isFinite);
       if (!prices.length) {{
-        c.fillStyle = '#667085';
+        c.fillStyle = '#8b95a7';
         c.fillText('无价格数据', 20, 40);
         return;
       }}
@@ -577,7 +556,7 @@ def generate_dashboard(
       const pad = 24;
       const span = Math.max(max - min, 1);
       const xStep = (chart.width - pad * 2) / Math.max(rows.length - 1, 1);
-      c.strokeStyle = '#e1e7ef';
+      c.strokeStyle = '#2a3145';
       c.beginPath();
       c.moveTo(pad, pad);
       c.lineTo(pad, chart.height - pad);
@@ -592,8 +571,9 @@ def generate_dashboard(
         const yOpen = chart.height - pad - (open - min) / span * (chart.height - pad * 2);
         const yClose = chart.height - pad - (close - min) / span * (chart.height - pad * 2);
         const up = close >= open;
-        c.strokeStyle = up ? '#b42318' : '#147d64';
-        c.fillStyle = up ? '#f04438' : '#12b76a';
+        // A-share convention: red = up, green = down (matches --pos/--neg).
+        c.strokeStyle = up ? '#ef4444' : '#22c55e';
+        c.fillStyle = up ? '#ef4444' : '#22c55e';
         c.beginPath();
         c.moveTo(x, yHigh);
         c.lineTo(x, yLow);
@@ -602,7 +582,7 @@ def generate_dashboard(
         const bodyH = Math.max(Math.abs(yClose - yOpen), 2);
         c.fillRect(x - 2, bodyTop, 4, bodyH);
       }});
-      c.fillStyle = '#667085';
+      c.fillStyle = '#8b95a7';
       c.font = '12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
       c.fillText(max.toFixed(2), 4, pad + 4);
       c.fillText(min.toFixed(2), 4, chart.height - pad);
@@ -645,7 +625,7 @@ def generate_dashboard(
       c.clearRect(0, 0, chart.width, chart.height);
       c.font = '12px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
       if (!panels.length) {{
-        c.fillStyle = '#667085';
+        c.fillStyle = '#8b95a7';
         c.fillText('暂无前向 RankIC 数据。等待 5 个交易日后会自动累积。', 24, 40);
         return;
       }}
@@ -654,7 +634,7 @@ def generate_dashboard(
       const yPad = 18;
       const usable = chart.height - yPad * 2;
       const drawAxis = () => {{
-        c.strokeStyle = '#d8dee8';
+        c.strokeStyle = '#2a3145';
         c.lineWidth = 1;
         c.beginPath();
         c.moveTo(50, yPad);
@@ -662,18 +642,19 @@ def generate_dashboard(
         c.lineTo(chart.width - 12, chart.height - yPad);
         c.stroke();
         const zeroY = yPad + usable * 0.5;
-        c.strokeStyle = '#e3e8ee';
+        c.strokeStyle = '#2a3145';
         c.beginPath();
         c.moveTo(50, zeroY);
         c.lineTo(chart.width - 12, zeroY);
         c.stroke();
-        c.fillStyle = '#667085';
+        c.fillStyle = '#8b95a7';
         c.fillText('+1', 28, yPad + 4);
         c.fillText('0', 36, zeroY + 4);
         c.fillText('-1', 28, chart.height - yPad);
       }};
       drawAxis();
-      const colors = ['#2457a7', '#147d64', '#b76e00', '#b42318', '#7c3aed', '#0ea5e9', '#dc2626', '#14b8a6'];
+      // Dark Bloomberg palette for the factor contribution bar chart — 8 distinct hues with good contrast on bg-overlay.
+      const colors = ['#f59e0b', '#06b6d4', '#a78bfa', '#22c55e', '#ef4444', '#0ea5e9', '#fb923c', '#10b981'];
       panels.slice(0, 6).forEach((panel, idx) => {{
         c.strokeStyle = colors[idx % colors.length];
         c.fillStyle = colors[idx % colors.length];
@@ -685,7 +666,7 @@ def generate_dashboard(
           const dateIdx = allDates.indexOf(date);
           const x = 50 + dateIdx * xStep;
           if (point.status !== 'ok' || point.ic == null) {{
-            c.fillStyle = '#aab2bd';
+            c.fillStyle = '#5a6478';
             c.fillRect(x - 1, yPad + usable * 0.5 - 1, 2, 2);
             c.fillStyle = colors[idx % colors.length];
             started = false;
@@ -706,6 +687,29 @@ def generate_dashboard(
 
     renderCoveragePanel(coveragePanel);
     renderForwardIc(forwardIcPanel);
+
+    // Sub-tab switching: one IIFE handles every .sub-tabs nav on the page.
+    // Scope: each .sub-tabs and its sibling .sub-content sections share a
+    // .sub-tabs-container parent. Clicking a button toggles 'hidden' on
+    // siblings and updates the bar's data-active attribute (used by CSS to
+    // paint the active tab).
+    (function() {{
+      const containers = document.querySelectorAll('.sub-tabs-container');
+      containers.forEach(container => {{
+        const bar = container.querySelector('.sub-tabs');
+        if (!bar) return;
+        const contents = container.querySelectorAll('.sub-content');
+        const activate = (target) => {{
+          bar.dataset.active = target;
+          contents.forEach(c => {{
+            c.hidden = c.dataset.tab !== target;
+          }});
+        }};
+        bar.querySelectorAll('.sub-tab-btn').forEach(btn => {{
+          btn.addEventListener('click', () => activate(btn.dataset.target));
+        }});
+      }});
+    }})();
   </script>
 </body>
 </html>
@@ -1423,3 +1427,111 @@ def read_health(store: PortfolioStore) -> pd.DataFrame:
         return pd.DataFrame(json.loads(path.read_text(encoding="utf-8")))
     except json.JSONDecodeError:
         return pd.DataFrame(columns=list(HEALTH_COLUMNS))
+
+
+# ---------------------------------------------------------------------------
+# Dark Bloomberg theme CSS for the pro view.
+# Class names preserved so renderers (above) emit unchanged markup.
+# Color/spacing/typography pull tokens from _dashboard_assets.BASE_CSS.
+
+_PRO_CSS = """
+main { padding: var(--space-lg) var(--space-xl) var(--space-xl); max-width: 1600px; margin: 0 auto; }
+.page-header { padding: var(--space-lg) var(--space-xl); background: var(--bg-elevated); border-bottom: 1px solid var(--border-subtle); }
+.page-header h1 { margin: 0; font-size: 22px; font-weight: 600; color: var(--text-primary); letter-spacing: 0.02em; }
+.page-header .subhead { color: var(--text-tertiary); font-size: 12px; margin-top: 4px; font-family: var(--font-mono); }
+h2 { margin: var(--space-xl) 0 var(--space-md); font-size: 14px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.08em; }
+
+/* KPI grids */
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--space-md); }
+.metric-card { background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-md) var(--space-lg); }
+.card-label { margin-bottom: 6px; font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.08em; }
+.metric { font-size: 28px; font-weight: 600; font-family: var(--font-mono); color: var(--text-primary); font-variant-numeric: tabular-nums; line-height: 1.15; }
+.metric-card p { margin: var(--space-sm) 0; color: var(--text-secondary); font-size: 12px; font-family: var(--font-mono); }
+.tag { display: inline-flex; align-items: center; height: 22px; padding: 0 var(--space-sm); border-radius: var(--radius-sm); background: var(--bg-overlay); color: var(--accent); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+
+/* Panels (containers for charts + tables) */
+.panel { background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: var(--space-md); overflow: auto; }
+.split { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr); gap: var(--space-md); }
+.panel-row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: var(--space-md); }
+.price-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--space-sm); }
+.mini-chart { min-height: 220px; }
+.chart-title { margin: 0 0 var(--space-sm); font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.06em; }
+
+/* Tables */
+.table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.table th, .table td { border-bottom: 1px solid var(--border-subtle); padding: var(--space-sm) var(--space-md); text-align: left; white-space: nowrap; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.table th { background: var(--bg-overlay); color: var(--text-tertiary); font-weight: 500; text-transform: uppercase; font-size: 11px; letter-spacing: 0.06em; }
+.table td { color: var(--text-primary); max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+
+/* Empty / hint / warning */
+.empty { margin: 0; color: var(--text-tertiary); font-size: 13px; }
+.hint { color: var(--text-tertiary); font-size: 11px; margin-top: var(--space-sm); font-family: var(--font-mono); }
+.warning { color: var(--accent); }
+
+/* Canvas charts on dark backgrounds */
+canvas { width: 100%; height: 340px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); background: var(--bg-overlay); }
+.mini-chart canvas { height: 180px; }
+
+/* Deep metric breakdown */
+.metric-deep { font-size: 12px; }
+.metric-deep .metric-row { margin: var(--space-xs) 0; color: var(--text-secondary); display: flex; justify-content: space-between; font-family: var(--font-mono); }
+.metric-deep .metric-row strong { color: var(--text-primary); font-weight: 600; }
+
+/* Heatmap (factor coverage) */
+.heatmap { width: 100%; border-collapse: collapse; font-size: 11px; font-family: var(--font-mono); }
+.heatmap th, .heatmap td { border: 1px solid var(--border-subtle); padding: 4px 6px; text-align: center; color: var(--text-secondary); }
+.heatmap th { background: var(--bg-overlay); color: var(--text-tertiary); font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; }
+.heatmap td.low { background: var(--pos-bg); color: var(--pos); font-weight: 600; }
+
+/* Status tags */
+.tag-success { display: inline-flex; align-items: center; height: 20px; padding: 0 var(--space-sm); border-radius: var(--radius-sm); background: rgba(34, 197, 94, 0.12); color: var(--neg); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--font-mono); }
+.tag-failed { display: inline-flex; align-items: center; height: 20px; padding: 0 var(--space-sm); border-radius: var(--radius-sm); background: rgba(239, 68, 68, 0.12); color: var(--pos); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--font-mono); }
+.tag-running { display: inline-flex; align-items: center; height: 20px; padding: 0 var(--space-sm); border-radius: var(--radius-sm); background: rgba(245, 158, 11, 0.12); color: var(--accent); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--font-mono); }
+
+/* Strategy evolution table */
+table.strategy-evolution { font-size: 11px; }
+table.strategy-evolution td { vertical-align: top; max-width: 320px; white-space: normal; color: var(--text-primary); }
+table.strategy-evolution tr.proposal-no-change td { color: var(--text-tertiary); }
+table.strategy-evolution tr.proposal-drift td.decision-cell { color: var(--pos); font-weight: 600; }
+
+/* Code spans for command names */
+code { background: var(--bg-overlay); color: var(--accent); padding: 1px 5px; border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 11px; }
+
+/* Sub-tab navigation (二级 Tab — 结果 / 洞察 / 健康 / 演化) */
+.sub-tabs-container { margin: var(--space-lg) 0 0; }
+.sub-tabs { display: flex; gap: var(--space-xs); border-bottom: 1px solid var(--border-strong); padding-bottom: 0; margin-bottom: 0; }
+.sub-tab-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  padding: var(--space-sm) var(--space-md) calc(var(--space-sm) + 1px);
+  font-size: 12px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.12s, border-color 0.12s;
+}
+.sub-tab-btn:hover { color: var(--text-primary); }
+.sub-tabs[data-active="results"] .sub-tab-btn[data-target="results"],
+.sub-tabs[data-active="insights"] .sub-tab-btn[data-target="insights"],
+.sub-tabs[data-active="health"] .sub-tab-btn[data-target="health"],
+.sub-tabs[data-active="evolution"] .sub-tab-btn[data-target="evolution"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+.sub-content { padding-top: var(--space-md); }
+.sub-content[hidden] { display: none; }
+
+/* Responsive */
+@media (max-width: 900px) {
+  .split { grid-template-columns: 1fr; }
+  .panel-row { grid-template-columns: 1fr; }
+  .sub-tabs { flex-wrap: wrap; }
+  main { padding: var(--space-md); }
+}
+"""

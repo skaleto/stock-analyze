@@ -46,7 +46,12 @@ def _seed_agent_for_dashboard(
     data_dir.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
     if fragment is not None:
-        (reports_dir / "dashboard_fragment.html").write_text(fragment, encoding="utf-8")
+        # 2026-05-24: fragments moved out of reports/ to data/_dashboard_build/<agent>/
+        # See utils.dashboard_fragment_path.
+        from stock_analyze.utils import dashboard_fragment_path
+        fragment_path = dashboard_fragment_path(reports_dir)
+        fragment_path.parent.mkdir(parents=True, exist_ok=True)
+        fragment_path.write_text(fragment, encoding="utf-8")
     perf = {
         "accounts": {
             "hs300": {
