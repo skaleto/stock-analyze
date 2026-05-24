@@ -181,7 +181,7 @@ v1 → v2 配置自动迁移由 `stock_analyze.config.migrate_strategy_config()`
 
 ## 模拟成交规则
 
-周度任务会优先通过 AkShare 交易日历选择信号日之后的下一个 A 股交易日；如果交易日历接口和缓存都不可用，系统会降级为仅跳过周末的工作日近似，并把降级记录进 `data_health.json`。
+周度任务会优先通过 Tushare / Baostock 交易日历选择信号日之后的下一个 A 股交易日；如果交易日历接口和缓存都不可用，系统会降级为仅跳过周末的工作日近似，并把降级记录进 `data_health.json`。
 
 日度任务执行 pending orders 时采用保守规则：
 
@@ -208,28 +208,23 @@ v1 → v2 配置自动迁移由 `stock_analyze.config.migrate_strategy_config()`
 - Tushare `pro.index_weight(index_code='000300.SH', trade_date=...)` / `000905.SH`。
 - 失败则 Baostock `query_hs300_stocks` / `query_zz500_stocks`。
 - 再失败则中证指数成分本地缓存。
-- 中证指数权重成分接口。
-- AkShare 默认成分接口。
-- Baostock 支持的成分接口。
 - 本地缓存。
 
 历史日 K：
 
-- 东方财富。
-- 腾讯。
-- 新浪。
-- Baostock。
+- Tushare `pro.daily`。
+- Baostock `query_history_k_data_plus`。
 - 本地缓存。
 
 估值：
 
-- AkShare 百度估值接口。
+- Tushare `pro.daily_basic` 中的 `pe_ttm` / `pb`。
 - Baostock 日 K 中的 `peTTM` / `pbMRQ`。
 - 本地缓存。
 
 财务指标：
 
-- AkShare 财务摘要/财务指标。
+- Tushare `pro.fina_indicator`，按 `ann_date <= as_of` 做可见性过滤。
 - Baostock 季度利润表、资产负债表、成长能力数据。
 - 本地缓存。
 
@@ -278,24 +273,42 @@ cd /opt/stock-analyze/app
 sudo cp deploy/systemd/stock-analyze-*.service /etc/systemd/system/
 sudo cp deploy/systemd/stock-analyze-*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
+
+# 如果旧 single-agent timer 曾经启用过，先关掉，避免和双 agent pipeline 重复跑。
+sudo systemctl disable --now stock-analyze-daily.timer 2>/dev/null || true
+sudo systemctl disable --now stock-analyze-weekly.timer 2>/dev/null || true
+for unit in stock-analyze-claude-daily.timer stock-analyze-claude-weekly.timer \
+            stock-analyze-codex-daily.timer stock-analyze-codex-weekly.timer; do
+  sudo systemctl disable --now "$unit" 2>/dev/null || true
+  sudo rm -f "/etc/systemd/system/$unit"
+done
+sudo systemctl daemon-reload
+
 sudo systemctl enable --now stock-analyze-dashboard.service
-sudo systemctl enable --now stock-analyze-daily.timer
-sudo systemctl enable --now stock-analyze-weekly.timer
+sudo systemctl enable --now stock-analyze-market-data.timer
+sudo systemctl enable --now stock-analyze-weekly-trigger.timer
+sudo systemctl enable --now stock-analyze-monthly-review.timer
+systemctl list-timers --all 'stock-analyze-*' --no-pager
 ```
 
 手动触发周度任务：
 
 ```bash
-sudo systemctl start stock-analyze-weekly.service
-sudo systemctl status --no-pager --lines=40 stock-analyze-weekly.service
+sudo systemctl start stock-analyze-weekly-trigger.service
+sudo systemctl status --no-pager --lines=40 stock-analyze-weekly-trigger.service
+sudo systemctl status --no-pager --lines=40 stock-analyze-claude-weekly.service
+sudo systemctl status --no-pager --lines=40 stock-analyze-codex-weekly.service
 ```
 
 查看日志：
 
 ```bash
-tail -120 /opt/stock-analyze/logs/weekly.log
-tail -120 /opt/stock-analyze/logs/weekly.err
-tail -120 /opt/stock-analyze/logs/daily.log
+tail -120 /opt/stock-analyze/logs/market-data.log
+tail -120 /opt/stock-analyze/logs/weekly-trigger.log
+tail -120 /opt/stock-analyze/logs/claude-weekly.log
+tail -120 /opt/stock-analyze/logs/codex-weekly.log
+tail -120 /opt/stock-analyze/logs/claude-daily.log
+tail -120 /opt/stock-analyze/logs/codex-daily.log
 tail -120 /opt/stock-analyze/logs/dashboard.err
 ```
 

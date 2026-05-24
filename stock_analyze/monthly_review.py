@@ -24,7 +24,7 @@ import pandas as pd
 
 from .competition import AgentPaths, resolve_agent_paths
 from .store import PortfolioStore
-from .utils import ensure_dirs, format_pct, safe_float, write_json
+from .utils import ensure_dirs, format_pct, safe_float, write_dataframe_csv_atomic, write_json, write_text_atomic
 
 
 LEADERBOARD_COLUMNS = [
@@ -91,7 +91,7 @@ def write_review(
     leaderboard_path = competition_data / "leaderboard.csv"
 
     write_json(json_path, payload)
-    md_path.write_text(_render_markdown(payload), encoding="utf-8")
+    write_text_atomic(md_path, _render_markdown(payload), encoding="utf-8")
     _upsert_leaderboard(leaderboard_path, payload)
     return json_path, md_path, leaderboard_path
 
@@ -465,7 +465,7 @@ def _upsert_leaderboard(path: Path, payload: dict[str, Any]) -> None:
     else:
         df = pd.DataFrame([row], columns=LEADERBOARD_COLUMNS)
     df = df.sort_values("month")
-    df.to_csv(path, index=False, encoding="utf-8-sig")
+    write_dataframe_csv_atomic(df, path, index=False)
 
 
 def _round(value: Any, digits: int = 6) -> float | None:

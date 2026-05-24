@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -41,7 +42,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from .utils import ak_date, next_business_day, parse_date, pct_change, previous_calendar_date, safe_float, write_json
+from .utils import ak_date, next_business_day, parse_date, pct_change, previous_calendar_date, safe_float, write_dataframe_csv_atomic, write_json
 
 
 INDEX_CODES = {
@@ -257,7 +258,7 @@ class DataProvider(ABC):
     def save_cache(self, name: str, df: pd.DataFrame) -> None:
         path = self.cache_path(name)
         if path and df is not None and not df.empty:
-            df.to_csv(path, index=False, encoding="utf-8-sig")
+            write_dataframe_csv_atomic(df, path, index=False)
 
     def load_cache(self, name: str) -> pd.DataFrame:
         path = self.cache_path(name)
@@ -474,8 +475,8 @@ class DataProvider(ABC):
         self.save_cache(cache_name, pd.DataFrame([{"code": normalize_code(code), **result}]))
         return result
 
-    def financial_metrics(self, code: str) -> dict[str, Any]:
-        cache_name = f"financial_{code}_{self._date_stamp()}"
+    def financial_metrics(self, code: str, as_of: str | None = None) -> dict[str, Any]:
+        cache_name = f"financial_{code}_{self._date_stamp(as_of)}"
         cached = self.load_cache(cache_name)
         if not cached.empty:
             return cached.iloc[0].to_dict()
@@ -499,7 +500,12 @@ class DataProvider(ABC):
             return {"fetch_error": str(exc)}
 
         if df is not None and not df.empty:
-            row = df.iloc[0]
+            visible = filter_financial_visible_as_of(df, self._date_stamp(as_of))
+            if visible.empty:
+                self.record_health(f"financial_{code}", "failed", f"no visible report as_of={self._date_stamp(as_of)}")
+                self.save_cache(cache_name, pd.DataFrame([{"code": normalize_code(code), "fetch_error": "no_visible_financial_report"}]))
+                return {"fetch_error": "no_visible_financial_report"}
+            row = visible.iloc[0]
             roe = safe_float(row.get("roe"))
             gross_margin = safe_float(row.get("grossprofit_margin"))
             debt_ratio = safe_float(row.get("debt_to_assets"))
@@ -764,6 +770,7 @@ class TushareProvider(DataProvider):
         self._pro: Any | None = None
         self._stock_basic_df: pd.DataFrame | None = None
         self._last_call_at: float = 0.0
+        self._throttle_lock = threading.Lock()
 
     @property
     def pro(self) -> Any:
@@ -787,7 +794,8 @@ class TushareProvider(DataProvider):
         so logs / runs.csv never leak credentials.
         """
 
-        self._throttle()
+        with self._throttle_lock:
+            self._throttle()
         try:
             result = func()
             rows = len(result) if hasattr(result, "__len__") else None
@@ -913,7 +921,7 @@ class TushareProvider(DataProvider):
             f"fina_indicator_{code}",
             lambda: self.pro.fina_indicator(
                 ts_code=ts_code,
-                fields="ts_code,end_date,roe,grossprofit_margin,debt_to_assets,netprofit_yoy",
+                fields="ts_code,ann_date,end_date,roe,grossprofit_margin,debt_to_assets,netprofit_yoy",
             ),
         )
         if df is None or df.empty:
@@ -1319,6 +1327,7 @@ class AkshareProvider(TushareProvider):
         self._pro = None
         self._stock_basic_df = None
         self._last_call_at = 0.0
+        self._throttle_lock = threading.Lock()
 
     @property
     def pro(self) -> Any:  # type: ignore[override]
@@ -1574,6 +1583,38 @@ def normalize_amount_series(values: pd.Series) -> pd.Series:
     if pd.notna(high_quantile) and 0 < high_quantile < 10_000_000:
         return numeric * 10_000
     return numeric
+
+
+def filter_financial_visible_as_of(df: pd.DataFrame, as_of: str | None) -> pd.DataFrame:
+    """Return only financial rows whose announcement date was visible by ``as_of``.
+
+    Tushare's ``fina_indicator`` has both ``end_date`` and ``ann_date``. For
+    point-in-time simulation, report period alone is not enough: a 2026Q1 row
+    should not be visible before its announcement date.
+    """
+
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    as_of_stamp = _normalize_yyyymmdd(as_of or ak_date())
+    if "ann_date" in out.columns:
+        ann = out["ann_date"].astype(str).str.replace("-", "", regex=False)
+        ann = ann.where(ann.str.fullmatch(r"\d{8}"), "")
+        out = out[(ann != "") & (ann <= as_of_stamp)].copy()
+        if out.empty:
+            return out
+        out["_ann_sort"] = pd.to_numeric(ann.loc[out.index], errors="coerce")
+        if "end_date" in out.columns:
+            out["_end_sort"] = pd.to_numeric(out["end_date"].astype(str).str.replace("-", "", regex=False), errors="coerce")
+            return out.sort_values(["_ann_sort", "_end_sort"], ascending=False).drop(columns=["_ann_sort", "_end_sort"])
+        return out.sort_values("_ann_sort", ascending=False).drop(columns=["_ann_sort"])
+    if "end_date" in out.columns:
+        period = out["end_date"].astype(str).str.replace("-", "", regex=False)
+        if period.str.fullmatch(r"\d{8}").any():
+            out["_end_sort"] = pd.to_numeric(period.where(period.str.fullmatch(r"\d{8}"), ""), errors="coerce")
+            out = out[out["_end_sort"].fillna(0) <= int(as_of_stamp)]
+            return out.sort_values("_end_sort", ascending=False).drop(columns=["_end_sort"])
+    return out
 
 
 def parse_financial_metrics(df: pd.DataFrame) -> dict[str, Any]:

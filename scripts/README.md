@@ -24,6 +24,7 @@ the command themselves — they already told you what they want.
 | "跑月度演化" / "月度策略" / "monthly cycle" / "月初演化" / "策略调整一下" | run `./scripts/monthly.sh` | sync-from + Claude rewrite yaml + Codex rewrite yaml + diff pause + sync-to |
 | "拉一下 ECS" / "sync from ecs" | run `./scripts/sync-from-ecs.sh --exclude-cache` | just rsync ECS → local |
 | "推上去" / "sync to ecs" | run `./scripts/sync-to-ecs.sh` | just rsync local → ECS + refresh dashboard |
+| "检查定时任务" / "timer check" | run `./scripts/check-ecs-timers.sh` | verify ECS pipeline timers and old timer cleanup |
 
 **Always run via `Bash` tool, in foreground, with adequate timeout
 (weekly: 600s, monthly: 1200s). Stream the output to the operator

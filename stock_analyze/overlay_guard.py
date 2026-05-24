@@ -13,6 +13,7 @@ Six checks:
 | Baseline-locked field touched        | OverlayBaselineLocked        |
 | Unknown factor name                  | OverlayUnknownFactor         |
 | Factor weight outside `[0, 1]`       | OverlayInvalidWeight         |
+| Factor direction outside `high/low`  | OverlayInvalidDirection      |
 | Mapping cannot be parsed             | OverlayInvalidYAML           |
 | Generic structural / type mismatch   | OverlaySchemaError           |
 
@@ -108,6 +109,18 @@ class OverlayInvalidWeight(OverlayGuardError):
         )
         self.name = name
         self.weight = weight
+
+
+class OverlayInvalidDirection(OverlayGuardError):
+    """Factor direction is not one of the two supported values."""
+
+    def __init__(self, name: str, direction: Any) -> None:
+        super().__init__(
+            f"overlay_invalid_direction:factors.{name}.direction "
+            f"(value={direction!r}; expected 'high' or 'low')"
+        )
+        self.name = name
+        self.direction = direction
 
 
 def validate(
@@ -257,6 +270,10 @@ def _validate_factors(overlay: dict[str, Any]) -> None:
             value = float(weight)
             if value < 0.0 or value > 1.0:
                 raise OverlayInvalidWeight(name=name, weight=weight)
+        if "direction" in spec:
+            direction = spec.get("direction")
+            if direction not in {"high", "low"}:
+                raise OverlayInvalidDirection(name=name, direction=direction)
 
 
 def _is_number(value: Any) -> bool:

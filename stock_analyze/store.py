@@ -5,7 +5,7 @@ from typing import Any
 
 import pandas as pd
 
-from .utils import append_csv, ensure_dirs, now_iso, read_json, write_json
+from .utils import append_csv, ensure_dirs, now_iso, read_json, write_dataframe_csv_atomic, write_json
 
 
 STATE_FILE = "state.json"
@@ -95,8 +95,7 @@ class PortfolioStore:
 
     def save_signals(self, df: pd.DataFrame) -> Path:
         path = self.data_dir / SIGNALS_FILE
-        df.to_csv(path, index=False, encoding="utf-8-sig")
-        return path
+        return write_dataframe_csv_atomic(df, path, index=False)
 
     def append_trades(self, rows: list[dict[str, Any]]) -> None:
         append_csv(
@@ -143,7 +142,7 @@ class PortfolioStore:
         combined = pd.concat([existing, new_rows], ignore_index=True)
         combined = combined.drop_duplicates(["date", "account_id"], keep="last")
         combined = combined.sort_values(["date", "account_id"])
-        combined.to_csv(path, index=False, encoding="utf-8-sig")
+        write_dataframe_csv_atomic(combined, path, index=False)
 
     def write_positions(self, state: dict[str, Any]) -> None:
         rows: list[dict[str, Any]] = []
@@ -170,13 +169,13 @@ class PortfolioStore:
             "updated_at",
         ]
         path = self.data_dir / POSITIONS_FILE
-        pd.DataFrame(rows, columns=columns).to_csv(path, index=False, encoding="utf-8-sig")
+        write_dataframe_csv_atomic(pd.DataFrame(rows, columns=columns), path, index=False)
 
     def write_factor_snapshot(self, df: pd.DataFrame, run_id: str) -> Path:
         target_dir = self.data_dir / FACTOR_RUNS_DIR
         ensure_dirs(target_dir)
         path = target_dir / f"{run_id}.csv"
-        df.to_csv(path, index=False, encoding="utf-8-sig")
+        write_dataframe_csv_atomic(df, path, index=False)
         return path
 
     def append_factor_coverage(self, rows: list[dict[str, Any]]) -> None:

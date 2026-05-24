@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
+import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -53,8 +55,65 @@ def read_json(path: str | Path, default: Any) -> Any:
 
 def write_json(path: str | Path, data: Any) -> None:
     file_path = Path(path)
+    write_text_atomic(file_path, json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def write_text_atomic(path: str | Path, text: str, encoding: str = "utf-8") -> None:
+    """Write text via same-directory temp file + atomic replace."""
+
+    file_path = Path(path)
     ensure_dirs(file_path.parent)
-    file_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding=encoding,
+            dir=file_path.parent,
+            prefix=f".{file_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            tmp_name = handle.name
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, file_path)
+    finally:
+        if tmp_name:
+            try:
+                Path(tmp_name).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def write_dataframe_csv_atomic(df: pd.DataFrame, path: str | Path, **kwargs: Any) -> Path:
+    """Atomically write a DataFrame CSV to avoid half-written runtime files."""
+
+    file_path = Path(path)
+    ensure_dirs(file_path.parent)
+    tmp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding=kwargs.pop("encoding", "utf-8-sig"),
+            dir=file_path.parent,
+            prefix=f".{file_path.name}.",
+            suffix=".tmp",
+            delete=False,
+            newline="",
+        ) as handle:
+            tmp_name = handle.name
+            df.to_csv(handle, **kwargs)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, file_path)
+        return file_path
+    finally:
+        if tmp_name:
+            try:
+                Path(tmp_name).unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def append_csv(path: str | Path, rows: list[dict[str, Any]], columns: list[str]) -> None:
@@ -64,10 +123,27 @@ def append_csv(path: str | Path, rows: list[dict[str, Any]], columns: list[str])
     ensure_dirs(file_path.parent)
     exists = file_path.exists()
     with file_path.open("a", newline="", encoding="utf-8-sig") as handle:
+        try:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
         writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
         if not exists:
             writer.writeheader()
         writer.writerows(rows)
+        handle.flush()
+        try:
+            os.fsync(handle.fileno())
+        except OSError:
+            pass
+        try:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except (ImportError, OSError):
+            pass
 
 
 def read_csv(path: str | Path) -> pd.DataFrame:
@@ -161,4 +237,3 @@ def unique_rows(rows: Iterable[dict[str, Any]], keys: list[str]) -> list[dict[st
         seen.add(key)
         result.append(row)
     return result
-
