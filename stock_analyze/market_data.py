@@ -113,7 +113,11 @@ def _fetch_one_candidate(
     counts = {"basic": 0, "history": 0, "valuation": 0, "financial": 0, "dividend": 0}
     steps: tuple[tuple[str, str, Any], ...] = (
         ("basic", "basic_info", lambda: provider.basic_info(code)),
-        ("history", "price_history", lambda: provider.price_history(code, days=220)),
+        # Prewarm the *largest* window any caller asks for: diagnostics
+        # uses 260, price_snapshot 220, execution_quote 45. The offline
+        # fallback in price_history() reuses a larger window for smaller
+        # requests, so prewarming 260 covers all three.
+        ("history", "price_history", lambda: provider.price_history(code, days=260)),
         ("valuation", "valuation_metrics", lambda: provider.valuation_metrics(code)),
         ("financial", "financial_metrics", lambda: provider.financial_metrics(code)),
         ("dividend", "dividend_yield", lambda: provider.dividend_yield(code)),

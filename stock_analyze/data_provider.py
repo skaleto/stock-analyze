@@ -540,6 +540,27 @@ class DataProvider(ABC):
             return normalized.copy()
 
         if self.offline:
+            # prepare-market-data prewarms history with ``days=220`` so the
+            # weekly factor pipeline can compute 60-day momentum. Other
+            # callers (notably ``execution_quote`` with ``days=45``) request
+            # a smaller window and would otherwise CacheMiss even though a
+            # superset is on disk. Try every prewarmed window larger than
+            # the request before raising — the extra rows are harmless,
+            # downstream picks the slice it needs.
+            for fallback_days in (260, 220, 180, 90, 60):
+                if fallback_days <= days:
+                    continue
+                fallback_name = f"history_{code}_{stamp}_{fallback_days}"
+                fallback_cached = self.load_cache(fallback_name)
+                if fallback_cached.empty:
+                    continue
+                if "_no_data" in fallback_cached.columns:
+                    empty = normalize_history(pd.DataFrame())
+                    self._history_cache[cache_key] = empty
+                    return empty.copy()
+                normalized = normalize_history(fallback_cached)
+                self._history_cache[cache_key] = normalized
+                return normalized.copy()
             self._raise_cache_miss("price_history", cache_name)
 
         end_date = stamp
