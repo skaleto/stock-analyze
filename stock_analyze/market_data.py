@@ -195,8 +195,15 @@ def prepare_market_data(
     snapshot_path = _snapshot_path(repo_root, as_of_str)
     if snapshot_path.exists() and not force:
         existing = json.loads(snapshot_path.read_text(encoding="utf-8"))
-        existing["skipped"] = "snapshot_exists"
-        return existing
+        # Only skip if the previous run actually produced usable data.
+        # Failed snapshots SHOULD be retried — otherwise a one-time transient
+        # failure (e.g. token not yet provisioned, rate limit hit) sticks
+        # forever and the operator has to manually delete the file before
+        # the next attempt. Treat ``partial`` as "good enough to skip" since
+        # candidates are present.
+        if existing.get("status") in ("success", "partial"):
+            existing["skipped"] = "snapshot_exists"
+            return existing
 
     cache_dir = repo_root / "data" / "shared" / "cache"
     ensure_dirs(cache_dir, repo_root / "data" / "shared")
