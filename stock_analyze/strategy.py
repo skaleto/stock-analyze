@@ -7,7 +7,7 @@ import pandas as pd
 
 from .data_provider import DataProvider
 from .factor_pipeline import UNCLASSIFIED, process_factors
-from .utils import now_iso, safe_float
+from .utils import now_iso, parse_date, safe_float
 
 
 @dataclass
@@ -39,7 +39,7 @@ def build_signals(config: dict[str, Any], account: dict[str, Any], provider: Dat
 
         basic = provider.basic_info(code)
         valuation = provider.valuation_metrics(code)
-        metrics = provider.financial_metrics(code)
+        metrics = provider.financial_metrics(code, as_of=as_of)
         snapshot = provider.price_snapshot(code, as_of=as_of, spot_row=stock.to_dict())
         dividend_yield = provider.dividend_yield(code, as_of=as_of)
         data_warnings: list[str] = []
@@ -51,6 +51,10 @@ def build_signals(config: dict[str, Any], account: dict[str, Any], provider: Dat
             data_warnings.append("financial_fetch_failed")
         if snapshot.warning:
             data_warnings.append(snapshot.warning)
+        listing_date = basic.get("listing_date")
+        listing_age_days = listing_age(listing_date, as_of)
+        if listing_age_days is None:
+            data_warnings.append("listing_date_missing")
         market_cap_yi = safe_float(stock.get("market_cap_yi")) or safe_float(basic.get("market_cap_yi"))
         row = {
             "code": code,
@@ -60,6 +64,8 @@ def build_signals(config: dict[str, Any], account: dict[str, Any], provider: Dat
             "pe": safe_float(stock.get("pe")) or valuation.get("pe"),
             "pb": safe_float(stock.get("pb")) or valuation.get("pb"),
             "market_cap_yi": market_cap_yi,
+            "listing_date": listing_date,
+            "listing_age_days": listing_age_days,
             "roe": safe_float(metrics.get("roe")),
             "gross_margin": safe_float(metrics.get("gross_margin")),
             "debt_ratio": safe_float(metrics.get("debt_ratio")),
@@ -160,6 +166,10 @@ def apply_hard_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.DataFram
     if max_cap is not None and "market_cap_yi" in out:
         out = out[(out["market_cap_yi"].isna()) | (out["market_cap_yi"] <= max_cap)]
 
+    min_listing_days = safe_float(filters.get("min_listing_days"))
+    if min_listing_days is not None and "listing_age_days" in out:
+        out = out[(out["listing_age_days"].isna()) | (out["listing_age_days"] >= min_listing_days)]
+
     if "paused" in out:
         out = out[~out["paused"].fillna(False)]
 
@@ -181,6 +191,15 @@ def apply_relaxed_filters(df: pd.DataFrame, filters: dict[str, Any]) -> pd.DataF
         if field_name in out:
             out = out[out[field_name].notna()]
     return out
+
+
+def listing_age(listing_date: Any, as_of: str | None) -> int | None:
+    if not listing_date:
+        return None
+    try:
+        return (parse_date(as_of) - parse_date(str(listing_date))).days
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def score_candidates(df: pd.DataFrame, factors: dict[str, Any], factor_processing: dict[str, Any] | None = None) -> pd.DataFrame:

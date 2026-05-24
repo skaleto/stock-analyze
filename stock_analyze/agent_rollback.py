@@ -20,6 +20,7 @@ from typing import Any
 from . import competition
 from .config import config_hash
 from .evolution_writer import _append_evolution_row
+from .utils import write_text_atomic
 
 
 def rollback(
@@ -48,13 +49,14 @@ def rollback(
     restored_text = history_path.read_text(encoding="utf-8")
 
     try:
-        overlay_path.write_text(
+        write_text_atomic(
+            overlay_path,
             restored_text if restored_text.endswith("\n") else restored_text + "\n",
             encoding="utf-8",
         )
         restored_hash = config_hash(competition.load(agent_id, repo_root=root))
     except Exception:
-        overlay_path.write_text(old_text, encoding="utf-8")
+        write_text_atomic(overlay_path, old_text, encoding="utf-8")
         raise
 
     _append_evolution_row(

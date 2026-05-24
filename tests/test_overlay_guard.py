@@ -8,6 +8,7 @@ from pathlib import Path
 from stock_analyze.overlay_guard import (
     AVAILABLE_FACTORS,
     OverlayBaselineLocked,
+    OverlayInvalidDirection,
     OverlayInvalidWeight,
     OverlayInvalidYAML,
     OverlaySchemaError,
@@ -159,6 +160,18 @@ class OverlayGuardRaiseTests(unittest.TestCase):
             }
             with self.assertRaises(OverlayInvalidWeight):
                 validate("claude", overlay, repo_root=root)
+
+    def test_factor_direction_must_be_high_or_low(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_repo(root)
+            overlay = {
+                "agent_id": "claude",
+                "factors": {"pe": {"weight": 0.1, "direction": "lower_is_better"}},
+            }
+            with self.assertRaises(OverlayInvalidDirection) as ctx:
+                validate("claude", overlay, repo_root=root)
+            self.assertIn("pe", str(ctx.exception))
 
     def test_invalid_yaml_string_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

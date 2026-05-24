@@ -29,12 +29,13 @@ from . import competition
 from .data_provider import DataProvider, INDEX_CODES, make_provider
 from .run_ledger import RunLedger
 from .strategy import preselect_universe
-from .utils import ensure_dirs, parse_date
+from .utils import ensure_dirs, parse_date, write_text_atomic
 
 
 # Names that indicate a critical failure: if these come up empty the whole
 # fetch is considered a failure and downstream agents must NOT run.
 CRITICAL_STEPS = {"spot", "all_benchmarks"}
+OPTIONAL_EMPTY_METHODS = {"dividend_yield"}
 
 
 def _now_iso() -> str:
@@ -103,6 +104,7 @@ def _fetch_one_candidate(
     provider: DataProvider,
     code: str,
     errors: list[dict[str, Any]],
+    warnings: list[dict[str, Any]] | None = None,
 ) -> dict[str, int]:
     """Sequentially fetch the 5 per-stock endpoints for a single ``code``.
 
@@ -131,7 +133,8 @@ def _fetch_one_candidate(
                 or (isinstance(result, dict) and not result)
             )
             if empty:
-                errors.append({"code": code, "method": method_name, "message": "empty_result"})
+                target = warnings if method_name in OPTIONAL_EMPTY_METHODS and warnings is not None else errors
+                target.append({"code": code, "method": method_name, "message": "empty_result"})
             else:
                 counts[counter_key] = 1
         except Exception as exc:  # noqa: BLE001 — record + continue per-stock
@@ -229,6 +232,7 @@ def prepare_market_data(
     started_at = _now_iso()
     start_clock = time.time()
     errors: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
     counters: dict[str, int] = {"spot": 0, "trading_calendar": 0}
 
     provider = make_provider(cache_dir=cache_dir, offline=False, as_of=as_of_str)
@@ -261,7 +265,7 @@ def prepare_market_data(
     per_code_counts = {"basic": 0, "history": 0, "valuation": 0, "financial": 0, "dividend": 0}
     if candidate_codes:
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_fetch_one_candidate, provider, code, errors): code for code in candidate_codes}
+            futures = {pool.submit(_fetch_one_candidate, provider, code, errors, warnings): code for code in candidate_codes}
             for future in as_completed(futures):
                 code = futures[future]
                 try:
@@ -319,15 +323,17 @@ def prepare_market_data(
         "candidates_fetched": len(candidate_codes),
         "rows": counters,
         "errors": errors,
+        "warnings": warnings,
         "fetch_summary": {
             "ok": sum(1 for _ in counters.values() if _),
             "errors": len(errors),
+            "warnings": len(warnings),
             "fatal": fatal_reasons,
         },
         "status": status,
     }
 
-    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_text_atomic(snapshot_path, json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     provider.persist_health()
 
     return snapshot

@@ -89,11 +89,14 @@ def process_factors(
         else pd.Series([UNCLASSIFIED] * len(df), index=df.index)
     )
 
-    factor_meta = [
-        (name, float(spec.get("weight", 0)), spec.get("direction", "high"))
-        for name, spec in factors.items()
-        if float(spec.get("weight", 0)) > 0 and name in df.columns
-    ]
+    factor_meta: list[tuple[str, float, str]] = []
+    for name, spec in factors.items():
+        weight = float(spec.get("weight", 0))
+        direction = str(spec.get("direction", "high"))
+        if direction not in {"high", "low"}:
+            raise ValueError(f"invalid factor direction for {name}: {direction!r}")
+        if weight > 0 and name in df.columns:
+            factor_meta.append((name, weight, direction))
     total_weight = sum(weight for _, weight, _ in factor_meta)
 
     if not factor_meta or total_weight <= 0:

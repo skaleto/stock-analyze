@@ -93,7 +93,7 @@ python3 -m stock_analyze dashboard
 python3 -m stock_analyze serve-dashboard --host 127.0.0.1 --port 8765
 ```
 
-浏览器打开 `http://127.0.0.1:8765/dashboard.html`。
+浏览器打开 `http://127.0.0.1:8765/` 看新手简化版，或打开 `http://127.0.0.1:8765/pro.html` 看专业版。
 
 ### 简化版 vs 专业版
 
@@ -159,10 +159,16 @@ python3 -m stock_analyze serve-dashboard --host 127.0.0.1 --port 8765
 
 仓库包含 systemd 模板：
 
-- `deploy/systemd/stock-analyze-daily.service`
-- `deploy/systemd/stock-analyze-daily.timer`
-- `deploy/systemd/stock-analyze-weekly.service`
-- `deploy/systemd/stock-analyze-weekly.timer`
+- `deploy/systemd/stock-analyze-market-data.service`
+- `deploy/systemd/stock-analyze-market-data.timer`
+- `deploy/systemd/stock-analyze-weekly-trigger.service`
+- `deploy/systemd/stock-analyze-weekly-trigger.timer`
+- `deploy/systemd/stock-analyze-claude-daily.service`
+- `deploy/systemd/stock-analyze-codex-daily.service`
+- `deploy/systemd/stock-analyze-claude-weekly.service`
+- `deploy/systemd/stock-analyze-codex-weekly.service`
+- `deploy/systemd/stock-analyze-monthly-review.service`
+- `deploy/systemd/stock-analyze-monthly-review.timer`
 - `deploy/systemd/stock-analyze-dashboard.service`
 
 dashboard 服务只监听 `127.0.0.1:8765`。建议通过 SSH 隧道访问：
@@ -171,7 +177,7 @@ dashboard 服务只监听 `127.0.0.1:8765`。建议通过 SSH 隧道访问：
 ssh -L 8765:127.0.0.1:8765 user@your-server
 ```
 
-然后打开 `http://127.0.0.1:8765/dashboard.html`。
+然后打开 `http://127.0.0.1:8765/` 或 `http://127.0.0.1:8765/pro.html`。
 
 ## 旧版筛选器
 

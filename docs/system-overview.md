@@ -8,7 +8,7 @@
 
 **Stock Analyze** 是一个 A 股**纸面（paper trading）多因子策略系统**，专门用来：
 
-- 用公开数据（AkShare / Baostock 等）每周生成 A 股选股信号。
+- 用公开数据（Tushare Pro 主源 / Baostock 兜底）每周生成 A 股选股信号。
 - 在"下一交易日开盘价 + 滑点 + 佣金 + 印花税"的保守口径下**模拟成交**，更新模拟净值。
 - 让 **Claude 与 Codex 两个 agent**在完全相同的市场条件、启动资金、交易成本下**各跑各的策略**，每月对比成绩，刺激彼此优化。
 - 把所有过程在一个本地 dashboard 上可视化。
@@ -31,7 +31,7 @@
 │      → ExecStartPost 触发两 agent daily 并行（--offline）    │
 │  · Sat 10:00 weekly-trigger（复用周五 cache）                │
 │      → ExecStartPost 触发两 agent weekly 并行（--offline）   │
-│  · 每月 1 号跑 monthly-review + referee/apply + dashboard    │
+│  · 每月 1 号跑 monthly-review + dashboard                    │
 │  · 不调 LLM API；只产数据 + 输出"待 agent 看的任务包"        │
 └──────────────────────────────────────────────────────────────┘
                             │
@@ -43,8 +43,8 @@
 │             同时在 Codex CLI 让 codex 跑 weekly review       │
 │             → agent 写笔记到 data/<agent>/notes/             │
 │             → scripts/sync-to-ecs.sh 推回并刷新 dashboard    │
-│  · 月度同上 + /monthly-strategy <agent> 产 proposal JSON     │
-│  · sync-to-ecs 默认触发 ECS 裁判，只应用 approved patch       │
+│  · 月度同上 + /monthly-strategy <agent> 直接演化 overlay      │
+│  · sync-to-ecs 推回 evolution 产物并刷新 dashboard            │
 └──────────────────────────────────────────────────────────────┘
                             │
                             │  git push origin main
@@ -62,10 +62,10 @@
 
 | 谁 | 干什么 | 安全边界 |
 | --- | --- | --- |
-| **ECS** | 自动跑数、出 dashboard/briefings，并应用 referee-approved config patch | systemd timer + sync 后置命令 |
-| **本地 Claude Code** | claude 视角分析与提案 | 只动 `data/claude/notes/` 与 `data/claude/proposals/` |
-| **本地 Codex CLI** | codex 视角分析与提案 | 只动 `data/codex/notes/` 与 `data/codex/proposals/` |
-| **你（人）** | 查看 dashboard、处理 `needs_human`、决定是否回滚或暂停 | 唯一能改 `configs/competition.yaml` 的角色 |
+| **ECS** | 自动跑数、出 dashboard/briefings；不跑 LLM 裁判或策略应用 | systemd timer + sync 后置命令 |
+| **本地 Claude Code** | claude 视角周度分析与月度 overlay 演化 | 周度写 `data/claude/notes/`；月度写自己的 yaml + evolution 产物 |
+| **本地 Codex CLI** | codex 视角周度分析与月度 overlay 演化 | 周度写 `data/codex/notes/`；月度写自己的 yaml + evolution 产物 |
+| **你（人）** | 查看 dashboard、处理异常、决定是否回滚或暂停 | 唯一能改 `configs/competition.yaml` 的角色 |
 
 ---
 
@@ -84,7 +84,7 @@ stock_analyze/              # Python 包
   cli.py                    # 所有 CLI 子命令入口
   competition.py            # baseline + overlay 加载与锁字段校验
   config.py                 # 单 agent 配置加载与 v1→v2 迁移
-  data_provider.py          # AkShare/Baostock 数据接口 + 缓存 + 降级
+  data_provider.py          # Tushare/Baostock 数据接口 + 缓存 + 降级
   strategy.py               # 信号生成主流程
   factor_pipeline.py        # winsorize → z-score → 行业中性化 → 加权
   portfolio_controls.py     # 行业上限、持仓缓冲、max_holding_days
@@ -98,27 +98,28 @@ stock_analyze/              # Python 包
   agent_briefing.py         # 周/月任务包 markdown 生成
   store.py                  # CSV/JSON 持久化
 
-deploy/systemd/             # 8 个 .service / .timer 单元
+deploy/systemd/             # systemd service / timer 单元
 docs/                       # 运维、总览、规划文档
 openspec/                   # 所有 OpenSpec change 记录
 scripts/                    # ECS↔本地 rsync 脚本
 .claude/commands/           # Claude Code slash command 模板
-tests/                      # 67 个单元测试
+tests/                      # 单元测试
 
 data/                       # 运行时产物（gitignored）
-  shared/                   # 两侧共用的 AkShare 缓存与 data_health.json
+  shared/                   # 两侧共用的 Tushare/Baostock 缓存与 data_health.json
   competition/              # 月度对比、leaderboard、competition_metadata
   claude/                   # claude 自己的 state/orders/positions/nav/...
     notes/                  # agent 周/月笔记
       briefings/            # ECS 自动生成的任务包（agent 只读）
-    proposals/              # agent 月度策略提案
+    evolution_log/          # agent 月度策略演化思考
+    evolution_diff/         # agent 月度策略演化结构化 diff
     factor_runs/            # 每周因子快照
     factor_diagnostics/     # 覆盖率 + 前向 IC 累计
     configs/                # 历史 config_hash → 完整 config snapshot
   codex/                    # codex 同结构
 
 reports/                    # 渲染产物（gitignored）
-  claude/                   # claude 的 dashboard.html、dashboard_fragment.html、weekly_report.md
+  claude/                   # claude 的 dashboard.html、weekly_report.md
   codex/                    # codex 同上
   competition/              # 聚合 dashboard 与月度对比 markdown
 ```
@@ -255,9 +256,9 @@ ECS:
 - `schedule.execution`、`schedule.signal_day`
 - `trading.*`（所有交易成本相关）
 
-### 5b. `configs/agents/<agent>.yaml`（agent proposal 可改）
+### 5b. `configs/agents/<agent>.yaml`（agent 月度演化可改）
 
-每个 agent 通过月度 proposal 影响以下 overlay 字段；实际写回由 referee-approved apply 命令执行：
+每个 agent 通过月度策略演化影响以下 overlay 字段；实际写回由本地 LLM 调用 `evolution_writer.write_evolution` 执行，ECS 端不再 referee/apply：
 
 - `factors`：哪些因子、各自权重、方向 (`high` / `low`)
 - `factor_processing`：winsorize 上下分位、是否行业中性化、最小因子覆盖率
@@ -388,6 +389,8 @@ GET /simple.html               → reports/competition/simple.html
 GET /simple/claude.html        → reports/competition/simple/claude.html
 GET /simple/codex.html         → reports/competition/simple/codex.html
 GET /pro.html                  → reports/competition/dashboard.html  (别名)
+GET /pro/claude.html           → reports/claude/dashboard.html
+GET /pro/codex.html            → reports/codex/dashboard.html
 GET /competition/dashboard.html → reports/competition/dashboard.html  (向后兼容)
 GET /claude/dashboard.html     → reports/claude/dashboard.html       (单 agent fragment 页)
 ```
@@ -397,7 +400,7 @@ GET /claude/dashboard.html     → reports/claude/dashboard.html       (单 agen
 ```
 ┌─[ Claude ]─[ Codex ]─[ 对比 ]──────────────────────────┐
 │                                                       │
-│ Claude tab(嵌入 reports/claude/dashboard_fragment.html)│
+│ Claude tab(嵌入 data/_dashboard_build/claude/fragment.html)│
 │  · 4 张账户卡片(最新资产)                              │
 │  · 净值曲线                                            │
 │  · 绩效解释 4×3 卡片矩阵(年化/Sharpe/IR/成本…)         │
@@ -408,7 +411,7 @@ GET /claude/dashboard.html     → reports/claude/dashboard.html       (单 agen
 │  · 因子诊断(覆盖率热力图 + 前向 IC 折线)               │
 │  · 当前持仓 / 近期交易 / 数据源 / 最近运行             │
 │  · 近期 agent 笔记(最近 5 篇 markdown 折叠)            │
-│  · 策略演进时间线(每月 proposal + 当月与次月实际收益)  │
+│  · 策略演进时间线(每月 evolution + 当月与次月实际收益) │
 │  · 本期分析任务包(最新 weekly + monthly briefing)      │
 │                                                       │
 │ Codex tab 同结构                                       │
@@ -428,7 +431,7 @@ CSS `:target` 切 tab,纯静态,无 JS 框架。
 
 ### 简化版 (`simple.html`)
 
-面向新手,只 8 个 section,文件 ≤ 80 KB:
+面向新手,约 8 个 section,文件 ≤ 80 KB:
 
 ```
 [简化版] [专业版] [策略演进]                       ← 顶部 tab bar
@@ -452,7 +455,7 @@ CSS `:target` 切 tab,纯静态,无 JS 框架。
 
 - **周度**：ECS 自动生成 `data/<agent>/notes/briefings/<date>-weekly.md` → 你 sync → agent 跑 `/weekly-review claude`（或 codex 类似指令）→ agent 自己 Read 任务包 + 写 markdown 笔记到 `data/<agent>/notes/<date>-weekly-review.md` → 你 sync 回 ECS。**周度不改 config**。
 
-- **月度**：ECS 自动生成 `data/<agent>/notes/briefings/<month>-monthly.md`（含完整月度对比 JSON 摘要 + 近 4 周笔记 + 锁字段清单）→ 你 sync → agent 跑 `/monthly-strategy claude 2026-05` → 输出 markdown 月度复盘 + 严格 JSON proposal 到 `data/<agent>/proposals/<month>-strategy.json` → 你 sync 回 → ECS 裁判写 decision → 只自动应用 `approved` patch。
+- **月度**：ECS 自动生成 `data/<agent>/notes/briefings/<month>-monthly.md`（含完整月度对比 JSON 摘要 + 近 4 周笔记 + 锁字段清单）→ 你 sync → agent 跑 `/monthly-strategy claude 2026-05` → 写月度复盘、直接更新自己的 `configs/agents/<agent>.yaml`，并落 `evolution_log` / `evolution_diff` / `config_evolution.csv` → `validate-overlay` 通过 → 你 sync 回 ECS 刷 dashboard。
 
 每份 briefing 是**五段**结构：角色 / 数据快照 / 任务 / 输出契约 / 可选参考。agent 看到的就是一段固定模板，写什么、写到哪、不要碰什么完全明确。
 
@@ -492,7 +495,7 @@ CSS `:target` 切 tab,纯静态,无 JS 框架。
 | `data/shared/cache/*.csv` | data_provider | 公开数据缓存（两侧共用） |
 | `data/shared/data_health.json` | data_provider | 数据源健康日志 |
 | `reports/<agent>/dashboard.html` | reporting | 单 agent 仪表盘 |
-| `reports/<agent>/dashboard_fragment.html` | reporting | 给聚合页嵌入的片段 |
+| `data/_dashboard_build/<agent>/fragment.html` | reporting | 给聚合页嵌入的片段 |
 | `reports/<agent>/weekly_report.md` | reporting | 中文周报 |
 | `reports/competition/dashboard.html` | dashboard_aggregator | 三 tab 聚合页 |
 | `reports/competition/monthly_review_<month>.md` | monthly_review | 人类可读月报 |
@@ -533,7 +536,7 @@ CSS `:target` 切 tab,纯静态,无 JS 框架。
 ## 16. 限制与不在范围
 
 - **数据**：公开接口受网络 / 风控 / 限流影响；data_provider 已加多源降级和重试，但不保证不掉数据。
-- **financials**：未严格按公告日 point-in-time 截断（待 change `introduce-point-in-time-fundamentals`）。
+- **financials**：Tushare `fina_indicator` 已按 `ann_date <= as_of` 做 point-in-time 可见性过滤；更完整的财报公告溯源、修订版本和多期对齐仍待后续 change。
 - **历史回测**：当前是前向模拟。历史回测引擎留给 change `add-historical-backtest-baseline`。
 - **历史指数成分**：用当下成分倒推历史会有幸存者偏差，回测时再补。
 - **组合优化器**：未引入 CVXPY / PyPortfolioOpt。当前组合控制是规则式。
@@ -563,7 +566,7 @@ CSS `:target` 切 tab,纯静态,无 JS 框架。
 - **overlay**：`configs/agents/<agent>.yaml` 中的 agent 自由配置。
 - **briefing**：ECS 周/月自动生成给 agent 看的 markdown 任务包，位于 `data/<agent>/notes/briefings/`。
 - **note**：agent 自己写的分析 markdown，位于 `data/<agent>/notes/`。
-- **proposal**：agent 月度策略提案 JSON，位于 `data/<agent>/proposals/`。
+- **evolution**：agent 月度策略演化记录，包含 `data/<agent>/evolution_log/`、`data/<agent>/evolution_diff/` 与 `data/<agent>/config_evolution.csv`。
 - **review**：竞赛月度对比，位于 `data/competition/monthly_reviews/`。
 - **leaderboard**：按月战绩 CSV，位于 `data/competition/leaderboard.csv`。
 - **config_hash**：当前 overlay+baseline 合并后的 12 字符 sha256；每次 config 变化都重新计算。

@@ -37,7 +37,7 @@ from typing import Any
 from . import competition, overlay_guard
 from .config import config_hash
 from .monthly_review import default_month_for
-from .utils import ensure_dirs
+from .utils import ensure_dirs, write_text_atomic
 
 
 # Columns of ``data/<agent>/config_evolution.csv`` after this change.
@@ -130,7 +130,8 @@ def write_evolution(
     history_path = _history_path(root, from_hash)
     ensure_dirs(history_path.parent)
     if not history_path.exists():
-        history_path.write_text(
+        write_text_atomic(
+            history_path,
             json.dumps(old_overlay, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
@@ -139,25 +140,27 @@ def write_evolution(
     overlay_path = paths.config_path
     old_text = overlay_path.read_text(encoding="utf-8") if overlay_path.exists() else ""
     try:
-        overlay_path.write_text(
+        write_text_atomic(
+            overlay_path,
             json.dumps(new_overlay, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
     except Exception:
         if old_text:
-            overlay_path.write_text(old_text, encoding="utf-8")
+            write_text_atomic(overlay_path, old_text, encoding="utf-8")
         raise
 
     # 4. Markdown reasoning.
     log_path = paths.data_dir / "evolution_log" / f"{target_month}.md"
     ensure_dirs(log_path.parent)
-    log_path.write_text(reasoning_md, encoding="utf-8")
+    write_text_atomic(log_path, reasoning_md, encoding="utf-8")
 
     # 5. Machine-readable diff JSON.
     diff = compute_diff(old_overlay, new_overlay)
     diff_path = paths.data_dir / "evolution_diff" / f"{target_month}.json"
     ensure_dirs(diff_path.parent)
-    diff_path.write_text(
+    write_text_atomic(
+        diff_path,
         json.dumps(
             {
                 "agent_id": agent_id,

@@ -39,7 +39,7 @@ configs/
 
 data/
   shared/
-    cache/                 # AkShare/Baostock 共享缓存
+    cache/                 # Tushare/Baostock 共享缓存
     data_health.json
   claude/                  # Claude 独占的运行状态
     state.json, daily_nav.csv, trades.csv, positions.csv,
@@ -53,7 +53,7 @@ data/
     leaderboard.csv
 
 reports/
-  claude/                  # Claude 自己的 dashboard.html + dashboard_fragment.html + weekly_report.md
+  claude/                  # Claude 自己的 dashboard.html + weekly_report.md
   codex/                   # 同上
   competition/             # 聚合 dashboard.html + monthly_review_<month>.md
 ```
@@ -93,7 +93,7 @@ python3 -m stock_analyze --agent claude dashboard
 - `--config configs/agents/<id>.yaml`（经 `competition.load` 合并 baseline）
 - `--data-dir data/<id>`
 - `--reports-dir reports/<id>`
-- AkShare cache 指向 `data/shared/cache`
+- Tushare/Baostock cache 指向 `data/shared/cache`
 - `data_health.json` 写到 `data/shared/`
 
 不带 `--agent` 时仍走老路径（`configs/strategy_v1.yaml` + `data/` + `reports/`），与单 agent 模式完全兼容。
@@ -304,7 +304,7 @@ column -ts, data/codex/runs.csv | tail
 
 ### Dashboard 三 tab 但 Codex tab 空
 
-`reports/codex/dashboard_fragment.html` 不存在。先：
+`data/_dashboard_build/codex/fragment.html` 不存在。先：
 
 ```bash
 python3 -m stock_analyze --agent codex run-weekly
@@ -312,7 +312,7 @@ python3 -m stock_analyze --agent codex run-weekly
 python3 -m stock_analyze --agent codex dashboard
 ```
 
-`dashboard` / `run-daily` / `run-weekly` 命令现在会同时写 `dashboard.html` 与 `dashboard_fragment.html`。
+`dashboard` / `run-daily` / `run-weekly` 命令现在会同时写用户可见的 `dashboard.html` 与内部聚合片段 `data/_dashboard_build/<agent>/fragment.html`。
 
 ### 共享缓存写竞争
 
@@ -332,7 +332,7 @@ git diff configs/agents/claude.yaml
 ## 本地分析工作流（ECS 跑数据，本地 agent 分析）
 
 适用于没有 LLM API key、agent 分析在本地用 Claude Code / Codex CLI 完成的场景。
-ECS 只跑选股 + 出 briefing；本地 sync 后让 agent 读 briefing、写笔记、生成提案；再 sync 回 ECS 让 dashboard 显示。
+ECS 只跑选股 + 出 briefing；本地 sync 后让 agent 读 briefing、写笔记或月度演化；再 sync 回 ECS 让 dashboard 显示。
 
 ```text
 ECS 端（systemd 自动）
@@ -340,17 +340,17 @@ ECS 端（systemd 自动）
       └ 自动 build_weekly_briefing → data/<id>/notes/briefings/<date>-weekly.md
   └ competition-monthly-review
       └ 对每个 agent 自动 build_monthly_briefing → data/<id>/notes/briefings/<month>-monthly.md
-      └ 如 proposal 已存在，则自动 judge → apply approved → 刷 dashboard
+      └ 仅写月度 briefing 与 dashboard；不 judge/apply
 
 本地（人 + agent CLI）
   └ scripts/sync-from-ecs.sh       拉数据/配置/报告
   └ Claude Code: /weekly-review claude       agent 读 briefing → 写 data/claude/notes/<date>-weekly-review.md
   └ Codex CLI: "do weekly review for codex"  agent 读 briefing → 写 data/codex/notes/<date>-weekly-review.md
-  └ （月底再各跑一次 /monthly-strategy <id>，产 proposal JSON）
-  └ scripts/sync-to-ecs.sh         推 notes / proposals 回 ECS，并自动触发裁判/apply/dashboard
+  └ （月底再各跑一次 /monthly-strategy <id>，直接演化本 agent overlay）
+  └ scripts/sync-to-ecs.sh         推 notes / evolution 产物 / overlay 回 ECS，并刷新 dashboard
 
 ECS 端
-  └ dashboard 显示 notes、proposal 与裁判结论；approved patch 下次交易周期生效
+  └ dashboard 显示 notes 与 evolution 时间线；新 overlay 下次交易周期生效
 ```
 
 ### 一次性环境变量
@@ -359,10 +359,9 @@ ECS 端
 export SA_ECS_REMOTE=user@your-ecs-host:/opt/stock-analyze/app
 # 可选：覆盖本地仓库路径，默认 $(pwd)
 # export SA_ECS_LOCAL_REPO=$HOME/code/stock-analyze
-# 可选：远端自动裁判/apply 使用的 ssh 参数与目标月份
+# 可选：远端 dashboard 刷新使用的 ssh 参数
 # export SA_ECS_SSH_OPTS="-i ~/.ssh/your_key"
-# export SA_ECS_MONTH=2026-05
-# export SA_ECS_AFTER_SYNC=0  # 只同步，不触发远端裁判/apply
+# export SA_ECS_AFTER_SYNC=0  # 只同步，不触发远端 dashboard 刷新
 ```
 
 ### 周度本地分析步骤
@@ -441,9 +440,9 @@ python3 -m stock_analyze agent-prepare-monthly --agent codex --month 2026-05
 
 | 频率 | 命令 | 谁触发 |
 | --- | --- | --- |
-| 每个交易日 17:30 / 17:35 | `--agent claude/codex run-daily` | ECS systemd timer |
-| 每周五 17:40 / 17:45 | `--agent claude/codex run-weekly`（自带 briefing） | ECS systemd timer |
-| 周五晚 | sync-from-ecs → `/weekly-review claude` + 同步 codex → sync-to-ecs | 本地人工 + agent |
+| Mon-Fri 17:25 CST | `prepare-market-data` → 两 agent `run-daily --offline` | ECS systemd timer |
+| Sat 10:00 CST | `weekly-trigger` → 两 agent `run-weekly --offline`（自带 briefing） | ECS systemd timer |
+| 周六 / 周末 | sync-from-ecs → `/weekly-review claude` + 同步 codex → sync-to-ecs | 本地人工 + agent |
 | 每月 1 号 09:00 | `competition-monthly-review` + `competition-dashboard` | ECS systemd timer |
 | 每月 1-2 号 | sync-from-ecs → `/monthly-strategy claude` + 同步 codex → sync-to-ecs | 本地人工 + agent |
 | 任意时刻 | `competition-dashboard` | 人或 timer |
@@ -453,4 +452,4 @@ python3 -m stock_analyze agent-prepare-monthly --agent codex --month 2026-05
 - 仅模拟。任何输出都不构成投资建议。
 - 公开数据接口可能失败/限流；`data/shared/data_health.json` 会记录降级路径。
 - 两侧 overlay 同质化（`daily_return_correlation > 0.85`）时对比意义下降，月度报告会自动给出提醒。
-- 策略自动演进只应用裁判判定为 `approved` 的小步 patch；`needs_human` 和 `rejected` 不会自动改配置。
+- 策略自动演进由本地 LLM 直接改本 agent overlay；守卫只校验 schema、锁字段、因子白名单、权重和方向合法性，策略好坏由月度表现与人工回滚机制约束。

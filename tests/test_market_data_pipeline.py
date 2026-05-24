@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from stock_analyze.data_provider import AkshareProvider, CacheMiss
+from stock_analyze.data_provider import AkshareProvider, CacheMiss, filter_financial_visible_as_of
 from stock_analyze.market_data import (
     _merged_filters,
     prepare_market_data,
@@ -57,7 +57,7 @@ class FakeProvider(AkshareProvider):
     def valuation_metrics(self, code: str) -> dict:
         return {"pe": 15.0, "pb": 1.5}
 
-    def financial_metrics(self, code: str) -> dict:
+    def financial_metrics(self, code: str, as_of: str | None = None) -> dict:
         return {"roe": 12.0, "gross_margin": 25.0, "debt_ratio": 40.0, "net_profit_growth": 8.0}
 
     def dividend_yield(self, code: str, as_of: str | None = None) -> float | None:
@@ -228,6 +228,25 @@ class PrepareMarketDataTests(unittest.TestCase):
         self.assertEqual(snapshot["status"], "partial")
         self.assertTrue(any(err.get("method") == "basic_info" for err in snapshot["errors"]))
 
+    def test_missing_dividend_is_warning_not_partial_failure(self) -> None:
+        class NoDividendProvider(FakeProvider):
+            def dividend_yield(self, code: str, as_of: str | None = None) -> float | None:
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._scaffold(root)
+            cache_dir = root / "data" / "shared" / "cache"
+            cache_dir.mkdir(parents=True)
+            fake = NoDividendProvider(cache_dir=cache_dir)
+            self._patch_provider(fake)
+
+            snapshot = prepare_market_data(as_of="2026-05-22", repo_root=root, max_workers=1)
+
+        self.assertEqual(snapshot["status"], "success")
+        self.assertEqual(snapshot["errors"], [])
+        self.assertTrue(any(item.get("method") == "dividend_yield" for item in snapshot["warnings"]))
+
     def test_does_not_refetch_when_snapshot_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -289,6 +308,21 @@ class PrepareMarketDataTests(unittest.TestCase):
                     f"--force should have deleted stale cache {path.name}",
                 )
             self.assertTrue(untouched.exists(), "per-stock caches must not be deleted")
+
+
+class PointInTimeFinancialTests(unittest.TestCase):
+    def test_filters_financial_rows_by_announcement_date(self) -> None:
+        raw = pd.DataFrame(
+            [
+                {"ann_date": "20260430", "end_date": "20260331", "roe": 99.0},
+                {"ann_date": "20251030", "end_date": "20250930", "roe": 12.0},
+            ]
+        )
+
+        visible = filter_financial_visible_as_of(raw, "2026-03-31")
+
+        self.assertEqual(len(visible), 1)
+        self.assertEqual(float(visible.iloc[0]["roe"]), 12.0)
 
 
 if __name__ == "__main__":
