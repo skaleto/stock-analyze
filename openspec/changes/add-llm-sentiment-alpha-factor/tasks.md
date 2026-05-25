@@ -2,192 +2,139 @@
 
 ## 0. 前置依赖
 
-- [ ] 0.1 `add-historical-backtest-engine` 必须先完成（含 simulator 时钟参数化 / backtest engine / gate）
-- [ ] 0.2 确认 Tushare `pro.news` 是否在 2000 积分包内（实施前需 human operator 测一下 token 调用是否成功）
-- [ ] 0.3 备选数据源决策：如 `pro.news` 不可用，选 `pro.major_news` 或升 4000 积分
+- [ ] 0.1 无前置依赖（与 `add-historical-backtest-engine` 完全正交）
 
 ## 1. OpenSpec foundation
 
-- [ ] 1.1 proposal.md / design.md / tasks.md 落
+- [ ] 1.1 proposal.md / design.md / tasks.md / README.md 落
 - [ ] 1.2 加 specs/ 子目录，每个新 capability 一份 spec：
-  - [ ] specs/news-data-fetch/spec.md
-  - [ ] specs/news-stock-ner/spec.md
-  - [ ] specs/llm-sentiment-analysis-workflow/spec.md
-  - [ ] specs/agent-specific-alt-factor-pipeline/spec.md
-  - [ ] specs/sentiment-factor-backtest-integration/spec.md
-  - [ ] specs/cross-llm-comparison-dashboard/spec.md
+  - [ ] specs/weekly-market-sentiment-recording/spec.md
+  - [ ] specs/agent-specific-broadcast-alt-factor/spec.md
 - [ ] 1.3 `openspec validate add-llm-sentiment-alpha-factor --strict` 通过
 - [ ] 1.4 human operator confirm
 
-## 2. 新闻数据层
+## 2. 核心模块：alt_factors/sentiment.py
 
-- [ ] 2.1 新文件 `stock_analyze/news/__init__.py`
-- [ ] 2.2 新文件 `stock_analyze/news/fetch.py`，exposing:
-  - [ ] `fetch_news_for_date(as_of, sources, data_root)`
-  - [ ] `prepare_news_data(start, end, force=False)` 入口
-- [ ] 2.3 Tushare news 4 个源接入：`新浪财经` / `财联社` / `同花顺` / `央视新闻`（按 2000 积分包确认情况调整）
-- [ ] 2.4 CLI 子命令 `prepare-news-data --as-of <date> [--start --end] [--force]`
-- [ ] 2.5 写入 `data/shared/news_cache/<date>/<source>.json` + `_meta.json` 维护
-- [ ] 2.6 幂等：已拉过的 (date, source) 跳过
-- [ ] 2.7 错误处理：单源失败不影响其他源；累积错误写 `_meta.json.errors`
-- [ ] 2.8 单元测试：mock Tushare client，验证写盘结构 + 幂等性 + 多源合并
+- [ ] 2.1 新文件 `stock_analyze/alt_factors/__init__.py`
+- [ ] 2.2 新文件 `stock_analyze/alt_factors/sentiment.py`，提供 Python API:
+  - [ ] `record_market_sentiment(agent_id, week_end, score, confidence, drivers, sources, llm_model, prompt_version, force=False) -> None`
+  - [ ] `load_latest_market_sentiment(agent_id, as_of) -> float | None`
+  - [ ] `load_sentiment_history(agent_id, last_n=None) -> List[SentimentRow]`
+  - [ ] `remove_sentiment(agent_id, week_end) -> None`
+- [ ] 2.3 CSV schema 验证：
+  - [ ] score ∈ [-1.0, 1.0]
+  - [ ] confidence ∈ [0.0, 1.0]
+  - [ ] week_end 是周五（A 股调仓信号日；非交易日顺延规则同 simulator）
+  - [ ] drivers 至少 1 个、不超过 5 个
+- [ ] 2.4 防重复：默认拒绝同一 (agent, week_end) 第二次写，除非 `force=True`
+- [ ] 2.5 单元测试：8 个 cases（happy / 重复拒绝 / force 通过 / 范围错误 4 个 / 字段缺失 / 无效日期）
 
-## 3. NER 关键词匹配
+## 3. CLI 子命令
 
-- [ ] 3.1 新文件 `stock_analyze/news/ner.py`，exposing:
-  - [ ] `TickerIndex.build(stock_basic_df) -> TickerIndex`
-  - [ ] `match_news_to_stocks(news_text, ticker_index) -> List[str]`
-- [ ] 3.2 全名 / 简称 / cnspell / 行业关键词四级匹配，按优先级
-- [ ] 3.3 歧义规则：`贵州` 不映射 `贵州茅台`（歧义词列表）
-- [ ] 3.4 启动时构建 TickerIndex 一次（基于最新 stock_basic.csv）
-- [ ] 3.5 fetch 时同时跑 NER，把 `mentioned_tickers` 写进 news json 记录
-- [ ] 3.6 单元测试：构造典型新闻文本（含简称 / 全名 / 行业宽匹配 / 歧义），验证识别准确率
+- [ ] 3.1 `record-sentiment` 子命令（cli.py）
+  - [ ] 参数：`--agent --week-end --score --confidence --drivers --sources --llm-model [--prompt-version v1] [--force]`
+  - [ ] 调用 `sentiment.record_market_sentiment(...)`
+  - [ ] 输出：成功 echo "✓ recorded; csv now has N weeks"，失败 echo "✗ <原因>"
+- [ ] 3.2 `sentiment-log` 子命令
+  - [ ] `--agent <id> [--last N]` 显示历史
+  - [ ] `--agent <id> --remove --week-end <date>` 删除（带 confirm）
+- [ ] 3.3 单元测试：CLI 解析 + dispatch
 
-## 4. ECS pipeline 集成
+## 4. factor_pipeline 集成
 
-- [ ] 4.1 扩展 `prepare-market-data` ExecStart 序列，加 `prepare-news-data --as-of <today>` 步骤
-- [ ] 4.2 失败 → 不阻塞后续 daily agent（news 不是关键路径）
-- [ ] 4.3 deploy/systemd/stock-analyze-market-data.service 更新 ExecStart
+- [ ] 4.1 `factor_pipeline.py` 加 `is_broadcast_factor(factor_name) -> bool`
+- [ ] 4.2 `factor_pipeline.py` 加 `load_broadcast_factor(agent_id, factor_name, as_of) -> float`
+- [ ] 4.3 `compute_composite_score(...)` 分流：broadcast factor 直接乘 weight（跳过 winsorize / z-score / 行业中性化）
+- [ ] 4.4 broadcast factor 缺失（NaN）→ 复用现有缺失因子分摊逻辑
+- [ ] 4.5 单元测试：
+  - [ ] broadcast factor 正确广播到所有候选
+  - [ ] broadcast factor 跳过预处理
+  - [ ] 缺失时按比例分摊
+  - [ ] broadcast + per-stock 混合 overlay 正确计算
 
-## 5. LLM analyzer helper（不调 API）
+## 5. overlay_guard 扩展
 
-- [ ] 5.1 新文件 `stock_analyze/news/llm_analyzer.py`，提供 Python 内部 API:
-  - [ ] `next_pending_week(agent_id) -> (week_end_date, tickers)` 或 None
-  - [ ] `get_news_for_stock_week(ts_code, week_end) -> List[NewsItem]`
-  - [ ] `save_sentiment(agent_id, ts_code, week_end, score, confidence, drivers, news_count)`
-  - [ ] `current_progress(agent_id) -> ProgressSummary`
-  - [ ] `current_epoch(agent_id) -> EpochInfo`
-  - [ ] `bump_epoch(agent_id, llm_model, prompt_version, notes)` 升 epoch
-- [ ] 5.2 把上述 helper 全部暴露为 CLI 子命令：
-  - [ ] `python3 -m stock_analyze news-analyze next-pending --agent <id>`（输出 JSON）
-  - [ ] `python3 -m stock_analyze news-analyze get-news --ticker <code> --week-end <date>`（输出 JSON）
-  - [ ] `python3 -m stock_analyze news-analyze save-sentiment --agent --ticker --week-end --score --confidence --drivers --news-count`
-  - [ ] `python3 -m stock_analyze news-analyze progress --agent <id>`
-  - [ ] `python3 -m stock_analyze news-analyze bump-epoch --agent --llm-model --prompt-version --notes`
-- [ ] 5.3 `data/<agent>/alt_factors/_progress.json` schema 和读写
-- [ ] 5.4 `data/<agent>/alt_factors/_epoch.json` schema 和读写
-- [ ] 5.5 `data/<agent>/alt_factors/sentiment/<YYYY-MM>.csv` schema 和追加写
-- [ ] 5.6 `(ts_code, week_end, epoch)` 缓存层：已分析的不重复写
-- [ ] 5.7 单元测试：模拟 LLM 通过 CLI 调用 helper 的全流程
+- [ ] 5.1 `overlay_guard.py` 把 `AVAILABLE_FACTORS` 拆成 `CLASSIC_FACTORS` + `AGENT_FACTOR_PATTERN`
+- [ ] 5.2 `validate_factor_name(name, agent_id)` 函数
+- [ ] 5.3 新异常 `OverlayCrossAgentFactor`
+- [ ] 5.4 错误消息中文 + 指明具体字段
+- [ ] 5.5 单元测试：
+  - [ ] claude 用 `claude_market_sentiment_1w` ✓
+  - [ ] claude 用 `codex_market_sentiment_1w` → raise OverlayCrossAgentFactor
+  - [ ] claude 用 `claude_unknown_factor` → raise OverlayUnknownFactor
+  - [ ] claude 用 `pe` ✓（classic）
 
-## 6. Slash command（Claude Code 侧）
+## 6. Prompt 模板
 
-- [ ] 6.1 新文件 `.claude/commands/analyze-historical-news.md`，提示 LLM:
-  - 读 CLAUDE.md
-  - 循环：通过 Bash 跑 `news-analyze next-pending` → 对每只 ticker 跑 `get-news` → 自己分析出 JSON → 跑 `save-sentiment`
-  - 每 10 只打印进度
-  - 接受 `--from YYYY-MM --to YYYY-MM` 参数限定范围
-- [ ] 6.2 新文件 `.claude/commands/analyze-current-week-news.md`，提示 LLM:
-  - 自动 `--from` `--to` 设为本周
-  - 短会话（~15 分钟）
-- [ ] 6.3 prompt 模板放 `stock_analyze/news/prompts/sentiment_v1.0.md`
+- [ ] 6.1 新文件 `stock_analyze/alt_factors/prompts/market_sentiment_v1.md`
+- [ ] 6.2 内容按 design.md §3.1
+- [ ] 6.3 README 在文件顶部说明："操作员每周末打开 Claude.ai / ChatGPT，粘贴本模板填充 {agent_id} 和 {week_*_date}"
 
-## 6b. Codex CLI 侧适配（实施时按 codex 版本能力选）
+## 7. Dashboard 集成
 
-- [ ] 6b.1 调研 codex CLI 是否支持 slash command 机制
-- [ ] 6b.2 若支持 → 写对称的 commands 模板
-- [ ] 6b.3 若不支持 → 写一份 markdown prompt 模板，操作员粘贴启动
-- [ ] 6b.4 文档化操作员每次进入 codex CLI 后该做什么
+- [ ] 7.1 `reporting.py::render_market_sentiment_panel(agent_id) -> html`：
+  - [ ] 过去 26 周折线
+  - [ ] 最新 + 4 周均值 + 8 周均值数字
+  - [ ] 本周 key_drivers 文字
+  - [ ] sources URL 链接（可展开）
+  - [ ] 已 >2 周未更新时橙色警示
+- [ ] 7.2 `dashboard_aggregator.py::render_sentiment_comparison_panel()`：
+  - [ ] claude vs codex 双折线
+  - [ ] 本周配对数字
+  - [ ] 26 周相关性 + 差值标准差
+- [ ] 7.3 嵌入到专业版 Claude / Codex / 对比三个 tab
+- [ ] 7.4 新手版 dashboard 不动
+- [ ] 7.5 单元测试：渲染输出快照对比
 
-## 7. factor_pipeline 集成
+## 8. CLAUDE.md / AGENTS.md 更新
 
-- [ ] 7.1 `factor_pipeline.py` 加 `load_agent_alt_factor(agent_id, factor_name, as_of, candidates)`
-- [ ] 7.2 实现 `_1w` 和 `_4w` 两种聚合
-- [ ] 7.3 NaN 处理：复用现有"缺失因子按比例分摊"
-- [ ] 7.4 单元测试：构造已知 sentiment.csv，验证 1w / 4w 聚合正确
+- [ ] 8.1 §4 加 `<agent>_market_sentiment_1w` 因子说明（含 broadcast factor 概念 + MVP 阶段不期待立即 alpha）
+- [ ] 8.2 §7（forbidden actions）加 "不可读对手 alt_factors/*"
+- [ ] 8.3 §8（allowed exploration）保持不变（MVP 阶段无新闻 cache）
+- [ ] 8.4 §10 加新动作 "每周末手动跑 record-sentiment 落盘市场情感"
+- [ ] 8.5 演进路线写进 §11（新章节，或追加到 §17 路线图）
 
-## 8. overlay_guard 扩展
+## 9. 系统文档
 
-- [ ] 8.1 `AVAILABLE_FACTORS` 拆成 `CLASSIC_FACTORS`（fixed）+ `AGENT_FACTOR_PREFIX`（regex）
-- [ ] 8.2 `validate_factor_name(name, agent_id)` 函数
-- [ ] 8.3 新异常 `OverlayCrossAgentFactor`，跨 agent 引用时 raise
-- [ ] 8.4 错误消息中文 + 指明具体字段
-- [ ] 8.5 单元测试：claude 用 claude_* OK / claude 用 codex_* 拒 / 用未知 factor 拒
+- [ ] 9.1 新增 `docs/llm-sentiment-factor-flow.md`：
+  - MVP 流程（操作员每周动作 + Python 处理）
+  - **演进路线 4 个 Phase**（一等公民章节）
+  - 升级触发条件
+  - 关键纪律（每 Phase 独立 change / 6 个月 review）
+- [ ] 9.2 更新 `docs/system-overview.md`：
+  - §4d 加 "每周末市场情感记录" 步骤
+  - §6 加 broadcast factor 说明
+  - §13 关键产物清单加 alt_factors/market_sentiment.csv
+  - §17 路线图加 Phase 2/3/4 references
 
-## 9. 回测引擎集成
+## 10. 测试
 
-- [ ] 9.1 `backtest/engine.py::run_backtest` 加 `agent_id` 必需参数
-- [ ] 9.2 `backtest/data_view.py::PointInTimeView.agent_alt_factor(agent_id, factor, as_of)` 实现
-- [ ] 9.3 严格按 `week_end_date < as_of` 过滤（防泄漏）
-- [ ] 9.4 新异常 `BacktestAltFactorMissing`，alt-factor 覆盖不全时 raise
-- [ ] 9.5 `gate.py::validate_overlay_via_backtest` 加 `check_alt_factor_coverage`
-- [ ] 9.6 软降级逻辑：覆盖不全时跑 `strip_agent_factors(overlay, agent_id)` 后的 overlay
-- [ ] 9.7 提示信息告诉操作员"先跑 /analyze-historical-news"
-- [ ] 9.8 单元测试：完整覆盖 / 部分覆盖 / 完全缺失 三场景
+- [ ] 10.1 单元测试覆盖：sentiment.py / cli / factor_pipeline / overlay_guard / reporting
+- [ ] 10.2 端到端：
+  - [ ] 跑 `record-sentiment` 4 次模拟 4 周历史
+  - [ ] 跑 weekly factor_pipeline，验证 sentiment 被乘 weight 加到 score
+  - [ ] dashboard 渲染验证显示正常
+- [ ] 10.3 全部 unittest 通过 + pyflakes 0 + openspec validate --strict 通过
 
-## 10. CLI 集成
+## 11. e2e 验证（手动）
 
-- [ ] 10.1 `backtest` 子命令加 `--agent` 必需参数（之前 optional）
-- [ ] 10.2 `evolution_writer` 集成时传 `agent_id`
-- [ ] 10.3 单元测试：CLI 解析 + 调用链
+- [ ] 11.1 操作员打开 Claude.ai，用 prompt 模板，让它对本周 A 股市场 web search + 输出 JSON
+- [ ] 11.2 跑 `python3 -m stock_analyze record-sentiment ...` 落盘
+- [ ] 11.3 检查 csv 新增 1 行
+- [ ] 11.4 跑 ECS run-weekly（带 sentiment factor 的 overlay），verify factor 进入 score 计算
+- [ ] 11.5 dashboard 看 sentiment 面板渲染正常
+- [ ] 11.6 同样对 codex 做一遍（操作员打开 ChatGPT）
 
-## 11. Dashboard 集成
+## 12. 不在范围
 
-- [ ] 11.1 `reporting.py::render_sentiment_factor_panel(agent_id) -> html`：
-  - [ ] 持仓 Top10 过去 26 周 sentiment 折线
-  - [ ] 本周持仓情感分布
-  - [ ] 关键判断驱动词云（按 key_drivers 聚合）
-- [ ] 11.2 `reporting.render_factor_contribution_panel` 把 `<agent>_news_sentiment_*` 纳入因子归因
-- [ ] 11.3 `dashboard_aggregator.py::render_llm_comparison_panel()`:
-  - [ ] 本周新闻量 Top 5 股票
-  - [ ] 列：股票 / claude score / codex score / 差值
-  - [ ] 差值 > 0.5 高亮（大分歧）
-- [ ] 11.4 嵌入到专业版 Claude / Codex / 对比三个 tab
-- [ ] 11.5 新手版 dashboard 不动
-- [ ] 11.6 单元测试：渲染输出快照对比
-
-## 12. CLAUDE.md / AGENTS.md 更新
-
-- [ ] 12.1 §4 加 `<agent>_*` 前缀因子说明
-- [ ] 12.2 §7（forbidden actions）加 "不可读对手 alt_factors/"
-- [ ] 12.3 §8（allowed exploration）加 "可读 data/shared/news_cache/"
-- [ ] 12.4 §10 加新动作 "每月初跑 /analyze-historical-news 补全历史预热（如需要）/ 每周末跑 /analyze-current-week-news"
-
-## 13. 文档
-
-- [ ] 13.1 新增 `docs/llm-sentiment-factor-flow.md` 完整流程说明
-- [ ] 13.2 更新 `docs/system-overview.md`：
-  - [ ] §4 数据流加新闻 fetch + LLM 分析路径
-  - [ ] §6 因子流水线加 alt-factor 说明
-  - [ ] §13 关键产物清单加 alt_factors / news_cache / _progress
-- [ ] 13.3 新增 `docs/historical-news-warmup-runbook.md` — 操作员历史预热长跑指南
-
-## 14. 测试
-
-- [ ] 14.1 单元测试覆盖：fetch / ner / llm_analyzer / factor_pipeline_integration / overlay_guard / backtest_integration / gate / reporting
-- [ ] 14.2 端到端：模拟 1 周新闻 → NER → 触发模拟 LLM 调用 → save sentiment → factor_pipeline 读 → 进入排序
-- [ ] 14.3 端到端：故意构造跨 agent factor 引用 → overlay_guard 拒绝
-- [ ] 14.4 端到端：backtest with alt-factor coverage incomplete → gate 软降级
-- [ ] 14.5 全部 unittest 通过 + pyflakes 0 + openspec validate --strict 通过
-
-## 15. e2e 验证（手动）
-
-- [ ] 15.1 跑 `prepare-news-data --as-of 2026-05-26` 验证拉新闻成功
-- [ ] 15.2 操作员开 Claude Code 跑 `/analyze-current-week-news claude` 验证 ~15 分钟会话能写完 1 周 sentiment
-- [ ] 15.3 sentiment.csv 内容 sanity check（情感分布合理、关键驱动文本通顺）
-- [ ] 15.4 同样验证 codex 端在 Codex CLI（操作员视实际环境）
-- [ ] 15.5 启动历史预热：分多次会话跑完 4+1 年（双方各 ~166K 次），监控 `_progress.json` 完成度
-- [ ] 15.6 完成后跑 backtest 含 alt-factor，确认不再触发软降级
-- [ ] 15.7 dashboard 上看情感时间线 + 对比 panel 显示正常
-
-## 16. 历史预热（长跑）
-
-- [ ] 16.1 操作员制定预热计划（建议：每天 1-2 小时，连续 5-7 天完成）
-- [ ] 16.2 跑 `/analyze-historical-news claude --from 2021-01 --to 2021-06`（第一批，~6 个月）
-- [ ] 16.3 ... 重复直至 2026-04 全部完成
-- [ ] 16.4 codex 端同步进行
-- [ ] 16.5 完成后两边 `_progress.json.completion_pct = 1.0`
-
-## 17. 不在范围
-
-- ❌ `_confidence_1w` / `_volume_1w` 因子（先实现 `_1w` `_4w`）
-- ❌ LLM NER（让 LLM 识别股票，留作未来）
-- ❌ 事件型 dummy 因子
-- ❌ 雪球 / 股吧 / 微博等社交情绪
-- ❌ 实时新闻
-- ❌ LLM 跨 agent 互评
-- ❌ 中文以外语言
-- ❌ 卫星 / 信用卡 / 招聘等
-- ❌ 在 Python 内调任何 LLM API
+- ❌ 任何 Python 内 LLM API 调用
+- ❌ 新闻 fetch / 缓存 / NER（留 Phase 2）
+- ❌ per-stock LLM sentiment（留 Phase 3）
+- ❌ 历史回填
+- ❌ 回测引擎集成（live-only）
+- ❌ 事件型因子 / 社交媒体 / 卫星等（留 Phase 4）
+- ❌ Slash command（操作员直接跑 CLI）
+- ❌ Tushare 新闻包订阅
 - ❌ 不改 baseline 锁字段
 - ❌ 不改 daily / weekly 执行时间
+- ❌ 不动新手 dashboard
