@@ -810,8 +810,16 @@ def render_backtest_vs_live_panel(agent_id: str, repo_root: Path | str) -> str:
     bt_nav_path = runs[-1] / "daily_nav.csv"
     live_nav_path = root / "data" / agent_id / "daily_nav.csv"
 
-    bt_df = pd.read_csv(bt_nav_path) if bt_nav_path.exists() else pd.DataFrame()
-    live_df = pd.read_csv(live_nav_path) if live_nav_path.exists() else pd.DataFrame()
+    # Mirror store.py daily_nav dtype invariant — benchmark_code must stay str
+    # so '000300' isn't coerced to int 300 mid-merge.
+    _nav_dtype = {
+        "date": str,
+        "account_id": str,
+        "benchmark_code": str,
+        "benchmark_date": str,
+    }
+    bt_df = pd.read_csv(bt_nav_path, dtype=_nav_dtype) if bt_nav_path.exists() else pd.DataFrame()
+    live_df = pd.read_csv(live_nav_path, dtype=_nav_dtype) if live_nav_path.exists() else pd.DataFrame()
 
     def _cum_return(df: pd.DataFrame) -> float:
         if df.empty:
@@ -1002,7 +1010,12 @@ def load_price_panels(store: PortfolioStore, signals: pd.DataFrame, limit: int =
         matches = sorted((store.data_dir / "cache").glob(f"history_{code}_*.csv"))
         if not matches:
             continue
-        history = pd.read_csv(matches[-1])
+        # Date columns can be YYYYMMDD ints; preserve as str so downstream
+        # str(item.get("日期", ...)) doesn't render '20260525' as '20260525.0'.
+        history = pd.read_csv(
+            matches[-1],
+            dtype={"日期": str, "date": str, "trade_date": str, "source": str},
+        )
         if history.empty:
             continue
         rows = []
@@ -1322,7 +1335,8 @@ def _load_leaderboard_by_month(leaderboard_path: Path) -> dict[str, dict[str, An
     if not leaderboard_path.exists():
         return {}
     try:
-        df = pd.read_csv(leaderboard_path)
+        # month is "YYYY-MM" string — defensive to ensure no int coercion
+        df = pd.read_csv(leaderboard_path, dtype={"month": str})
     except Exception:  # noqa: BLE001
         return {}
     if df.empty or "month" not in df.columns:

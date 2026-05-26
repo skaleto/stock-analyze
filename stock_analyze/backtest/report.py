@@ -34,7 +34,11 @@ def render_markdown_report(result: BacktestResult) -> str:
     trades_path = result.out_dir / "trades.csv"
     if trades_path.exists():
         try:
-            tdf = pd.read_csv(trades_path)
+            # code / account_id / side / date are textual identifiers
+            tdf = pd.read_csv(
+                trades_path,
+                dtype={"code": str, "account_id": str, "side": str, "date": str},
+            )
             n_trades = len(tdf)
             n_buys = int((tdf["side"] == "BUY").sum()) if not tdf.empty else 0
             n_sells = int((tdf["side"] == "SELL").sum()) if not tdf.empty else 0
@@ -52,7 +56,16 @@ def render_markdown_report(result: BacktestResult) -> str:
     nav_path = result.out_dir / "daily_nav.csv"
     if nav_path.exists():
         try:
-            ndf = pd.read_csv(nav_path)
+            # Mirror store.py dtype invariant for daily_nav.
+            ndf = pd.read_csv(
+                nav_path,
+                dtype={
+                    "date": str,
+                    "account_id": str,
+                    "benchmark_code": str,
+                    "benchmark_date": str,
+                },
+            )
             if not ndf.empty:
                 portfolio = ndf.groupby("date")["total_value"].sum()
                 lines.extend([

@@ -243,7 +243,18 @@ def prepare_backtest_data(
         # Force the fetch even if meta says done but file is gone
         _fetch_stock_basic(pro, cache_root)
     try:
-        sb_df = pd.read_csv(stock_basic_path)
+        # ts_code / symbol / list_date / delist_date are textually-coded;
+        # leading zeros and YYYYMMDD ints must not be coerced.
+        sb_df = pd.read_csv(
+            stock_basic_path,
+            dtype={
+                "ts_code": str,
+                "symbol": str,
+                "list_date": str,
+                "delist_date": str,
+                "name": str,
+            },
+        )
     except pd.errors.EmptyDataError:
         sb_df = pd.DataFrame(columns=["ts_code"])
     all_codes: List[str] = (

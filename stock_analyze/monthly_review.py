@@ -459,7 +459,8 @@ def _upsert_leaderboard(path: Path, payload: dict[str, Any]) -> None:
     }
 
     if path.exists():
-        df = pd.read_csv(path)
+        # month must be str ("YYYY-MM") for the != filter below to match
+        df = pd.read_csv(path, dtype={"month": str})
         df = df[df["month"] != month]
         df = pd.concat([df, pd.DataFrame([row], columns=LEADERBOARD_COLUMNS)], ignore_index=True)
     else:

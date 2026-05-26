@@ -46,14 +46,16 @@ class PointInTimeView:
         path = self.cache_root / "daily" / f"{d.isoformat()}.csv"
         if not path.exists():
             return pd.DataFrame()
-        return pd.read_csv(path)
+        # ts_code like '000001.SZ' / trade_date YYYYMMDD must stay str —
+        # without these pandas may strip leading zeros or coerce dates to int.
+        return pd.read_csv(path, dtype={"ts_code": str, "trade_date": str})
 
     def daily_basic(self, as_of: Optional[date] = None) -> pd.DataFrame:
         d = as_of if as_of is not None else self.as_of
         path = self.cache_root / "daily_basic" / f"{d.isoformat()}.csv"
         if not path.exists():
             return pd.DataFrame()
-        return pd.read_csv(path)
+        return pd.read_csv(path, dtype={"ts_code": str, "trade_date": str})
 
     # ------------------------------------------------------------------
     # Financial indicators (ann_date-filtered)
@@ -65,7 +67,12 @@ class PointInTimeView:
         path = self.cache_root / "fina_indicator" / f"{ts_code}.csv"
         if not path.exists():
             return pd.DataFrame()
-        df = pd.read_csv(path)
+        # ann_date / end_date are stored as YYYYMMDD; keep them as str so the
+        # explicit pd.to_datetime conversion below has clean input.
+        df = pd.read_csv(
+            path,
+            dtype={"ts_code": str, "ann_date": str, "end_date": str},
+        )
         if df.empty or "ann_date" not in df.columns:
             return df
         # ann_date arrives as int (YYYYMMDD) or string; coerce defensively
@@ -104,7 +111,11 @@ class PointInTimeView:
         )
         if not candidates:
             return set()
-        df = pd.read_csv(candidates[-1])
+        # con_code / index_code are textual stock tickers; trade_date YYYYMMDD.
+        df = pd.read_csv(
+            candidates[-1],
+            dtype={"con_code": str, "index_code": str, "trade_date": str},
+        )
         if df.empty or "con_code" not in df.columns:
             return set()
         return set(df["con_code"].astype(str))
