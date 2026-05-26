@@ -412,7 +412,7 @@ def _render_recent_nav(paths: AgentPaths, limit: int = 7) -> list[str]:
     path = paths.data_dir / "daily_nav.csv"
     if not path.exists() or path.stat().st_size == 0:
         return ["## 最近净值", "", "尚无 `daily_nav.csv`。", ""]
-    df = _safe_read_csv(path)
+    df = _safe_read_csv(path, dtype={"benchmark_code": str})
     if df.empty:
         return ["## 最近净值", "", "`daily_nav.csv` 为空。", ""]
     df = df.sort_values(["date", "account_id"], ascending=[False, True]).head(limit * 2)
@@ -426,7 +426,7 @@ def _render_monthly_nav(paths: AgentPaths, month: str) -> list[str]:
     path = paths.data_dir / "daily_nav.csv"
     if not path.exists() or path.stat().st_size == 0:
         return ["## 本月净值序列", "", "尚无 `daily_nav.csv`。", ""]
-    df = _safe_read_csv(path)
+    df = _safe_read_csv(path, dtype={"benchmark_code": str})
     if df.empty:
         return ["## 本月净值序列", "", "`daily_nav.csv` 为空。", ""]
     df = df.copy()
@@ -760,9 +760,9 @@ def _try_load_baseline(root: Path) -> dict[str, Any] | None:
         return None
 
 
-def _safe_read_csv(path: Path) -> pd.DataFrame:
+def _safe_read_csv(path: Path, *, dtype: dict | None = None) -> pd.DataFrame:
     try:
-        return pd.read_csv(path)
+        return pd.read_csv(path, dtype=dtype) if dtype else pd.read_csv(path)
     except Exception:  # noqa: BLE001
         return pd.DataFrame()
 
