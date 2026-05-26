@@ -200,6 +200,49 @@ class ExecuteDueOrdersClockInjectionTests(unittest.TestCase):
 
             self.assertEqual(provider.cache_dir, Path(cache))
 
+    def test_data_root_and_market_data_root_together(self) -> None:
+        """Both kwargs in the same call: store goes to data_root, provider.cache_dir goes to market_data_root.
+
+        This is the call shape the backtest engine (Task 7) uses — verifies the two
+        overrides compose without interfering with each other.
+        """
+        with tempfile.TemporaryDirectory() as outer, \
+             tempfile.TemporaryDirectory() as inner, \
+             tempfile.TemporaryDirectory() as cache:
+            config = _base_config()
+            outer_store = PortfolioStore(outer)
+            outer_store.initialize(config)
+            inner_store = PortfolioStore(inner)
+            inner_store.initialize(config)
+            inner_store.save_pending(
+                [
+                    {
+                        "run_id": "test",
+                        "account_id": "acc",
+                        "signal_date": "2026-05-18",
+                        "execute_after": "2026-05-18",
+                        "orders": [],
+                    }
+                ]
+            )
+            provider = _RecordingProvider()
+            provider.cache_dir = Path("/old/cache")
+
+            simulator.execute_due_orders(
+                config,
+                outer_store,
+                provider,
+                as_of=date(2026, 5, 18),
+                data_root=Path(inner),
+                market_data_root=Path(cache),
+            )
+
+            # Store side: inner's pending was consumed, outer's was not touched
+            self.assertEqual(len(inner_store.load_pending()), 0)
+            self.assertEqual(len(outer_store.load_pending()), 0)
+            # Provider side: cache_dir was rebound to market_data_root
+            self.assertEqual(provider.cache_dir, Path(cache))
+
     def test_default_behavior_unchanged_when_kwargs_omitted(self) -> None:
         """Existing call signature (str as_of, no new kwargs) must still work."""
         with tempfile.TemporaryDirectory() as tmp:
