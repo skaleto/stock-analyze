@@ -39,6 +39,250 @@ AGENT_COLORS = {
 DEFAULT_AGENT_ORDER = ("claude", "codex")
 
 
+def _today() -> "_dt.date":
+    """Test hook for stubbing today's date in the pipeline status panel."""
+    import datetime as _dt
+    return _dt.date.today()
+
+
+# Expected daily / weekly pipeline tasks. Order = display order.
+_DAILY_TASK_ROWS = [
+    ("prepare-market-data", "ECS 17:25 Mon-Fri 拉数据 → 触发 daily agents",
+     "_pipeline_market_data"),
+    ("stock-analyze-claude-daily", "执行待发订单 + 更新 NAV",
+     "_pipeline_agent_daily:claude"),
+    ("stock-analyze-codex-daily", "执行待发订单 + 更新 NAV",
+     "_pipeline_agent_daily:codex"),
+    ("aggregate-dashboard (OnSuccess)", "agent daily 完成后自动刷新 competition 聚合页",
+     "_pipeline_aggregate_dashboard"),
+]
+_WEEKLY_TASK_ROWS = [
+    ("stock-analyze-weekly-trigger", "ECS Sat 10:00 触发 weekly agents（用周五 cache）",
+     "_pipeline_weekly_trigger"),
+    ("stock-analyze-claude-weekly", "生成下周一执行的 pending orders + 周报",
+     "_pipeline_agent_weekly:claude"),
+    ("stock-analyze-codex-weekly", "生成下周一执行的 pending orders + 周报",
+     "_pipeline_agent_weekly:codex"),
+]
+
+
+def _runs_today(repo: Path, agent: str, command: str, today: "_dt.date") -> dict | None:
+    """Return the latest run row for (agent, command) started today, or None."""
+    csv = repo / "data" / agent / "runs.csv"
+    if not csv.exists():
+        return None
+    import pandas as _pd
+    try:
+        df = _pd.read_csv(csv)
+    except Exception:  # noqa: BLE001
+        return None
+    if df.empty:
+        return None
+    today_iso = today.isoformat()
+    today_rows = df[
+        (df["command"] == command)
+        & df["started_at"].astype(str).str.startswith(today_iso)
+        & (df["status"] != "running")  # final state only
+    ]
+    if today_rows.empty:
+        return None
+    return today_rows.iloc[-1].to_dict()
+
+
+def _rollup_7d(repo: Path, agent: str, command: str, today: "_dt.date") -> tuple[int, int]:
+    """Return (success_count, failed_count) for (agent, command) in last 7 days."""
+    csv = repo / "data" / agent / "runs.csv"
+    if not csv.exists():
+        return (0, 0)
+    import pandas as _pd
+    try:
+        df = _pd.read_csv(csv)
+    except Exception:  # noqa: BLE001
+        return (0, 0)
+    if df.empty:
+        return (0, 0)
+    from datetime import timedelta as _td
+    cutoff = (today - _td(days=7)).isoformat()
+    df = df[(df["command"] == command) & (df["status"] != "running")]
+    df = df[df["started_at"].astype(str) >= cutoff]
+    success = int((df["status"] == "success").sum())
+    failed = int((df["status"] == "failed").sum())
+    return (success, failed)
+
+
+def _status_cell(row: dict | None) -> str:
+    """Render today's-status cell HTML."""
+    if row is None:
+        return '<span class="pending">⏸ 未跑</span>'
+    if row.get("status") == "success":
+        dur = row.get("duration_ms")
+        dur_str = f" {float(dur)/1000:.1f}s" if dur else ""
+        ts = row.get("started_at", "")[-8:]  # HH:MM:SS
+        return f'<span class="ok">✓ {ts}{dur_str}</span>'
+    err = row.get("error_summary", "") or ""
+    err_short = (err[:60] + "…") if len(err) > 60 else err
+    return f'<span class="fail">✗ {err_short}</span>'
+
+
+def _market_data_today(repo: Path, today: "_dt.date") -> dict | None:
+    """Read data/shared/market_snapshot_<today>.json and synthesise a row."""
+    path = repo / "data" / "shared" / f"market_snapshot_{today.isoformat()}.json"
+    if not path.exists():
+        return None
+    try:
+        import json as _json
+        snap = _json.loads(path.read_text())
+    except Exception:  # noqa: BLE001
+        return None
+    return {
+        "status": snap.get("status", "unknown"),
+        "duration_ms": snap.get("duration_ms"),
+        "started_at": snap.get("started_at", ""),
+        "error_summary": "; ".join(
+            e.get("source", "?") for e in (snap.get("errors") or [])[:2]
+        ),
+    }
+
+
+def _aggregate_dashboard_today(repo: Path, today: "_dt.date") -> dict | None:
+    """Stat the competition dashboard HTML's mtime; if today, treat as ✓."""
+    p = repo / "reports" / "competition" / "dashboard.html"
+    if not p.exists():
+        return None
+    import datetime as _dt
+    mtime = _dt.datetime.fromtimestamp(p.stat().st_mtime)
+    if mtime.date() != today:
+        return None
+    return {
+        "status": "success",
+        "duration_ms": None,
+        "started_at": mtime.isoformat(timespec="seconds"),
+        "error_summary": "",
+    }
+
+
+def _recent_failures(log_path: Path | None, today: "_dt.date", limit: int = 5) -> list[str]:
+    if log_path is None:
+        log_path = Path("/opt/stock-analyze/logs/PIPELINE_FAILURES.log")
+    if not log_path.exists():
+        return []
+    try:
+        lines = log_path.read_text().split("\n")
+    except Exception:  # noqa: BLE001
+        return []
+    failures = [ln for ln in lines if "\tFAILED\t" in ln]
+    return failures[-limit:]
+
+
+def _is_weekday(d: "_dt.date") -> bool:
+    return d.weekday() < 5  # Mon-Fri
+
+
+def _resolve_today_task(repo: Path, kind: str, today: "_dt.date") -> dict | None:
+    if kind == "_pipeline_market_data":
+        if not _is_weekday(today):
+            return None  # market-data timer doesn't fire on weekends
+        return _market_data_today(repo, today)
+    if kind.startswith("_pipeline_agent_daily:"):
+        agent = kind.split(":", 1)[1]
+        if not _is_weekday(today):
+            return None
+        return _runs_today(repo, agent, "run-daily", today)
+    if kind.startswith("_pipeline_agent_weekly:"):
+        agent = kind.split(":", 1)[1]
+        if today.weekday() < 5:
+            return None  # weekly-trigger only fires Sat
+        return _runs_today(repo, agent, "run-weekly", today)
+    if kind == "_pipeline_weekly_trigger":
+        if today.weekday() < 5:
+            return None
+        # No first-class "trigger" row; check if either agent ran weekly today
+        for ag in ("claude", "codex"):
+            row = _runs_today(repo, ag, "run-weekly", today)
+            if row is not None:
+                return row
+        return None
+    if kind == "_pipeline_aggregate_dashboard":
+        return _aggregate_dashboard_today(repo, today)
+    return None
+
+
+def render_pipeline_status_panel(
+    repo_root: Path | str,
+    *,
+    pipeline_failures_log: Path | None = None,
+) -> str:
+    """Render the pipeline-status panel: today's task list + 7-day rollup.
+
+    Data sources:
+      - data/<agent>/runs.csv (per-agent service runs)
+      - data/shared/market_snapshot_<today>.json (pipeline data fetch)
+      - reports/competition/dashboard.html mtime (aggregator refresh)
+      - logs/PIPELINE_FAILURES.log (recent failures from OnFailure hooks)
+
+    Refresh frequency: as fast as dashboard regeneration (after each agent
+    service via aggregate-dashboard.service OnSuccess hook).
+    """
+    root = Path(repo_root)
+    today = _today()
+    today_label = today.isoformat()
+    today_dow = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][today.weekday()]
+
+    lines = [
+        f'<div class="panel pipeline-status">',
+        f'  <h3>📋 Pipeline 任务清单 · {today_label} ({today_dow})</h3>',
+        '  <table class="pipeline-task-table">',
+        '    <thead><tr>'
+        '<th>任务</th><th>含义</th>'
+        '<th>今天</th><th>近 7 日</th>'
+        '</tr></thead>',
+        '    <tbody>',
+    ]
+
+    for task_name, task_desc, kind in _DAILY_TASK_ROWS + _WEEKLY_TASK_ROWS:
+        row = _resolve_today_task(root, kind, today)
+        status_html = _status_cell(row)
+
+        # 7-day rollup
+        if kind.startswith("_pipeline_agent_daily:"):
+            ag = kind.split(":", 1)[1]
+            s, f = _rollup_7d(root, ag, "run-daily", today)
+        elif kind.startswith("_pipeline_agent_weekly:"):
+            ag = kind.split(":", 1)[1]
+            s, f = _rollup_7d(root, ag, "run-weekly", today)
+        else:
+            s, f = (0, 0)  # not tracked in runs.csv
+
+        rollup_html = (
+            f'<span class="rollup">✓{s} ✗{f}</span>'
+            if (s + f) > 0 else '<span class="rollup">—</span>'
+        )
+
+        lines.append(
+            f'      <tr>'
+            f'<td><code>{task_name}</code></td>'
+            f'<td>{task_desc}</td>'
+            f'<td>{status_html}</td>'
+            f'<td>{rollup_html}</td>'
+            f'</tr>'
+        )
+
+    lines.append('    </tbody>')
+    lines.append('  </table>')
+
+    # Recent failures (if any)
+    failures = _recent_failures(pipeline_failures_log, today)
+    if failures:
+        lines.append('  <h4>⚠️ 最近 PIPELINE_FAILURES.log</h4>')
+        lines.append('  <ul class="recent-failures">')
+        for f in failures:
+            lines.append(f'    <li><code>{f}</code></li>')
+        lines.append('  </ul>')
+
+    lines.append('</div>')
+    return "\n".join(lines)
+
+
 def render_sentiment_comparison_panel(repo_root: Path | str) -> str:
     """Render the cross-LLM market-sentiment comparison panel.
 
@@ -401,10 +645,20 @@ def _render_tab_sections(
     else:
         observation_html = _render_observation_pairing(agents, {})
 
+    # Pipeline status (refreshes with the aggregate dashboard via OnSuccess)
+    try:
+        pipeline_status_html = render_pipeline_status_panel(repo_root=Path.cwd())
+    except Exception as exc:  # noqa: BLE001
+        pipeline_status_html = (
+            f'<div class="panel"><p>pipeline-status panel render error: {exc}</p></div>'
+        )
+
     compare_section = (
         '<section id="tab-compare" class="tab-section">\n'
         '<h1 class="tab-title">对比</h1>\n'
         f'<section class="grid summary-grid">{cards_html}</section>\n'
+        '<h2>📋 Pipeline 任务清单</h2>\n'
+        f'{pipeline_status_html}\n'
         '<h2>累计净值曲线</h2>\n'
         '<div class="panel"><canvas id="comparisonNav" width="1200" height="320"></canvas>'
         '<div class="hint">两条曲线分别代表两个 agent 的总资产；颜色与 tab 颜色一致。</div></div>\n'
