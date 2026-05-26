@@ -131,22 +131,7 @@ True
 
 ### 6.1 P0 — production-ready 必做
 
-1. **simulator/strategy 集成 broadcast_values 解析**（**最重要**）：
-   `process_factors` 接受 `broadcast_values` 但 `strategy.py` 当前没传它。要让 broadcast 在生产 weekly run 里真正影响 score，需要在 `build_signals` 调用点加：
-   ```python
-   broadcast_values = {
-       name: factor_pipeline.load_broadcast_factor(
-           agent_id, name, as_of=as_of, repo_root=Path.cwd()
-       )
-       for name in config.get("factors", {})
-       if factor_pipeline.is_broadcast_factor(name)
-   }
-   scored, factor_table = factor_pipeline.process_factors(
-       candidates, config["factors"], config["factor_processing"],
-       broadcast_values=broadcast_values,
-   )
-   ```
-   strategy.py 还需接受 `agent_id` / `repo_root` 参数，~10 行修改。**没做这一步，broadcast 因子代码已就绪但 weekly run 不读 sentiment**。
+1. ✅ **完成（commit `df0e728`）**: **simulator/strategy 集成 broadcast_values 解析** — 已加 `_resolve_broadcast_values(config, as_of, repo_root)` helper + `build_signals` 加 `repo_root` 可选参数 + simulator.generate_rebalance_orders 透传。**ECS round-trip 实测通过**：record sentiment 0.50 → 三个 candidate score 全部 +0.05 uniform shift。
 
 2. **手工合入 CLAUDE.md / AGENTS.md 改动**（Task 9）：
    - §4 加 `claude_market_sentiment_1w` 因子说明 + "MVP 不立即产生 alpha" 注脚
@@ -172,17 +157,25 @@ True
 ## 7. 全链路状态
 
 ```
-代码:     9/11 task 完成（55 新增测试 + 269 既有 = 324/324 ✓）
-ECS:      6 个修改文件部署，import smoke 通过
+代码:     9/11 task + P0 集成胶水完成（59 新增测试 + 269 既有 = 328/328 ✓）
+ECS:      7 个修改文件部署，import smoke + 实战 round-trip 通过
 prompts:  v1 模板在位
 CLI:      record-sentiment + sentiment-log live
 Dashboard: 2 个面板渲染函数就绪
+集成胶水: ✅ build_signals 自动解析 broadcast 因子值（commit df0e728）
 数据:     sentiment.csv 0 行（操作员未跑过）
 
-阻塞 / 待操作员:
-  · simulator/strategy 集成（~10 行；做了才会真正影响 weekly run）
-  · CLAUDE.md / AGENTS.md / docs/ 文档合入
-  · 周六 5/30 第一次实战
+ECS 实战验证（5/26 round-trip）:
+  - record_market_sentiment(0.50) →
+  - build_signals() 内部自动 load_broadcast_factor →
+  - process_factors(broadcast_values={'claude_market_sentiment_1w': 0.50}) →
+  - 三个 candidate 的 score 都加 +0.05（uniform, spread=0）
+  → 全链路 live ✓
+
+剩余阻塞 / 待操作员:
+  · CLAUDE.md / AGENTS.md / docs/ 文档合入（Task 9-10，§7.0 锁）
+  · 周六 5/30 第一次实战：在 Claude.ai / ChatGPT 用 v1 prompt 跑 → record-sentiment
+    → 等周六 weekly-trigger 自动 generate_rebalance_orders → 看 dashboard 面板变化
 ```
 
 ## 8. 完成证据
