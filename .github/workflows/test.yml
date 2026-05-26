@@ -1,0 +1,51 @@
+name: tests
+
+# Run the unit-test suite on push and PR. Catches regressions before
+# changes reach ECS via scp deploys (we currently have no automated
+# rollout, so CI is the last line of defense).
+#
+# Notes:
+#  - Tushare / Baostock are NOT exercised — tests mock them at module
+#    boundaries (see tests/test_backtest_data_prep.py). No TUSHARE_TOKEN
+#    secret is needed in CI.
+#  - The suite is fast (~15 s locally on Apple Silicon, ~30 s on GHA).
+#  - We pin Python 3.11 to match the production venv on ECS
+#    (/opt/stock-analyze/venv/).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Allow manual triggers for one-off checks (e.g. before a risky deploy).
+  workflow_dispatch: {}
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Tushare/Baostock are heavy and not needed for the mocked test
+          # suite, but they're top-level imports of data_provider.py — install
+          # to make import succeed.
+          pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Smoke-check CLI import (no network)
+        run: |
+          python -c "from stock_analyze import cli; print('cli import OK')"
+          python -c "from stock_analyze.backtest import engine, gate, data_prep, data_view, report, types; print('backtest pkg OK')"
+          python -c "from stock_analyze.alt_factors import sentiment; print('alt_factors pkg OK')"
