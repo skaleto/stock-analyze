@@ -122,6 +122,35 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Re-fetch even if already cached.",
     )
+
+    bt = sub.add_parser(
+        "backtest",
+        help="Run a historical backtest of an overlay over an arbitrary window.",
+    )
+    bt.add_argument("--agent", required=True, choices=["claude", "codex"],
+                     help="Agent the backtest belongs to (paths under data/<agent>/).")
+    bt.add_argument("--start", type=_parse_iso_date, required=True,
+                     help="Start date (YYYY-MM-DD).")
+    bt.add_argument("--end", type=_parse_iso_date, required=True,
+                     help="End date (YYYY-MM-DD).")
+    bt.add_argument("--overlay", type=Path, required=True,
+                     help="Path to overlay JSON/YAML (configs/agents/<agent>.yaml).")
+    bt.add_argument("--output", type=Path, required=True,
+                     help="Output directory for backtest products.")
+    bt.add_argument("--in-memory", action="store_true",
+                     help="Skip per-day disk writes; only emit final outputs.")
+    bt.add_argument(
+        "--universe",
+        choices=["hs300", "zz500", "both"],
+        default="both",
+        help="Universe (default: both = hs300 + zz500).",
+    )
+    bt.add_argument(
+        "--cache-root",
+        type=Path,
+        default=Path("data/shared/backtest_cache"),
+        help="Where backtest_cache lives (default: data/shared/backtest_cache).",
+    )
     return parser
 
 
@@ -227,6 +256,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "prepare-backtest-data":
         ensure_dirs(args.logs_dir)
         return _command_prepare_backtest_data(args)
+    if args.command == "backtest":
+        ensure_dirs(args.logs_dir)
+        return _command_backtest(args)
 
     try:
         config, data_dir, reports_dir, cache_dir = _resolve_runtime(args)
@@ -508,6 +540,51 @@ def _command_prepare_backtest_data(args: argparse.Namespace) -> int:
         f"start={args.start.isoformat()} end={args.end.isoformat()} "
         f"cache_root={args.cache_root} done"
     )
+    return 0
+
+
+def _command_backtest(args: argparse.Namespace) -> int:
+    """Run a historical backtest of an overlay and write outputs to args.output."""
+    from .backtest import engine
+
+    # Load overlay
+    try:
+        overlay = competition.load(args.agent)
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: failed to load overlay for agent {args.agent}: {exc}",
+              file=sys.stderr)
+        return 2
+
+    universe_map = {
+        "hs300": ["hs300"],
+        "zz500": ["zz500"],
+        "both": ["hs300", "zz500"],
+    }
+    universe = universe_map[args.universe]
+
+    args.output.mkdir(parents=True, exist_ok=True)
+
+    try:
+        result = engine.run_backtest(
+            overlay=overlay,
+            start=args.start,
+            end=args.end,
+            universe=universe,
+            market_data_root=args.cache_root,
+            out_dir=args.output,
+            in_memory=args.in_memory,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: backtest failed: {exc}", file=sys.stderr)
+        return 2
+
+    m = result.metrics
+    print(
+        f"✓ backtest complete · {args.start.isoformat()} → {args.end.isoformat()}"
+        f" · cum={m.cum_return:+.1%} sharpe={m.sharpe:.2f}"
+        f" max_dd={m.max_drawdown:+.1%}"
+    )
+    print(f"  outputs: {args.output}")
     return 0
 
 
