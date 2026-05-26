@@ -106,7 +106,9 @@ def generate_rebalance_orders(
 
         coverage_rows.extend(_coverage_rows(scored, config.get("factors", {}), account_id, run_date))
 
-        orders = build_target_orders(config, account_state, selected)
+        orders = build_target_orders(
+            config, account_state, selected, fallback_pool=scored
+        )
         pending_batches.append(
             {
                 "run_id": run_id or f"{config.get('strategy_id', 'strategy')}-{account_id}-{run_date}",
@@ -164,24 +166,62 @@ def _coverage_rows(scored: pd.DataFrame, factors: dict[str, Any], account_id: st
     return rows
 
 
-def build_target_orders(config: dict[str, Any], account_state: dict[str, Any], selected: pd.DataFrame) -> list[dict[str, Any]]:
+def build_target_orders(
+    config: dict[str, Any],
+    account_state: dict[str, Any],
+    selected: pd.DataFrame,
+    *,
+    fallback_pool: pd.DataFrame | None = None,
+) -> list[dict[str, Any]]:
+    """Build pending buy/sell orders for the next trading day.
+
+    The caller passes ``selected`` (top-N after industry caps + hold buffer)
+    and the full scored ``fallback_pool``. Sizing applies in this order:
+
+      1. Equal-weight target ``total_value / top_n``, capped by
+         ``max_single_weight × total_value`` (5% by default).
+      2. ``target_shares = int(target_value // (price × lot_size)) × lot_size``.
+      3. **Tier 1 — 1-lot fallback**: if ``target_shares == 0`` but 1 lot
+         still fits under the 5% cap (``price × lot_size ≤ cap``), bump to
+         ``lot_size``. This rescues stocks priced ¥100-250 that the strict
+         equal-weight formula would otherwise drop.
+      4. **Tier 2 — skip-down fill**: if fewer than ``top_n`` slots have
+         non-zero target_shares after processing ``selected``, walk
+         ``fallback_pool`` in score-rank order, pulling in the next
+         eligible candidate (1 lot under cap). This guarantees the
+         strategy actually expresses its top-N intent rather than leaving
+         slots empty just because the highest-ranked picks are unbuyable.
+
+    Stocks priced > ``max_single_value / lot_size`` (¥250 under default
+    baseline) are still structurally excluded — buying any of them would
+    breach the 5% single-stock cap.
+    """
     top_n = max(len(selected), 1)
     total_value = account_total_value(account_state)
     target_value = total_value / top_n
     max_single_weight = safe_float(config.get("trading", {}).get("max_single_weight"))
     if max_single_weight is not None and max_single_weight > 0:
-        target_value = min(target_value, total_value * max_single_weight)
+        max_single_value = total_value * max_single_weight
+        target_value = min(target_value, max_single_value)
+    else:
+        max_single_value = None
     lot_size = int(config.get("trading", {}).get("lot_size", 100))
     current_positions = account_state.get("positions", {})
 
-    targets: dict[str, dict[str, Any]] = {}
-    for _, row in selected.iterrows():
-        price = safe_float(row.get("latest_price"))
-        if price is None or price <= 0:
-            continue
-        target_shares = int(target_value // (price * lot_size)) * lot_size
-        targets[str(row["code"]).zfill(6)] = {
-            "code": str(row["code"]).zfill(6),
+    def _compute_target_shares(price: float) -> int:
+        raw = int(target_value // (price * lot_size)) * lot_size
+        if raw == 0 and max_single_value is not None and price * lot_size <= max_single_value:
+            # Tier 1: 1 lot fits under cap — buy 1 lot rather than leave slot empty.
+            return lot_size
+        return raw
+
+    def _make_target(code: str, row, price: float, target_shares: int,
+                       *, fallback: bool = False) -> dict[str, Any]:
+        base_reason = row.get("score_detail", "") if hasattr(row, "get") else ""
+        if fallback:
+            base_reason = f"{base_reason};fallback_fill" if base_reason else "fallback_fill"
+        return {
+            "code": code,
             "name": row.get("name", ""),
             "industry": row.get("industry") or UNCLASSIFIED,
             "target_shares": target_shares,
@@ -189,8 +229,40 @@ def build_target_orders(config: dict[str, Any], account_state: dict[str, Any], s
             "target_weight": round((target_shares * price / total_value), 6) if total_value else None,
             "reference_price": price,
             "score": row.get("score"),
-            "reason": row.get("score_detail", ""),
+            "reason": base_reason,
         }
+
+    targets: dict[str, dict[str, Any]] = {}
+    filled_count = 0
+    for _, row in selected.iterrows():
+        price = safe_float(row.get("latest_price"))
+        if price is None or price <= 0:
+            continue
+        code = str(row["code"]).zfill(6)
+        target_shares = _compute_target_shares(price)
+        targets[code] = _make_target(code, row, price, target_shares)
+        if target_shares > 0:
+            filled_count += 1
+
+    # Tier 2: skip-down fill from fallback_pool when selected leaves slots empty.
+    if fallback_pool is not None and filled_count < top_n:
+        already_seen = set(targets.keys())
+        need = top_n - filled_count
+        for _, row in fallback_pool.iterrows():
+            if need <= 0:
+                break
+            price = safe_float(row.get("latest_price"))
+            if price is None or price <= 0:
+                continue
+            code = str(row["code"]).zfill(6)
+            if code in already_seen:
+                continue
+            target_shares = _compute_target_shares(price)
+            if target_shares == 0:
+                continue  # still unbuyable — try next candidate
+            targets[code] = _make_target(code, row, price, target_shares, fallback=True)
+            already_seen.add(code)
+            need -= 1
 
     for code, position in current_positions.items():
         targets.setdefault(
