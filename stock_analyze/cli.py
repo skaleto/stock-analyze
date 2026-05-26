@@ -102,7 +102,32 @@ def build_parser() -> argparse.ArgumentParser:
     serve = sub.add_parser("serve-dashboard", help="Serve reports directory on localhost")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
+
+    prep_bt = sub.add_parser(
+        "prepare-backtest-data",
+        help="One-time batch fetch of 5y A-share market data from Tushare into backtest_cache/",
+    )
+    prep_bt.add_argument("--start", type=_parse_iso_date, required=True,
+                          help="Start date (YYYY-MM-DD).")
+    prep_bt.add_argument("--end", type=_parse_iso_date, required=True,
+                          help="End date (YYYY-MM-DD).")
+    prep_bt.add_argument(
+        "--cache-root",
+        type=Path,
+        default=Path("data/shared/backtest_cache"),
+        help="Where the cache lives (default: data/shared/backtest_cache).",
+    )
+    prep_bt.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-fetch even if already cached.",
+    )
     return parser
+
+
+def _parse_iso_date(s: str) -> date:
+    """Parse a YYYY-MM-DD string into a datetime.date."""
+    return date.fromisoformat(s)
 
 
 def _resolve_offline_as_of(cache_dir: Path) -> str | None:
@@ -199,6 +224,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "prepare-market-data":
         ensure_dirs(args.logs_dir)
         return _command_prepare_market_data(args)
+    if args.command == "prepare-backtest-data":
+        ensure_dirs(args.logs_dir)
+        return _command_prepare_backtest_data(args)
 
     try:
         config, data_dir, reports_dir, cache_dir = _resolve_runtime(args)
@@ -459,6 +487,28 @@ def _command_prepare_market_data(args: argparse.Namespace) -> int:
         f"duration_ms={snapshot.get('duration_ms')}"
     )
     return 0 if snapshot.get("status") != "failed" else 2
+
+
+def _command_prepare_backtest_data(args: argparse.Namespace) -> int:
+    """One-time batch fetch of historical market data from Tushare into backtest_cache/."""
+    from .backtest import data_prep
+
+    try:
+        data_prep.prepare_backtest_data(
+            start=args.start,
+            end=args.end,
+            cache_root=args.cache_root,
+            force=args.force,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: prepare-backtest-data failed: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"Prepare backtest-data: "
+        f"start={args.start.isoformat()} end={args.end.isoformat()} "
+        f"cache_root={args.cache_root} done"
+    )
+    return 0
 
 
 def _auto_write_weekly_briefing(agent_id: str | None, as_of: str | None) -> str | None:
