@@ -73,7 +73,9 @@ Everything in `configs/agents/codex.yaml`:
   `require_fields`, `fallback_require_fields`.
 
 Available factors (as of this revision, per
-`stock_analyze/data_provider.py`):
+`stock_analyze/data_provider.py` + `stock_analyze/overlay_guard.py`):
+
+**Classic per-stock factors:**
 
 `pe`, `pb`, `roe`, `gross_margin`, `debt_ratio`, `net_profit_growth`,
 `momentum_20`, `momentum_60`, `low_volatility_60`, `dividend_yield`.
@@ -351,6 +353,38 @@ project.
 时跳过该因子贡献），但 dashboard 会显示"已 N 周未更新"警示。
 
 注意：你（Codex CLI）在 weekly review 笔记里可以**读** `data/codex/alt_factors/market_sentiment.csv` 自己的历史，作为情感叙事素材；但**不能**读 `data/claude/alt_factors/*`（见 §7.1）。
+
+### 9.2 三段窗口纪律（由 `add-historical-backtest-engine` 引入）
+
+回测引擎将历史时间划分为三段：
+
+- **训练窗口** (2021-01-01 ~ 2024-12-31, 48 个月)：你可以读月度明细、因子贡献、单股贡献，自由探索。
+- **验证窗口** (2025-01-01 ~ 2026-04-30, 16 个月)：briefing **只展示 5 个总结指标**（累计 / 年化 / Sharpe / 最大回撤 / IR），**不展示**月度明细、不展示因子分解。这是 gate 准入判定用的。
+- **Live OOS** (2026-05-18+)：真实竞赛，没有任何回测可读。
+
+**软约束**：不允许针对验证窗口的失败结果反向迭代你的 overlay。
+
+### 9.3 Backtest gate (in evolution flow)
+
+`evolution_writer.write_evolution` automatically runs the backtest gate
+between `overlay_guard.validate` and the yaml-write step (§6 in this file).
+Three hard floors on the validation window (2025-01 → 2026-04):
+
+- `abs(max_drawdown) > 25%` → reject
+- `sharpe < -0.5` → reject
+- `cum_return < -15%` → reject
+
+On breach: yaml is NOT written, a `<month>-floor-breach.md` lands in your
+`evolution_log/`, and you must redesign. See `docs/historical-backtest-flow.md`.
+
+### 9.4 CSV dtype invariant
+
+`daily_nav.csv` / `runs.csv` / `config_evolution.csv` etc. — all "textually-
+coded identifier" columns (`benchmark_code`, `ts_code`, `code`, `con_code`,
+`ann_date`, `trade_date`, `list_date`, `config_hash`, `month`, ...) **must**
+use `pd.read_csv(..., dtype={col: str})` — otherwise pandas infers int64
+and silently truncates `'000300'` to `300`. All new CSV-reading code MUST
+respect this invariant. See commit `6b33ae8`.
 
 ## 10. Success criteria
 
