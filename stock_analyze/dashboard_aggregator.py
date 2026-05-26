@@ -39,6 +39,46 @@ AGENT_COLORS = {
 DEFAULT_AGENT_ORDER = ("claude", "codex")
 
 
+def render_sentiment_comparison_panel(repo_root: Path | str) -> str:
+    """Render the cross-LLM market-sentiment comparison panel.
+
+    Aggregates ``data/<agent>/alt_factors/market_sentiment.csv`` for both
+    agents and shows: the latest week's score per agent and the diff, plus
+    a 26-week alignment table. Operator-visible only — agent isolation per
+    CLAUDE.md §7.1 means agents themselves cannot read each other's CSV.
+    """
+    from stock_analyze.alt_factors import sentiment as _alt_sent
+
+    root = Path(repo_root)
+    claude_rows = _alt_sent.load_sentiment_history("claude", root, last_n=26)
+    codex_rows = _alt_sent.load_sentiment_history("codex", root, last_n=26)
+    if not claude_rows or not codex_rows:
+        return (
+            '<div class="panel"><h3>claude vs codex 市场情感</h3>'
+            '<p>尚无足够数据：至少需要两个 agent 都有记录。</p></div>'
+        )
+
+    latest_c = claude_rows[-1]
+    latest_x = codex_rows[-1]
+    diff = latest_c.score - latest_x.score
+
+    return (
+        f'<div class="panel">\n'
+        f'  <h3>claude vs codex 市场情感（过去 26 周）</h3>\n'
+        f'  <p>本周对比：</p>\n'
+        f'  <table>\n'
+        f'    <tr><th>agent</th><th>week_end</th><th>score</th><th>confidence</th></tr>\n'
+        f'    <tr><td>claude</td><td>{latest_c.week_end.isoformat()}</td>'
+        f'<td>{latest_c.score:+.2f}</td><td>{latest_c.confidence:.2f}</td></tr>\n'
+        f'    <tr><td>codex</td><td>{latest_x.week_end.isoformat()}</td>'
+        f'<td>{latest_x.score:+.2f}</td><td>{latest_x.confidence:.2f}</td></tr>\n'
+        f'    <tr><td colspan="2">差值 (claude − codex)</td>'
+        f'<td colspan="2">{diff:+.2f}</td></tr>\n'
+        f'  </table>\n'
+        f'</div>'
+    )
+
+
 def generate_competition_dashboard(
     agents: list[str] | None = None,
     repo_root: str | Path | None = None,
