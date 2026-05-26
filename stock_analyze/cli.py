@@ -578,6 +578,10 @@ def _command_backtest(args: argparse.Namespace) -> int:
         print(f"error: backtest failed: {exc}", file=sys.stderr)
         return 2
 
+    # Write markdown report
+    from .backtest.report import write_report
+    report_path = write_report(result)
+
     m = result.metrics
     print(
         f"✓ backtest complete · {args.start.isoformat()} → {args.end.isoformat()}"
@@ -585,6 +589,7 @@ def _command_backtest(args: argparse.Namespace) -> int:
         f" max_dd={m.max_drawdown:+.1%}"
     )
     print(f"  outputs: {args.output}")
+    print(f"  report:  {report_path}")
     return 0
 
 
