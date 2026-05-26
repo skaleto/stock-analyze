@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -17,13 +18,59 @@ def initialize(config: dict[str, Any], store: PortfolioStore, force: bool = Fals
     return store.initialize(config, force=force)
 
 
+def _resolve_as_of(as_of: str | date | None) -> str | None:
+    """Normalize an as_of value to an ISO-format string (or None).
+
+    The simulator's downstream contract uses ISO strings throughout
+    (pending batch dates, NAV rows, etc.). The forward-mode call sites
+    pass strings; the new backtest-mode call sites can pass datetime.date.
+    """
+    if as_of is None:
+        return None
+    if isinstance(as_of, date):
+        return as_of.isoformat()
+    return str(as_of)
+
+
+def _override_store(store: PortfolioStore, data_root: Path | None) -> PortfolioStore:
+    """If ``data_root`` is provided, build a fresh store rooted there.
+
+    This is the integration seam for the backtest engine (Task 7): a single
+    overlay run can be driven through a temporary data_root without
+    polluting the agent's forward-mode state files.
+    """
+    if data_root is None:
+        return store
+    return PortfolioStore(data_root)
+
+
+def _override_provider_cache(provider: DataProvider, market_data_root: Path | None) -> None:
+    """If ``market_data_root`` is provided, rebind the provider's cache root.
+
+    Providers built off ``AkshareProvider`` carry a ``cache_dir`` attribute
+    that controls where read-only market-data lookups land. Backtest mode
+    points this at a historical point-in-time cache; forward mode leaves it
+    pointing at ``data/shared/cache/``.
+    """
+    if market_data_root is None:
+        return
+    if hasattr(provider, "cache_dir"):
+        provider.cache_dir = Path(market_data_root)
+
+
 def generate_rebalance_orders(
     config: dict[str, Any],
     store: PortfolioStore,
     provider: DataProvider,
-    as_of: str | None = None,
+    as_of: str | date | None = None,
     run_id: str | None = None,
+    *,
+    data_root: Path | None = None,
+    market_data_root: Path | None = None,
 ) -> list[dict[str, Any]]:
+    store = _override_store(store, data_root)
+    _override_provider_cache(provider, market_data_root)
+    as_of = _resolve_as_of(as_of)
     state = store.initialize(config)
     all_selected: list[pd.DataFrame] = []
     all_factor_tables: list[pd.DataFrame] = []
@@ -190,8 +237,14 @@ def execute_due_orders(
     config: dict[str, Any],
     store: PortfolioStore,
     provider: DataProvider,
-    as_of: str | None = None,
+    as_of: str | date | None = None,
+    *,
+    data_root: Path | None = None,
+    market_data_root: Path | None = None,
 ) -> list[dict[str, Any]]:
+    store = _override_store(store, data_root)
+    _override_provider_cache(provider, market_data_root)
+    as_of = _resolve_as_of(as_of)
     state = store.initialize(config)
     pending = store.load_pending()
     run_date = as_of or date.today().isoformat()
@@ -353,9 +406,15 @@ def update_nav(
     config: dict[str, Any],
     store: PortfolioStore,
     provider: DataProvider,
-    as_of: str | None = None,
+    as_of: str | date | None = None,
     notes: str = "",
+    *,
+    data_root: Path | None = None,
+    market_data_root: Path | None = None,
 ) -> list[dict[str, Any]]:
+    store = _override_store(store, data_root)
+    _override_provider_cache(provider, market_data_root)
+    as_of = _resolve_as_of(as_of)
     state = store.initialize(config)
     run_date = as_of or date.today().isoformat()
     rows: list[dict[str, Any]] = []
