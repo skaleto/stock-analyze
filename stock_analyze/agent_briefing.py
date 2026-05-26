@@ -28,6 +28,97 @@ from .monthly_review import default_month_for
 BRIEFINGS_SUBDIR = "notes/briefings"
 
 
+# ---------------------------------------------------------------------------
+# Backtest window sections (train/dev/test information isolation)
+# ---------------------------------------------------------------------------
+
+
+def _read_backtest_summary(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def render_training_section(
+    agent_id: str,
+    month: str,
+    repo_root: Path,
+) -> str:
+    """Render the training-window backtest summary with FULL detail.
+
+    The training window (2021-2024) is open territory for the LLM —
+    monthly breakdowns and factor contributions are exposed so the LLM
+    can iterate on hypotheses freely.
+    """
+    summary_path = (
+        Path(repo_root) / "data" / agent_id / "backtest" / "training" / month
+        / "performance_summary.json"
+    )
+    summary = _read_backtest_summary(summary_path)
+    if summary is None:
+        return "## 训练窗口表现\n\n(尚无数据)\n"
+
+    lines = [
+        "## 训练窗口表现",
+        "",
+        f"- 累计: {summary.get('cum_return', 0):+.1%}",
+        f"- 年化: {summary.get('annual_return', 0):+.1%}",
+        f"- Sharpe: {summary.get('sharpe', 0):.2f}",
+        f"- 最大回撤: {summary.get('max_drawdown', 0):+.1%}",
+        f"- IR: {summary.get('information_ratio', 0):.2f}",
+        "",
+    ]
+    monthly = summary.get("month_breakdown", [])
+    if monthly:
+        lines += ["### 月度明细", ""]
+        for row in monthly:
+            lines.append(f"- {row.get('month')}: {row.get('ret', 0):+.2%}")
+        lines.append("")
+    factors = summary.get("factor_breakdown", [])
+    if factors:
+        lines += ["### 因子贡献", ""]
+        for row in factors:
+            lines.append(
+                f"- {row.get('factor')}: {row.get('contribution', 0):+.2%}"
+            )
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_validation_section(
+    agent_id: str,
+    month: str,
+    repo_root: Path,
+) -> str:
+    """Render the validation-window backtest summary with AGGREGATE-ONLY detail.
+
+    The validation window (2025-01 → 2026-04) feeds the gate. Briefings
+    surface only the 5 aggregate metrics — no monthly breakdown, no factor
+    decomposition — to reduce noise-fitting (information isolation soft
+    constraint; see CLAUDE.md / AGENTS.md §10).
+    """
+    summary_path = (
+        Path(repo_root) / "data" / agent_id / "backtest" / "validation" / month
+        / "performance_summary.json"
+    )
+    summary = _read_backtest_summary(summary_path)
+    if summary is None:
+        return "## 验证窗口表现\n\n(尚无数据)\n"
+
+    return (
+        "## 验证窗口表现\n\n"
+        "(仅展示 5 个聚合指标；月度明细 / 因子分解被有意隐藏 — 见 §10 信息隔离)\n\n"
+        f"- 累计: {summary.get('cum_return', 0):+.1%}\n"
+        f"- 年化: {summary.get('annual_return', 0):+.1%}\n"
+        f"- Sharpe: {summary.get('sharpe', 0):.2f}\n"
+        f"- 最大回撤: {summary.get('max_drawdown', 0):+.1%}\n"
+        f"- IR: {summary.get('information_ratio', 0):.2f}\n"
+    )
+
+
 def build_weekly_briefing(
     agent_id: str,
     as_of: str | None = None,
