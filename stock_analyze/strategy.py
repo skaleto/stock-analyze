@@ -5,7 +5,7 @@ from typing import Any
 
 import pandas as pd
 
-from .data_provider import DataProvider
+from .data_provider import CacheMiss, DataProvider
 from .factor_pipeline import UNCLASSIFIED, process_factors
 from .utils import now_iso, parse_date, safe_float
 
@@ -31,17 +31,26 @@ def build_signals(config: dict[str, Any], account: dict[str, Any], provider: Dat
 
     rows: list[dict[str, Any]] = []
     filters = config.get("filters", {})
+    cache_miss_codes: list[str] = []
     for _, stock in universe.iterrows():
         code = str(stock["code"]).zfill(6)
         name = str(stock["name"])
         if filters.get("exclude_st") and "ST" in name.upper():
             continue
 
-        basic = provider.basic_info(code)
-        valuation = provider.valuation_metrics(code)
-        metrics = provider.financial_metrics(code, as_of=as_of)
-        snapshot = provider.price_snapshot(code, as_of=as_of, spot_row=stock.to_dict())
-        dividend_yield = provider.dividend_yield(code, as_of=as_of)
+        # In offline mode a missing cache entry for one stock should not kill
+        # the whole run — skip the affected stock and accumulate a warning so
+        # the rest of the universe can still produce a signal. The aggregate
+        # count is surfaced in `warnings` for dashboard / operator review.
+        try:
+            basic = provider.basic_info(code)
+            valuation = provider.valuation_metrics(code)
+            metrics = provider.financial_metrics(code, as_of=as_of)
+            snapshot = provider.price_snapshot(code, as_of=as_of, spot_row=stock.to_dict())
+            dividend_yield = provider.dividend_yield(code, as_of=as_of)
+        except CacheMiss as exc:
+            cache_miss_codes.append(f"{code}:{exc.cache_name}")
+            continue
         data_warnings: list[str] = []
         if valuation.get("pe") is None and safe_float(stock.get("pe")) is None:
             data_warnings.append("pe_missing")
@@ -79,6 +88,13 @@ def build_signals(config: dict[str, Any], account: dict[str, Any], provider: Dat
             "data_warnings": ";".join(data_warnings),
         }
         rows.append(row)
+
+    if cache_miss_codes:
+        warnings.append(
+            f"cache_miss_skipped:{len(cache_miss_codes)}:"
+            + ",".join(cache_miss_codes[:5])
+            + ("..." if len(cache_miss_codes) > 5 else "")
+        )
 
     candidates = pd.DataFrame(rows)
     if candidates.empty:
