@@ -2,6 +2,7 @@
 Description=Stock Analyze weekly simulation run (Claude agent)
 After=network-online.target
 Wants=network-online.target
+OnFailure=stock-analyze-pipeline-failure@%n.service
 
 [Service]
 Type=oneshot

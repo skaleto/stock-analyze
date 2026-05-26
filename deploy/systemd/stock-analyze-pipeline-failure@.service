@@ -1,0 +1,17 @@
+[Unit]
+Description=Stock Analyze pipeline failure notification for %i
+# This is a small notification service triggered by `OnFailure=` on the
+# four agent services (claude/codex × daily/weekly). When any of those
+# units exits non-zero, systemd activates this template instance with
+# the failed unit name passed as %i; we append a timestamped row to
+# /opt/stock-analyze/logs/PIPELINE_FAILURES.log so the operator can
+# grep / tail / wire any preferred alerting on top.
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '\
+  printf "%%s\\tFAILED\\t%%s\\n" "$(date -Iseconds)" "%i" \
+    >> /opt/stock-analyze/logs/PIPELINE_FAILURES.log; \
+  journalctl -u "%i" --no-pager -n 40 \
+    >> /opt/stock-analyze/logs/PIPELINE_FAILURES.log; \
+  printf -- "---\\n" >> /opt/stock-analyze/logs/PIPELINE_FAILURES.log'
