@@ -140,7 +140,7 @@ A 股场景必须建模为硬约束：
 - 部署有雏形，daily、weekly、dashboard 的 systemd service/timer 分开，dashboard 默认只监听 `127.0.0.1`。
 - 数据源韧性有意识，`data_health.json` 记录了数据源、状态、消息和行数。
 - 本地状态结构简单，适合初期调试：`state.json`、`pending_orders.json`、`daily_nav.csv`、`trades.csv`、`positions.csv`、`latest_signals.csv`、`performance_summary.json`。
-- 凭据边界正确，东方财富 Cookie 只通过 `EASTMONEY_COOKIE` 环境变量传入，不写入配置、仓库和日志。
+- 凭据边界正确，当时使用的东方财富 Cookie 仅通过环境变量传入，不写入配置、仓库和日志。（注：2026-05-23 起 AKShare/东方财富链路已被 Tushare Pro 取代，相关 Cookie 已弃用。）
 
 主要工程短板：
 
