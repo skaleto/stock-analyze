@@ -61,8 +61,10 @@ class SingleAgentMarketSentimentPanelTests(unittest.TestCase):
             self.assertIn("尚无", html)
 
     def test_panel_stale_warning_when_data_more_than_2_weeks_old(self):
-        # Most recent is 2026-05-15; today=2026-06-15 → 31 days old → stale
-        with patch("stock_analyze.reporting._today",
+        # Most recent is 2026-05-15; today=2026-06-15 → 31 days old → stale.
+        # Patch target is the submodule where the panel actually looks up
+        # `_today` after the 2026-05-26 reporting/ split (I1 audit task).
+        with patch("stock_analyze.reporting.panels._today",
                     return_value=date(2026, 6, 15)):
             html = reporting.render_market_sentiment_panel(
                 "claude", repo_root=self.repo,
@@ -70,8 +72,9 @@ class SingleAgentMarketSentimentPanelTests(unittest.TestCase):
         self.assertIn("未更新", html)
 
     def test_panel_no_stale_warning_when_data_fresh(self):
-        # Most recent is 2026-05-15; today=2026-05-22 (one week later) → fresh
-        with patch("stock_analyze.reporting._today",
+        # Most recent is 2026-05-15; today=2026-05-22 (one week later) → fresh.
+        # Patch target matches the panels submodule after the I1 split.
+        with patch("stock_analyze.reporting.panels._today",
                     return_value=date(2026, 5, 22)):
             html = reporting.render_market_sentiment_panel(
                 "claude", repo_root=self.repo,
