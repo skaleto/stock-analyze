@@ -720,6 +720,63 @@ def generate_dashboard(
     return dashboard_path
 
 
+def render_backtest_vs_live_panel(agent_id: str, repo_root: Path | str) -> str:
+    """Render the historical-backtest-vs-live-NAV comparison panel.
+
+    Reads:
+      - data/<agent>/backtest/training/<latest>/daily_nav.csv (historical)
+      - data/<agent>/daily_nav.csv (live)
+
+    Returns an HTML fragment; emitted into the professional dashboard's
+    Claude / Codex tabs. New-beginner dashboard does NOT include this panel.
+    """
+    root = Path(repo_root)
+    train_root = root / "data" / agent_id / "backtest" / "training"
+    if not train_root.exists() or not any(train_root.iterdir()):
+        return (
+            '<div class="panel"><h3>历史回测 vs 真实运行</h3>'
+            '<p>尚无训练窗口回测数据。请先跑 <code>prepare-backtest-data</code> '
+            '+ 自动月度训练回测。</p></div>'
+        )
+    runs = sorted(p for p in train_root.iterdir() if p.is_dir())
+    if not runs:
+        return (
+            '<div class="panel"><h3>历史回测 vs 真实运行</h3>'
+            '<p>尚无训练窗口回测数据。</p></div>'
+        )
+    bt_nav_path = runs[-1] / "daily_nav.csv"
+    live_nav_path = root / "data" / agent_id / "daily_nav.csv"
+
+    bt_df = pd.read_csv(bt_nav_path) if bt_nav_path.exists() else pd.DataFrame()
+    live_df = pd.read_csv(live_nav_path) if live_nav_path.exists() else pd.DataFrame()
+
+    def _cum_return(df: pd.DataFrame) -> float:
+        if df.empty:
+            return 0.0
+        p = df.groupby("date")["total_value"].sum().sort_index()
+        if len(p) < 2:
+            return 0.0
+        return float(p.iloc[-1] / p.iloc[0] - 1)
+
+    bt_cum = _cum_return(bt_df)
+    live_cum = _cum_return(live_df)
+    diff = bt_cum - live_cum
+    warn_cls = ' class="warn"' if abs(diff) > 0.05 else ""
+
+    return (
+        f'<div class="panel">\n'
+        f'  <h3>历史回测 vs 真实运行</h3>\n'
+        f'  <p>(浅色 = 历史回测；深色 = live 真实运行；灰色虚线 = 基准)</p>\n'
+        f'  <table>\n'
+        f'    <tr><th></th><th>累计收益</th></tr>\n'
+        f'    <tr><td>历史回测</td><td>{bt_cum:+.1%}</td></tr>\n'
+        f'    <tr><td>真实运行</td><td>{live_cum:+.1%}</td></tr>\n'
+        f'    <tr{warn_cls}><td>差异</td><td>{diff:+.1%}</td></tr>\n'
+        f'  </table>\n'
+        f'</div>'
+    )
+
+
 def _to_fragment(page_html: str, agent_id: str) -> str:
     """Strip the outer HTML shell and rename element IDs so multiple fragments
     can be inlined into one container page without collisions.
