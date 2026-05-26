@@ -58,9 +58,17 @@ claude 差 8 个,codex 差 19 个。怀疑：要么是模拟器记账有 bug,要
 
 codex 19 笔减仓与之高度重叠(002032 / 002415 / 600018 / 600372 / 600959 / 601021 / 601668 七只完全相同),再加 12 只 codex 独有的减仓,合理。
 
-### 为何两边都恰好 93
+### 为何两边都恰好 93（修正）
 
-`hs300` + `zz500` 两个账户 `top_n` 合计 = 93(`configs/competition.yaml.accounts.{hs300,zz500}.top_n` 之和;baseline locked),所以两个 agent 周中再平衡后理论上都应回到 93,与观察一致。
+⚠️ 第一版 note 写的"top_n 合计 = 93"是错的——`configs/competition.yaml` 实际是
+`accounts.hs300.top_n = 50` + `accounts.zz500.top_n = 50` = **100**。
+
+两边都落 93 的真实原因是**初始建仓凑不齐**：5-18 第一次建仓时受 `cash` +
+`lot_size=100` + 单股价 + `max_single_weight=5%` 联合约束,claude 只填了 81 个、
+codex 填了 82 个 (本来应该都 100)。5-25 rebalance 的 net 变化 (claude +4 /
+codex -8 之后又被减仓事件抵消) 让两边都收敛到 93。
+
+这是个**巧合数字**,不是结构性的。下一次 rebalance 持仓数还会变。
 
 ## 是否要改什么
 
