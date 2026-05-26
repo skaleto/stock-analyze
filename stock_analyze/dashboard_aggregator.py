@@ -73,7 +73,12 @@ def _runs_today(repo: Path, agent: str, command: str, today: "_dt.date") -> dict
         return None
     import pandas as _pd
     try:
-        df = _pd.read_csv(csv)
+        # runs.csv has textually-coded fields (run_id, hash, ISO timestamps)
+        df = _pd.read_csv(csv, dtype={
+            "run_id": str, "command": str, "as_of": str,
+            "started_at": str, "finished_at": str, "status": str,
+            "error_summary": str, "config_hash": str, "code_version": str,
+        })
     except Exception:  # noqa: BLE001
         return None
     if df.empty:
@@ -96,7 +101,11 @@ def _rollup_7d(repo: Path, agent: str, command: str, today: "_dt.date") -> tuple
         return (0, 0)
     import pandas as _pd
     try:
-        df = _pd.read_csv(csv)
+        df = _pd.read_csv(csv, dtype={
+            "run_id": str, "command": str, "as_of": str,
+            "started_at": str, "finished_at": str, "status": str,
+            "error_summary": str, "config_hash": str, "code_version": str,
+        })
     except Exception:  # noqa: BLE001
         return (0, 0)
     if df.empty:
@@ -412,7 +421,8 @@ def _read_leaderboard(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     try:
-        df = pd.read_csv(path)
+        # month "YYYY-MM" string — defensive against int coercion
+        df = pd.read_csv(path, dtype={"month": str})
     except Exception:  # noqa: BLE001
         return []
     return df.to_dict(orient="records")

@@ -200,7 +200,13 @@ class PortfolioStore:
         if not path.exists() or path.stat().st_size == 0:
             return pd.DataFrame(columns=FACTOR_COVERAGE_COLUMNS)
         try:
-            return pd.read_csv(path)
+            # Preserve str for signal_date / account_id / factor — defensive
+            # against pandas inferring numeric dtypes for textually-coded
+            # identifiers (e.g. account_id="hs300", factor="pe").
+            return pd.read_csv(
+                path,
+                dtype={"signal_date": str, "account_id": str, "factor": str},
+            )
         except pd.errors.EmptyDataError:
             return pd.DataFrame(columns=FACTOR_COVERAGE_COLUMNS)
 
@@ -209,7 +215,16 @@ class PortfolioStore:
         if not path.exists() or path.stat().st_size == 0:
             return pd.DataFrame(columns=FORWARD_IC_COLUMNS)
         try:
-            return pd.read_csv(path)
+            return pd.read_csv(
+                path,
+                dtype={
+                    "signal_date": str,
+                    "account_id": str,
+                    "factor": str,
+                    "ic_status": str,
+                    "computed_at": str,
+                },
+            )
         except pd.errors.EmptyDataError:
             return pd.DataFrame(columns=FORWARD_IC_COLUMNS)
 

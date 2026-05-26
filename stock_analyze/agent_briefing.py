@@ -396,7 +396,11 @@ def _render_recent_runs(paths: AgentPaths, limit: int = 5) -> list[str]:
     if not path.exists() or path.stat().st_size == 0:
         return ["## 最近运行", "", "尚无 `runs.csv`，可能是第一次跑。", ""]
     try:
-        df = pd.read_csv(path)
+        df = pd.read_csv(path, dtype={
+            "run_id": str, "command": str, "as_of": str,
+            "started_at": str, "finished_at": str, "status": str,
+            "error_summary": str, "config_hash": str, "code_version": str,
+        })
     except Exception:  # noqa: BLE001
         return ["## 最近运行", "", "`runs.csv` 解析失败，跳过。", ""]
     if df.empty:
@@ -671,7 +675,12 @@ def _render_opponent_evolution_history(agent_id: str, root: Path, months: int = 
             blocks.append("")
             continue
         try:
-            df = pd.read_csv(csv_path)
+            # config_evolution.csv: month + hashes are textual; preserve.
+            df = pd.read_csv(csv_path, dtype={
+                "event": str, "event_at": str, "agent_id": str, "month": str,
+                "from_hash": str, "to_hash": str, "diff_summary": str,
+                "reasoning_file": str, "diff_file": str, "reviewer": str,
+            })
         except Exception:  # noqa: BLE001
             blocks.append(f"## 对手 {other} 历史改动（近 {months} 个月）")
             blocks.append("")
