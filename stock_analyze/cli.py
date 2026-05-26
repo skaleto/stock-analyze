@@ -151,6 +151,43 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("data/shared/backtest_cache"),
         help="Where backtest_cache lives (default: data/shared/backtest_cache).",
     )
+
+    rec = sub.add_parser(
+        "record-sentiment",
+        help="Record one week of operator-curated market sentiment from LLM client.",
+    )
+    rec.add_argument("--agent", required=True, choices=["claude", "codex"])
+    rec.add_argument("--week-end", type=_parse_iso_date, required=True,
+                      help="Friday-end of the analysed week (YYYY-MM-DD).")
+    rec.add_argument("--score", type=float, required=True,
+                      help="Sentiment score in [-1.0, 1.0].")
+    rec.add_argument("--confidence", type=float, required=True,
+                      help="LLM self-rated confidence in [0.0, 1.0].")
+    rec.add_argument("--drivers", required=True,
+                      help="Comma-separated key drivers (1..5).")
+    rec.add_argument("--sources", default="",
+                      help="Pipe-separated source URLs (optional).")
+    rec.add_argument("--llm-model", required=True,
+                      help="LLM model identifier, e.g. claude-sonnet-4.5.")
+    rec.add_argument("--prompt-version", default="v1",
+                      help="Prompt template version (default v1).")
+    rec.add_argument("--force", action="store_true",
+                      help="Overwrite an existing row for the same week_end.")
+
+    slog = sub.add_parser(
+        "sentiment-log",
+        help="Inspect / remove sentiment history rows.",
+    )
+    slog.add_argument("--agent", required=True, choices=["claude", "codex"])
+    slog.add_argument("--last", type=int, default=None,
+                       help="Show only the last N rows.")
+    slog.add_argument("--remove", action="store_true",
+                       help="Remove the row whose week_end matches --week-end.")
+    slog.add_argument("--week-end", type=_parse_iso_date, default=None,
+                       help="Required with --remove.")
+    slog.add_argument("--repo-root", type=Path, default=Path("."),
+                       help="Override repo root for tests.")
+
     return parser
 
 
@@ -259,6 +296,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "backtest":
         ensure_dirs(args.logs_dir)
         return _command_backtest(args)
+    if args.command == "record-sentiment":
+        ensure_dirs(args.logs_dir)
+        return _command_record_sentiment(args)
+    if args.command == "sentiment-log":
+        ensure_dirs(args.logs_dir)
+        return _command_sentiment_log(args)
 
     try:
         config, data_dir, reports_dir, cache_dir = _resolve_runtime(args)
@@ -590,6 +633,73 @@ def _command_backtest(args: argparse.Namespace) -> int:
     )
     print(f"  outputs: {args.output}")
     print(f"  report:  {report_path}")
+    return 0
+
+
+def _command_record_sentiment(args: argparse.Namespace) -> int:
+    """Record one operator-curated sentiment row from LLM-client chat."""
+    from .alt_factors import sentiment as alt_sent
+
+    drivers = [d.strip() for d in args.drivers.split(",") if d.strip()]
+    sources_raw = args.sources or ""
+    sources = [s.strip() for s in sources_raw.split("|") if s.strip()] if sources_raw else []
+    try:
+        alt_sent.record_market_sentiment(
+            agent_id=args.agent,
+            week_end=args.week_end,
+            score=args.score,
+            confidence=args.confidence,
+            drivers=drivers,
+            sources=sources,
+            llm_model=args.llm_model,
+            prompt_version=args.prompt_version,
+            repo_root=Path.cwd(),
+            force=args.force,
+        )
+    except alt_sent.DuplicateSentimentEntry as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"✗ validation: {exc}", file=sys.stderr)
+        return 1
+    rows = alt_sent.load_sentiment_history(args.agent, Path.cwd())
+    print(
+        f"✓ recorded {args.agent} {args.week_end.isoformat()} "
+        f"score={args.score:+.2f} confidence={args.confidence:.2f}; "
+        f"csv now has {len(rows)} weeks"
+    )
+    return 0
+
+
+def _command_sentiment_log(args: argparse.Namespace) -> int:
+    """List or remove sentiment history rows."""
+    from .alt_factors import sentiment as alt_sent
+
+    if args.remove:
+        if args.week_end is None:
+            print("✗ --remove requires --week-end", file=sys.stderr)
+            return 1
+        try:
+            alt_sent.remove_sentiment(args.agent, args.week_end, args.repo_root)
+        except ValueError as exc:
+            print(f"✗ {exc}", file=sys.stderr)
+            return 1
+        print(f"✓ removed {args.agent} {args.week_end.isoformat()}")
+        return 0
+
+    rows = alt_sent.load_sentiment_history(
+        args.agent, args.repo_root, last_n=args.last,
+    )
+    if not rows:
+        print(f"(no sentiment rows for {args.agent})")
+        return 0
+    for r in rows:
+        print(
+            f"{r.week_end.isoformat()}  score={r.score:+.2f}  "
+            f"conf={r.confidence:.2f}  "
+            f"drivers=\"{','.join(r.drivers)}\"  "
+            f"({r.llm_model})"
+        )
     return 0
 
 
