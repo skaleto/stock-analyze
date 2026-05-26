@@ -76,9 +76,11 @@ def generate_rebalance_orders(
     as_of = _resolve_as_of(as_of)
     state = store.initialize(config)
     # repo_root controls where strategy.build_signals reads broadcast-factor
-    # data (e.g. data/<agent>/alt_factors/market_sentiment.csv). Defaults to
-    # Path.cwd() inside build_signals when None, which is correct for both
-    # production (ECS systemd runs in /opt/stock-analyze/app/) and CLI use.
+    # data (e.g. data/<agent>/alt_factors/market_sentiment.csv). When None,
+    # strategy._resolve_default_repo_root() resolves via (in priority order):
+    # SA_REPO_ROOT env > __file__-anchored walk > Path.cwd(). The
+    # file-anchored fallback is robust to CWD drift (operator running CLI
+    # from anywhere).
     all_selected: list[pd.DataFrame] = []
     all_factor_tables: list[pd.DataFrame] = []
     coverage_rows: list[dict[str, Any]] = []

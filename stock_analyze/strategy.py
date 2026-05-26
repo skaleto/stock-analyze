@@ -62,11 +62,37 @@ def _resolve_broadcast_values(
     else:
         as_of_date = _date_cls.today()
 
-    root = _Path_cls(repo_root) if repo_root else _Path_cls.cwd()
+    root = _Path_cls(repo_root) if repo_root else _resolve_default_repo_root()
     return {
         name: load_broadcast_factor(agent_id, name, as_of_date, root)
         for name in broadcast_names
     }
+
+
+def _resolve_default_repo_root() -> _Path_cls:
+    """Resolve the project root when caller didn't pass one explicitly.
+
+    Priority (in order):
+      1. ``SA_REPO_ROOT`` env var (operator-set override; useful in tests
+         or non-default deploys).
+      2. ``__file__``-anchored walk: this module lives at
+         ``stock_analyze/strategy.py``; parent.parent is the project root.
+         Robust regardless of CWD.
+      3. ``Path.cwd()`` as last-resort fallback (matches the original
+         behavior so existing call sites that relied on CWD don't break).
+    """
+    import os
+    env_root = os.environ.get("SA_REPO_ROOT", "").strip()
+    if env_root:
+        candidate = _Path_cls(env_root)
+        if candidate.exists():
+            return candidate
+    # Walk up from this file: stock_analyze/strategy.py → stock_analyze/ → repo root
+    here = _Path_cls(__file__).resolve()
+    file_anchored = here.parent.parent
+    if (file_anchored / "stock_analyze").exists():
+        return file_anchored
+    return _Path_cls.cwd()
 
 
 def build_signals(
