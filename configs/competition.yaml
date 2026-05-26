@@ -41,5 +41,12 @@
   "objective": {
     "annual_excess_return_target": 0.05,
     "max_drawdown_vs_benchmark": 1.2
+  },
+  "backtest": {
+    "floor": {
+      "max_drawdown": 0.25,
+      "sharpe_floor": -0.5,
+      "cum_return_floor": -0.15
+    }
   }
 }
