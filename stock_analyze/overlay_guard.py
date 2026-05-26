@@ -36,7 +36,7 @@ from . import competition
 # factor columns produced by ``data_provider``. Until the codebase grows a
 # canonical ``data_provider.AVAILABLE_FACTORS`` constant, we keep the
 # whitelist here as the single source of truth.
-AVAILABLE_FACTORS: frozenset[str] = frozenset(
+CLASSIC_FACTORS: frozenset[str] = frozenset(
     {
         "pe",
         "pb",
@@ -49,6 +49,18 @@ AVAILABLE_FACTORS: frozenset[str] = frozenset(
         "low_volatility_60",
         "dividend_yield",
     }
+)
+
+# Backward-compat alias for callers / tests that imported the old name.
+AVAILABLE_FACTORS = CLASSIC_FACTORS
+
+# Agent-specific alt-factor naming convention: ``<agent_id>_market_sentiment_1w``
+# (and future ``<agent_id>_*`` factors). The agent prefix in the factor name
+# MUST match the calling agent_id — claude cannot reference codex's
+# sentiment factor (transparency rule, see CLAUDE.md §7.1).
+import re as _re_module  # local alias to avoid shadowing
+AGENT_ALT_FACTOR_PATTERN = _re_module.compile(
+    r"^(claude|codex)_market_sentiment_1w$"
 )
 
 # Top-level keys permitted in an agent overlay. Anything else raises
@@ -97,6 +109,41 @@ class OverlayUnknownFactor(OverlayGuardError):
         )
         self.name = name
         self.whitelist = whitelist
+
+
+class OverlayCrossAgentFactor(OverlayGuardError):
+    """Overlay references an agent-prefixed alt-factor whose agent_id differs.
+
+    e.g. ``claude.yaml`` referencing ``codex_market_sentiment_1w``. Each
+    agent's alt-factor data is private to that agent (transparency rule,
+    CLAUDE.md §7.1).
+    """
+
+    def __init__(self, name: str, agent_id: str) -> None:
+        super().__init__(
+            f"overlay_cross_agent_factor:{name} "
+            f"(agent_id={agent_id!r} cannot reference another agent's alt-factor)"
+        )
+        self.name = name
+        self.agent_id = agent_id
+
+
+def validate_factor_name(name: str, agent_id: str) -> None:
+    """Raise the appropriate exception if ``name`` is unsupported for ``agent_id``.
+
+    - Classic factor (in ``CLASSIC_FACTORS``)  -> ok
+    - ``<agent_id>_*`` matching the alt-factor pattern  -> ok
+    - ``<other>_*`` matching the pattern  -> raise OverlayCrossAgentFactor
+    - Anything else  -> raise OverlayUnknownFactor
+    """
+    if name in CLASSIC_FACTORS:
+        return
+    match = AGENT_ALT_FACTOR_PATTERN.match(name)
+    if not match:
+        raise OverlayUnknownFactor(name=name, whitelist=CLASSIC_FACTORS)
+    factor_agent = match.group(1)
+    if factor_agent != agent_id:
+        raise OverlayCrossAgentFactor(name=name, agent_id=agent_id)
 
 
 class OverlayInvalidWeight(OverlayGuardError):
@@ -164,7 +211,7 @@ def validate(
     _validate_top_level(parsed)
     _validate_agent_id(parsed, agent_id)
     _validate_baseline_locks(parsed, repo_root=repo_root, baseline=baseline)
-    _validate_factors(parsed)
+    _validate_factors(parsed, agent_id=agent_id)
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +295,7 @@ def _validate_baseline_locks(
         ) from exc
 
 
-def _validate_factors(overlay: dict[str, Any]) -> None:
+def _validate_factors(overlay: dict[str, Any], *, agent_id: str) -> None:
     factors = overlay.get("factors")
     if factors is None:
         return
@@ -257,8 +304,7 @@ def _validate_factors(overlay: dict[str, Any]) -> None:
             "overlay_schema_error:factors_must_be_mapping"
         )
     for name, spec in factors.items():
-        if name not in AVAILABLE_FACTORS:
-            raise OverlayUnknownFactor(name=name, whitelist=AVAILABLE_FACTORS)
+        validate_factor_name(name, agent_id=agent_id)  # Tasks 6: alt-factor + cross-agent rule
         if not isinstance(spec, dict):
             raise OverlaySchemaError(
                 f"overlay_schema_error:factors.{name}_must_be_mapping"
