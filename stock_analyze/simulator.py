@@ -47,10 +47,12 @@ def _override_store(store: PortfolioStore, data_root: Path | None) -> PortfolioS
 def _override_provider_cache(provider: DataProvider, market_data_root: Path | None) -> None:
     """If ``market_data_root`` is provided, rebind the provider's cache root.
 
-    Providers built off ``AkshareProvider`` carry a ``cache_dir`` attribute
-    that controls where read-only market-data lookups land. Backtest mode
-    points this at a historical point-in-time cache; forward mode leaves it
-    pointing at ``data/shared/cache/``.
+    The abstract ``DataProvider`` base class defines a ``cache_dir`` attribute
+    that controls where read-only market-data lookups land; every concrete
+    provider (Tushare, Baostock, Akshare) inherits it. Backtest mode points
+    this at a historical point-in-time cache; forward mode leaves it pointing
+    at ``data/shared/cache/``. The ``hasattr`` guard tolerates lightweight
+    test stubs that omit the attribute.
     """
     if market_data_root is None:
         return
