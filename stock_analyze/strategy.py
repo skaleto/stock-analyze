@@ -5,8 +5,16 @@ from typing import Any
 
 import pandas as pd
 
+from datetime import date as _date_cls
+from pathlib import Path as _Path_cls
+
 from .data_provider import CacheMiss, DataProvider
-from .factor_pipeline import UNCLASSIFIED, process_factors
+from .factor_pipeline import (
+    UNCLASSIFIED,
+    is_broadcast_factor,
+    load_broadcast_factor,
+    process_factors,
+)
 from .utils import now_iso, parse_date, safe_float
 
 
@@ -21,7 +29,54 @@ class SignalResult:
     factor_table: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
-def build_signals(config: dict[str, Any], account: dict[str, Any], provider: DataProvider, as_of: str | None = None) -> SignalResult:
+def _resolve_broadcast_values(
+    config: dict[str, Any],
+    as_of: str | None,
+    repo_root: _Path_cls | None,
+) -> dict[str, float | None] | None:
+    """Resolve `<agent>_*` broadcast factor values for the upcoming process_factors call.
+
+    Returns ``None`` when the overlay contains no broadcast factors (cheap
+    fast-path). Otherwise returns ``{factor_name: scalar | None}`` where
+    ``None`` means "no data row available; treat as missing" — the factor
+    pipeline already handles missing-value contribution as 0.
+    """
+    factors = config.get("factors", {}) or {}
+    broadcast_names = [name for name in factors if is_broadcast_factor(name)]
+    if not broadcast_names:
+        return None
+
+    agent_id = config.get("agent_id")
+    if not agent_id:
+        # Without agent_id we cannot route to the right CSV; skip and let
+        # the broadcast factors contribute 0.
+        return {name: None for name in broadcast_names}
+
+    if isinstance(as_of, _date_cls):
+        as_of_date = as_of
+    elif isinstance(as_of, str) and as_of:
+        try:
+            as_of_date = _date_cls.fromisoformat(as_of)
+        except ValueError:
+            as_of_date = _date_cls.today()
+    else:
+        as_of_date = _date_cls.today()
+
+    root = _Path_cls(repo_root) if repo_root else _Path_cls.cwd()
+    return {
+        name: load_broadcast_factor(agent_id, name, as_of_date, root)
+        for name in broadcast_names
+    }
+
+
+def build_signals(
+    config: dict[str, Any],
+    account: dict[str, Any],
+    provider: DataProvider,
+    as_of: str | None = None,
+    *,
+    repo_root: _Path_cls | None = None,
+) -> SignalResult:
     warnings: list[str] = []
     scope = str(account["scope"])
     universe = provider.universe(scope)
@@ -108,7 +163,13 @@ def build_signals(config: dict[str, Any], account: dict[str, Any], provider: Dat
     if candidates.empty:
         raise RuntimeError(f"No candidates left after hard filters for {scope}")
 
-    scored, factor_table = process_factors(candidates, config.get("factors", {}), config.get("factor_processing"))
+    broadcast_values = _resolve_broadcast_values(config, as_of, repo_root)
+    scored, factor_table = process_factors(
+        candidates,
+        config.get("factors", {}),
+        config.get("factor_processing"),
+        broadcast_values=broadcast_values,
+    )
     if scored.get("insufficient_factor_coverage", pd.Series([], dtype=bool)).any():
         scored = scored[~scored["insufficient_factor_coverage"]].copy()
     if scored.empty:
