@@ -121,6 +121,34 @@ def write_evolution(
     # 1. Guard check first; if this raises, no side effects happen.
     overlay_guard.validate(agent_id, new_overlay, repo_root=root)
 
+    # 1b. Backtest floor gate. If it raises BacktestFloorBreach, no side
+    # effects on yaml; we write a breach log and re-raise. Imported lazily
+    # so optional backtest support doesn't load when not needed.
+    from .backtest import gate as backtest_gate
+    from .backtest.exceptions import BacktestFloorBreach
+
+    try:
+        backtest_metrics = backtest_gate.validate_overlay_via_backtest(
+            new_overlay, agent_id=agent_id,
+        )
+    except BacktestFloorBreach as breach:
+        _write_floor_breach_log(
+            agent_id=agent_id,
+            month=target_month,
+            breach=breach,
+            reasoning_md=reasoning_md,
+            repo_root=root,
+        )
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # If the gate cannot run (e.g., backtest_cache missing), log a soft
+        # warning and continue. Operator should run prepare-backtest-data.
+        import logging
+        logging.warning(
+            "backtest gate skipped (cache missing or engine error): %s", exc
+        )
+        backtest_metrics = None
+
     # Resolve hashes through the same `competition.load`-style merge so
     # they are comparable with the hashes already in `runs.csv`.
     from_hash = _config_hash_for_overlay(agent_id, old_overlay, root)
@@ -159,28 +187,33 @@ def write_evolution(
     diff = compute_diff(old_overlay, new_overlay)
     diff_path = paths.data_dir / "evolution_diff" / f"{target_month}.json"
     ensure_dirs(diff_path.parent)
+    diff_payload: dict[str, Any] = {
+        "agent_id": agent_id,
+        "month": target_month,
+        "evolved_at": datetime.now().isoformat(timespec="seconds"),
+        "from_config_hash": from_hash,
+        "to_config_hash": to_hash,
+        "diff": diff,
+        "reasoning_file": _relative_or_str(log_path, root),
+        "guard_checks_passed": [
+            "schema_valid",
+            "no_baseline_lock_violation",
+            "factors_in_whitelist",
+            "weights_in_range",
+        ],
+    }
+    if backtest_metrics is not None:
+        diff_payload["backtest_metrics"] = {
+            "cum_return": backtest_metrics.cum_return,
+            "annual_return": backtest_metrics.annual_return,
+            "sharpe": backtest_metrics.sharpe,
+            "max_drawdown": backtest_metrics.max_drawdown,
+            "information_ratio": backtest_metrics.information_ratio,
+        }
+        diff_payload["guard_checks_passed"].append("backtest_floor_ok")
     write_text_atomic(
         diff_path,
-        json.dumps(
-            {
-                "agent_id": agent_id,
-                "month": target_month,
-                "evolved_at": datetime.now().isoformat(timespec="seconds"),
-                "from_config_hash": from_hash,
-                "to_config_hash": to_hash,
-                "diff": diff,
-                "reasoning_file": _relative_or_str(log_path, root),
-                "guard_checks_passed": [
-                    "schema_valid",
-                    "no_baseline_lock_violation",
-                    "factors_in_whitelist",
-                    "weights_in_range",
-                ],
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-        + "\n",
+        json.dumps(diff_payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
 
@@ -255,6 +288,42 @@ def summarise_diff(diff: dict[str, dict[str, Any]], limit: int = 6) -> str:
 
 # ---------------------------------------------------------------------------
 # Internals
+
+
+def _write_floor_breach_log(
+    *,
+    agent_id: str,
+    month: str,
+    breach: Any,  # BacktestFloorBreach — typed as Any to avoid top-level import
+    reasoning_md: str,
+    repo_root: Path,
+) -> Path:
+    """Persist a `<month>-floor-breach.md` capturing why the gate rejected.
+
+    Written under ``data/<agent>/evolution_log/`` alongside the normal
+    monthly log. The live overlay yaml and ``config_evolution.csv`` are
+    NOT touched in this path — the operator must read this file and
+    redesign before re-attempting.
+    """
+    paths = competition.resolve_agent_paths(agent_id, repo_root=repo_root)
+    out = paths.data_dir / "evolution_log" / f"{month}-floor-breach.md"
+    ensure_dirs(out.parent)
+    m = breach.metrics
+    body = (
+        f"# {agent_id} 回测准入失败 · {month}\n\n"
+        f"## 失败原因\n\n"
+        f"- 类型: `{breach.breach_type}`\n"
+        f"- 验证窗口指标:\n"
+        f"  - 累计: {m.cum_return:+.1%}\n"
+        f"  - 年化: {m.annual_return:+.1%}\n"
+        f"  - Sharpe: {m.sharpe:.2f}\n"
+        f"  - 最大回撤: {m.max_drawdown:+.1%}\n"
+        f"  - IR: {m.information_ratio:.2f}\n\n"
+        f"## LLM 原始 reasoning\n\n"
+        f"{reasoning_md}\n"
+    )
+    write_text_atomic(out, body, encoding="utf-8")
+    return out
 
 
 def _config_hash_for_overlay(
