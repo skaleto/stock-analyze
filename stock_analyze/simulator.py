@@ -69,11 +69,16 @@ def generate_rebalance_orders(
     *,
     data_root: Path | None = None,
     market_data_root: Path | None = None,
+    repo_root: Path | None = None,
 ) -> list[dict[str, Any]]:
     store = _override_store(store, data_root)
     _override_provider_cache(provider, market_data_root)
     as_of = _resolve_as_of(as_of)
     state = store.initialize(config)
+    # repo_root controls where strategy.build_signals reads broadcast-factor
+    # data (e.g. data/<agent>/alt_factors/market_sentiment.csv). Defaults to
+    # Path.cwd() inside build_signals when None, which is correct for both
+    # production (ECS systemd runs in /opt/stock-analyze/app/) and CLI use.
     all_selected: list[pd.DataFrame] = []
     all_factor_tables: list[pd.DataFrame] = []
     coverage_rows: list[dict[str, Any]] = []
@@ -83,7 +88,10 @@ def generate_rebalance_orders(
 
     for account in config.get("accounts", []):
         account_id = str(account["id"])
-        signal = build_signals(config, account, provider, as_of=as_of)
+        signal = build_signals(
+            config, account, provider, as_of=as_of,
+            repo_root=repo_root,
+        )
         scored = signal.candidates.copy()
         account_state = state["accounts"][account_id]
         top_n = int(account.get("top_n", 10))
