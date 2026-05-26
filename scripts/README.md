@@ -32,6 +32,67 @@ as it comes back, then summarize what changed.**
 
 ---
 
+## scripts/check-ecs-timers.sh — pipeline health canary
+
+**When**: run weekly, or any time you suspect the ECS automation has
+drifted (missing dashboard refresh, suspiciously short `runs.csv`, etc.).
+
+**What it does** (two checks, both via one SSH session):
+
+1. **Timer layout** — confirms the three expected timers
+   (`stock-analyze-market-data.timer`, `stock-analyze-weekly-trigger.timer`,
+   `stock-analyze-monthly-review.timer`) are enabled and active, and that
+   the deprecated single-agent / per-agent timers from earlier iterations
+   are not enabled.
+2. **Ledger consistency** — for each `(agent, cadence) ∈ {claude,codex}×{daily,weekly}`,
+   compares the most recent `Finished` event from
+   `journalctl -u stock-analyze-<agent>-<cadence>.service` (last 7 days,
+   `-t systemd`) against the most recent matching `started_at` in
+   `data/<agent>/runs.csv`. A drift of more than one day means the
+   service ran but `RunLedger` never appended a row — the regression
+   first observed on 2026-05-20/21 before the per-agent ledger path was
+   wired up (see [investigation note](../data/claude/notes/2026-05-26-historical-pipeline-investigation.md)
+   §副产物 #2).
+
+**Sample output (clean run)**:
+
+```
+NEXT                        LEFT          LAST  PASSED  UNIT                                    ACTIVATES
+Tue 2026-05-26 17:25:00 CST  3h            Mon …  …       stock-analyze-market-data.timer         stock-analyze-market-data.service
+…
+OK: stock-analyze dual-agent pipeline timers are enabled and old timers are disabled.
+
+Checking service-vs-runs.csv ledger consistency (last 7 days)...
+OK: stock-analyze-claude-daily.service Finished=2026-05-25, runs.csv latest run-daily=2026-05-25.
+OK: stock-analyze-claude-weekly.service Finished=2026-05-22, runs.csv latest run-weekly=2026-05-22.
+OK: stock-analyze-codex-daily.service Finished=2026-05-25, runs.csv latest run-daily=2026-05-25.
+OK: stock-analyze-codex-weekly.service Finished=2026-05-22, runs.csv latest run-weekly=2026-05-22.
+OK: service journal and run_ledger are consistent.
+```
+
+**Sample output (drift detected)** — e.g. the service ran today but the
+ledger row from 2 days ago is the most recent:
+
+```
+…
+Checking service-vs-runs.csv ledger consistency (last 7 days)...
+WARN: service ran but run_ledger missing for claude daily on 2026-05-26 (latest runs.csv row: 2026-05-24, drift 2d).
+OK: stock-analyze-claude-weekly.service Finished=2026-05-22, runs.csv latest run-weekly=2026-05-22.
+OK: stock-analyze-codex-daily.service Finished=2026-05-26, runs.csv latest run-daily=2026-05-26.
+OK: stock-analyze-codex-weekly.service Finished=2026-05-22, runs.csv latest run-weekly=2026-05-22.
+ERROR: ledger drift detected — at least one service ran without an accompanying runs.csv row.
+```
+
+Exit code is non-zero on drift, so wrappers can detect it.
+
+**Manual drift test** (only do this on staging or with operator approval):
+temporarily rename one `runs.csv` (`mv data/claude/runs.csv data/claude/runs.csv.bak`),
+then `systemctl start stock-analyze-claude-daily.service`. After it
+finishes, re-run this script — expect the `WARN` line above. Restore
+`runs.csv` immediately afterwards.
+
+---
+
 ## scripts/weekly.sh — one-shot weekly cycle
 
 **When**: every Sunday after ECS Saturday weekly-trigger has produced
