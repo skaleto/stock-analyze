@@ -89,7 +89,9 @@ Everything in `configs/agents/claude.yaml`:
   `min_pe`, `min_avg_amount_20`, `min_market_cap_yi`, `max_market_cap_yi`,
   `require_fields`, `fallback_require_fields`.
 
-Available factors (per `stock_analyze/data_provider.py`):
+Available factors (per `stock_analyze/data_provider.py` + `stock_analyze/overlay_guard.py`):
+
+**Classic per-stock factors** (always available):
 
 `pe`, `pb`, `roe`, `gross_margin`, `debt_ratio`, `net_profit_growth`,
 `momentum_20`, `momentum_60`, `low_volatility_60`, `dividend_yield`.
@@ -218,7 +220,22 @@ Steps:
    - 1 = schema / factor / weight error → fix the yaml.
    - 2 = baseline-lock violation → fix the yaml.
 
-6. Human operator triggers `./scripts/sync-to-ecs.sh` to push the change.
+6. **Backtest gate runs automatically** inside `evolution_writer.write_evolution`
+   (per OpenSpec change `add-historical-backtest-engine`). After
+   `overlay_guard.validate` passes, the writer invokes
+   `backtest.gate.validate_overlay_via_backtest(new_overlay)` against the
+   **validation window 2025-01-01 → 2026-04-30**. Three hard floors:
+   - `abs(max_drawdown) > 25%` → `BacktestFloorBreach('max_drawdown_exceeded')`
+   - `sharpe < -0.5` → `BacktestFloorBreach('sharpe_below_floor')`
+   - `cum_return < -15%` → `BacktestFloorBreach('cum_return_below_floor')`
+
+   On breach: yaml is NOT written, a `<month>-floor-breach.md` is created
+   under `data/claude/evolution_log/`, and the LLM must redesign. On pass:
+   metrics are injected into the diff JSON, commit proceeds.
+
+   See `docs/historical-backtest-flow.md` for full background.
+
+7. Human operator triggers `./scripts/sync-to-ecs.sh` to push the change.
 
 ## 6. Slash commands
 
@@ -296,6 +313,26 @@ You may freely:
 
 ## 9. Tool usage tips
 
+### 9.1 三段窗口纪律（由 `add-historical-backtest-engine` 引入）
+
+回测引擎将历史时间划分为三段：
+
+- **训练窗口** (2021-01-01 ~ 2024-12-31, 48 个月)：你可以读月度明细、因子贡献、单股贡献，自由探索。
+- **验证窗口** (2025-01-01 ~ 2026-04-30, 16 个月)：briefing **只展示 5 个总结指标**（累计 / 年化 / Sharpe / 最大回撤 / IR），**不展示**月度明细、不展示因子分解。这是 gate 准入判定用的。
+- **Live OOS** (2026-05-18+)：真实竞赛，没有任何回测可读。
+
+**软约束**：不允许针对验证窗口的失败结果反向迭代你的 overlay；应基于训练窗口的发现重新设计。code 不强制，靠 briefing 信息密度控制实施。
+
+### 9.2 CSV dtype 不变式
+
+`daily_nav.csv` / `runs.csv` / `config_evolution.csv` / 其他 CSV 里所有"textually-coded
+identifier"列（`benchmark_code`、`ts_code`、`code`、`con_code`、`ann_date`、
+`trade_date`、`list_date`、`config_hash`、`month` 等）**必须**用 `pd.read_csv(..., dtype={...})`
+显式声明为 str — 否则 pandas 推断成 int64 会把 `'000300'` 截成 `300`。**所有新增的
+读 CSV 代码都必须遵守这个不变式**。详见 commit `6b33ae8`（C1 sweep）。
+
+### 9.3 其它
+
 When you read CSVs (e.g. `daily_nav.csv`), prefer reading just the tail
 (e.g. with `Read --offset` based on file size, or via Bash `tail`) instead
 of slurping multi-megabyte files. Briefings already summarize what you
@@ -352,6 +389,16 @@ paper trading project.
 时跳过该因子贡献），但 dashboard 会显示"已 N 周未更新"警示。
 
 注意：你（Claude Code）在 weekly review 笔记里可以**读** `data/claude/alt_factors/market_sentiment.csv` 自己的历史，作为情感叙事素材；但**不能**读 `data/codex/alt_factors/*`（见 §7.1）。
+
+### 10.2 ECS pipeline failure monitoring
+
+Each agent service has `OnFailure=stock-analyze-pipeline-failure@%n.service`
+(systemd hook) that appends a `<timestamp>\tFAILED\t<unit>` row +
+40-line journal context to `/opt/stock-analyze/logs/PIPELINE_FAILURES.log`
+on any failure. The competition dashboard's Compare tab also shows a
+"Recent PIPELINE_FAILURES" section (only appears when there are recent
+failures). If you see one, write a note describing the failure mode and
+how you'd recommend fixing it.
 
 ## 11. Success criteria
 
