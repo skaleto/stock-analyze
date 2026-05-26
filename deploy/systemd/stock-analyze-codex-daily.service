@@ -3,6 +3,7 @@ Description=Stock Analyze daily simulation run (Codex agent)
 After=network-online.target
 Wants=network-online.target
 OnFailure=stock-analyze-pipeline-failure@%n.service
+OnSuccess=stock-analyze-aggregate-dashboard.service
 
 [Service]
 Type=oneshot
