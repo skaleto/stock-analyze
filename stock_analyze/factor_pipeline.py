@@ -3,17 +3,61 @@
 Pure pandas, no sklearn. Produces a per-stock-factor long-form table so the
 caller can persist a reproducible snapshot and a score column whose value is
 Σ contribution per code.
+
+Broadcast factors (e.g. ``claude_market_sentiment_1w``) bypass the
+cross-sectional pipeline (winsorize/z-score/neutralize) — their value is a
+single scalar applied uniformly to every candidate's composite score. Apply
+``sign × weight × value`` after the classic pipeline; the caller supplies
+the scalar via the ``broadcast_values`` kwarg.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from datetime import date
+from pathlib import Path
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
 
 
 UNCLASSIFIED = "未分类"
+
+# Broadcast factor names look like ``<agent_id>_market_sentiment_1w`` (and
+# future ``<agent_id>_*`` factors). They contribute a constant to every
+# candidate's score, not a per-stock value. See
+# ``openspec/changes/add-llm-sentiment-alpha-factor/design.md`` §5.
+_BROADCAST_FACTOR_RE = re.compile(r"^(claude|codex)_market_sentiment_1w$")
+
+
+def is_broadcast_factor(name: str) -> bool:
+    """Return True if ``name`` matches a broadcast (market-level) factor."""
+    if not name:
+        return False
+    return bool(_BROADCAST_FACTOR_RE.match(name))
+
+
+def load_broadcast_factor(
+    agent_id: str,
+    factor_name: str,
+    as_of: date,
+    repo_root: Path,
+) -> Optional[float]:
+    """Resolve a broadcast factor's scalar value for ``agent_id`` at ``as_of``.
+
+    Currently only ``<agent>_market_sentiment_1w`` is supported (reads
+    ``data/<agent>/alt_factors/market_sentiment.csv``). Returns ``None``
+    when the factor name is unknown or no sentiment row exists for the
+    relevant week.
+    """
+    if not is_broadcast_factor(factor_name):
+        return None
+    expected = f"{agent_id}_market_sentiment_1w"
+    if factor_name != expected:
+        return None
+    from stock_analyze.alt_factors import sentiment as alt_sent
+    return alt_sent.load_latest_market_sentiment(agent_id, as_of, repo_root)
 
 
 def winsorize_series(values: pd.Series, lower: float, upper: float) -> pd.Series:
@@ -61,6 +105,8 @@ def process_factors(
     candidates: pd.DataFrame,
     factors: dict[str, dict[str, Any]],
     factor_processing: dict[str, Any] | None,
+    *,
+    broadcast_values: dict[str, Optional[float]] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run the full factor pipeline and return ``(scored, factor_table)``.
 
@@ -72,7 +118,16 @@ def process_factors(
         code, factor, industry, direction, weight_configured, weight_effective,
         raw, winsorized, zscore, neutralized, signed_neutralized, contribution, valid
 
-    Score reproducibility: ``scored.score == factor_table.groupby('code').contribution.sum()``.
+    Score reproducibility: ``scored.score == factor_table.groupby('code').contribution.sum()``
+    (for the classic factors; broadcast contributions are uniform across codes
+    and added on top — they appear in ``factor_table`` as a single row per
+    broadcast factor with ``code='__broadcast__'`` and the same value).
+
+    Broadcast factors (``<agent>_market_sentiment_1w`` etc.) skip
+    winsorize/z-score/neutralize and add ``sign × weight × value`` uniformly
+    across all candidates. The caller resolves the scalar via
+    ``load_broadcast_factor`` and passes it through ``broadcast_values``;
+    a missing or ``None`` value means the broadcast factor contributes 0.
     """
 
     fp = factor_processing or {}
@@ -90,18 +145,35 @@ def process_factors(
     )
 
     factor_meta: list[tuple[str, float, str]] = []
+    broadcast_meta: list[tuple[str, float, str]] = []
     for name, spec in factors.items():
         weight = float(spec.get("weight", 0))
         direction = str(spec.get("direction", "high"))
         if direction not in {"high", "low"}:
             raise ValueError(f"invalid factor direction for {name}: {direction!r}")
-        if weight > 0 and name in df.columns:
+        if weight <= 0:
+            continue
+        if is_broadcast_factor(name):
+            broadcast_meta.append((name, weight, direction))
+        elif name in df.columns:
             factor_meta.append((name, weight, direction))
+    # total_weight only counts classic factors for per-stock effective-weight
+    # rescaling; broadcast contributions are layered on as a pure additive
+    # constant after the classic pipeline (they're cross-sectionally uniform,
+    # so they cannot affect classic scaling decisions).
     total_weight = sum(weight for _, weight, _ in factor_meta)
 
     if not factor_meta or total_weight <= 0:
-        df["score"] = 0.0
-        df["score_detail"] = ""
+        # No classic factors — but broadcast factors might still contribute a
+        # uniform shift. Build a zero composite, layer on broadcasts, and
+        # return. (Coverage metrics stay 0 because classic-factor coverage is
+        # what they measure; broadcasts are always "fully covered" if a value
+        # exists and contribute nothing if not.)
+        broadcast_shift = _broadcast_shift(broadcast_meta, broadcast_values)
+        df["score"] = round(broadcast_shift, 4)
+        df["score_detail"] = (
+            f"broadcast:{broadcast_shift:+.4f}" if broadcast_shift else ""
+        )
         df["factor_coverage_weight"] = 0.0
         df["factor_coverage_ratio"] = 0.0
         df["insufficient_factor_coverage"] = False
@@ -169,6 +241,14 @@ def process_factors(
                 }
             )
 
+    # Layer broadcast factor contribution on top of classic composite. The
+    # shift is uniform across all rows, so relative ranking is unchanged but
+    # the strategy's "view of the market" (e.g. risk-on vs risk-off) can be
+    # reflected as a level shift.
+    broadcast_shift = _broadcast_shift(broadcast_meta, broadcast_values)
+    if broadcast_shift:
+        composite = composite + broadcast_shift
+
     df["score"] = composite.round(4)
     df["factor_coverage_weight"] = coverage_weight.round(4)
     df["factor_coverage_ratio"] = coverage_ratio.round(4)
@@ -183,6 +263,26 @@ def process_factors(
     df["score_detail"] = _build_score_details(df.index, factor_meta, intermediate, scale)
     factor_table = pd.DataFrame(rows)
     return df, factor_table
+
+
+def _broadcast_shift(
+    broadcast_meta: list[tuple[str, float, str]],
+    broadcast_values: dict[str, Optional[float]] | None,
+) -> float:
+    """Return ``Σ (sign × weight × value)`` for all broadcast factors with a
+    resolved value. Missing / None values contribute 0.
+    """
+    if not broadcast_meta:
+        return 0.0
+    values = broadcast_values or {}
+    total = 0.0
+    for name, weight, direction in broadcast_meta:
+        value = values.get(name)
+        if value is None:
+            continue
+        sign = -1.0 if direction == "low" else 1.0
+        total += sign * weight * float(value)
+    return total
 
 
 def _empty_factor_table() -> pd.DataFrame:
