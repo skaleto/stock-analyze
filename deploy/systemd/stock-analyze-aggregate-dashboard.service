@@ -1,0 +1,19 @@
+[Unit]
+Description=Stock Analyze competition aggregator dashboard refresh
+# Triggered via OnSuccess= from the four agent services (claude/codex × daily/weekly).
+# Re-renders reports/competition/dashboard.html (the 3-tab claude/codex/compare view)
+# so it stays in sync with the per-agent dashboards. Without this hook the aggregator
+# only refreshes when scripts/sync-to-ecs.sh runs, which can leave it 24h+ stale.
+# Two agents finishing back-to-back will fire two start jobs; systemd merges
+# concurrent requests, and an extra render is a cheap read-only operation.
+After=network-online.target
+Wants=network-online.target
+OnFailure=stock-analyze-pipeline-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --logs-dir /opt/stock-analyze/logs competition-dashboard
+StandardOutput=append:/opt/stock-analyze/logs/aggregate-dashboard.log
+StandardError=append:/opt/stock-analyze/logs/aggregate-dashboard.err
