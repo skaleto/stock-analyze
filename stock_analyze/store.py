@@ -135,7 +135,10 @@ class PortfolioStore:
         ]
         path = self.data_dir / DAILY_NAV_FILE
         if path.exists():
-            existing = pd.read_csv(path)
+            # Preserve 6-digit benchmark codes ('000300' / '000905'); without
+            # dtype hint pandas infers int64 and silently drops leading zeros,
+            # regressing any backfilled rows on the next append.
+            existing = pd.read_csv(path, dtype={"benchmark_code": str})
         else:
             existing = pd.DataFrame(columns=columns)
         new_rows = pd.DataFrame(rows, columns=columns)
@@ -226,7 +229,9 @@ class PortfolioStore:
         path = self.data_dir / DAILY_NAV_FILE
         if not path.exists():
             return pd.DataFrame()
-        return pd.read_csv(path)
+        # Same dtype hint as append_nav — keep benchmark_code as str so
+        # downstream groupby/join doesn't see '000300' as 300.
+        return pd.read_csv(path, dtype={"benchmark_code": str})
 
     def read_trades(self) -> pd.DataFrame:
         path = self.data_dir / TRADES_FILE
