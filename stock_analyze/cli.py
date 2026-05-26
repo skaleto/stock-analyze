@@ -188,6 +188,19 @@ def build_parser() -> argparse.ArgumentParser:
     slog.add_argument("--repo-root", type=Path, default=Path("."),
                        help="Override repo root for tests.")
 
+    # Weekly anomaly detector — reads data/<agent>/ and prints findings.
+    # Exit codes mirror validate-overlay: 0 info, 1 warn, 2 critical, so the
+    # PIPELINE_FAILURES.log + Lark webhook notifier can wire to a single
+    # `|| /opt/stock-analyze/app/scripts/notify-pipeline-failure.sh sanity`
+    # without parsing stdout.
+    sanity = sub.add_parser(
+        "sanity-check",
+        help="Run NAV / positions / IC anomaly checks on an agent's data dir.",
+    )
+    sanity.add_argument("--agent", required=True, choices=["claude", "codex"])
+    sanity.add_argument("--repo-root", type=Path, default=None,
+                          help="Override repo root (defaults to SA_REPO_ROOT or __file__ anchor).")
+
     return parser
 
 
@@ -302,6 +315,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sentiment-log":
         ensure_dirs(args.logs_dir)
         return _command_sentiment_log(args)
+    if args.command == "sanity-check":
+        ensure_dirs(args.logs_dir)
+        return _command_sanity_check(args)
 
     try:
         config, data_dir, reports_dir, cache_dir = _resolve_runtime(args)
@@ -701,6 +717,23 @@ def _command_sentiment_log(args: argparse.Namespace) -> int:
             f"({r.llm_model})"
         )
     return 0
+
+
+def _command_sanity_check(args: argparse.Namespace) -> int:
+    """Run sanity_check.check_agent and print findings.
+
+    Exit code mirrors the worst severity so the same notification rule
+    used for validate-overlay can fork on the result:
+      - 0 = no anomalies (or only info-level cold-start notices).
+      - 1 = at least one warn-level finding (probably worth a look).
+      - 2 = at least one critical finding (data plumbing broken).
+    """
+    from .sanity_check import check_agent, format_report, max_severity
+
+    findings = check_agent(args.agent, repo_root=args.repo_root)
+    print(format_report(args.agent, findings))
+    worst = max_severity(findings)
+    return {"info": 0, "warn": 1, "critical": 2}[worst]
 
 
 def _auto_write_weekly_briefing(agent_id: str | None, as_of: str | None) -> str | None:
