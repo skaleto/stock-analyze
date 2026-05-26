@@ -18,7 +18,16 @@ from .store import (
     PortfolioStore,
 )
 from ._dashboard_assets import BASE_CSS, NAV_CSS, render_nav_html
-from .utils import dashboard_fragment_path, ensure_dirs, format_money, format_pct, safe_float, today_str, write_json
+from .utils import (
+    dashboard_fragment_path,
+    ensure_dirs,
+    format_money,
+    format_pct,
+    safe_float,
+    today as _today,
+    today_str,
+    write_json,
+)
 
 
 POSITION_COLUMNS = {
@@ -718,12 +727,6 @@ def generate_dashboard(
         html = _to_fragment(html, agent_id)
     dashboard_path.write_text(html, encoding="utf-8")
     return dashboard_path
-
-
-def _today() -> "_dt.date":
-    """Hook for tests to monkey-patch 'now' when checking sentiment staleness."""
-    import datetime as _dt
-    return _dt.date.today()
 
 
 def render_market_sentiment_panel(agent_id: str, repo_root: Path | str) -> str:

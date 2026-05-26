@@ -27,7 +27,13 @@ import pandas as pd
 from ._dashboard_assets import BASE_CSS, NAV_CSS, render_nav_html
 from .beginner_dashboard import write_beginner_views
 from .competition import resolve_agent_paths
-from .utils import dashboard_fragment_path, ensure_dirs, format_pct, safe_float
+from .utils import (
+    dashboard_fragment_path,
+    ensure_dirs,
+    format_pct,
+    safe_float,
+    today as _today,
+)
 
 
 AGENT_COLORS = {
@@ -39,10 +45,9 @@ AGENT_COLORS = {
 DEFAULT_AGENT_ORDER = ("claude", "codex")
 
 
-def _today() -> "_dt.date":
-    """Test hook for stubbing today's date in the pipeline status panel."""
-    import datetime as _dt
-    return _dt.date.today()
+# _today is imported from .utils as a single canonical helper.
+# Tests can still patch `stock_analyze.dashboard_aggregator._today` —
+# that targets the local alias name in this module's namespace.
 
 
 # Expected daily / weekly pipeline tasks. Order = display order.

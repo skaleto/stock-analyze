@@ -21,6 +21,18 @@ def today_str() -> str:
     return date.today().isoformat()
 
 
+def today() -> date:
+    """Return today's date.
+
+    Single canonical "what day is it" helper. Modules that need to test
+    "is X stale" or "did task Y run today" should import this as
+    ``from .utils import today as _today`` so tests can monkey-patch the
+    local alias (e.g. ``patch("stock_analyze.reporting._today", ...)``).
+    Avoids duplicating the same trivial helper across modules.
+    """
+    return date.today()
+
+
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
