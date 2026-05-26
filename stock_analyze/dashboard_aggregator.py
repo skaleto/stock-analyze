@@ -156,7 +156,8 @@ def _build_nav_panel(paths_by_agent: dict[str, Any]) -> dict[str, list[dict[str,
             panel[agent] = []
             continue
         try:
-            df = pd.read_csv(nav_path)
+            # Keep benchmark_code as str so '000300' isn't coerced to int 300
+            df = pd.read_csv(nav_path, dtype={"benchmark_code": str})
         except Exception:  # noqa: BLE001
             panel[agent] = []
             continue

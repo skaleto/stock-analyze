@@ -203,7 +203,8 @@ def _read_nav_dataframe(data_dir: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
     try:
-        df = pd.read_csv(path)
+        # Keep benchmark_code as str so '000300' isn't coerced to int 300
+        df = pd.read_csv(path, dtype={"benchmark_code": str})
     except Exception:  # noqa: BLE001
         return pd.DataFrame()
     if df.empty:
