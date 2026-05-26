@@ -3,15 +3,18 @@ Description=Stock Analyze pipeline failure notification for %i
 # This is a small notification service triggered by `OnFailure=` on the
 # four agent services (claude/codex × daily/weekly). When any of those
 # units exits non-zero, systemd activates this template instance with
-# the failed unit name passed as %i; we append a timestamped row to
-# /opt/stock-analyze/logs/PIPELINE_FAILURES.log so the operator can
-# grep / tail / wire any preferred alerting on top.
+# the failed unit name passed as %i.
+#
+# Two side effects:
+# 1. Always: append a timestamped FAILED row + journal context to
+#    /opt/stock-analyze/logs/PIPELINE_FAILURES.log
+# 2. Optional: if SA_LARK_WEBHOOK env var is set (via EnvironmentFile),
+#    POST a brief alert to the Lark group webhook.
+# See scripts/notify-pipeline-failure.sh for the implementation and
+# docs/operator-alerting-setup.md for webhook setup.
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c '\
-  printf "%%s\\tFAILED\\t%%s\\n" "$(date -Iseconds)" "%i" \
-    >> /opt/stock-analyze/logs/PIPELINE_FAILURES.log; \
-  journalctl -u "%i" --no-pager -n 40 \
-    >> /opt/stock-analyze/logs/PIPELINE_FAILURES.log; \
-  printf -- "---\\n" >> /opt/stock-analyze/logs/PIPELINE_FAILURES.log'
+# Best-effort env file — absent file shouldn't fail the notification.
+EnvironmentFile=-/etc/stock-analyze/secrets.env
+ExecStart=/opt/stock-analyze/app/scripts/notify-pipeline-failure.sh %i
