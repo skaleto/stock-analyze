@@ -50,7 +50,8 @@ class E2ESentimentToFactorPipelineTests(unittest.TestCase):
                 "claude", "claude_market_sentiment_1w",
                 date(2026, 5, 25), repo_root=repo,
             )
-            self.assertAlmostEqual(value, 0.50)
+            # Confidence-weighted: 0.50 (score) × 0.78 (confidence) = 0.39
+            self.assertAlmostEqual(value, 0.50 * 0.78)
 
             overlay_factors = {
                 "pe": {"weight": 0.45, "direction": "low"},
@@ -73,9 +74,10 @@ class E2ESentimentToFactorPipelineTests(unittest.TestCase):
                 broadcast_values={"claude_market_sentiment_1w": value},
             )
 
+            # Uniform shift = sign(+1) × weight(0.10) × value(0.50 × 0.78) = 0.039
             shifts = scored_b.set_index("code")["score"] - scored_a.set_index("code")["score"]
             for code in scored_a["code"]:
-                self.assertAlmostEqual(shifts[code], 0.05, places=4)
+                self.assertAlmostEqual(shifts[code], 0.10 * 0.50 * 0.78, places=4)
 
 
 class E2ESentimentCLISubprocessTests(unittest.TestCase):

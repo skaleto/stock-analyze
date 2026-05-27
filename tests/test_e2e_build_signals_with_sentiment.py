@@ -142,7 +142,7 @@ class BuildSignalsWithSentimentBroadcastTests(unittest.TestCase):
             )
             shifted_scores = sig_b.candidates.set_index("code")["score"]
 
-            # Expected shift = sign(+1) × weight(0.1) × value(0.50) = +0.05
+            # Expected shift = sign(+1) × weight(0.1) × score(0.50) × confidence(0.8) = +0.04
             common_codes = set(baseline_scores.index) & set(shifted_scores.index)
             self.assertGreaterEqual(len(common_codes), 2)
             shifts = (shifted_scores - baseline_scores).dropna()
@@ -151,7 +151,7 @@ class BuildSignalsWithSentimentBroadcastTests(unittest.TestCase):
                 msg=f"broadcast shift was not uniform: {shifts.to_dict()}",
             )
             self.assertAlmostEqual(
-                shifts.mean(), 0.05, places=3,
+                shifts.mean(), 0.1 * 0.50 * 0.8, places=3,
                 msg=f"broadcast shift magnitude wrong: mean={shifts.mean()}",
             )
 
@@ -210,10 +210,11 @@ class BuildSignalsWithSentimentBroadcastTests(unittest.TestCase):
                 cfg_neg, account, provider,
                 as_of="2026-05-25", repo_root=repo,
             )
-            # Pos direction adds +0.1, neg direction adds -0.1; difference = 0.2
+            # Confidence-weighted effective value = 1.0 (score) × 0.8 (conf) = 0.8
+            # Pos direction adds +0.1×0.8=+0.08, neg adds -0.08; difference = 0.16
             delta = (sig_pos.candidates.set_index("code")["score"]
                       - sig_neg.candidates.set_index("code")["score"])
-            self.assertAlmostEqual(delta.mean(), 0.2, places=2)
+            self.assertAlmostEqual(delta.mean(), 2 * 0.1 * 1.0 * 0.8, places=2)
 
     def test_cross_agent_factor_in_overlay_returns_none_for_value(self):
         """If claude's overlay had codex_market_sentiment_1w (caught by

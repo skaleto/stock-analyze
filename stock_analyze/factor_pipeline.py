@@ -50,6 +50,15 @@ def load_broadcast_factor(
     ``data/<agent>/alt_factors/market_sentiment.csv``). Returns ``None``
     when the factor name is unknown or no sentiment row exists for the
     relevant week.
+
+    For sentiment factors, the returned value is already
+    **confidence-weighted**: ``sentiment_score × confidence`` (both ∈
+    [-1, 1] and [0, 1] respectively). This lets a low-confidence LLM
+    reading (e.g. confidence=0.3) contribute proportionally less to the
+    composite score than a high-confidence one (e.g. confidence=0.9),
+    even when raw scores are identical. Downstream
+    ``process_factors`` consumes the returned scalar verbatim — no
+    further confidence handling is required at the application site.
     """
     if not is_broadcast_factor(factor_name):
         return None
@@ -57,7 +66,12 @@ def load_broadcast_factor(
     if factor_name != expected:
         return None
     from stock_analyze.alt_factors import sentiment as alt_sent
-    return alt_sent.load_latest_market_sentiment(agent_id, as_of, repo_root)
+    rows = alt_sent.load_sentiment_history(agent_id, repo_root)
+    eligible = [r for r in rows if r.week_end <= as_of]
+    if not eligible:
+        return None
+    latest = eligible[-1]
+    return float(latest.score) * float(latest.confidence)
 
 
 def winsorize_series(values: pd.Series, lower: float, upper: float) -> pd.Series:
