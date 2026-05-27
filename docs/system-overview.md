@@ -18,7 +18,6 @@
 - 不接券商，不下真单。所有"成交"都是模拟。
 - 不构成投资建议。
 - 不调任何 LLM API。Agent 思考全部在你自己的开发机上用 Claude Code / Codex CLI 完成。
-- 不是回测系统。当前只有**前向模拟**（today onwards）；历史回测留给后续 change。
 
 ---
 
@@ -239,6 +238,81 @@ ECS:
 
 月度策略变化的好坏由 LLM 自负——守卫只确认 schema 合法、不踩 baseline 锁字段、factor 名在白名单、weight 在 `[0, 1]`。
 
+### 4e. 每月策略演化时的 backtest gate
+
+> 由 OpenSpec change `add-historical-backtest-engine` 实施（2026-05-26 全链路上线）。
+
+月度 `evolution_writer.write_evolution` 在 commit 新 overlay 之前会自动跑一次验证窗口（2025-01 ~ 2026-04）回测，作为"灾难底线"准入门槛：
+
+```
+LLM 写完新 overlay → overlay_guard.validate（schema + 锁字段）通过
+                  → backtest.gate.validate_overlay_via_backtest(new_overlay)
+                  → engine.run_backtest 在验证窗口跑一遍
+                  → 比对 competition.yaml.backtest.floor 三个阈值:
+                       · max_drawdown <= 0.25
+                       · sharpe >= -0.5
+                       · cum_return >= -0.15
+                  → 任一 breach → 抛 BacktestFloorBreach
+                                + 写 data/<agent>/evolution_log/<YYYY-MM>-floor-breach.md
+                                + 回滚 yaml（不写入新 overlay）
+                  → 全部通过 → 正常 commit + 把指标记入 evolution_log
+```
+
+历史时间被划分为三段窗口：
+
+- **训练窗口** (2021-01 ~ 2024-12): briefing 渲染完整明细，LLM 可探索因子贡献、月度分解。
+- **验证窗口** (2025-01 ~ 2026-04): briefing **只渲染 5 个聚合数字**（累计 / 年化 / Sharpe / 最大回撤 / IR），不展示月度明细或因子分解。这是 gate 准入用的。
+- **Live OOS** (2026-05-18+): 真实竞赛，无任何回测可读。
+
+研究 CLI（不参与 gate，operator 手动跑）：
+
+```bash
+python3 -m stock_analyze backtest \
+  --agent claude --start 2024-01-01 --end 2024-12-31 \
+  --overlay configs/agents/claude.yaml \
+  --output data/claude/backtest/research-2024
+```
+
+回测一次性数据预热（约 15 分钟，~3000 次 Tushare 调用，~200MB）：
+
+```bash
+python3 -m stock_analyze prepare-backtest-data --start 2021-01-01 --end 2026-04-30
+```
+
+### 4f. LLM 市场情绪因子（MVP）
+
+> 由 OpenSpec change `add-llm-sentiment-alpha-factor` 实施（2026-05-26 全链路上线，Phase 1 / MVP）。
+
+每周末（建议周六上午配合 weekly review）由 operator 手动跑一次"市场情感采集"：
+
+```
+operator 打开 Claude.ai / 桌面客户端
+  → 用 stock_analyze/alt_factors/prompts/market_sentiment_v1.md 模板
+  → LLM 自带 web search 拉本周 A 股新闻 → 输出严格 JSON
+  → operator copy JSON 字段填到 CLI:
+       python3 -m stock_analyze record-sentiment \
+         --agent claude --week-end 2026-05-22 \
+         --score 0.32 --confidence 0.78 \
+         --drivers "AI 算力链回暖,央行 MLF 偏鸽" \
+         --llm-model claude-sonnet-4.5 --sources "..."
+  → 写 data/claude/alt_factors/market_sentiment.csv（每周 1 行，原子写）
+
+operator 再开 ChatGPT 同步给 codex 跑一次（写 data/codex/alt_factors/market_sentiment.csv）
+
+下一次 weekly run-weekly:
+  factor_pipeline.process_factors(broadcast_values=...) 自动 load_broadcast_factor
+  → claude_market_sentiment_1w 作为 broadcast 因子,sign × weight × value 加在每个候选股 score 上
+```
+
+**MVP 限制**：broadcast factor 的值是跨股票常数，对横截面排名零影响（所有股票被同样数值上下平移）。MVP 实质是**建数据通路 + 培养 operator 周度行为习惯**，等 Phase 3 升级到 per-stock 颗粒度后才真正影响选股。
+
+CLI：
+
+- `record-sentiment` — 新增一周记录（duplicate 默认拒绝，`--force` 覆盖）
+- `sentiment-log --agent <id> [--last N] [--remove <date>]` — 查看 / 删除历史记录
+
+跨 agent 隔离：`overlay_guard` 拒绝在 claude 的 overlay 里引用 `codex_market_sentiment_1w`（`OverlayCrossAgentFactor`），反之亦然。
+
 ---
 
 ## 5. 公平基线与 overlay
@@ -289,10 +363,15 @@ ECS:
   ↓ 按可用因子重新归一权重（缺失因子按比例分摊给其他因子）
   ↓ 覆盖率 < min_factor_coverage 的股票被剔除并写 insufficient_factor_coverage warning
   ↓ 综合分 = Σ (有效因子 z-score × 方向 × 归一权重)
+  ↓ + broadcast sentiment factor（若 overlay 含 `<agent>_market_sentiment_1w`）
+     · 跳过 winsorize / z-score / 行业中性化
+     · 同一标量 sign × weight × value 加在每只候选股的 score 上
 按综合分降序排列
 ```
 
 每周这份完整明细写入 `data/<agent>/factor_runs/<run_id>.csv`，列含：原值 / winsorize 后 / z-score / neutralize / 方向 / weight / contribution。可重现：`score == sum(contribution per code)`。
+
+**广播因子（broadcast factors）**：由 `add-llm-sentiment-alpha-factor` MVP 引入。当因子名匹配 `<agent_id>_market_sentiment_1w` 时，因子值是一个标量（不是 per-stock），跳过 winsorize / z-score / 行业中性化，直接广播到所有候选股的综合分上。MVP 阶段对横截面排名零影响（统一平移），Phase 3 升级到 per-stock 后才参与排序。
 
 ---
 
@@ -412,6 +491,8 @@ GET /claude/dashboard.html     → reports/claude/dashboard.html       (单 agen
 │  · 当前持仓 / 近期交易 / 数据源 / 最近运行             │
 │  · 近期 agent 笔记(最近 5 篇 markdown 折叠)            │
 │  · 策略演进时间线(每月 evolution + 当月与次月实际收益) │
+│  · 历史回测 vs 真实运行(backtest 双线对比,本月引入)    │
+│  · 市场情感面板(本周 score / confidence / drivers)     │
 │  · 本期分析任务包(最新 weekly + monthly briefing)      │
 │                                                       │
 │ Codex tab 同结构                                       │
@@ -422,6 +503,7 @@ GET /claude/dashboard.html     → reports/claude/dashboard.html       (单 agen
 │  · 9 行横向指标对比表                                  │
 │  · 持仓重叠条(独占 / 共有 / 独占 三段宽度)             │
 │  · 滚动战绩(按月色块)                                  │
+│  · 市场情感对比(claude vs codex 每周 score 双线)       │
 │  · 月度报告链接列表                                    │
 │  · 本周双方观察对照(两侧最新周笔记并列)                │
 └───────────────────────────────────────────────────────┘
@@ -499,6 +581,13 @@ CSS `:target` 切 tab,纯静态,无 JS 框架。
 | `reports/<agent>/weekly_report.md` | reporting | 中文周报 |
 | `reports/competition/dashboard.html` | dashboard_aggregator | 三 tab 聚合页 |
 | `reports/competition/monthly_review_<month>.md` | monthly_review | 人类可读月报 |
+| `data/shared/backtest_cache/*` | prepare-backtest-data CLI | 历史回测数据缓存（7 个 Tushare endpoint） |
+| `data/<agent>/backtest/<run_id>/daily_nav.csv` | backtest engine | 回测每日 NAV |
+| `data/<agent>/backtest/<run_id>/performance_summary.json` | backtest engine | 回测全套指标 |
+| `data/<agent>/backtest/<run_id>/report.md` | backtest engine | 回测 markdown 报告 |
+| `data/<agent>/evolution_log/<YYYY-MM>-floor-breach.md` | evolution_writer | 回测 gate breach 时的报告 |
+| `data/<agent>/alt_factors/market_sentiment.csv` | record-sentiment CLI | 每周 1 行 LLM 情感记录 |
+| `stock_analyze/alt_factors/prompts/market_sentiment_v1.md` | repo | operator 每周用的 LLM prompt 模板 |
 
 `data/` 与 `reports/` 全部 gitignored，不进版本控制。
 
@@ -537,7 +626,7 @@ CSS `:target` 切 tab,纯静态,无 JS 框架。
 
 - **数据**：公开接口受网络 / 风控 / 限流影响；data_provider 已加多源降级和重试，但不保证不掉数据。
 - **financials**：Tushare `fina_indicator` 已按 `ann_date <= as_of` 做 point-in-time 可见性过滤；更完整的财报公告溯源、修订版本和多期对齐仍待后续 change。
-- **历史回测**：当前是前向模拟。历史回测引擎留给 change `add-historical-backtest-baseline`。
+- **历史回测**：MVP 已上线（`add-historical-backtest-engine`，2026-05-26）。引擎复用 `simulator.py`，gate 集成到月度演化，研究 CLI 支持任意窗口。⚠️ MVP 引擎用简化版信号生成（low PE top-N），完整 `factor_pipeline` 集成仍是 Phase 2 工作（详见 §17）。
 - **历史指数成分**：用当下成分倒推历史会有幸存者偏差，回测时再补。
 - **组合优化器**：未引入 CVXPY / PyPortfolioOpt。当前组合控制是规则式。
 - **告警**：没有钉钉/邮件告警，全靠你看 dashboard。
@@ -548,12 +637,14 @@ CSS `:target` 切 tab,纯静态,无 JS 框架。
 
 按优先级建议：
 
-1. `add-historical-backtest-baseline`：把当前规则跑 3-5 年历史，输出年化 / 超额 / 最大回撤 / 夏普 / 换手；提供样本外检验。
-2. `introduce-point-in-time-fundamentals`：按公告日生效财务因子。
-3. `add-research-factor-toolkit`：因子衰减、相关性、行业暴露归因、风格暴露归因。
-4. `migrate-run-ledger-to-sqlite`：CSV 账本 → SQLite/DuckDB，加索引、原子写、备份。
-5. `add-alerting-and-sla`：任务失败 / NAV 停更 / pending 超期 / 回撤超阈值告警。
-6. `introduce-portfolio-optimizer`：在既有约束下接 CVXPY 做加权。
+1. **Phase 2 backtest factor_pipeline 集成**（约 800-1200 行）：把 `stock_analyze.factor_pipeline` 适配到 `PointInTimeView`，让 gate 真正测试 overlay 的 factor 配置；MVP 当前用 low-PE top-N 简化信号生成。
+2. **Phase 2 sentiment Tushare 新闻包**：升级到 ¥1000/年 Tushare news endpoint + 新增 `news_volume` 因子 + 历史回填 + 回测集成。
+3. **Phase 3 sentiment per-stock 颗粒度**：把 LLM sentiment 从单标量升级到 per-stock Z 分（真正影响横截面排名）。
+4. `introduce-point-in-time-fundamentals`：按公告日生效财务因子。
+5. `add-research-factor-toolkit`：因子衰减、相关性、行业暴露归因、风格暴露归因。
+6. `migrate-run-ledger-to-sqlite`：CSV 账本 → SQLite/DuckDB，加索引、原子写、备份。
+7. `add-alerting-and-sla`：任务失败 / NAV 停更 / pending 超期 / 回撤超阈值告警。
+8. `introduce-portfolio-optimizer`：在既有约束下接 CVXPY 做加权。
 
 每个 change 都走 OpenSpec：proposal → design → tasks → specs，验证通过后实施。
 

@@ -78,6 +78,12 @@ Available factors (as of this revision, per
 `pe`, `pb`, `roe`, `gross_margin`, `debt_ratio`, `net_profit_growth`,
 `momentum_20`, `momentum_60`, `low_volatility_60`, `dividend_yield`.
 
+**Agent 特有 alt-factor**（由 OpenSpec change `add-llm-sentiment-alpha-factor` 引入）：
+
+- `codex_market_sentiment_1w` — codex 自己的市场情感因子（broadcast 因子，每周 1 个标量值，对所有候选股同样应用）。 *(MVP: broadcast factor, uniform shift, 不立即产生 alpha — 见 add-llm-sentiment-alpha-factor IMPLEMENTATION_REPORT §5.1)*
+
+注意：codex 只能在自己的 overlay 里用 `codex_*` 前缀的 alt-factor；不能引用 `claude_market_sentiment_1w`（`overlay_guard` 会抛 `OverlayCrossAgentFactor` 拒绝）。
+
 You can only assign weights to factors that already exist in the codebase.
 To request a new factor, leave a note (see §9). Don't add it to the YAML
 and hope it materialises.
@@ -188,6 +194,33 @@ Pay attention to:
    - write `data/codex/evolution_diff/<YYYY-MM>.json` (machine-readable diff),
    - append one row to `data/codex/config_evolution.csv`.
 
+   **Backtest gate auto-runs before commit.** Inside
+   `evolution_writer.write_evolution`, after `overlay_guard.validate`
+   succeeds, the writer automatically calls
+   `backtest.gate.validate_overlay_via_backtest(new_overlay)` against
+   the validation window (2025-01 → 2026-04). If any of the three floor
+   thresholds (`max_drawdown ≤ 0.25`, `sharpe ≥ -0.5`,
+   `cum_return ≥ -0.15`, from `competition.yaml.backtest.floor.*`) is
+   breached:
+   - Raises `BacktestFloorBreach`
+   - Writes `data/codex/evolution_log/<YYYY-MM>-floor-breach.md`
+     with the failed metrics + your reasoning
+   - Rolls back the yaml (your overlay is NOT written)
+   - You must redesign.
+
+   If the gate passes, metrics are recorded in the evolution_log and
+   commit proceeds.
+
+   **三段窗口纪律**（由 `add-historical-backtest-engine` 引入）：
+
+   - 训练窗口 (2021-01 ~ 2024-12, 48 个月): briefing 展示完整月度明细
+     + 因子贡献，自由探索。
+   - 验证窗口 (2025-01 ~ 2026-04, 16 个月): briefing **只展示 5 个聚合
+     数字** (累计 / 年化 / Sharpe / 最大回撤 / IR)，**不展示月度明细、
+     不展示因子分解**。这是 gate 准入判定用的——不允许针对验证窗口的
+     失败结果反向迭代你的 overlay。
+   - Live OOS (2026-05-18+): 真实竞赛，没有任何回测可读。
+
 4. **Run the guard.** Exit code reports outcome:
    ```bash
    python3 -m stock_analyze validate-overlay --agent codex
@@ -244,9 +277,10 @@ After this change:
 - ❌ `data/claude/state.json`、`positions.csv`、`daily_nav.csv`、`trades.csv`(对手的实时持仓 / 净值)
 - ❌ `data/claude/factor_runs/*`
 - ❌ `data/claude/proposals/*`(旧 proposal 文件,继续禁)
+- ❌ `data/claude/alt_factors/*`(对手的 sentiment 输入,属对手"思考过程")
 - ❌ `reports/claude/*`
 
-→ "你能看到对手的阵型(yaml),看不到对手的思考(evolution_log)。"
+→ "你能看到对手的阵型(yaml),看不到对手的思考(evolution_log / alt_factors)。"
 
 ### 7.2 月度演化的硬约束
 
@@ -284,6 +318,39 @@ When you're stuck or see something that needs source-level change:
 Don't open shell prompts, don't try to contact APIs you don't already have
 permission for, don't email anyone. This is a sandboxed paper trading
 project.
+
+### 9.1 每周末跑 sentiment record
+
+> 由 OpenSpec change `add-llm-sentiment-alpha-factor` 引入（2026-05-26
+> MVP 上线）。这是 operator 的手动动作（不是你直接做），但记录在这
+> 里以便 operator 在 weekly review 时不忘。
+
+每周末（建议周六上午，配合 weekly review 一起跑）：
+
+1. operator 打开自己的 LLM 客户端（codex 侧用 ChatGPT 或 ChatGPT
+   桌面版）。
+2. 用 `stock_analyze/alt_factors/prompts/market_sentiment_v1.md` 这份
+   prompt 模板（填充 `{agent_id}` = `codex` 和 `{week_start_date}` /
+   `{week_end_date}`）。
+3. LLM 用自带 web search 拉本周 A 股新闻 + 输出严格 JSON
+   (`score`, `confidence`, `key_drivers`, `sources`)。
+4. operator copy JSON 字段填到 CLI：
+
+   ```bash
+   python3 -m stock_analyze record-sentiment \
+     --agent codex --week-end 2026-05-22 \
+     --score 0.18 --confidence 0.65 \
+     --drivers "出口数据走弱,降准预期升温,新能源需求改善" \
+     --llm-model gpt-5-thinking \
+     --sources "https://www.cls.cn/x|https://..."
+   ```
+
+5. 验证 dashboard "市场情感" 面板出现新一周数据。
+
+每周 ~10 分钟。漏跑某周不致命（factor_pipeline 在 broadcast 因子缺失
+时跳过该因子贡献），但 dashboard 会显示"已 N 周未更新"警示。
+
+注意：你（Codex CLI）在 weekly review 笔记里可以**读** `data/codex/alt_factors/market_sentiment.csv` 自己的历史，作为情感叙事素材；但**不能**读 `data/claude/alt_factors/*`（见 §7.1）。
 
 ## 10. Success criteria
 
