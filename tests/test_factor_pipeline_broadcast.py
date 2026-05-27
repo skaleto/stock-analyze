@@ -72,7 +72,8 @@ class LoadBroadcastFactorTests(unittest.TestCase):
             "claude", "claude_market_sentiment_1w",
             date(2026, 5, 25), repo_root=self.repo,
         )
-        self.assertAlmostEqual(v, 0.42)
+        # Confidence-weighted: 0.42 (score) × 0.7 (confidence) = 0.294
+        self.assertAlmostEqual(v, 0.42 * 0.7)
 
     def test_cross_agent_does_not_leak(self):
         """claude's broadcast factor reads claude's csv, codex's reads codex's."""
@@ -95,6 +96,56 @@ class LoadBroadcastFactorTests(unittest.TestCase):
             date(2026, 5, 25), repo_root=self.repo,
         )
         self.assertIsNone(v)
+
+    def test_confidence_weighting_scales_contribution(self):
+        """A low-confidence LLM reading contributes proportionally less than a
+        high-confidence reading at the same score. Specifically:
+
+          - confidence=1.0 yields the raw score (regression-safe baseline).
+          - confidence=0.5 yields half of the confidence=1.0 value.
+        """
+        # confidence=1.0: returned value equals the raw score (baseline)
+        sentiment.record_market_sentiment(
+            agent_id="claude", week_end=date(2026, 5, 22),
+            score=0.6, confidence=1.0, drivers=["x"],
+            sources=[], llm_model="m", prompt_version="v1",
+            repo_root=self.repo,
+        )
+        v_full = factor_pipeline.load_broadcast_factor(
+            "claude", "claude_market_sentiment_1w",
+            date(2026, 5, 25), repo_root=self.repo,
+        )
+        self.assertAlmostEqual(v_full, 0.6)
+
+        # confidence=0.5 at the same score: contribution halved
+        sentiment.record_market_sentiment(
+            agent_id="codex", week_end=date(2026, 5, 22),
+            score=0.6, confidence=0.5, drivers=["x"],
+            sources=[], llm_model="m", prompt_version="v1",
+            repo_root=self.repo,
+        )
+        v_half = factor_pipeline.load_broadcast_factor(
+            "codex", "codex_market_sentiment_1w",
+            date(2026, 5, 25), repo_root=self.repo,
+        )
+        self.assertAlmostEqual(v_half, 0.3)
+        # half of full
+        self.assertAlmostEqual(v_half, v_full * 0.5)
+
+    def test_confidence_zero_zeros_out_contribution(self):
+        """An LLM reading of confidence=0 (no certainty) should zero out the
+        broadcast contribution regardless of score magnitude."""
+        sentiment.record_market_sentiment(
+            agent_id="claude", week_end=date(2026, 5, 22),
+            score=0.9, confidence=0.0, drivers=["x"],
+            sources=[], llm_model="m", prompt_version="v1",
+            repo_root=self.repo,
+        )
+        v = factor_pipeline.load_broadcast_factor(
+            "claude", "claude_market_sentiment_1w",
+            date(2026, 5, 25), repo_root=self.repo,
+        )
+        self.assertAlmostEqual(v, 0.0)
 
 
 class BroadcastFactorAppliedUniformlyTests(unittest.TestCase):

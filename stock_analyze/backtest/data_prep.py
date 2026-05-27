@@ -34,8 +34,16 @@ import pandas as pd
 
 TUSHARE_TOKEN_ENV = "TUSHARE_TOKEN"
 INDEX_CODES = [("000300.SH", "000300"), ("000905.SH", "000905")]
-# Rate limit: tushare 2000-point tier allows 500 calls/min; we leave headroom.
-_RATE_SLEEP_S = 0.15
+# Rate limit: tushare 2000-point tier limits are per-endpoint:
+#   - daily / daily_basic : 500/min  → 0.12s OK
+#   - fina_indicator      : 200/min  → 0.30s required
+#   - adj_factor          : 200/min  → 0.30s required
+#   - index_weight        : 200/min  → 0.30s required
+# Pick 0.35s globally (171/min) to leave buffer for sliding-window throttle
+# bursts. Daily endpoints pay a ~20% throughput tax we don't really care
+# about (one-time 5y backfill = ~20 min instead of ~15). The audit fix
+# 2026-05-27: prior 0.15s tripped fina_indicator 200/min after 200 codes.
+_RATE_SLEEP_S = 0.35
 
 
 # ---------------------------------------------------------------------------
