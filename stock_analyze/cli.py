@@ -201,6 +201,21 @@ def build_parser() -> argparse.ArgumentParser:
     sanity.add_argument("--repo-root", type=Path, default=None,
                           help="Override repo root (defaults to SA_REPO_ROOT or __file__ anchor).")
 
+    # Daily summary push to the operator's Lark DM. Triggered nightly via
+    # systemd ExecStartPost on stock-analyze-aggregate-dashboard.service.
+    # Reads SA_LARK_APP_ID / SA_LARK_APP_SECRET / SA_LARK_USER_OPEN_ID;
+    # falls back to stdout preview if any is missing.
+    notify = sub.add_parser(
+        "notify-daily-summary",
+        help="Build daily ECS summary + send DM to operator via Lark Open API.",
+    )
+    notify.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help="Override repo root (default: cwd; ECS will use /opt/stock-analyze/app).",
+    )
+
     return parser
 
 
@@ -318,6 +333,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sanity-check":
         ensure_dirs(args.logs_dir)
         return _command_sanity_check(args)
+    if args.command == "notify-daily-summary":
+        ensure_dirs(args.logs_dir)
+        return _command_notify_daily_summary(args)
 
     try:
         config, data_dir, reports_dir, cache_dir = _resolve_runtime(args)
@@ -734,6 +752,17 @@ def _command_sanity_check(args: argparse.Namespace) -> int:
     print(format_report(args.agent, findings))
     worst = max_severity(findings)
     return {"info": 0, "warn": 1, "critical": 2}[worst]
+
+
+def _command_notify_daily_summary(args: argparse.Namespace) -> int:
+    """Send the daily summary DM via Lark Open API.
+
+    Delegated to ``stock_analyze.notifier.cli_send_daily_summary`` so the
+    CLI layer stays thin and the heavy logic stays testable in isolation.
+    """
+    from .notifier import cli_send_daily_summary
+
+    return cli_send_daily_summary(repo_root=args.repo_root)
 
 
 def _auto_write_weekly_briefing(agent_id: str | None, as_of: str | None) -> str | None:
