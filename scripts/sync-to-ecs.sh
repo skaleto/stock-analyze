@@ -9,6 +9,7 @@
 #   - data/<agent>/evolution_log/               (monthly evolution reasoning)
 #   - data/<agent>/evolution_diff/              (machine-readable diff)
 #   - data/<agent>/config_evolution.csv        (audit row)
+#   - data/<agent>/alt_factors/                 (sentiment records per add-llm-sentiment-alpha-factor)
 #   - configs/agents/<agent>.yaml               (LLM-direct overlay edits)
 #   - configs/agents/_history/                  (overlay backups)
 #
@@ -62,6 +63,7 @@ for agent in "${agents[@]}"; do
   log_local="$LOCAL_REPO/data/$agent/evolution_log/"
   diff_local="$LOCAL_REPO/data/$agent/evolution_diff/"
   csv_local="$LOCAL_REPO/data/$agent/config_evolution.csv"
+  alt_local="$LOCAL_REPO/data/$agent/alt_factors/"
   overlay_local="$LOCAL_REPO/configs/agents/$agent.yaml"
   if [[ -d "$notes_local" ]]; then
     echo "Pushing data/$agent/notes/ -> $SA_ECS_REMOTE/data/$agent/notes/"
@@ -78,6 +80,10 @@ for agent in "${agents[@]}"; do
   if [[ -f "$csv_local" ]]; then
     echo "Pushing data/$agent/config_evolution.csv -> $SA_ECS_REMOTE/data/$agent/config_evolution.csv"
     rsync -av "$csv_local" "$SA_ECS_REMOTE/data/$agent/config_evolution.csv"
+  fi
+  if [[ -d "$alt_local" ]]; then
+    echo "Pushing data/$agent/alt_factors/ -> $SA_ECS_REMOTE/data/$agent/alt_factors/"
+    rsync -av "$alt_local" "$SA_ECS_REMOTE/data/$agent/alt_factors/"
   fi
   if [[ -f "$overlay_local" ]]; then
     echo "Pushing configs/agents/$agent.yaml -> $SA_ECS_REMOTE/configs/agents/$agent.yaml"
