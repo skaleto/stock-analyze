@@ -29,7 +29,7 @@ from .overlay_guard import (
 )
 from .reporting import generate_dashboard, generate_weekly_report
 from .run_ledger import RunLedger
-from .simulator import execute_due_orders, generate_rebalance_orders, initialize, update_nav
+from .markets.a_share.simulator import execute_due_orders, generate_rebalance_orders, initialize, update_nav
 from .store import PortfolioStore
 from .utils import ensure_dirs, write_json
 

@@ -15,7 +15,7 @@ import unittest
 
 import pandas as pd
 
-from stock_analyze.simulator import build_target_orders
+from stock_analyze.markets.a_share.simulator import build_target_orders
 
 
 def _config(cash_per_account: int = 500_000, lot_size: int = 100,

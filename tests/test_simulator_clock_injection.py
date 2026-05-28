@@ -14,7 +14,7 @@ from unittest import mock
 
 import pandas as pd
 
-from stock_analyze import simulator
+from stock_analyze.markets.a_share import simulator
 from stock_analyze.data_provider import ExecutionQuote
 from stock_analyze.store import PortfolioStore
 
@@ -109,7 +109,7 @@ class ExecuteDueOrdersClockInjectionTests(unittest.TestCase):
             provider = _RecordingProvider()
 
             mocked_today = date(2026, 5, 20)  # > 2026-05-18 → batch is due
-            with mock.patch("stock_analyze.simulator.date") as mocked_date:
+            with mock.patch("stock_analyze.markets.a_share.simulator.date") as mocked_date:
                 mocked_date.today.return_value = mocked_today
                 mocked_date.side_effect = lambda *a, **kw: date(*a, **kw)
                 simulator.execute_due_orders(config, store, provider)
@@ -289,7 +289,7 @@ class UpdateNavClockInjectionTests(unittest.TestCase):
             provider = _RecordingProvider()
 
             mocked_today = date(2026, 5, 18)
-            with mock.patch("stock_analyze.simulator.date") as mocked_date:
+            with mock.patch("stock_analyze.markets.a_share.simulator.date") as mocked_date:
                 mocked_date.today.return_value = mocked_today
                 mocked_date.side_effect = lambda *a, **kw: date(*a, **kw)
                 rows = simulator.update_nav(config, store, provider)
@@ -358,7 +358,7 @@ class GenerateRebalanceOrdersClockInjectionTests(unittest.TestCase):
             provider = _RecordingProvider()
             target = date(2026, 5, 18)
 
-            with mock.patch("stock_analyze.simulator.build_signals", return_value=self._stub_signal()):
+            with mock.patch("stock_analyze.markets.a_share.simulator.build_signals", return_value=self._stub_signal()):
                 batches = simulator.generate_rebalance_orders(config, store, provider, as_of=target)
             self.assertEqual(len(batches), 1)
             self.assertEqual(batches[0]["signal_date"], "2026-05-18")
@@ -371,8 +371,8 @@ class GenerateRebalanceOrdersClockInjectionTests(unittest.TestCase):
             provider = _RecordingProvider()
 
             mocked_today = date(2026, 5, 18)
-            with mock.patch("stock_analyze.simulator.date") as mocked_date, \
-                 mock.patch("stock_analyze.simulator.build_signals", return_value=self._stub_signal()):
+            with mock.patch("stock_analyze.markets.a_share.simulator.date") as mocked_date, \
+                 mock.patch("stock_analyze.markets.a_share.simulator.build_signals", return_value=self._stub_signal()):
                 mocked_date.today.return_value = mocked_today
                 mocked_date.side_effect = lambda *a, **kw: date(*a, **kw)
                 batches = simulator.generate_rebalance_orders(config, store, provider)
@@ -389,7 +389,7 @@ class GenerateRebalanceOrdersClockInjectionTests(unittest.TestCase):
             inner_store.initialize(config)
             provider = _RecordingProvider()
 
-            with mock.patch("stock_analyze.simulator.build_signals", return_value=self._stub_signal()):
+            with mock.patch("stock_analyze.markets.a_share.simulator.build_signals", return_value=self._stub_signal()):
                 simulator.generate_rebalance_orders(
                     config,
                     outer_store,
@@ -412,7 +412,7 @@ class GenerateRebalanceOrdersClockInjectionTests(unittest.TestCase):
             provider = _RecordingProvider()
             provider.cache_dir = Path("/old/cache")
 
-            with mock.patch("stock_analyze.simulator.build_signals", return_value=self._stub_signal()):
+            with mock.patch("stock_analyze.markets.a_share.simulator.build_signals", return_value=self._stub_signal()):
                 simulator.generate_rebalance_orders(
                     config,
                     store,
