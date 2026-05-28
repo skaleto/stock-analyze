@@ -123,6 +123,8 @@ def build_weekly_briefing(
     agent_id: str,
     as_of: str | None = None,
     repo_root: str | Path | None = None,
+    *,
+    market: str = "a_share",
 ) -> str:
     """Return the weekly briefing markdown for the given agent."""
 
@@ -144,6 +146,8 @@ def build_monthly_briefing(
     agent_id: str,
     month: str | None = None,
     repo_root: str | Path | None = None,
+    *,
+    market: str = "a_share",
 ) -> str:
     """Return the monthly briefing markdown for the given agent."""
 

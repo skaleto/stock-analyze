@@ -80,6 +80,8 @@ def write_evolution(
     repo_root: str | Path | None = None,
     month: str | None = None,
     reviewer: str = "llm-direct",
+    *,
+    market: str = "a_share",
 ) -> dict[str, Any]:
     """Persist the four artifacts and return a summary dict.
 

@@ -52,6 +52,8 @@ def compute_review(
     month: str,
     agents: list[str],
     repo_root: str | Path | None = None,
+    *,
+    market: str = "a_share",
 ) -> dict[str, Any]:
     """Compute the review payload for the given month and agent list."""
 

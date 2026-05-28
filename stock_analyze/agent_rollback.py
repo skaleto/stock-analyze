@@ -28,6 +28,8 @@ def rollback(
     to_hash: str,
     repo_root: str | Path | None = None,
     reviewer: str = "operator",
+    *,
+    market: str = "a_share",
 ) -> dict[str, Any]:
     """Restore an agent overlay from ``configs/agents/_history/<hash>.yaml``.
 

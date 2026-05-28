@@ -340,6 +340,8 @@ def render_sentiment_comparison_panel(repo_root: Path | str) -> str:
 def generate_competition_dashboard(
     agents: list[str] | None = None,
     repo_root: str | Path | None = None,
+    *,
+    market: str = "a_share",
 ) -> Path:
     """Render and persist ``reports/competition/dashboard.html``."""
 

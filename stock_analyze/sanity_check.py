@@ -338,6 +338,8 @@ def _resolve_repo_root(repo_root: Path | str | None) -> Path:
 def check_agent(
     agent_id: str,
     repo_root: Path | str | None = None,
+    *,
+    market: str = "a_share",
 ) -> list[Anomaly]:
     """Run every check against ``data/<agent>/`` and return a flat list.
 
