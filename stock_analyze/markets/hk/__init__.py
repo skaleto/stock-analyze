@@ -17,6 +17,20 @@ Public API is wired at the bottom of this file once data_provider,
 simulator, and strategy modules exist (Phase 2 follow-up tasks).
 """
 
-# Phase 2 follow-up tasks wire the public API here. For the bootstrap
-# task (P2-T1) the docstring documents the contract; data_provider,
-# simulator, strategy land in P2-T2..P2-T4.
+from .data_provider import make_provider
+from .simulator import (
+    execute_due_orders,
+    generate_rebalance_orders,
+    initialize,
+    update_nav,
+)
+from .strategy import build_signals
+
+__all__ = [
+    "build_signals",
+    "execute_due_orders",
+    "generate_rebalance_orders",
+    "initialize",
+    "make_provider",
+    "update_nav",
+]
