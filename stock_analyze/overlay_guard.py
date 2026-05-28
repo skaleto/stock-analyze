@@ -76,7 +76,11 @@ AVAILABLE_FACTORS_BY_MARKET: dict[str, set[str]] = {
         "pe", "pb", "momentum_20", "momentum_60",
         "low_volatility_60", "dividend_yield",
     },
-    # Phase 3 adds 'us' here.
+    "us": {
+        # v1 factor set (Phase 3): same 6-factor set as HK.
+        "pe", "pb", "momentum_20", "momentum_60",
+        "low_volatility_60", "dividend_yield",
+    },
 }
 
 # Backwards-compat alias for code paths that still reference the old

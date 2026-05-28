@@ -1,0 +1,32 @@
+# US competition baseline. Locked fields per the spec.
+
+competition_id: "claude-vs-codex-us"
+start_date: "2026-06-15"
+initial_cash: 150000.0           # $150K ≈ ¥1.07M equivalent
+
+accounts:
+  - id: "sp500"
+    scope: "sp500"
+    top_n: 50
+    cash: 75000
+    benchmark: "^GSPC"
+  - id: "ndx100"
+    scope: "ndx100"
+    top_n: 50
+    cash: 75000
+    benchmark: "^NDX"
+
+schedule:
+  execution: "weekly"
+  signal_day: "friday"
+
+trading:
+  commission_rate: 0.0             # retail commission-free
+  stamp_tax_rate: 0.0
+  slippage_bps: 3                  # tighter than HK/A-share (deeper US books)
+  settlement_days: 1               # T+1 since May 2024
+  daily_limit_pct: null
+  max_single_weight: 0.05
+  allow_shorting: true
+  shorting_collateral_ratio: 1.0
+  lot_size_default: 1

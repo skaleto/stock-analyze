@@ -1,0 +1,31 @@
+{
+  "agent_id": "claude",
+  "strategy_id": "claude-us-v1",
+  "name": "Claude US",
+  "factors": {
+    "pe": {"weight": 0.20, "direction": "low"},
+    "pb": {"weight": 0.15, "direction": "low"},
+    "momentum_20": {"weight": 0.25, "direction": "high"},
+    "momentum_60": {"weight": 0.20, "direction": "high"},
+    "dividend_yield": {"weight": 0.10, "direction": "high"},
+    "low_volatility_60": {"weight": 0.10, "direction": "low"}
+  },
+  "factor_processing": {
+    "winsorize_lower": 0.05,
+    "winsorize_upper": 0.95,
+    "neutralize_industry": false,
+    "min_factor_coverage": 0.50
+  },
+  "portfolio_controls": {
+    "max_industry_weight": 0.40,
+    "hold_buffer_pct": 0.20,
+    "max_holding_days": 90,
+    "industry_unclassified_label": "未分类"
+  },
+  "filters": {
+    "max_fetch_candidates": 200,
+    "min_listing_days": 90,
+    "min_pe": 0,
+    "min_avg_amount_20": 10000000
+  }
+}
