@@ -51,8 +51,30 @@ CLASSIC_FACTORS: frozenset[str] = frozenset(
     }
 )
 
-# Backward-compat alias for callers / tests that imported the old name.
-AVAILABLE_FACTORS = CLASSIC_FACTORS
+# Per-market factor whitelists. The 'a_share' set is the union of
+# A-share's classic factors + the sentiment alt-factors introduced by
+# OpenSpec change ``add-llm-sentiment-alpha-factor``. Note that
+# ``validate_factor_name`` still enforces the cross-agent prefix rule
+# via ``AGENT_ALT_FACTOR_PATTERN`` — appearing in the whitelist is not
+# sufficient on its own to bypass the transparency boundary.
+AVAILABLE_FACTORS_BY_MARKET: dict[str, set[str]] = {
+    "a_share": {
+        # Classic per-stock factors
+        "pe", "pb", "roe", "gross_margin", "debt_ratio",
+        "net_profit_growth", "momentum_20", "momentum_60",
+        "low_volatility_60", "dividend_yield",
+        # Broadcast alt-factors (one per agent — overlay_guard's
+        # cross-agent rule still rejects mismatched prefixes).
+        "claude_market_sentiment_1w",
+        "codex_market_sentiment_1w",
+    },
+    # Phase 2/3 add 'hk' and 'us' here.
+}
+
+# Backwards-compat alias for code paths that still reference the old
+# flat ``AVAILABLE_FACTORS`` name. New code uses
+# ``AVAILABLE_FACTORS_BY_MARKET[market]``.
+AVAILABLE_FACTORS = AVAILABLE_FACTORS_BY_MARKET["a_share"]
 
 # Agent-specific alt-factor naming convention: ``<agent_id>_market_sentiment_1w``
 # (and future ``<agent_id>_*`` factors). The agent prefix in the factor name
@@ -72,6 +94,20 @@ ALLOWED_TOP_LEVEL: frozenset[str] = competition.OVERLAY_ALLOWED_TOP_LEVEL
 
 class OverlayGuardError(RuntimeError):
     """Base class for all overlay-guard violations."""
+
+
+class OverlayUnknownMarket(OverlayGuardError):
+    """Overlay validation requested for a market not in
+    ``AVAILABLE_FACTORS_BY_MARKET``.
+    """
+
+    def __init__(self, market: str, known_markets: list[str]) -> None:
+        super().__init__(
+            f"overlay_unknown_market:{market!r} "
+            f"(known_markets={known_markets})"
+        )
+        self.market = market
+        self.known_markets = known_markets
 
 
 class OverlaySchemaError(OverlayGuardError):
@@ -128,19 +164,41 @@ class OverlayCrossAgentFactor(OverlayGuardError):
         self.agent_id = agent_id
 
 
-def validate_factor_name(name: str, agent_id: str) -> None:
+def validate_factor_name(
+    name: str,
+    agent_id: str,
+    *,
+    factors_whitelist: set[str] | frozenset[str] | None = None,
+) -> None:
     """Raise the appropriate exception if ``name`` is unsupported for ``agent_id``.
 
     - Classic factor (in ``CLASSIC_FACTORS``)  -> ok
     - ``<agent_id>_*`` matching the alt-factor pattern  -> ok
     - ``<other>_*`` matching the pattern  -> raise OverlayCrossAgentFactor
     - Anything else  -> raise OverlayUnknownFactor
+
+    When ``factors_whitelist`` is provided, names not in that set are
+    rejected (modulo the alt-factor cross-agent rule, which is enforced
+    via ``AGENT_ALT_FACTOR_PATTERN`` so a whitelisted but
+    wrong-agent-prefixed alt-factor still raises
+    ``OverlayCrossAgentFactor``). When ``factors_whitelist`` is ``None``,
+    falls back to ``CLASSIC_FACTORS`` for backwards compatibility.
     """
-    if name in CLASSIC_FACTORS:
+    whitelist = factors_whitelist if factors_whitelist is not None else CLASSIC_FACTORS
+    if name in whitelist:
+        # Could be a classic factor or a whitelisted alt-factor; in the
+        # latter case the cross-agent prefix rule below still applies.
+        match = AGENT_ALT_FACTOR_PATTERN.match(name)
+        if match and match.group(1) != agent_id:
+            raise OverlayCrossAgentFactor(name=name, agent_id=agent_id)
         return
+    # Not in whitelist: alt-factor naming may still be admitted via the
+    # cross-agent pattern (matching legacy behaviour when the default
+    # ``CLASSIC_FACTORS`` whitelist is in effect and the sentiment factors
+    # are not listed there).
     match = AGENT_ALT_FACTOR_PATTERN.match(name)
     if not match:
-        raise OverlayUnknownFactor(name=name, whitelist=CLASSIC_FACTORS)
+        raise OverlayUnknownFactor(name=name, whitelist=frozenset(whitelist))
     factor_agent = match.group(1)
     if factor_agent != agent_id:
         raise OverlayCrossAgentFactor(name=name, agent_id=agent_id)
@@ -175,6 +233,8 @@ def validate(
     overlay: dict[str, Any] | str | Path,
     repo_root: str | Path | None = None,
     baseline: dict[str, Any] | None = None,
+    *,
+    market: str = "a_share",
 ) -> None:
     """Run all guard checks on the given overlay.
 
@@ -193,12 +253,18 @@ def validate(
         is not provided. Defaults to ``Path.cwd()``.
     baseline:
         Optional pre-loaded baseline mapping (skip disk read).
+    market:
+        Selects the per-market factor whitelist
+        (``AVAILABLE_FACTORS_BY_MARKET[market]``). Keyword-only; defaults
+        to ``"a_share"`` so existing call sites continue to work
+        unchanged. Unknown markets raise ``OverlayUnknownMarket``.
 
     Raises
     ------
     OverlayInvalidYAML, OverlaySchemaError, OverlayUnknownTopLevelKey,
-    OverlayBaselineLocked, OverlayUnknownFactor, OverlayInvalidWeight
-        One of the six guard exceptions on any violation.
+    OverlayBaselineLocked, OverlayUnknownFactor, OverlayInvalidWeight,
+    OverlayUnknownMarket
+        One of the guard exceptions on any violation.
 
     Returns
     -------
@@ -207,11 +273,18 @@ def validate(
         beyond the optional baseline read.
     """
 
+    factors_whitelist = AVAILABLE_FACTORS_BY_MARKET.get(market)
+    if factors_whitelist is None:
+        raise OverlayUnknownMarket(
+            market=market,
+            known_markets=sorted(AVAILABLE_FACTORS_BY_MARKET.keys()),
+        )
+
     parsed = _parse_overlay(overlay)
     _validate_top_level(parsed)
     _validate_agent_id(parsed, agent_id)
     _validate_baseline_locks(parsed, repo_root=repo_root, baseline=baseline)
-    _validate_factors(parsed, agent_id=agent_id)
+    _validate_factors(parsed, agent_id=agent_id, factors_whitelist=factors_whitelist)
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +368,12 @@ def _validate_baseline_locks(
         ) from exc
 
 
-def _validate_factors(overlay: dict[str, Any], *, agent_id: str) -> None:
+def _validate_factors(
+    overlay: dict[str, Any],
+    *,
+    agent_id: str,
+    factors_whitelist: set[str] | frozenset[str] | None = None,
+) -> None:
     factors = overlay.get("factors")
     if factors is None:
         return
@@ -304,7 +382,11 @@ def _validate_factors(overlay: dict[str, Any], *, agent_id: str) -> None:
             "overlay_schema_error:factors_must_be_mapping"
         )
     for name, spec in factors.items():
-        validate_factor_name(name, agent_id=agent_id)  # Tasks 6: alt-factor + cross-agent rule
+        validate_factor_name(
+            name,
+            agent_id=agent_id,
+            factors_whitelist=factors_whitelist,
+        )  # Tasks 6/7: alt-factor + cross-agent + per-market whitelist
         if not isinstance(spec, dict):
             raise OverlaySchemaError(
                 f"overlay_schema_error:factors.{name}_must_be_mapping"
