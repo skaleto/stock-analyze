@@ -37,7 +37,7 @@ from typing import Any
 
 import pandas as pd
 
-from .data_provider import INDEX_CODES
+from .markets.a_share.data_provider import INDEX_CODES
 from .store import (
     DAILY_NAV_FILE,
     FACTOR_FORWARD_IC_FILE,

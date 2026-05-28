@@ -12,7 +12,7 @@ from stock_analyze import cli
 class PrepareBacktestDataCLITests(unittest.TestCase):
     def test_subcommand_invokes_prepare_backtest_data(self):
         with patch(
-            "stock_analyze.backtest.data_prep.prepare_backtest_data"
+            "stock_analyze.markets.a_share.backtest.data_prep.prepare_backtest_data"
         ) as mocked:
             cli.main([
                 "prepare-backtest-data",
@@ -27,7 +27,7 @@ class PrepareBacktestDataCLITests(unittest.TestCase):
 
     def test_subcommand_passes_force_flag(self):
         with patch(
-            "stock_analyze.backtest.data_prep.prepare_backtest_data"
+            "stock_analyze.markets.a_share.backtest.data_prep.prepare_backtest_data"
         ) as mocked:
             cli.main([
                 "prepare-backtest-data",
@@ -39,7 +39,7 @@ class PrepareBacktestDataCLITests(unittest.TestCase):
 
     def test_subcommand_passes_custom_cache_root(self):
         with patch(
-            "stock_analyze.backtest.data_prep.prepare_backtest_data"
+            "stock_analyze.markets.a_share.backtest.data_prep.prepare_backtest_data"
         ) as mocked:
             cli.main([
                 "prepare-backtest-data",
@@ -55,7 +55,7 @@ class PrepareBacktestDataCLITests(unittest.TestCase):
     def test_subcommand_defaults_cache_root_to_shared(self):
         """When --cache-root omitted, default is data/shared/backtest_cache."""
         with patch(
-            "stock_analyze.backtest.data_prep.prepare_backtest_data"
+            "stock_analyze.markets.a_share.backtest.data_prep.prepare_backtest_data"
         ) as mocked:
             cli.main([
                 "prepare-backtest-data",

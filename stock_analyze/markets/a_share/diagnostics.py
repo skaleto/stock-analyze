@@ -8,8 +8,8 @@ from typing import Any
 import pandas as pd
 
 from .data_provider import DataProvider
-from .store import PortfolioStore
-from .utils import now_iso
+from ...store import PortfolioStore
+from ...utils import now_iso
 
 
 def compute_pending_forward_ic(

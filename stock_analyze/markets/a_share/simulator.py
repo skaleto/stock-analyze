@@ -6,11 +6,11 @@ from typing import Any
 
 import pandas as pd
 
-from stock_analyze.data_provider import DataProvider, ExecutionQuote
+from .data_provider import DataProvider, ExecutionQuote
 from ...factor_pipeline import UNCLASSIFIED
-from stock_analyze.portfolio_controls import annotate_industries, select_top_n_with_controls
+from .portfolio_controls import annotate_industries, select_top_n_with_controls
 from ...store import PortfolioStore
-from stock_analyze.strategy import build_signals
+from .strategy import build_signals
 from ...utils import next_business_day, now_iso, safe_float
 
 

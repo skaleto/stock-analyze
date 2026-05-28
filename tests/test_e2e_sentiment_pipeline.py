@@ -14,7 +14,7 @@ from tempfile import TemporaryDirectory
 import pandas as pd
 
 from stock_analyze import factor_pipeline
-from stock_analyze.alt_factors import sentiment
+from stock_analyze.markets.a_share.alt_factors import sentiment
 
 
 PROJECT_ROOT = Path(__file__).parent.parent

@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from stock_analyze import cli
-from stock_analyze.alt_factors import sentiment
+from stock_analyze.markets.a_share.alt_factors import sentiment
 
 
 class SentimentLogCLITests(unittest.TestCase):

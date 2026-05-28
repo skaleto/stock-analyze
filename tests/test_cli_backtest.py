@@ -11,7 +11,7 @@ from unittest.mock import patch, MagicMock
 import pandas as pd
 
 from stock_analyze import cli
-from stock_analyze.backtest.types import BacktestMetrics, BacktestResult
+from stock_analyze.markets.a_share.backtest.types import BacktestMetrics, BacktestResult
 
 
 class BacktestCLITests(unittest.TestCase):
@@ -62,7 +62,7 @@ class BacktestCLITests(unittest.TestCase):
             metrics=BacktestMetrics(0.18, 0.087, 1.4, -0.087, 0.92),
         )
         with patch(
-            "stock_analyze.backtest.engine.run_backtest",
+            "stock_analyze.markets.a_share.backtest.engine.run_backtest",
             return_value=fake_result,
         ) as mocked, patch(
             "stock_analyze.competition.load",
@@ -90,7 +90,7 @@ class BacktestCLITests(unittest.TestCase):
             metrics=BacktestMetrics(0, 0, 0, 0, 0),
         )
         with patch(
-            "stock_analyze.backtest.engine.run_backtest",
+            "stock_analyze.markets.a_share.backtest.engine.run_backtest",
             return_value=fake_result,
         ) as mocked, patch(
             "stock_analyze.competition.load",
@@ -117,7 +117,7 @@ class BacktestCLITests(unittest.TestCase):
             metrics=BacktestMetrics(0, 0, 0, 0, 0),
         )
         with patch(
-            "stock_analyze.backtest.engine.run_backtest",
+            "stock_analyze.markets.a_share.backtest.engine.run_backtest",
             return_value=fake_result,
         ) as mocked, patch(
             "stock_analyze.competition.load",
@@ -142,7 +142,7 @@ class BacktestCLITests(unittest.TestCase):
             metrics=BacktestMetrics(0, 0, 0, 0, 0),
         )
         with patch(
-            "stock_analyze.backtest.engine.run_backtest",
+            "stock_analyze.markets.a_share.backtest.engine.run_backtest",
             return_value=fake_result,
         ) as mocked, patch(
             "stock_analyze.competition.load",

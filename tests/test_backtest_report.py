@@ -5,8 +5,8 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from stock_analyze.backtest.report import render_markdown_report
-from stock_analyze.backtest.types import BacktestMetrics, BacktestResult
+from stock_analyze.markets.a_share.backtest.report import render_markdown_report
+from stock_analyze.markets.a_share.backtest.types import BacktestMetrics, BacktestResult
 
 
 def _sample_result(out_dir: Path = Path("/tmp/bt")) -> BacktestResult:

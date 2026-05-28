@@ -65,7 +65,7 @@ def load_broadcast_factor(
     expected = f"{agent_id}_market_sentiment_1w"
     if factor_name != expected:
         return None
-    from stock_analyze.alt_factors import sentiment as alt_sent
+    from stock_analyze.markets.a_share.alt_factors import sentiment as alt_sent
     rows = alt_sent.load_sentiment_history(agent_id, repo_root)
     eligible = [r for r in rows if r.week_end <= as_of]
     if not eligible:

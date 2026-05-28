@@ -9,8 +9,8 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from stock_analyze import evolution_writer
-from stock_analyze.backtest.exceptions import BacktestFloorBreach
-from stock_analyze.backtest.types import BacktestMetrics
+from stock_analyze.markets.a_share.backtest.exceptions import BacktestFloorBreach
+from stock_analyze.markets.a_share.backtest.types import BacktestMetrics
 
 
 class EvolutionWriterBacktestGateTests(unittest.TestCase):
@@ -72,7 +72,7 @@ class EvolutionWriterBacktestGateTests(unittest.TestCase):
         original_yaml = self.overlay_path.read_text()
 
         with patch(
-            "stock_analyze.backtest.gate.validate_overlay_via_backtest",
+            "stock_analyze.markets.a_share.backtest.gate.validate_overlay_via_backtest",
             side_effect=breach,
         ):
             with self.assertRaises(BacktestFloorBreach):
@@ -98,7 +98,7 @@ class EvolutionWriterBacktestGateTests(unittest.TestCase):
         """When gate returns metrics, evolution_writer proceeds normally."""
         good_metrics = BacktestMetrics(0.05, 0.04, 0.8, -0.10, 0.6)
         with patch(
-            "stock_analyze.backtest.gate.validate_overlay_via_backtest",
+            "stock_analyze.markets.a_share.backtest.gate.validate_overlay_via_backtest",
             return_value=good_metrics,
         ):
             summary = evolution_writer.write_evolution(

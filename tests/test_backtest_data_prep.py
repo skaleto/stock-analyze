@@ -13,7 +13,7 @@ from unittest.mock import patch, MagicMock
 
 import pandas as pd
 
-from stock_analyze.backtest import data_prep
+from stock_analyze.markets.a_share.backtest import data_prep
 
 
 def _stub_pro(daily_df=None, daily_basic_df=None, stock_basic_df=None,
@@ -75,7 +75,7 @@ class PrepareBacktestDataTests(unittest.TestCase):
             stock_basic_df=_stock_basic([('000001.SZ', '平安银行', '19910403', None, '银行')]),
             trade_cal_df=_trade_cal(['20210104', '20210105']),
         )
-        with patch('stock_analyze.backtest.data_prep._make_pro_client', return_value=pro):
+        with patch('stock_analyze.markets.a_share.backtest.data_prep._make_pro_client', return_value=pro):
             data_prep.prepare_backtest_data(
                 start=date(2021, 1, 4),
                 end=date(2021, 1, 5),
@@ -113,7 +113,7 @@ class PrepareBacktestDataTests(unittest.TestCase):
         pro = _stub_pro(
             trade_cal_df=_trade_cal(['20210104']),
         )
-        with patch('stock_analyze.backtest.data_prep._make_pro_client', return_value=pro):
+        with patch('stock_analyze.markets.a_share.backtest.data_prep._make_pro_client', return_value=pro):
             data_prep.prepare_backtest_data(
                 start=date(2021, 1, 4),
                 end=date(2021, 1, 4),
@@ -140,7 +140,7 @@ class PrepareBacktestDataTests(unittest.TestCase):
             stock_basic_df=_stock_basic([('000001.SZ', '平安银行', '19910403', None, '银行')]),
             trade_cal_df=_trade_cal(['20210104']),
         )
-        with patch('stock_analyze.backtest.data_prep._make_pro_client', return_value=pro):
+        with patch('stock_analyze.markets.a_share.backtest.data_prep._make_pro_client', return_value=pro):
             data_prep.prepare_backtest_data(
                 start=date(2021, 1, 4), end=date(2021, 1, 4),
                 cache_root=self.cache_root,
@@ -153,7 +153,7 @@ class PrepareBacktestDataTests(unittest.TestCase):
     def test_writes_stock_basic_once(self):
         sb = _stock_basic([('000001.SZ', '平安银行', '19910403', None, '银行')])
         pro = _stub_pro(stock_basic_df=sb, trade_cal_df=_trade_cal(['20210104']))
-        with patch('stock_analyze.backtest.data_prep._make_pro_client', return_value=pro):
+        with patch('stock_analyze.markets.a_share.backtest.data_prep._make_pro_client', return_value=pro):
             data_prep.prepare_backtest_data(
                 start=date(2021, 1, 4), end=date(2021, 1, 4),
                 cache_root=self.cache_root,
@@ -165,7 +165,7 @@ class PrepareBacktestDataTests(unittest.TestCase):
 
         # Second call should NOT re-fetch stock_basic
         pro.stock_basic.reset_mock()
-        with patch('stock_analyze.backtest.data_prep._make_pro_client', return_value=pro):
+        with patch('stock_analyze.markets.a_share.backtest.data_prep._make_pro_client', return_value=pro):
             data_prep.prepare_backtest_data(
                 start=date(2021, 1, 4), end=date(2021, 1, 4),
                 cache_root=self.cache_root,
@@ -191,7 +191,7 @@ class PrepareBacktestDataTests(unittest.TestCase):
             fina_df=fake_fina,
             trade_cal_df=_trade_cal(['20210104']),
         )
-        with patch('stock_analyze.backtest.data_prep._make_pro_client', return_value=pro):
+        with patch('stock_analyze.markets.a_share.backtest.data_prep._make_pro_client', return_value=pro):
             data_prep.prepare_backtest_data(
                 start=date(2021, 1, 4), end=date(2021, 1, 4),
                 cache_root=self.cache_root,
@@ -211,7 +211,7 @@ class PrepareBacktestDataTests(unittest.TestCase):
             adj_df=fake_adj,
             trade_cal_df=_trade_cal(['20210104']),
         )
-        with patch('stock_analyze.backtest.data_prep._make_pro_client', return_value=pro):
+        with patch('stock_analyze.markets.a_share.backtest.data_prep._make_pro_client', return_value=pro):
             data_prep.prepare_backtest_data(
                 start=date(2021, 1, 4), end=date(2021, 1, 4),
                 cache_root=self.cache_root,
@@ -231,7 +231,7 @@ class PrepareBacktestDataTests(unittest.TestCase):
             index_weight_df=fake_iw,
             trade_cal_df=_trade_cal(['20210104', '20210204']),
         )
-        with patch('stock_analyze.backtest.data_prep._make_pro_client', return_value=pro):
+        with patch('stock_analyze.markets.a_share.backtest.data_prep._make_pro_client', return_value=pro):
             data_prep.prepare_backtest_data(
                 start=date(2021, 1, 4), end=date(2021, 2, 4),
                 cache_root=self.cache_root,
@@ -244,7 +244,7 @@ class PrepareBacktestDataTests(unittest.TestCase):
 
     def test_writes_trade_cal(self):
         pro = _stub_pro(trade_cal_df=_trade_cal(['20210104', '20210105']))
-        with patch('stock_analyze.backtest.data_prep._make_pro_client', return_value=pro):
+        with patch('stock_analyze.markets.a_share.backtest.data_prep._make_pro_client', return_value=pro):
             data_prep.prepare_backtest_data(
                 start=date(2021, 1, 4), end=date(2021, 1, 5),
                 cache_root=self.cache_root,
@@ -260,7 +260,7 @@ class PrepareBacktestDataTests(unittest.TestCase):
             stock_basic_df=sb,
             trade_cal_df=_trade_cal(['20210104']),
         )
-        with patch('stock_analyze.backtest.data_prep._make_pro_client', return_value=pro):
+        with patch('stock_analyze.markets.a_share.backtest.data_prep._make_pro_client', return_value=pro):
             data_prep.prepare_backtest_data(
                 start=date(2021, 1, 4), end=date(2021, 1, 4),
                 cache_root=self.cache_root,
@@ -290,7 +290,7 @@ class PrepareBacktestDataTests(unittest.TestCase):
             daily_df=pd.DataFrame({'ts_code': ['000001.SZ'], 'close': [10.0]}),
             trade_cal_df=_trade_cal(['20210104']),
         )
-        with patch('stock_analyze.backtest.data_prep._make_pro_client', return_value=pro):
+        with patch('stock_analyze.markets.a_share.backtest.data_prep._make_pro_client', return_value=pro):
             data_prep.prepare_backtest_data(
                 start=date(2021, 1, 4), end=date(2021, 1, 4),
                 cache_root=self.cache_root,

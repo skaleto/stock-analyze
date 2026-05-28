@@ -11,7 +11,7 @@ from typing import List
 
 import pandas as pd
 
-from stock_analyze.backtest.types import BacktestResult
+from .types import BacktestResult
 
 
 def render_markdown_report(result: BacktestResult) -> str:
