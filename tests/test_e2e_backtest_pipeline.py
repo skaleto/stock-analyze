@@ -164,7 +164,7 @@ class E2EBacktestPipelineTests(unittest.TestCase):
             out = Path(tmp) / "out"
             _build_synthetic_cache(cache, n_days=10)
 
-            # We need configs/agents/claude.yaml; use a fixture overlay.
+            # We need configs/agents/claude_a_share.yaml; use a fixture overlay.
             # Strategy: create a temp working tree with minimal repo layout
             # then run the CLI from there.
             workdir = Path(tmp) / "workdir"
@@ -173,9 +173,9 @@ class E2EBacktestPipelineTests(unittest.TestCase):
             (workdir / "logs").mkdir(parents=True)
 
             # Copy real competition.yaml so loader works
-            comp = json.loads((PROJECT_ROOT / "configs/competition.yaml")
+            comp = json.loads((PROJECT_ROOT / "configs/competition_a_share.yaml")
                                 .read_text())
-            (workdir / "configs/competition.yaml").write_text(json.dumps(comp))
+            (workdir / "configs/competition_a_share.yaml").write_text(json.dumps(comp))
 
             overlay = {
                 "agent_id": "claude", "strategy_id": "e2e", "name": "E2E test",
@@ -194,7 +194,7 @@ class E2EBacktestPipelineTests(unittest.TestCase):
                              "max_market_cap_yi": 100000, "require_fields": [],
                              "fallback_require_fields": []},
             }
-            (workdir / "configs/agents/claude.yaml").write_text(json.dumps(overlay))
+            (workdir / "configs/agents/claude_a_share.yaml").write_text(json.dumps(overlay))
 
             # Move cache into workdir layout
             shared_cache = workdir / "data" / "shared" / "backtest_cache"
@@ -208,7 +208,7 @@ class E2EBacktestPipelineTests(unittest.TestCase):
                 "--agent", "claude",
                 "--start", "2023-06-26",
                 "--end", "2023-07-07",
-                "--overlay", str(workdir / "configs/agents/claude.yaml"),
+                "--overlay", str(workdir / "configs/agents/claude_a_share.yaml"),
                 "--output", str(out),
                 "--cache-root", str(shared_cache),
                 "--in-memory",
@@ -235,9 +235,9 @@ class E2EGateTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "configs/agents").mkdir(parents=True)
-            comp = json.loads((PROJECT_ROOT / "configs/competition.yaml")
+            comp = json.loads((PROJECT_ROOT / "configs/competition_a_share.yaml")
                                 .read_text())
-            (root / "configs/competition.yaml").write_text(json.dumps(comp))
+            (root / "configs/competition_a_share.yaml").write_text(json.dumps(comp))
             overlay = {
                 "agent_id": "claude", "strategy_id": "e2e", "name": "E2E",
                 "factors": {"pe": {"weight": 1.0, "direction": "low"}},
@@ -255,7 +255,7 @@ class E2EGateTests(unittest.TestCase):
                              "max_market_cap_yi": 100000, "require_fields": [],
                              "fallback_require_fields": []},
             }
-            (root / "configs/agents/claude.yaml").write_text(json.dumps(overlay))
+            (root / "configs/agents/claude_a_share.yaml").write_text(json.dumps(overlay))
 
             new_overlay = dict(overlay)
             new_overlay["factors"] = {"pe": {"weight": 0.95, "direction": "low"}}
@@ -281,12 +281,12 @@ class E2EGateTests(unittest.TestCase):
                     )
             # Live yaml untouched
             live = json.loads(
-                (root / "configs/agents/claude.yaml").read_text()
+                (root / "configs/agents/claude_a_share.yaml").read_text()
             )
             self.assertEqual(live["factors"]["pe"]["weight"], 1.0)
             # Breach log written
             breach = (
-                root / "data" / "claude" / "evolution_log"
+                root / "data" / "a_share" / "claude" / "evolution_log"
                 / "2026-06-floor-breach.md"
             )
             self.assertTrue(breach.exists())

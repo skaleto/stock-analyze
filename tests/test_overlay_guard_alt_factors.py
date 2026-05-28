@@ -75,7 +75,7 @@ class FullOverlayValidateTests(unittest.TestCase):
         self.tmp = TemporaryDirectory()
         self.root = Path(self.tmp.name)
         (self.root / "configs/agents").mkdir(parents=True)
-        (self.root / "configs/competition.yaml").write_text(json.dumps({
+        (self.root / "configs/competition_a_share.yaml").write_text(json.dumps({
             "competition_id": "x",
             "start_date": "2026-01-01",
             "initial_cash": 100000,

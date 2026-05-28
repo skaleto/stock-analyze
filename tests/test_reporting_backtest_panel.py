@@ -15,7 +15,7 @@ class BacktestVsLivePanelTests(unittest.TestCase):
         self.tmp = TemporaryDirectory()
         self.repo = Path(self.tmp.name)
         # Training run (synthetic NAV path: +5% over 5 days)
-        train_dir = self.repo / "data" / "claude" / "backtest" / "training" / "2026-06"
+        train_dir = self.repo / "data" / "a_share" / "claude" / "backtest" / "training" / "2026-06"
         train_dir.mkdir(parents=True)
         pd.DataFrame({
             "date": ["2021-01-04", "2021-01-05", "2024-12-29",
@@ -27,7 +27,7 @@ class BacktestVsLivePanelTests(unittest.TestCase):
         }).to_csv(train_dir / "daily_nav.csv", index=False)
 
         # Live run (+2%)
-        live_dir = self.repo / "data" / "claude"
+        live_dir = self.repo / "data" / "a_share" / "claude"
         live_dir.mkdir(parents=True, exist_ok=True)
         pd.DataFrame({
             "date": ["2026-05-18", "2026-05-19", "2026-05-25"],
@@ -59,7 +59,7 @@ class BacktestVsLivePanelTests(unittest.TestCase):
     def test_panel_empty_state_when_no_training_data(self):
         # Wipe training dir
         import shutil
-        shutil.rmtree(self.repo / "data" / "claude" / "backtest")
+        shutil.rmtree(self.repo / "data" / "a_share" / "claude" / "backtest")
         html = reporting.render_backtest_vs_live_panel(
             agent_id="claude", repo_root=self.repo,
         )

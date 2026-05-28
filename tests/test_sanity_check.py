@@ -189,7 +189,7 @@ class CheckAgentEndToEndTests(unittest.TestCase):
     def test_cold_start_agent_only_info_findings(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "data" / "claude").mkdir(parents=True)
+            (root / "data" / "a_share" / "claude").mkdir(parents=True)
             findings = check_agent("claude", repo_root=root)
             # Cold-start: no nav, no positions, no trades, no IC.
             # Only the "info"-level "cold start" notices should fire.
@@ -200,7 +200,7 @@ class CheckAgentEndToEndTests(unittest.TestCase):
     def test_critical_benchmark_dtype_propagates(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            data_dir = root / "data" / "claude"
+            data_dir = root / "data" / "a_share" / "claude"
             data_dir.mkdir(parents=True)
             # Seed a daily_nav.csv with the int-coerced benchmark_code bug.
             (data_dir / "daily_nav.csv").write_text(

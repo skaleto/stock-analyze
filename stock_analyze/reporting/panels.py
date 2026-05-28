@@ -88,7 +88,8 @@ def render_backtest_vs_live_panel(agent_id: str, repo_root: Path | str) -> str:
     Claude / Codex tabs. New-beginner dashboard does NOT include this panel.
     """
     root = Path(repo_root)
-    train_root = root / "data" / agent_id / "backtest" / "training"
+    # Phase 1 (Task 10) migration: A-share data now lives under data/a_share/<agent>/.
+    train_root = root / "data" / "a_share" / agent_id / "backtest" / "training"
     if not train_root.exists() or not any(train_root.iterdir()):
         return (
             '<div class="panel"><h3>历史回测 vs 真实运行</h3>'
@@ -102,7 +103,7 @@ def render_backtest_vs_live_panel(agent_id: str, repo_root: Path | str) -> str:
             '<p>尚无训练窗口回测数据。</p></div>'
         )
     bt_nav_path = runs[-1] / "daily_nav.csv"
-    live_nav_path = root / "data" / agent_id / "daily_nav.csv"
+    live_nav_path = root / "data" / "a_share" / agent_id / "daily_nav.csv"
 
     # Mirror store.py daily_nav dtype invariant — benchmark_code must stay str
     # so '000300' isn't coerced to int 300 mid-merge.

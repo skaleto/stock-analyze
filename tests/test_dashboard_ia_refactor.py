@@ -67,18 +67,18 @@ _BASE = {
 
 def _seed_repo(tmp: Path) -> None:
     (tmp / "configs" / "agents").mkdir(parents=True, exist_ok=True)
-    (tmp / "configs" / "competition.yaml").write_text(json.dumps(_BASE), encoding="utf-8")
+    (tmp / "configs" / "competition_a_share.yaml").write_text(json.dumps(_BASE), encoding="utf-8")
     for agent in ("claude", "codex"):
-        (tmp / "configs" / "agents" / f"{agent}.yaml").write_text(
+        (tmp / "configs" / "agents" / f"{agent}_a_share.yaml").write_text(
             json.dumps({"agent_id": agent, "strategy_id": f"{agent}_v1", "factors": {"pe": {"weight": 1.0, "direction": "low"}}}),
             encoding="utf-8",
         )
 
 
 def _seed_agent(tmp: Path, agent: str) -> None:
-    data_dir = tmp / "data" / agent
+    data_dir = tmp / "data" / "a_share" / agent
     data_dir.mkdir(parents=True, exist_ok=True)
-    (tmp / "reports" / agent).mkdir(parents=True, exist_ok=True)
+    (tmp / "reports" / "a_share" / agent).mkdir(parents=True, exist_ok=True)
     (data_dir / "performance_summary.json").write_text(
         json.dumps({
             "accounts": {
@@ -272,8 +272,8 @@ class ProSubTabTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            data_dir = tmp_path / "data" / "claude"
-            reports_dir = tmp_path / "reports" / "claude"
+            data_dir = tmp_path / "data" / "a_share" / "claude"
+            reports_dir = tmp_path / "reports" / "a_share" / "claude"
             data_dir.mkdir(parents=True)
             reports_dir.mkdir(parents=True)
             store = PortfolioStore(data_dir)

@@ -45,7 +45,9 @@ class SentimentRow:
 
 
 def _csv_path(agent_id: str, repo_root: Path) -> Path:
-    return Path(repo_root) / "data" / agent_id / "alt_factors" / "market_sentiment.csv"
+    # Phase 1 (Task 10) migration: A-share data now lives under data/a_share/<agent>/.
+    # Phase 2/3 will refactor this to accept a `market` kwarg.
+    return Path(repo_root) / "data" / "a_share" / agent_id / "alt_factors" / "market_sentiment.csv"
 
 
 def _parse_row(row: dict) -> SentimentRow:

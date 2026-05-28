@@ -54,7 +54,7 @@ def render_training_section(
     can iterate on hypotheses freely.
     """
     summary_path = (
-        Path(repo_root) / "data" / agent_id / "backtest" / "training" / month
+        Path(repo_root) / "data" / "a_share" / agent_id / "backtest" / "training" / month
         / "performance_summary.json"
     )
     summary = _read_backtest_summary(summary_path)
@@ -101,7 +101,7 @@ def render_validation_section(
     constraint; see CLAUDE.md / AGENTS.md §10).
     """
     summary_path = (
-        Path(repo_root) / "data" / agent_id / "backtest" / "validation" / month
+        Path(repo_root) / "data" / "a_share" / agent_id / "backtest" / "validation" / month
         / "performance_summary.json"
     )
     summary = _read_backtest_summary(summary_path)
@@ -671,7 +671,7 @@ def _render_opponent_evolution_history(agent_id: str, root: Path, months: int = 
         return []
     blocks: list[str] = []
     for other in other_agents:
-        csv_path = root / "data" / other / "config_evolution.csv"
+        csv_path = root / "data" / "a_share" / other / "config_evolution.csv"
         if not csv_path.exists():
             blocks.append(f"## 对手 {other} 历史改动（近 {months} 个月）")
             blocks.append("")

@@ -42,11 +42,11 @@ BASELINE_CONFIG = {
 
 def _seed_repo(tmp: Path) -> None:
     (tmp / "configs" / "agents").mkdir(parents=True, exist_ok=True)
-    (tmp / "configs" / "competition.yaml").write_text(
+    (tmp / "configs" / "competition_a_share.yaml").write_text(
         json.dumps(BASELINE_CONFIG), encoding="utf-8"
     )
     for agent in ("claude", "codex"):
-        (tmp / "configs" / "agents" / f"{agent}.yaml").write_text(
+        (tmp / "configs" / "agents" / f"{agent}_a_share.yaml").write_text(
             json.dumps(
                 {
                     "agent_id": agent,
@@ -68,9 +68,9 @@ def _seed_agent(
     trades: list[dict] | None = None,
     evolution_log: dict[str, str] | None = None,
 ) -> None:
-    data_dir = tmp / "data" / agent
+    data_dir = tmp / "data" / "a_share" / agent
     data_dir.mkdir(parents=True, exist_ok=True)
-    (tmp / "reports" / agent).mkdir(parents=True, exist_ok=True)
+    (tmp / "reports" / "a_share" / agent).mkdir(parents=True, exist_ok=True)
     if perf is not None:
         (data_dir / "performance_summary.json").write_text(
             json.dumps(perf), encoding="utf-8"

@@ -35,12 +35,12 @@ BASELINE_CONFIG = {
 
 def _seed_repo(tmp: Path) -> None:
     (tmp / "configs" / "agents").mkdir(parents=True, exist_ok=True)
-    (tmp / "configs" / "competition.yaml").write_text(json.dumps(BASELINE_CONFIG), encoding="utf-8")
+    (tmp / "configs" / "competition_a_share.yaml").write_text(json.dumps(BASELINE_CONFIG), encoding="utf-8")
     for agent_id, factors in (
         ("claude", {"pe": {"weight": 0.5, "direction": "low"}, "roe": {"weight": 0.5, "direction": "high"}}),
         ("codex", {"roe": {"weight": 0.5, "direction": "high"}, "low_volatility_60": {"weight": 0.5, "direction": "low"}}),
     ):
-        path = tmp / "configs" / "agents" / f"{agent_id}.yaml"
+        path = tmp / "configs" / "agents" / f"{agent_id}_a_share.yaml"
         path.write_text(
             json.dumps({"agent_id": agent_id, "strategy_id": f"{agent_id}_v1", "name": f"{agent_id} test", "factors": factors}),
             encoding="utf-8",
@@ -48,7 +48,7 @@ def _seed_repo(tmp: Path) -> None:
 
 
 def _seed_agent_data(tmp: Path, agent: str) -> None:
-    data_dir = tmp / "data" / agent
+    data_dir = tmp / "data" / "a_share" / agent
     data_dir.mkdir(parents=True, exist_ok=True)
     (tmp / "data" / "competition" / "monthly_reviews").mkdir(parents=True, exist_ok=True)
 
@@ -107,7 +107,7 @@ class MonthlyBriefingTests(unittest.TestCase):
             # New LLM-direct flow writes evolution_log + edits overlay directly,
             # not a JSON proposal.
             self.assertIn("data/claude/evolution_log/2026-05.md", text)
-            self.assertIn("configs/agents/claude.yaml", text)
+            self.assertIn("configs/agents/claude_a_share.yaml", text)
             self.assertIn("evolution_writer.write_evolution", text)
             self.assertIn("validate-overlay", text)
 

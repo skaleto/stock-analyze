@@ -107,7 +107,7 @@ class E2ESentimentCLISubprocessTests(unittest.TestCase):
             )
             self.assertIn("recorded", result.stdout.lower())
 
-            csv = workdir / "data" / "claude" / "alt_factors" / "market_sentiment.csv"
+            csv = workdir / "data" / "a_share" / "claude" / "alt_factors" / "market_sentiment.csv"
             self.assertTrue(csv.exists())
 
             result = subprocess.run(

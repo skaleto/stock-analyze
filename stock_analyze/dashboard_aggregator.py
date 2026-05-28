@@ -73,7 +73,7 @@ _WEEKLY_TASK_ROWS = [
 
 def _runs_today(repo: Path, agent: str, command: str, today: "_dt.date") -> dict | None:
     """Return the latest run row for (agent, command) started today, or None."""
-    csv = repo / "data" / agent / "runs.csv"
+    csv = repo / "data" / "a_share" / agent / "runs.csv"
     if not csv.exists():
         return None
     import pandas as _pd
@@ -101,7 +101,7 @@ def _runs_today(repo: Path, agent: str, command: str, today: "_dt.date") -> dict
 
 def _rollup_7d(repo: Path, agent: str, command: str, today: "_dt.date") -> tuple[int, int]:
     """Return (success_count, failed_count) for (agent, command) in last 7 days."""
-    csv = repo / "data" / agent / "runs.csv"
+    csv = repo / "data" / "a_share" / agent / "runs.csv"
     if not csv.exists():
         return (0, 0)
     import pandas as _pd

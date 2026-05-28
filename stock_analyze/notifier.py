@@ -196,7 +196,7 @@ def _format_nav_section(agent_ids: list[str], repo_root: Path) -> list[str]:
     """Per-agent NAV + 1-day delta. Robust to missing/empty files."""
     lines = ["💰 NAV:"]
     for agent in agent_ids:
-        nav_path = repo_root / "data" / agent / "daily_nav.csv"
+        nav_path = repo_root / "data" / "a_share" / agent / "daily_nav.csv"
         if not nav_path.exists():
             lines.append(f"  {agent:<7} (尚未初始化)")
             continue
@@ -228,7 +228,7 @@ def _format_positions_section(agent_ids: list[str], repo_root: Path) -> list[str
     """Per-account holdings breakdown so the operator can spot sizing gaps."""
     lines = ["📈 持仓:"]
     for agent in agent_ids:
-        pos_path = repo_root / "data" / agent / "positions.csv"
+        pos_path = repo_root / "data" / "a_share" / agent / "positions.csv"
         if not pos_path.exists():
             lines.append(f"  {agent:<7} (尚未初始化)")
             continue
@@ -331,7 +331,7 @@ def collect_pending_actions(
         this_friday = _most_recent_friday_on_or_before(today_d)
         for agent in agent_ids:
             sentiment_csv = (
-                repo_root / "data" / agent / "alt_factors" / "market_sentiment.csv"
+                repo_root / "data" / "a_share" / agent / "alt_factors" / "market_sentiment.csv"
             )
             if not sentiment_csv.exists():
                 actions.append(
