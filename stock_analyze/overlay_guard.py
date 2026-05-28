@@ -68,7 +68,15 @@ AVAILABLE_FACTORS_BY_MARKET: dict[str, set[str]] = {
         "claude_market_sentiment_1w",
         "codex_market_sentiment_1w",
     },
-    # Phase 2/3 add 'hk' and 'us' here.
+    "hk": {
+        # v1 factor set (Phase 2): 6 factors derivable from yfinance.info
+        # + price history. ROE / gross_margin / debt_ratio /
+        # net_profit_growth are deferred to v2 (require quarterly_financials
+        # DataFrame parsing). Sentiment alt-factors also deferred to v2.
+        "pe", "pb", "momentum_20", "momentum_60",
+        "low_volatility_60", "dividend_yield",
+    },
+    # Phase 3 adds 'us' here.
 }
 
 # Backwards-compat alias for code paths that still reference the old
