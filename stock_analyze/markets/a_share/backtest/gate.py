@@ -15,7 +15,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from stock_analyze import competition
+from .... import competition
 from . import engine
 from .exceptions import BacktestFloorBreach
 from .types import BacktestMetrics
