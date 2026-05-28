@@ -10,6 +10,7 @@ market-data cache.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 from copy import deepcopy
 from dataclasses import dataclass
@@ -62,6 +63,77 @@ OVERLAY_ALLOWED_TOP_LEVEL: frozenset[str] = frozenset(
     }
 )
 
+
+# ---------------------------------------------------------------------------
+# Multi-market dispatch
+
+MARKETS = ["a_share"]  # Phase 2/3 will add 'hk' and 'us'
+
+
+class UnknownMarket(ValueError):
+    """Raised when a market id is not in :data:`MARKETS`."""
+
+    def __init__(self, market: str) -> None:
+        super().__init__(f"unknown market: {market!r}; expected one of {MARKETS}")
+        self.market = market
+
+
+def get_market_module(market: str):
+    """Import and return ``stock_analyze.markets.<market>``.
+
+    The returned module is the market's public API (make_provider,
+    execute_due_orders, update_nav, generate_rebalance_orders,
+    initialize, build_signals) re-exported from its ``__init__.py``.
+    Subsequent calls hit Python's import cache.
+    """
+    if market not in MARKETS:
+        raise UnknownMarket(market)
+    return importlib.import_module(f"stock_analyze.markets.{market}")
+
+
+@dataclass
+class MarketAgentPaths:
+    """Resolved on-disk paths for a (market, agent) pair."""
+
+    market: str
+    agent_id: str
+    repo_root: Path
+    data_dir: Path
+    reports_dir: Path
+    config_path: Path
+
+
+def resolve_market_paths(
+    market: str,
+    agent_id: str,
+    repo_root: Path | str | None = None,
+) -> MarketAgentPaths:
+    """Compute the canonical paths for a (market, agent) pair.
+
+    Convention:
+      data/<market>/<agent>/
+      reports/<market>/<agent>/
+      configs/agents/<agent>_<market>.yaml
+
+    The market suffix on the overlay filename keeps all overlays in one
+    flat ``configs/agents/`` directory (no nested subdirs) while still
+    being unambiguous about which market each overlay targets.
+    """
+    if market not in MARKETS:
+        raise UnknownMarket(market)
+    root = Path(repo_root) if repo_root else Path.cwd()
+    return MarketAgentPaths(
+        market=market,
+        agent_id=agent_id,
+        repo_root=root,
+        data_dir=root / "data" / market / agent_id,
+        reports_dir=root / "reports" / market / agent_id,
+        config_path=root / "configs" / "agents" / f"{agent_id}_{market}.yaml",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Competition baseline enforcement
 
 class CompetitionBaselineLocked(RuntimeError):
     """Raised when an agent overlay tries to override a locked baseline field."""
