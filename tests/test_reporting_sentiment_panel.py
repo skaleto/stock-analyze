@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from stock_analyze import reporting, dashboard_aggregator
-from stock_analyze.alt_factors import sentiment
+from stock_analyze.markets.a_share.alt_factors import sentiment
 
 
 def _seed_sentiment(repo: Path, agent: str, rows: list[tuple[date, float]]) -> None:

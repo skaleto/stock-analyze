@@ -305,7 +305,7 @@ def render_sentiment_comparison_panel(repo_root: Path | str) -> str:
     a 26-week alignment table. Operator-visible only — agent isolation per
     CLAUDE.md §7.1 means agents themselves cannot read each other's CSV.
     """
-    from stock_analyze.alt_factors import sentiment as _alt_sent
+    from stock_analyze.markets.a_share.alt_factors import sentiment as _alt_sent
 
     root = Path(repo_root)
     claude_rows = _alt_sent.load_sentiment_history("claude", root, last_n=26)

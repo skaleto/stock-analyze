@@ -41,12 +41,12 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from ..utils import ak_date, next_business_day, parse_date, pct_change, previous_calendar_date, safe_float, write_dataframe_csv_atomic, write_json
+from ....utils import ak_date, next_business_day, parse_date, pct_change, previous_calendar_date, safe_float, write_dataframe_csv_atomic, write_json
 
 
 # Dataclasses, exceptions, and constants live in base.py (Stage 2 of the
 # I2 split, 2026-05-26 audit). Re-exported here so existing imports of the
-# form ``from stock_analyze.data_provider import PriceSnapshot`` keep
+# form ``from stock_analyze.markets.a_share.data_provider import PriceSnapshot`` keep
 # working unchanged. The abstract DataProvider class and concrete
 # Tushare/Baostock/Akshare providers still live below in this module
 # because extracting them would create circular imports with the helpers

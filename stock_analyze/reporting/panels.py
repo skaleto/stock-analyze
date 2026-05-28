@@ -28,7 +28,7 @@ def render_market_sentiment_panel(agent_id: str, repo_root: Path | str) -> str:
     - 4-week and 8-week rolling means
     - A "未更新 N 周" warning when the latest row is > 2 weeks old
     """
-    from stock_analyze.alt_factors import sentiment as _alt_sent
+    from stock_analyze.markets.a_share.alt_factors import sentiment as _alt_sent
 
     rows = _alt_sent.load_sentiment_history(agent_id, Path(repo_root), last_n=26)
     if not rows:

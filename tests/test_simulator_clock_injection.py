@@ -15,7 +15,7 @@ from unittest import mock
 import pandas as pd
 
 from stock_analyze.markets.a_share import simulator
-from stock_analyze.data_provider import ExecutionQuote
+from stock_analyze.markets.a_share.data_provider import ExecutionQuote
 from stock_analyze.store import PortfolioStore
 
 

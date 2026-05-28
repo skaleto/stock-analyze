@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from stock_analyze.data_provider import AkshareProvider, ExecutionQuote
+from stock_analyze.markets.a_share.data_provider import AkshareProvider, ExecutionQuote
 from stock_analyze.markets.a_share.simulator import build_target_orders, execute_due_orders
 from stock_analyze.store import PortfolioStore
 

@@ -19,9 +19,9 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from stock_analyze.backtest import engine, gate
-from stock_analyze.backtest.exceptions import BacktestFloorBreach
-from stock_analyze.backtest.types import BacktestMetrics, BacktestResult
+from stock_analyze.markets.a_share.backtest import engine, gate
+from stock_analyze.markets.a_share.backtest.exceptions import BacktestFloorBreach
+from stock_analyze.markets.a_share.backtest.types import BacktestMetrics, BacktestResult
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -267,7 +267,7 @@ class E2EGateTests(unittest.TestCase):
                 metrics=BacktestMetrics(-0.30, -0.20, -1.2, -0.40, -1.8),
             )
             with patch(
-                "stock_analyze.backtest.engine.run_backtest",
+                "stock_analyze.markets.a_share.backtest.engine.run_backtest",
                 return_value=catastrophic,
             ):
                 with self.assertRaises(BacktestFloorBreach):

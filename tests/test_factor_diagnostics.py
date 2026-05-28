@@ -5,7 +5,7 @@ import unittest
 
 import pandas as pd
 
-from stock_analyze.diagnostics import compute_pending_forward_ic
+from stock_analyze.markets.a_share.diagnostics import compute_pending_forward_ic
 from stock_analyze.store import PortfolioStore
 
 

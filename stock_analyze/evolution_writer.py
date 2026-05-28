@@ -124,8 +124,8 @@ def write_evolution(
     # 1b. Backtest floor gate. If it raises BacktestFloorBreach, no side
     # effects on yaml; we write a breach log and re-raise. Imported lazily
     # so optional backtest support doesn't load when not needed.
-    from .backtest import gate as backtest_gate
-    from .backtest.exceptions import BacktestFloorBreach
+    from .markets.a_share.backtest import gate as backtest_gate
+    from .markets.a_share.backtest.exceptions import BacktestFloorBreach
 
     try:
         backtest_metrics = backtest_gate.validate_overlay_via_backtest(

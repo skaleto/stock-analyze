@@ -18,9 +18,9 @@ from .agent_briefing import (
 )
 from .competition import CompetitionBaselineLocked
 from .config import load_config
-from .data_provider import make_provider
+from .markets.a_share.data_provider import make_provider
 from .dashboard_aggregator import generate_competition_dashboard
-from .diagnostics import compute_pending_forward_ic
+from .markets.a_share.diagnostics import compute_pending_forward_ic
 from .monthly_review import compute_review, default_month_for, write_review
 from .overlay_guard import (
     OverlayBaselineLocked,
@@ -575,7 +575,7 @@ def _command_agent_rollback(args: argparse.Namespace) -> int:
 
 
 def _command_prepare_market_data(args: argparse.Namespace) -> int:
-    from .market_data import prepare_market_data_via_ledger
+    from .markets.a_share.market_data import prepare_market_data_via_ledger
 
     try:
         snapshot = prepare_market_data_via_ledger(
@@ -600,7 +600,7 @@ def _command_prepare_market_data(args: argparse.Namespace) -> int:
 
 def _command_prepare_backtest_data(args: argparse.Namespace) -> int:
     """One-time batch fetch of historical market data from Tushare into backtest_cache/."""
-    from .backtest import data_prep
+    from .markets.a_share.backtest import data_prep
 
     try:
         data_prep.prepare_backtest_data(
@@ -622,7 +622,7 @@ def _command_prepare_backtest_data(args: argparse.Namespace) -> int:
 
 def _command_backtest(args: argparse.Namespace) -> int:
     """Run a historical backtest of an overlay and write outputs to args.output."""
-    from .backtest import engine
+    from .markets.a_share.backtest import engine
 
     # Load overlay
     try:
@@ -656,7 +656,7 @@ def _command_backtest(args: argparse.Namespace) -> int:
         return 2
 
     # Write markdown report
-    from .backtest.report import write_report
+    from .markets.a_share.backtest.report import write_report
     report_path = write_report(result)
 
     m = result.metrics
@@ -672,7 +672,7 @@ def _command_backtest(args: argparse.Namespace) -> int:
 
 def _command_record_sentiment(args: argparse.Namespace) -> int:
     """Record one operator-curated sentiment row from LLM-client chat."""
-    from .alt_factors import sentiment as alt_sent
+    from .markets.a_share.alt_factors import sentiment as alt_sent
 
     drivers = [d.strip() for d in args.drivers.split(",") if d.strip()]
     sources_raw = args.sources or ""
@@ -707,7 +707,7 @@ def _command_record_sentiment(args: argparse.Namespace) -> int:
 
 def _command_sentiment_log(args: argparse.Namespace) -> int:
     """List or remove sentiment history rows."""
-    from .alt_factors import sentiment as alt_sent
+    from .markets.a_share.alt_factors import sentiment as alt_sent
 
     if args.remove:
         if args.week_end is None:

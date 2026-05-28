@@ -1,7 +1,7 @@
 """Exceptions raised by the backtest layer."""
 from __future__ import annotations
 
-from stock_analyze.backtest.types import BacktestMetrics
+from .types import BacktestMetrics
 
 
 class BacktestFloorBreach(Exception):

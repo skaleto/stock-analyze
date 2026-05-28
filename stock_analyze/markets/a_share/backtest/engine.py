@@ -25,8 +25,8 @@ from typing import Any, List, Optional
 
 import pandas as pd
 
-from stock_analyze.backtest.data_view import PointInTimeView
-from stock_analyze.backtest.types import BacktestMetrics, BacktestResult
+from .data_view import PointInTimeView
+from .types import BacktestMetrics, BacktestResult
 
 
 SIGNAL_DAY_WEEKDAY = 4  # Friday

@@ -11,7 +11,7 @@ from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from stock_analyze.alt_factors import sentiment
+from stock_analyze.markets.a_share.alt_factors import sentiment
 
 
 class RecordMarketSentimentTests(unittest.TestCase):

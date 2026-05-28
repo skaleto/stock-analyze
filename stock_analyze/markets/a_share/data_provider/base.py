@@ -12,7 +12,7 @@ non-trivial import-order risk because they reference each other and the
 helpers in the package root).
 
 Public symbols are re-exported from ``stock_analyze.data_provider`` so any
-caller doing ``from stock_analyze.data_provider import PriceSnapshot``
+caller doing ``from stock_analyze.markets.a_share.data_provider import PriceSnapshot``
 keeps working unchanged.
 """
 

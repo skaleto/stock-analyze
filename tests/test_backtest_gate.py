@@ -6,9 +6,9 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
-from stock_analyze.backtest import gate
-from stock_analyze.backtest.exceptions import BacktestFloorBreach
-from stock_analyze.backtest.types import BacktestMetrics, BacktestResult
+from stock_analyze.markets.a_share.backtest import gate
+from stock_analyze.markets.a_share.backtest.exceptions import BacktestFloorBreach
+from stock_analyze.markets.a_share.backtest.types import BacktestMetrics, BacktestResult
 
 
 def _result(cum: float, annual: float, sharpe: float, max_dd: float,
@@ -28,7 +28,7 @@ class ValidateOverlayViaBacktestTests(unittest.TestCase):
     def test_passing_overlay_returns_metrics(self):
         good = _result(cum=0.05, annual=0.04, sharpe=0.8,
                         max_dd=-0.10, ir=0.6)
-        with patch("stock_analyze.backtest.engine.run_backtest",
+        with patch("stock_analyze.markets.a_share.backtest.engine.run_backtest",
                     return_value=good), \
              patch("stock_analyze.competition.load",
                     return_value={"backtest": {"floor": {
@@ -44,7 +44,7 @@ class ValidateOverlayViaBacktestTests(unittest.TestCase):
     def test_breach_on_max_drawdown(self):
         bad = _result(cum=-0.20, annual=-0.15, sharpe=-0.8,
                        max_dd=-0.32, ir=-1.4)
-        with patch("stock_analyze.backtest.engine.run_backtest",
+        with patch("stock_analyze.markets.a_share.backtest.engine.run_backtest",
                     return_value=bad), \
              patch("stock_analyze.competition.load",
                     return_value={"backtest": {"floor": {
@@ -62,7 +62,7 @@ class ValidateOverlayViaBacktestTests(unittest.TestCase):
     def test_breach_on_sharpe_floor(self):
         bad = _result(cum=-0.05, annual=-0.04, sharpe=-0.8,
                        max_dd=-0.10, ir=-1.0)
-        with patch("stock_analyze.backtest.engine.run_backtest",
+        with patch("stock_analyze.markets.a_share.backtest.engine.run_backtest",
                     return_value=bad), \
              patch("stock_analyze.competition.load",
                     return_value={"backtest": {"floor": {
@@ -79,7 +79,7 @@ class ValidateOverlayViaBacktestTests(unittest.TestCase):
     def test_breach_on_cum_return_floor(self):
         bad = _result(cum=-0.20, annual=-0.15, sharpe=0.0,
                        max_dd=-0.10, ir=0.0)
-        with patch("stock_analyze.backtest.engine.run_backtest",
+        with patch("stock_analyze.markets.a_share.backtest.engine.run_backtest",
                     return_value=bad), \
              patch("stock_analyze.competition.load",
                     return_value={"backtest": {"floor": {
@@ -97,7 +97,7 @@ class ValidateOverlayViaBacktestTests(unittest.TestCase):
         """When multiple floors breached, max_drawdown is reported first."""
         bad = _result(cum=-0.50, annual=-0.30, sharpe=-1.5,
                        max_dd=-0.40, ir=-2.0)
-        with patch("stock_analyze.backtest.engine.run_backtest",
+        with patch("stock_analyze.markets.a_share.backtest.engine.run_backtest",
                     return_value=bad), \
              patch("stock_analyze.competition.load",
                     return_value={"backtest": {"floor": {

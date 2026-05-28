@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from stock_analyze.data_provider import AkshareProvider, CacheMiss, filter_financial_visible_as_of
-from stock_analyze.market_data import (
+from stock_analyze.markets.a_share.data_provider import AkshareProvider, CacheMiss, filter_financial_visible_as_of
+from stock_analyze.markets.a_share.market_data import (
     _merged_filters,
     prepare_market_data,
 )
@@ -153,7 +153,7 @@ class MergedFiltersTests(unittest.TestCase):
 
 class PrepareMarketDataTests(unittest.TestCase):
     def _patch_provider(self, fake: FakeProvider) -> None:
-        from stock_analyze import market_data
+        from stock_analyze.markets.a_share import market_data
 
         self._original = market_data.make_provider
         market_data.make_provider = lambda **kwargs: fake  # type: ignore[assignment]

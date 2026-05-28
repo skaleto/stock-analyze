@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Any
 
 from stock_analyze import competition
-from stock_analyze.backtest import engine
-from stock_analyze.backtest.exceptions import BacktestFloorBreach
-from stock_analyze.backtest.types import BacktestMetrics
+from . import engine
+from .exceptions import BacktestFloorBreach
+from .types import BacktestMetrics
 
 
 VALIDATION_START = date(2025, 1, 1)

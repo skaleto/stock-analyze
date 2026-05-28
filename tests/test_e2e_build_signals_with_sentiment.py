@@ -26,8 +26,8 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 
-from stock_analyze import strategy
-from stock_analyze.alt_factors import sentiment
+from stock_analyze.markets.a_share import strategy
+from stock_analyze.markets.a_share.alt_factors import sentiment
 
 
 def _three_stock_universe() -> pd.DataFrame:

@@ -4,7 +4,7 @@ import unittest
 
 import pandas as pd
 
-from stock_analyze.strategy import apply_hard_filters, listing_age
+from stock_analyze.markets.a_share.strategy import apply_hard_filters, listing_age
 
 
 class ListingAgeFilterTests(unittest.TestCase):

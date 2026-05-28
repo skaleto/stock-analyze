@@ -12,7 +12,7 @@ from stock_analyze import cli
 class RecordSentimentCLITests(unittest.TestCase):
     def test_happy_path_invokes_recording(self):
         with patch(
-            "stock_analyze.alt_factors.sentiment.record_market_sentiment"
+            "stock_analyze.markets.a_share.alt_factors.sentiment.record_market_sentiment"
         ) as mocked:
             cli.main([
                 "record-sentiment",
@@ -35,9 +35,9 @@ class RecordSentimentCLITests(unittest.TestCase):
             self.assertEqual(len(kw["sources"]), 2)
 
     def test_duplicate_returns_exit_1(self):
-        from stock_analyze.alt_factors.sentiment import DuplicateSentimentEntry
+        from stock_analyze.markets.a_share.alt_factors.sentiment import DuplicateSentimentEntry
         with patch(
-            "stock_analyze.alt_factors.sentiment.record_market_sentiment",
+            "stock_analyze.markets.a_share.alt_factors.sentiment.record_market_sentiment",
             side_effect=DuplicateSentimentEntry("claude / 2026-05-22 already exists"),
         ):
             rc = cli.main([
@@ -52,7 +52,7 @@ class RecordSentimentCLITests(unittest.TestCase):
 
     def test_validation_error_returns_exit_1(self):
         with patch(
-            "stock_analyze.alt_factors.sentiment.record_market_sentiment",
+            "stock_analyze.markets.a_share.alt_factors.sentiment.record_market_sentiment",
             side_effect=ValueError("score must be in [-1, 1]"),
         ):
             rc = cli.main([
@@ -67,7 +67,7 @@ class RecordSentimentCLITests(unittest.TestCase):
 
     def test_force_flag_propagates(self):
         with patch(
-            "stock_analyze.alt_factors.sentiment.record_market_sentiment"
+            "stock_analyze.markets.a_share.alt_factors.sentiment.record_market_sentiment"
         ) as mocked:
             cli.main([
                 "record-sentiment",
@@ -82,7 +82,7 @@ class RecordSentimentCLITests(unittest.TestCase):
 
     def test_default_prompt_version_v1(self):
         with patch(
-            "stock_analyze.alt_factors.sentiment.record_market_sentiment"
+            "stock_analyze.markets.a_share.alt_factors.sentiment.record_market_sentiment"
         ) as mocked:
             cli.main([
                 "record-sentiment",

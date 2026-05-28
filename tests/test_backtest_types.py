@@ -3,7 +3,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from stock_analyze.backtest.types import (
+from stock_analyze.markets.a_share.backtest.types import (
     BacktestMetrics,
     BacktestResult,
     CoverageReport,

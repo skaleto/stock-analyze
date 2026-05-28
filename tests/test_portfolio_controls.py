@@ -5,7 +5,7 @@ import unittest
 import pandas as pd
 
 from stock_analyze.config import migrate_strategy_config
-from stock_analyze.portfolio_controls import select_top_n_with_controls
+from stock_analyze.markets.a_share.portfolio_controls import select_top_n_with_controls
 
 
 def make_candidates(rows: list[dict]) -> pd.DataFrame:

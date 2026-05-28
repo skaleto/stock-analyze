@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 
 import pandas as pd
 
-from stock_analyze.backtest.data_view import PointInTimeView
+from stock_analyze.markets.a_share.backtest.data_view import PointInTimeView
 
 
 class _CacheBuilder:

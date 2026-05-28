@@ -13,8 +13,8 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from stock_analyze import strategy
-from stock_analyze.data_provider import CacheMiss
+from stock_analyze.markets.a_share import strategy
+from stock_analyze.markets.a_share.data_provider import CacheMiss
 
 
 class CacheMissResilienceTests(unittest.TestCase):
