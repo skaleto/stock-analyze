@@ -31,20 +31,20 @@ BASELINE_CONFIG = {
 
 def _seed_repo(tmp: Path) -> None:
     (tmp / "configs" / "agents").mkdir(parents=True, exist_ok=True)
-    (tmp / "configs" / "competition.yaml").write_text(json.dumps(BASELINE_CONFIG), encoding="utf-8")
+    (tmp / "configs" / "competition_a_share.yaml").write_text(json.dumps(BASELINE_CONFIG), encoding="utf-8")
     for agent_id, factors in (
         ("claude", {"pe": {"weight": 0.5, "direction": "low"}, "roe": {"weight": 0.5, "direction": "high"}}),
         ("codex", {"roe": {"weight": 0.5, "direction": "high"}, "low_volatility_60": {"weight": 0.5, "direction": "low"}}),
     ):
-        path = tmp / "configs" / "agents" / f"{agent_id}.yaml"
+        path = tmp / "configs" / "agents" / f"{agent_id}_a_share.yaml"
         payload = {"agent_id": agent_id, "strategy_id": f"{agent_id}_v1", "factors": factors}
         path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _seed_agent(tmp: Path, agent: str, *, cumulative: float, ir: float, daily_returns: list[tuple[str, float]], positions: list[str], factor_ic: list[tuple[str, str, float]]) -> None:
-    data_dir = tmp / "data" / agent
+    data_dir = tmp / "data" / "a_share" / agent
     data_dir.mkdir(parents=True, exist_ok=True)
-    (tmp / "reports" / agent).mkdir(parents=True, exist_ok=True)
+    (tmp / "reports" / "a_share" / agent).mkdir(parents=True, exist_ok=True)
     (tmp / "data" / "shared").mkdir(parents=True, exist_ok=True)
     (tmp / "data" / "competition").mkdir(parents=True, exist_ok=True)
     (tmp / "reports" / "competition").mkdir(parents=True, exist_ok=True)

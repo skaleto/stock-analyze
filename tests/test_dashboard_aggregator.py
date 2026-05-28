@@ -25,9 +25,9 @@ BASELINE_CONFIG = {
 
 def _seed_repo(tmp: Path) -> None:
     (tmp / "configs" / "agents").mkdir(parents=True, exist_ok=True)
-    (tmp / "configs" / "competition.yaml").write_text(json.dumps(BASELINE_CONFIG), encoding="utf-8")
+    (tmp / "configs" / "competition_a_share.yaml").write_text(json.dumps(BASELINE_CONFIG), encoding="utf-8")
     for agent_id in ("claude", "codex"):
-        path = tmp / "configs" / "agents" / f"{agent_id}.yaml"
+        path = tmp / "configs" / "agents" / f"{agent_id}_a_share.yaml"
         payload = {"agent_id": agent_id, "strategy_id": f"{agent_id}_v1", "factors": {"pe": {"weight": 1.0, "direction": "low"}}}
         path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -41,8 +41,8 @@ def _seed_agent_for_dashboard(
     nav_rows: list[tuple[str, float]] | None,
     positions: list[str],
 ) -> None:
-    data_dir = tmp / "data" / agent
-    reports_dir = tmp / "reports" / agent
+    data_dir = tmp / "data" / "a_share" / agent
+    reports_dir = tmp / "reports" / "a_share" / agent
     data_dir.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
     if fragment is not None:
@@ -172,7 +172,7 @@ class ObservationPairingTests(unittest.TestCase):
             tmp_path = Path(tmp)
             self._seed_minimal(tmp_path)
             for agent, body in (("claude", "claude weekly observation"), ("codex", "codex weekly observation")):
-                notes_dir = tmp_path / "data" / agent / "notes"
+                notes_dir = tmp_path / "data" / "a_share" / agent / "notes"
                 notes_dir.mkdir(parents=True, exist_ok=True)
                 (notes_dir / "2026-05-22-weekly-review.md").write_text(body, encoding="utf-8")
             out_path = generate_competition_dashboard(agents=["claude", "codex"], repo_root=tmp_path)
@@ -186,7 +186,7 @@ class ObservationPairingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             self._seed_minimal(tmp_path)
-            notes_dir = tmp_path / "data" / "claude" / "notes"
+            notes_dir = tmp_path / "data" / "a_share" / "claude" / "notes"
             notes_dir.mkdir(parents=True, exist_ok=True)
             (notes_dir / "2026-05-22-weekly-review.md").write_text("only claude wrote", encoding="utf-8")
             out_path = generate_competition_dashboard(agents=["claude", "codex"], repo_root=tmp_path)

@@ -24,7 +24,7 @@ from stock_analyze.notifier import (
 
 
 def _seed_agent_dir(repo_root: Path, agent: str) -> Path:
-    data_dir = repo_root / "data" / agent
+    data_dir = repo_root / "data" / "a_share" / agent
     data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir
 
@@ -117,7 +117,7 @@ class PendingActionsTests(unittest.TestCase):
     def test_saturday_with_missing_sentiment_flags_action(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            alt_dir = root / "data" / "claude" / "alt_factors"
+            alt_dir = root / "data" / "a_share" / "claude" / "alt_factors"
             alt_dir.mkdir(parents=True)
             # Sentiment exists but doesn't cover this Friday (2026-05-22)
             (alt_dir / "market_sentiment.csv").write_text(
@@ -131,7 +131,7 @@ class PendingActionsTests(unittest.TestCase):
     def test_saturday_with_recorded_sentiment_no_action(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            alt_dir = root / "data" / "claude" / "alt_factors"
+            alt_dir = root / "data" / "a_share" / "claude" / "alt_factors"
             alt_dir.mkdir(parents=True)
             (alt_dir / "market_sentiment.csv").write_text(
                 "week_end,score,confidence\n2026-05-22,0.1,0.7\n",

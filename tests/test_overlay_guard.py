@@ -45,7 +45,7 @@ BASELINE_CONFIG = {
 
 def _seed_repo(root: Path) -> None:
     (root / "configs" / "agents").mkdir(parents=True, exist_ok=True)
-    (root / "configs" / "competition.yaml").write_text(
+    (root / "configs" / "competition_a_share.yaml").write_text(
         json.dumps(BASELINE_CONFIG), encoding="utf-8"
     )
 

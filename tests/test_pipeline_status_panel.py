@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 def _seed_runs(repo: Path, agent: str, rows: list[dict]) -> None:
     """Write a minimal runs.csv with the given row dicts."""
-    csv_dir = repo / "data" / agent
+    csv_dir = repo / "data" / "a_share" / agent
     csv_dir.mkdir(parents=True, exist_ok=True)
     header = "run_id,command,as_of,started_at,finished_at,duration_ms,status,error_summary,config_hash,code_version\n"
     lines = [header]

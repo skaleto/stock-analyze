@@ -13,8 +13,8 @@ class BriefingBacktestIsolationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = TemporaryDirectory()
         self.repo = Path(self.tmp.name)
-        self.training_dir = self.repo / "data" / "claude" / "backtest" / "training" / "2026-06"
-        self.validation_dir = self.repo / "data" / "claude" / "backtest" / "validation" / "2026-06"
+        self.training_dir = self.repo / "data" / "a_share" / "claude" / "backtest" / "training" / "2026-06"
+        self.validation_dir = self.repo / "data" / "a_share" / "claude" / "backtest" / "validation" / "2026-06"
         self.training_dir.mkdir(parents=True)
         self.validation_dir.mkdir(parents=True)
 

@@ -44,7 +44,7 @@ BASELINE_CONFIG = {
 
 def _seed_repo(root: Path, agent: str = "claude") -> dict:
     (root / "configs" / "agents").mkdir(parents=True, exist_ok=True)
-    (root / "configs" / "competition.yaml").write_text(
+    (root / "configs" / "competition_a_share.yaml").write_text(
         json.dumps(BASELINE_CONFIG), encoding="utf-8"
     )
     overlay = {
@@ -59,10 +59,10 @@ def _seed_repo(root: Path, agent: str = "claude") -> dict:
         "portfolio_controls": {"max_industry_weight": 0.30},
         "filters": {"min_avg_amount_20": 50000000},
     }
-    (root / "configs" / "agents" / f"{agent}.yaml").write_text(
+    (root / "configs" / "agents" / f"{agent}_a_share.yaml").write_text(
         json.dumps(overlay), encoding="utf-8"
     )
-    (root / "data" / agent).mkdir(parents=True, exist_ok=True)
+    (root / "data" / "a_share" / agent).mkdir(parents=True, exist_ok=True)
     return overlay
 
 
@@ -91,7 +91,7 @@ class WriteEvolutionTests(unittest.TestCase):
             )
             # 1. Live overlay updated
             updated = json.loads(
-                (root / "configs" / "agents" / "claude.yaml").read_text(encoding="utf-8")
+                (root / "configs" / "agents" / "claude_a_share.yaml").read_text(encoding="utf-8")
             )
             self.assertAlmostEqual(updated["factors"]["pe"]["weight"], 0.40)
             # 2. History backup created at from_hash
@@ -100,11 +100,11 @@ class WriteEvolutionTests(unittest.TestCase):
             backup = json.loads(history.read_text(encoding="utf-8"))
             self.assertAlmostEqual(backup["factors"]["pe"]["weight"], 0.30)
             # 3. evolution_log markdown written
-            log_path = root / "data" / "claude" / "evolution_log" / "2026-06.md"
+            log_path = root / "data" / "a_share" / "claude" / "evolution_log" / "2026-06.md"
             self.assertTrue(log_path.exists())
             self.assertIn("本月加 pe 权重", log_path.read_text(encoding="utf-8"))
             # 4. evolution_diff JSON written
-            diff_path = root / "data" / "claude" / "evolution_diff" / "2026-06.json"
+            diff_path = root / "data" / "a_share" / "claude" / "evolution_diff" / "2026-06.json"
             self.assertTrue(diff_path.exists())
             diff_payload = json.loads(diff_path.read_text(encoding="utf-8"))
             self.assertEqual(diff_payload["agent_id"], "claude")
@@ -114,7 +114,7 @@ class WriteEvolutionTests(unittest.TestCase):
             self.assertAlmostEqual(diff_payload["diff"]["factors.pe.weight"]["from"], 0.30)
             self.assertAlmostEqual(diff_payload["diff"]["factors.pe.weight"]["to"], 0.40)
             # 5. config_evolution.csv has new row
-            csv_path = root / "data" / "claude" / "config_evolution.csv"
+            csv_path = root / "data" / "a_share" / "claude" / "config_evolution.csv"
             self.assertTrue(csv_path.exists())
             with csv_path.open(encoding="utf-8-sig") as handle:
                 rows = list(csv.DictReader(handle))
@@ -131,7 +131,7 @@ class WriteEvolutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             old_overlay = _seed_repo(root, agent="claude")
-            overlay_path = root / "configs" / "agents" / "claude.yaml"
+            overlay_path = root / "configs" / "agents" / "claude_a_share.yaml"
             mtime_before = overlay_path.stat().st_mtime_ns
             # New overlay tries to override accounts.*.cash → baseline lock
             new_overlay = {
@@ -161,9 +161,9 @@ class WriteEvolutionTests(unittest.TestCase):
             # Overlay file unchanged
             self.assertEqual(overlay_path.stat().st_mtime_ns, mtime_before)
             # No log / diff / csv created
-            self.assertFalse((root / "data" / "claude" / "evolution_log" / "2026-06.md").exists())
-            self.assertFalse((root / "data" / "claude" / "evolution_diff" / "2026-06.json").exists())
-            self.assertFalse((root / "data" / "claude" / "config_evolution.csv").exists())
+            self.assertFalse((root / "data" / "a_share" / "claude" / "evolution_log" / "2026-06.md").exists())
+            self.assertFalse((root / "data" / "a_share" / "claude" / "evolution_diff" / "2026-06.json").exists())
+            self.assertFalse((root / "data" / "a_share" / "claude" / "config_evolution.csv").exists())
             self.assertFalse((root / "configs" / "agents" / "_history").exists())
 
     def test_csv_columns_include_reasoning_and_diff_file(self) -> None:
@@ -179,7 +179,7 @@ class WriteEvolutionTests(unittest.TestCase):
                 repo_root=root,
                 month="2026-06",
             )
-            csv_path = root / "data" / "claude" / "config_evolution.csv"
+            csv_path = root / "data" / "a_share" / "claude" / "config_evolution.csv"
             with csv_path.open(encoding="utf-8-sig") as handle:
                 reader = csv.reader(handle)
                 header = next(reader)
@@ -214,7 +214,7 @@ class WriteEvolutionTests(unittest.TestCase):
             root = Path(tmp)
             old_overlay = _seed_repo(root, agent="claude")
             # Plant a legacy-schema csv from the deleted proposal_apply era.
-            csv_path = root / "data" / "claude" / "config_evolution.csv"
+            csv_path = root / "data" / "a_share" / "claude" / "config_evolution.csv"
             csv_path.parent.mkdir(parents=True, exist_ok=True)
             legacy_columns = [
                 "event", "event_at", "agent_id", "month",

@@ -39,10 +39,10 @@ BASELINE_CONFIG = {
 
 def _seed_repo(root: Path, agent: str, overlay: dict) -> None:
     (root / "configs" / "agents").mkdir(parents=True, exist_ok=True)
-    (root / "configs" / "competition.yaml").write_text(
+    (root / "configs" / "competition_a_share.yaml").write_text(
         json.dumps(BASELINE_CONFIG), encoding="utf-8"
     )
-    (root / "configs" / "agents" / f"{agent}.yaml").write_text(
+    (root / "configs" / "agents" / f"{agent}_a_share.yaml").write_text(
         json.dumps(overlay), encoding="utf-8"
     )
 
@@ -126,10 +126,10 @@ class ValidateOverlayCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "configs" / "agents").mkdir(parents=True, exist_ok=True)
-            (root / "configs" / "competition.yaml").write_text(
+            (root / "configs" / "competition_a_share.yaml").write_text(
                 json.dumps(BASELINE_CONFIG), encoding="utf-8"
             )
-            (root / "configs" / "agents" / "claude.yaml").write_text(
+            (root / "configs" / "agents" / "claude_a_share.yaml").write_text(
                 "{not json", encoding="utf-8"
             )
             with _ChdirContext(root):

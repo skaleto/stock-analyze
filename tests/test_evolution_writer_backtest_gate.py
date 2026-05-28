@@ -19,7 +19,7 @@ class EvolutionWriterBacktestGateTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         (self.root / "configs/agents").mkdir(parents=True)
         # Minimal baseline
-        (self.root / "configs/competition.yaml").write_text(json.dumps({
+        (self.root / "configs/competition_a_share.yaml").write_text(json.dumps({
             "competition_id": "x",
             "start_date": "2026-01-01",
             "initial_cash": 100000,
@@ -35,7 +35,7 @@ class EvolutionWriterBacktestGateTests(unittest.TestCase):
                                      "sharpe_floor": -0.5,
                                      "cum_return_floor": -0.15}},
         }))
-        self.overlay_path = self.root / "configs/agents/claude.yaml"
+        self.overlay_path = self.root / "configs/agents/claude_a_share.yaml"
         self.old_overlay = {
             "agent_id": "claude",
             "strategy_id": "old",
@@ -88,7 +88,7 @@ class EvolutionWriterBacktestGateTests(unittest.TestCase):
         # Live yaml unchanged
         self.assertEqual(self.overlay_path.read_text(), original_yaml)
         # Breach log was written
-        breach_log = self.root / "data" / "claude" / "evolution_log" / "2026-06-floor-breach.md"
+        breach_log = self.root / "data" / "a_share" / "claude" / "evolution_log" / "2026-06-floor-breach.md"
         self.assertTrue(breach_log.exists(),
                          f"expected breach log at {breach_log}")
         text = breach_log.read_text()
@@ -116,7 +116,7 @@ class EvolutionWriterBacktestGateTests(unittest.TestCase):
         # Summary returned successfully
         self.assertIn("to_hash", summary)
         # Backtest metrics were threaded into the diff JSON
-        diff_path = self.root / "data" / "claude" / "evolution_diff" / "2026-06.json"
+        diff_path = self.root / "data" / "a_share" / "claude" / "evolution_diff" / "2026-06.json"
         self.assertTrue(diff_path.exists())
         diff_data = json.loads(diff_path.read_text())
         self.assertIn("backtest_metrics", diff_data)

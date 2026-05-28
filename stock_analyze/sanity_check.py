@@ -349,7 +349,7 @@ def check_agent(
     notices, not failures.
     """
     root = _resolve_repo_root(repo_root)
-    data_dir = root / "data" / agent_id
+    data_dir = root / "data" / "a_share" / agent_id
     store = PortfolioStore(data_dir)
 
     findings: list[Anomaly] = []

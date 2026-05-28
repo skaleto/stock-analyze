@@ -20,10 +20,17 @@ from typing import Any
 from .config import canonical_json, load_config, migrate_strategy_config
 
 
-COMPETITION_CONFIG_FILE = "configs/competition.yaml"
+COMPETITION_CONFIG_FILE = "configs/competition_a_share.yaml"
 AGENTS_CONFIG_DIR = "configs/agents"
 DATA_ROOT = "data"
 REPORTS_ROOT = "reports"
+
+# Phase 1 (Task 10) migration: A-share data + overlays now sit under the
+# market-namespaced path. The constants below preserve the legacy
+# ``resolve_agent_paths`` / ``list_agents`` API contract by hardcoding the
+# default market ("a_share"). Phase 2/3 introduce a ``market`` kwarg.
+_DEFAULT_MARKET = "a_share"
+_OVERLAY_SUFFIX = f"_{_DEFAULT_MARKET}"  # e.g. "_a_share"
 SHARED_DATA_DIR = "shared"
 COMPETITION_DATA_DIR = "competition"
 COMPETITION_REPORTS_DIR = "competition"
@@ -164,28 +171,45 @@ class AgentPaths:
 
 
 def list_agents(repo_root: str | Path | None = None) -> list[str]:
-    """Return the agent IDs declared by ``configs/agents/*.yaml`` files."""
+    """Return the agent IDs declared by ``configs/agents/<agent>_a_share.yaml`` files.
+
+    Phase 1 (Task 10) convention: agent overlays are stored with a market
+    suffix (``claude_a_share.yaml``, ``codex_a_share.yaml``). This function
+    strips the ``_a_share`` suffix so callers continue to receive the bare
+    agent id (``claude``, ``codex``). Phase 2/3 will broaden this to handle
+    multiple market suffixes.
+    """
 
     root = Path(repo_root) if repo_root else Path.cwd()
     agent_dir = root / AGENTS_CONFIG_DIR
     if not agent_dir.exists():
         return []
-    return sorted(path.stem for path in agent_dir.glob("*.yaml"))
+    agents: list[str] = []
+    for path in agent_dir.glob(f"*{_OVERLAY_SUFFIX}.yaml"):
+        # Strip the "_a_share" suffix to recover the bare agent id.
+        agents.append(path.stem[: -len(_OVERLAY_SUFFIX)])
+    return sorted(agents)
 
 
 def resolve_agent_paths(agent_id: str, repo_root: str | Path | None = None) -> AgentPaths:
-    """Return the on-disk layout for a given agent."""
+    """Return the on-disk layout for a given agent under the default market.
+
+    Phase 1 (Task 10) routes to the market-namespaced layout:
+      ``configs/agents/<agent_id>_a_share.yaml``
+      ``data/a_share/<agent_id>/``
+      ``reports/a_share/<agent_id>/``
+    """
 
     root = Path(repo_root) if repo_root else Path.cwd()
-    overlay_path = root / AGENTS_CONFIG_DIR / f"{agent_id}.yaml"
+    overlay_path = root / AGENTS_CONFIG_DIR / f"{agent_id}{_OVERLAY_SUFFIX}.yaml"
     if not overlay_path.exists():
         known = list_agents(root)
         raise UnknownAgent(f"unknown_agent:{agent_id}; known={known}")
     return AgentPaths(
         agent_id=agent_id,
-        config_path=root / AGENTS_CONFIG_DIR / f"{agent_id}.yaml",
-        data_dir=root / DATA_ROOT / agent_id,
-        reports_dir=root / REPORTS_ROOT / agent_id,
+        config_path=overlay_path,
+        data_dir=root / DATA_ROOT / _DEFAULT_MARKET / agent_id,
+        reports_dir=root / REPORTS_ROOT / _DEFAULT_MARKET / agent_id,
         shared_cache_dir=root / DATA_ROOT / SHARED_DATA_DIR / "cache",
         competition_data_dir=root / DATA_ROOT / COMPETITION_DATA_DIR,
         competition_reports_dir=root / REPORTS_ROOT / COMPETITION_REPORTS_DIR,

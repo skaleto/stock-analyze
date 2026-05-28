@@ -32,7 +32,7 @@ class RecordMarketSentimentTests(unittest.TestCase):
             prompt_version="v1",
             repo_root=self.repo,
         )
-        csv = self.repo / "data" / "claude" / "alt_factors" / "market_sentiment.csv"
+        csv = self.repo / "data" / "a_share" / "claude" / "alt_factors" / "market_sentiment.csv"
         self.assertTrue(csv.exists())
         lines = csv.read_text().strip().split("\n")
         self.assertEqual(len(lines), 2)

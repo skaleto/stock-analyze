@@ -44,10 +44,10 @@ class _RepoFixture:
     def __init__(self, root: Path) -> None:
         self.root = root
         (root / "configs" / "agents").mkdir(parents=True, exist_ok=True)
-        (root / "configs" / "competition.yaml").write_text(json.dumps(BASELINE_CONFIG), encoding="utf-8")
+        (root / "configs" / "competition_a_share.yaml").write_text(json.dumps(BASELINE_CONFIG), encoding="utf-8")
 
     def write_overlay(self, agent_id: str, overlay: dict) -> None:
-        path = self.root / "configs" / "agents" / f"{agent_id}.yaml"
+        path = self.root / "configs" / "agents" / f"{agent_id}_a_share.yaml"
         payload = {"agent_id": agent_id, "strategy_id": f"{agent_id}_v1", **overlay}
         path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -74,7 +74,7 @@ class CompetitionLoaderTests(unittest.TestCase):
             fixture = _RepoFixture(Path(tmp))
             fixture.write_overlay("codex", {"factors": {"pe": {"weight": 1.0, "direction": "low"}}})
             # Manually inject a disallowed top-level key bypassing helper.
-            path = Path(tmp) / "configs" / "agents" / "codex.yaml"
+            path = Path(tmp) / "configs" / "agents" / "codex_a_share.yaml"
             payload = json.loads(path.read_text(encoding="utf-8"))
             payload["trading"] = {"commission_rate": 0}
             path.write_text(json.dumps(payload), encoding="utf-8")
@@ -105,7 +105,7 @@ class CompetitionLoaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             fixture = _RepoFixture(Path(tmp))
             fixture.write_overlay("codex", {"factors": {"pe": {"weight": 1.0, "direction": "low"}}})
-            path = Path(tmp) / "configs" / "agents" / "codex.yaml"
+            path = Path(tmp) / "configs" / "agents" / "codex_a_share.yaml"
             payload = json.loads(path.read_text(encoding="utf-8"))
             payload["accounts"] = [{"id": "hs300", "cash": 600000}]
             path.write_text(json.dumps(payload), encoding="utf-8")
@@ -131,9 +131,9 @@ class CompetitionLoaderTests(unittest.TestCase):
             fixture = _RepoFixture(Path(tmp))
             fixture.write_overlay("claude", {"factors": {}})
             paths = resolve_agent_paths("claude", repo_root=tmp)
-            self.assertEqual(paths.config_path, Path(tmp) / "configs" / "agents" / "claude.yaml")
-            self.assertEqual(paths.data_dir, Path(tmp) / "data" / "claude")
-            self.assertEqual(paths.reports_dir, Path(tmp) / "reports" / "claude")
+            self.assertEqual(paths.config_path, Path(tmp) / "configs" / "agents" / "claude_a_share.yaml")
+            self.assertEqual(paths.data_dir, Path(tmp) / "data" / "a_share" / "claude")
+            self.assertEqual(paths.reports_dir, Path(tmp) / "reports" / "a_share" / "claude")
             self.assertEqual(paths.shared_cache_dir, Path(tmp) / "data" / "shared" / "cache")
             self.assertEqual(paths.competition_data_dir, Path(tmp) / "data" / "competition")
 
@@ -155,11 +155,16 @@ class CompetitionInitSmokeTests(unittest.TestCase):
             finally:
                 os.chdir(cwd)
             self.assertEqual(rc, 0)
-            for sub in ("shared", "claude", "codex", "competition"):
+            # data/<market>/<agent>/ for A-share after Phase 1 migration;
+            # data/shared/ and data/competition/ stay at the top level (cross-market).
+            for sub in ("shared", "competition"):
                 self.assertTrue((Path(tmp) / "data" / sub).is_dir())
+            for agent in ("claude", "codex"):
+                self.assertTrue((Path(tmp) / "data" / "a_share" / agent).is_dir())
             for sub in ("claude", "codex", "competition"):
-                self.assertTrue((Path(tmp) / "reports" / sub).is_dir())
-            claude_state = json.loads((Path(tmp) / "data" / "claude" / "state.json").read_text())
+                self.assertTrue((Path(tmp) / "reports" / "a_share" / sub).is_dir() if sub != "competition"
+                                else (Path(tmp) / "reports" / sub).is_dir())
+            claude_state = json.loads((Path(tmp) / "data" / "a_share" / "claude" / "state.json").read_text())
             self.assertEqual(claude_state["accounts"]["hs300"]["cash"], 500000.0)
             metadata = json.loads((Path(tmp) / "data" / "competition" / "competition_metadata.json").read_text())
             self.assertEqual(metadata["competition_id"], "test_competition")
@@ -177,7 +182,7 @@ class ValidateOverlayPureMemoryTests(unittest.TestCase):
                 "claude",
                 {"factors": {"pe": {"weight": 1.0, "direction": "low"}}},
             )
-            overlay_path = root / "configs" / "agents" / "claude.yaml"
+            overlay_path = root / "configs" / "agents" / "claude_a_share.yaml"
             mtime_before = overlay_path.stat().st_mtime_ns
             history_dir = root / "configs" / "agents" / "_history"
             history_before = sorted(history_dir.glob("*")) if history_dir.exists() else []
@@ -203,7 +208,7 @@ class ValidateOverlayPureMemoryTests(unittest.TestCase):
             root = Path(tmp)
             fixture = _RepoFixture(root)
             fixture.write_overlay("codex", {"factors": {"pe": {"weight": 1.0, "direction": "low"}}})
-            overlay_path = root / "configs" / "agents" / "codex.yaml"
+            overlay_path = root / "configs" / "agents" / "codex_a_share.yaml"
             mtime_before = overlay_path.stat().st_mtime_ns
             with self.assertRaises(CompetitionBaselineLocked):
                 competition.validate_overlay(

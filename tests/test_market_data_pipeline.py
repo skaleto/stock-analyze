@@ -166,7 +166,7 @@ class PrepareMarketDataTests(unittest.TestCase):
         configs = root / "configs"
         agents_dir = configs / "agents"
         agents_dir.mkdir(parents=True)
-        (configs / "competition.yaml").write_text(json.dumps({
+        (configs / "competition_a_share.yaml").write_text(json.dumps({
             "competition_id": "test",
             "start_date": "2026-05-26",
             "initial_cash": 1_000_000,

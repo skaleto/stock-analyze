@@ -33,7 +33,7 @@ class BacktestFloorBaselineTests(unittest.TestCase):
             root = Path(tmp)
             # Build a fake repo layout
             (root / "configs/agents").mkdir(parents=True)
-            (root / "configs/competition.yaml").write_text(
+            (root / "configs/competition_a_share.yaml").write_text(
                 json.dumps({
                     "competition_id": "x",
                     "start_date": "2026-01-01",
@@ -56,7 +56,7 @@ class BacktestFloorBaselineTests(unittest.TestCase):
                 "factors": {},
                 "backtest": {"floor": {"max_drawdown": 0.10}},
             }
-            (root / "configs/agents/claude.yaml").write_text(
+            (root / "configs/agents/claude_a_share.yaml").write_text(
                 json.dumps(bad_overlay)
             )
             with self.assertRaises(Exception) as ctx:
