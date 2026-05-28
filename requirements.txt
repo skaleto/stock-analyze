@@ -1,5 +1,6 @@
 tushare>=1.4.0
 baostock>=0.9.1
+yfinance>=0.2.40
 pandas>=2.0.0
 numpy>=1.24.0
 PyYAML>=6.0
