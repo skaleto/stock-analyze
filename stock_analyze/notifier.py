@@ -192,11 +192,39 @@ _NAV_DTYPE = {
 }
 
 
-def _format_nav_section(agent_ids: list[str], repo_root: Path) -> list[str]:
-    """Per-agent NAV + 1-day delta. Robust to missing/empty files."""
-    lines = ["💰 NAV:"]
+# Per-market display config. Phase 2/3 added 'hk' + 'us'; A-share's
+# entry preserves the prior behavior (¥ currency, ¥1M starting cash).
+MARKET_LABELS: dict[str, str] = {
+    "a_share": "A股",
+    "hk": "港股",
+    "us": "美股",
+}
+MARKET_CURRENCY: dict[str, str] = {
+    "a_share": "¥",
+    "hk": "HK$",
+    "us": "$",
+}
+MARKET_INITIAL_CASH: dict[str, float] = {
+    "a_share": 1_000_000.0,
+    "hk": 1_000_000.0,   # HK$1M
+    "us": 150_000.0,
+}
+
+
+def _format_nav_section(
+    agent_ids: list[str],
+    repo_root: Path,
+    market: str = "a_share",
+) -> list[str]:
+    """Per-agent NAV + 1-day delta for a single market."""
+    label = MARKET_LABELS.get(market, market)
+    currency = MARKET_CURRENCY.get(market, "")
+    baseline_cash = MARKET_INITIAL_CASH.get(market, 1_000_000.0)
+    baseline_disp = f"{currency}{baseline_cash / 1000:.0f}K" if baseline_cash < 500_000 else f"{currency}{baseline_cash / 1000_000:.0f}M"
+
+    lines = [f"💰 {label} NAV:"]
     for agent in agent_ids:
-        nav_path = repo_root / "data" / "a_share" / agent / "daily_nav.csv"
+        nav_path = repo_root / "data" / market / agent / "daily_nav.csv"
         if not nav_path.exists():
             lines.append(f"  {agent:<7} (尚未初始化)")
             continue
@@ -208,10 +236,9 @@ def _format_nav_section(agent_ids: list[str], repo_root: Path) -> list[str]:
         if df.empty or "total_value" not in df.columns:
             lines.append(f"  {agent:<7} (NAV 数据为空)")
             continue
-        # Sum across accounts per day so we get one number per day.
         per_day = df.groupby("date")["total_value"].sum().sort_index()
         latest = per_day.iloc[-1]
-        pct_vs_baseline = (latest / COMPETITION_INITIAL_CASH - 1.0) * 100
+        pct_vs_baseline = (latest / baseline_cash - 1.0) * 100
         delta_line = ""
         if len(per_day) >= 2:
             prev = per_day.iloc[-2]
@@ -219,16 +246,21 @@ def _format_nav_section(agent_ids: list[str], repo_root: Path) -> list[str]:
                 pct_1d = (latest / prev - 1.0) * 100
                 delta_line = f"  Δ {pct_1d:+.2f}%"
         lines.append(
-            f"  {agent:<7} ¥{latest:>11,.0f}  ({pct_vs_baseline:+.2f}% vs ¥1M){delta_line}"
+            f"  {agent:<7} {currency}{latest:>11,.0f}  ({pct_vs_baseline:+.2f}% vs {baseline_disp}){delta_line}"
         )
     return lines
 
 
-def _format_positions_section(agent_ids: list[str], repo_root: Path) -> list[str]:
-    """Per-account holdings breakdown so the operator can spot sizing gaps."""
-    lines = ["📈 持仓:"]
+def _format_positions_section(
+    agent_ids: list[str],
+    repo_root: Path,
+    market: str = "a_share",
+) -> list[str]:
+    """Per-account holdings breakdown for a single market."""
+    label = MARKET_LABELS.get(market, market)
+    lines = [f"📈 {label} 持仓:"]
     for agent in agent_ids:
-        pos_path = repo_root / "data" / "a_share" / agent / "positions.csv"
+        pos_path = repo_root / "data" / market / agent / "positions.csv"
         if not pos_path.exists():
             lines.append(f"  {agent:<7} (尚未初始化)")
             continue
@@ -253,11 +285,24 @@ def _format_positions_section(agent_ids: list[str], repo_root: Path) -> list[str
     return lines
 
 
-def _format_sanity_section(agent_ids: list[str], repo_root: Path) -> list[str]:
-    """Run sanity_check per agent, format the worst severity + highlights."""
-    lines = ["✅ Sanity-check:"]
+def _format_sanity_section(
+    agent_ids: list[str],
+    repo_root: Path,
+    market: str = "a_share",
+) -> list[str]:
+    """Run sanity_check per agent, format worst severity + highlights."""
+    label = MARKET_LABELS.get(market, market)
+    lines = [f"✅ {label} Sanity-check:"]
     for agent in agent_ids:
         try:
+            # sanity_check.check_agent gained a `market` kwarg in Phase 1 T8
+            # but the body currently still reads a_share paths. We pass
+            # market explicitly so future-proof; today's behavior is
+            # equivalent for a_share, and for hk/us the check gracefully
+            # treats missing data as info-level.
+            findings = check_agent(agent, repo_root=repo_root, market=market)
+        except TypeError:
+            # Fallback for older sanity_check that didn't accept `market`
             findings = check_agent(agent, repo_root=repo_root)
         except Exception as exc:  # noqa: BLE001
             lines.append(f"  {agent:<7} (sanity-check 抛错: {exc.__class__.__name__})")
@@ -265,7 +310,6 @@ def _format_sanity_section(agent_ids: list[str], repo_root: Path) -> list[str]:
         if not findings:
             lines.append(f"  {agent:<7} ✓ no anomalies")
             continue
-        # Bucket counts
         critical_count = sum(1 for f in findings if f.severity == "critical")
         warn_count = sum(1 for f in findings if f.severity == "warn")
         info_count = sum(1 for f in findings if f.severity == "info")
@@ -277,7 +321,6 @@ def _format_sanity_section(agent_ids: list[str], repo_root: Path) -> list[str]:
         if info_count:
             bucket_strs.append(f"{info_count} info")
         lines.append(f"  {agent:<7} {', '.join(bucket_strs)}")
-        # Show critical + warn detail one per line, truncate long messages.
         for f in findings:
             if f.severity in ("warn", "critical"):
                 msg = f.message
@@ -452,16 +495,24 @@ def build_daily_summary(
     agent_ids: list[str],
     repo_root: Path | None = None,
     today_d: date | None = None,
+    *,
+    markets: list[str] | None = None,
 ) -> str:
     """Assemble the full daily summary text body.
 
     Pure function (no I/O beyond reading repo files + an optional
     journalctl subprocess) so it's straightforward to test against
     a hand-crafted ``repo_root`` directory.
+
+    ``markets`` defaults to ``["a_share"]`` for backward compatibility.
+    Phase 2/3 callers pass ``["a_share", "hk", "us"]`` for the cross-market
+    summary; each market gets its own NAV / 持仓 / Sanity blocks with
+    market-label prefixes (``💰 A股 NAV``, ``💰 港股 NAV``, ``💰 美股 NAV``).
     """
     repo_root = Path(repo_root) if repo_root else Path.cwd()
     today_d = today_d or _today()
     weekday_cn = "一二三四五六日"[today_d.weekday()]
+    markets = markets if markets is not None else ["a_share"]
 
     sections: list[str] = []
     sections.append(f"📊 Stock-Analyze 日报 {today_d.isoformat()} (周{weekday_cn})")
@@ -472,14 +523,37 @@ def build_daily_summary(
         sections.append("")
         sections.extend(timeline)
 
-    sections.append("")
-    sections.extend(_format_nav_section(agent_ids, repo_root))
+    # Single-market path emits the legacy header format (no 市场 prefix) so
+    # existing tests + single-market deployments stay byte-equivalent.
+    # Multi-market path always shows the market label.
+    if len(markets) == 1:
+        market = markets[0]
+        sections.append("")
+        nav_lines = _format_nav_section(agent_ids, repo_root, market)
+        if market == "a_share":
+            # Back-compat: original header was "💰 NAV" without market label.
+            nav_lines[0] = "💰 NAV:"
+        sections.extend(nav_lines)
 
-    sections.append("")
-    sections.extend(_format_positions_section(agent_ids, repo_root))
+        sections.append("")
+        pos_lines = _format_positions_section(agent_ids, repo_root, market)
+        if market == "a_share":
+            pos_lines[0] = "📈 持仓:"
+        sections.extend(pos_lines)
 
-    sections.append("")
-    sections.extend(_format_sanity_section(agent_ids, repo_root))
+        sections.append("")
+        san_lines = _format_sanity_section(agent_ids, repo_root, market)
+        if market == "a_share":
+            san_lines[0] = "✅ Sanity-check:"
+        sections.extend(san_lines)
+    else:
+        for market in markets:
+            sections.append("")
+            sections.extend(_format_nav_section(agent_ids, repo_root, market))
+            sections.append("")
+            sections.extend(_format_positions_section(agent_ids, repo_root, market))
+            sections.append("")
+            sections.extend(_format_sanity_section(agent_ids, repo_root, market))
 
     pending = collect_pending_actions(agent_ids, repo_root, today_d)
     if pending:
@@ -512,7 +586,17 @@ def cli_send_daily_summary(repo_root: Path | None = None) -> int:
     - Credentials absent: print the summary to stdout, exit 0 (preview mode).
       This lets the operator install the script before configuring auth.
     """
-    summary = build_daily_summary(["claude", "codex"], repo_root=repo_root)
+    # Phase 2/3 multi-market: include all configured markets in the daily DM.
+    # Each gets its own NAV / 持仓 / Sanity block with the market label
+    # prefix. If a market has no data on disk yet (cold-start) it shows
+    # "尚未初始化" and doesn't block the other markets.
+    from . import competition as _competition
+    markets_to_include = list(_competition.MARKETS)
+    summary = build_daily_summary(
+        ["claude", "codex"],
+        repo_root=repo_root,
+        markets=markets_to_include,
+    )
 
     creds = LarkCredentials.from_env()
     if creds is None:
