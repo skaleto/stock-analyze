@@ -44,6 +44,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reports-dir", default=None, help="Reports directory (default: reports/ or reports/<agent>)")
     parser.add_argument("--logs-dir", default="logs")
     parser.add_argument("--agent", default=None, help="Competition agent id (claude|codex). Implies competition mode and routes paths.")
+    parser.add_argument(
+        "--market",
+        choices=competition.MARKETS,
+        default="a_share",
+        help="Market (a_share | hk | us). Default: a_share (back-compat).",
+    )
     parser.add_argument("--as-of", help="Override run date in YYYY-MM-DD format")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init", help="Initialize runtime state for the configured config")
