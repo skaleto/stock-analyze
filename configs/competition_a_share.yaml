@@ -47,6 +47,7 @@
       "max_drawdown": 0.25,
       "sharpe_floor": -0.5,
       "cum_return_floor": -0.15
-    }
+    },
+    "use_full_pipeline": true
   }
 }

@@ -225,7 +225,11 @@ def _load_trade_days(cache_root: Path, start: date, end: date) -> List[date]:
     if "is_open" in df.columns:
         df = df[df["is_open"] == 1]
     days = pd.to_datetime(df["cal_date"], format="%Y%m%d").dt.date.tolist()
-    return [d for d in days if start <= d <= end]
+    # trade_cal.csv is stored newest-first; the engine loop relies on
+    # chronological order (pending orders execute_after the *next* day, and
+    # NAV/return series must be ascending). Without this sort the loop runs
+    # backwards and no pending order ever becomes due → zero trades.
+    return sorted(d for d in days if start <= d <= end)
 
 
 def _is_signal_day(d: date) -> bool:
