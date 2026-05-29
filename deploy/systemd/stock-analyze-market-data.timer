@@ -1,9 +1,12 @@
 [Unit]
-Description=Mon-Fri 17:25 Asia/Shanghai market-data fetch + agent dispatch
-# 09:25 UTC == 17:25 Asia/Shanghai (no DST)
+Description=Mon-Fri 18:30 Asia/Shanghai market-data fetch + agent dispatch
+# 10:30 UTC == 18:30 Asia/Shanghai (no DST). Moved from 17:25 -> 18:30 on
+# 2026-05-29: Tushare's same-day EOD daily/daily_basic is not always published
+# by 17:25, which made spot() come back empty and fail the fetch (see the
+# spot-empty retry in markets/a_share/market_data.py for the in-process guard).
 
 [Timer]
-OnCalendar=Mon..Fri *-*-* 09:25:00 UTC
+OnCalendar=Mon..Fri *-*-* 10:30:00 UTC
 Persistent=false
 AccuracySec=30s
 Unit=stock-analyze-market-data.service

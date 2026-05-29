@@ -100,6 +100,17 @@ class DataProvider(ABC):
         self._history_cache: dict[str, pd.DataFrame] = {}
         self.health: list[dict[str, Any]] = []
 
+    def reset_spot_cache(self) -> None:
+        """Drop the in-memory spot cache so the next ``spot()`` re-fetches.
+
+        Used by prepare-market-data's spot-empty retry loop: Tushare's
+        same-day EOD ``daily``/``daily_basic`` can lag the trigger time, so an
+        empty spot is retried after a delay rather than failing the run
+        outright. ``spot()`` never writes a cache file on an empty result, so
+        clearing the in-memory handle is enough to force a fresh network fetch.
+        """
+        self._spot_df = None
+
     # -- helpers shared by every concrete provider --------------------------
 
     def _date_stamp(self, as_of: str | None = None) -> str:
