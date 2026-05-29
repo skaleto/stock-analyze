@@ -139,7 +139,7 @@ logs/*.log, logs/*.err          systemd stdout/stderr 日志
 
 ## 策略配置
 
-> 注：本节描述**单 agent 模式**（`--config configs/strategy_v1.yaml`，老入口）。**双 agent 竞赛模式**走 `configs/competition.yaml` + `configs/agents/<id>.yaml`，详见 [`docs/competition-runbook.md`](competition-runbook.md) 与 [`docs/system-overview.md`](system-overview.md)。
+> 注：本节描述**单 agent 模式**（`--config configs/strategy_v1.yaml`，老入口）。**双 agent 竞赛模式**走 `configs/competition_a_share.yaml` + `configs/agents/<id>_a_share.yaml`，详见 [`docs/competition-runbook.md`](competition-runbook.md) 与 [`docs/system-overview.md`](system-overview.md)。
 
 默认配置在 `configs/strategy_v1.yaml`（v2 schema）：
 

@@ -204,7 +204,7 @@ def _role_section(
         f"你的工作目录：`{paths.data_dir}`、`{paths.reports_dir}`。",
         f"你的策略 overlay：`{paths.config_path}`。",
         "",
-        "**绝对不要**修改：`configs/competition.yaml`、`configs/agents/<其它 agent>.yaml`、",
+        "**绝对不要**修改：`configs/competition_a_share.yaml`、`configs/agents/<其它 agent>_a_share.yaml`、",
         "`stock_analyze/*.py`、`tests/*.py`、`openspec/specs/*` 以及 `CLAUDE.md` / `AGENTS.md`。",
         "",
     ]
@@ -350,7 +350,7 @@ def _monthly_output_contract(agent_id: str, month: str, baseline: dict[str, Any]
         *locked_lines,
         *baseline_excerpt,
         "",
-        "其它路径不要写入。**不要**修改 `configs/competition.yaml`、`stock_analyze/`、`tests/`、`reports/`。",
+        "其它路径不要写入。**不要**修改 `configs/competition_a_share.yaml`、`stock_analyze/`、`tests/`、`reports/`。",
         "",
     ]
 

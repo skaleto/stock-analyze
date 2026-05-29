@@ -64,7 +64,7 @@
 | **ECS** | 自动跑数、出 dashboard/briefings；不跑 LLM 裁判或策略应用 | systemd timer + sync 后置命令 |
 | **本地 Claude Code** | claude 视角周度分析与月度 overlay 演化 | 周度写 `data/claude/notes/`；月度写自己的 yaml + evolution 产物 |
 | **本地 Codex CLI** | codex 视角周度分析与月度 overlay 演化 | 周度写 `data/codex/notes/`；月度写自己的 yaml + evolution 产物 |
-| **你（人）** | 查看 dashboard、处理异常、决定是否回滚或暂停 | 唯一能改 `configs/competition.yaml` 的角色 |
+| **你（人）** | 查看 dashboard、处理异常、决定是否回滚或暂停 | 唯一能改 `configs/competition_a_share.yaml`（按市场分文件）的角色 |
 
 ---
 
@@ -72,12 +72,14 @@
 
 ```
 configs/
-  competition.yaml          # 共享基线：账户、成本、调仓日、起跑日（锁字段集合）
+  competition_a_share.yaml  # A 股共享基线：账户、成本、调仓日、起跑日（锁字段集合）
+  competition_hk.yaml       # 港股共享基线（同结构）
+  competition_us.yaml       # 美股共享基线（同结构）
   strategy_v1.yaml          # 老的单 agent 入口（兼容保留）
   preset_quality_low_vol.yaml # 备用 preset 演示
   agents/
-    claude.yaml             # claude 策略 overlay（因子/控制/过滤）
-    codex.yaml              # codex 策略 overlay
+    claude_a_share.yaml     # claude A 股策略 overlay（因子/控制/过滤）；另有 _hk / _us
+    codex_a_share.yaml      # codex A 股策略 overlay；另有 _hk / _us
 
 stock_analyze/              # Python 包
   cli.py                    # 所有 CLI 子命令入口
@@ -248,7 +250,7 @@ ECS:
 LLM 写完新 overlay → overlay_guard.validate（schema + 锁字段）通过
                   → backtest.gate.validate_overlay_via_backtest(new_overlay)
                   → engine.run_backtest 在验证窗口跑一遍
-                  → 比对 competition.yaml.backtest.floor 三个阈值:
+                  → 比对 competition_a_share.yaml.backtest.floor 三个阈值:
                        · max_drawdown <= 0.25
                        · sharpe >= -0.5
                        · cum_return >= -0.15
@@ -279,9 +281,9 @@ python3 -m stock_analyze backtest \
 python3 -m stock_analyze prepare-backtest-data --start 2021-01-01 --end 2026-04-30
 ```
 
-### 4f. LLM 市场情绪因子（MVP）
+### 4f. LLM 情感因子
 
-> 由 OpenSpec change `add-llm-sentiment-alpha-factor` 实施（2026-05-26 全链路上线，Phase 1 / MVP）。
+> broadcast 标量由 OpenSpec change `add-llm-sentiment-alpha-factor` 引入（2026-05-26 全链路上线）；其后落地行业级 per-stock 情感因子 `<agent>_sector_sentiment`（参与横截面排序）。
 
 每周末（建议周六上午配合 weekly review）由 operator 手动跑一次"市场情感采集"：
 
@@ -304,11 +306,12 @@ operator 再开 ChatGPT 同步给 codex 跑一次（写 data/codex/alt_factors/m
   → claude_market_sentiment_1w 作为 broadcast 因子,sign × weight × value 加在每个候选股 score 上
 ```
 
-**MVP 限制**：broadcast factor 的值是跨股票常数，对横截面排名零影响（所有股票被同样数值上下平移）。MVP 实质是**建数据通路 + 培养 operator 周度行为习惯**，等 Phase 3 升级到 per-stock 颗粒度后才真正影响选股。
+**broadcast 与 per-stock 两类**：最初 MVP 的 broadcast factor（`<agent>_market_sentiment_1w`）值是跨股票常数，对横截面排名零影响（所有股票被同样数值上下平移），现仅作向后兼容保留。在此之上已落地**行业级 per-stock 情感因子**（`<agent>_sector_sentiment`，由 `record-sector-sentiment` 写入），它按行业给每只候选股不同的情感值，参与横截面排序（走 winsorize / z-score，但跳过行业中性化），真正影响选股。
 
 CLI：
 
-- `record-sentiment` — 新增一周记录（duplicate 默认拒绝，`--force` 覆盖）
+- `record-sentiment` — 新增一周 broadcast 市场情感记录（duplicate 默认拒绝，`--force` 覆盖）
+- `record-sector-sentiment` — 新增一周行业级 per-stock 情感记录（参与横截面排序）
 - `sentiment-log --agent <id> [--last N] [--remove <date>]` — 查看 / 删除历史记录
 
 跨 agent 隔离：`overlay_guard` 拒绝在 claude 的 overlay 里引用 `codex_market_sentiment_1w`（`OverlayCrossAgentFactor`），反之亦然。
@@ -319,7 +322,7 @@ CLI：
 
 竞赛的公平性靠**两层配置**保证：
 
-### 5a. `configs/competition.yaml`（不可改）
+### 5a. `configs/competition_a_share.yaml`（不可改）
 
 定义了**所有保证可比性的字段**：起跑日、初始资金 100 万、双账户各 50 万、`top_n=50`、股票池（hs300/zz500）、基准（000300/000905）、交易成本（佣金 0.03% + 印花税 0.05% + 滑点 0.05% + 单股上限 5%）。
 
@@ -330,7 +333,7 @@ CLI：
 - `schedule.execution`、`schedule.signal_day`
 - `trading.*`（所有交易成本相关）
 
-### 5b. `configs/agents/<agent>.yaml`（agent 月度演化可改）
+### 5b. `configs/agents/<agent>_a_share.yaml`（agent 月度演化可改；另有 `_hk` / `_us`）
 
 每个 agent 通过月度策略演化影响以下 overlay 字段；实际写回由本地 LLM 调用 `evolution_writer.write_evolution` 执行，ECS 端不再 referee/apply：
 
@@ -363,15 +366,21 @@ CLI：
   ↓ 按可用因子重新归一权重（缺失因子按比例分摊给其他因子）
   ↓ 覆盖率 < min_factor_coverage 的股票被剔除并写 insufficient_factor_coverage warning
   ↓ 综合分 = Σ (有效因子 z-score × 方向 × 归一权重)
-  ↓ + broadcast sentiment factor（若 overlay 含 `<agent>_market_sentiment_1w`）
+  ↓ + per-stock 行业情感因子（若 overlay 含 `<agent>_sector_sentiment`）
+     · 按行业映射给每只候选股一个情感值，走 winsorize / z-score
+     · 但跳过行业中性化（否则行业内常数会被 demean 抹平）
+     · 参与横截面排序，真正影响选股
+  ↓ + broadcast sentiment factor（若 overlay 含 `<agent>_market_sentiment_1w`，向后兼容保留）
      · 跳过 winsorize / z-score / 行业中性化
-     · 同一标量 sign × weight × value 加在每只候选股的 score 上
+     · 同一标量 sign × weight × value 加在每只候选股的 score 上（跨股票常数，不改排序）
 按综合分降序排列
 ```
 
 每周这份完整明细写入 `data/<agent>/factor_runs/<run_id>.csv`，列含：原值 / winsorize 后 / z-score / neutralize / 方向 / weight / contribution。可重现：`score == sum(contribution per code)`。
 
-**广播因子（broadcast factors）**：由 `add-llm-sentiment-alpha-factor` MVP 引入。当因子名匹配 `<agent_id>_market_sentiment_1w` 时，因子值是一个标量（不是 per-stock），跳过 winsorize / z-score / 行业中性化，直接广播到所有候选股的综合分上。MVP 阶段对横截面排名零影响（统一平移），Phase 3 升级到 per-stock 后才参与排序。
+**广播因子（broadcast factors）**：由 `add-llm-sentiment-alpha-factor` MVP 引入。当因子名匹配 `<agent_id>_market_sentiment_1w` 时，因子值是一个标量（不是 per-stock），跳过 winsorize / z-score / 行业中性化，直接广播到所有候选股的综合分上。因其是跨股票常数（统一平移），对横截面排名零影响，现仅作向后兼容保留。
+
+**行业情感因子（sector sentiment）**：在广播因子之上落地的 per-stock 情感因子。当因子名匹配 `<agent_id>_sector_sentiment` 时，按行业把情感值映射到每只候选股，走 winsorize / z-score，但**跳过行业中性化**（否则行业内常数会被 demean 抹平），参与横截面排序，真正影响选股。由 `record-sector-sentiment` 写入。
 
 ---
 
@@ -614,7 +623,7 @@ CSS `:target` 切 tab,纯静态,无 JS 框架。
 | 启动资金 / 账户 / 成本 / 调仓日不可改 | `competition.load()` 锁字段；overlay 试图覆盖直接 raise |
 | top_n / 股票池 / 基准 一致 | 同上 |
 | agent 不能跨写对方目录 | `CLAUDE.md` / `AGENTS.md` 行为约束 + slash command 禁止条款 |
-| agent 不能改 `stock_analyze/`、`configs/competition.yaml`、operating manual | 同上 |
+| agent 不能改 `stock_analyze/`、`configs/competition_a_share.yaml`（及 `_hk` / `_us`）、operating manual | 同上 |
 | 月度策略演化边界 | `overlay_guard.validate` 只校验 schema + 锁字段 + factor 白名单 + weight 范围；策略好坏 LLM 自负（人类授权 2026-05-23） |
 | 无 LLM API 依赖 | 整个 stack 没有任何 HTTP 调用到 anthropic.com / openai.com |
 | 真单 | 不可能。代码里没有任何券商 SDK 也没有任何下单链路 |
@@ -626,7 +635,7 @@ CSS `:target` 切 tab,纯静态,无 JS 框架。
 
 - **数据**：公开接口受网络 / 风控 / 限流影响；data_provider 已加多源降级和重试，但不保证不掉数据。
 - **financials**：Tushare `fina_indicator` 已按 `ann_date <= as_of` 做 point-in-time 可见性过滤；更完整的财报公告溯源、修订版本和多期对齐仍待后续 change。
-- **历史回测**：MVP 已上线（`add-historical-backtest-engine`，2026-05-26）。引擎复用 `simulator.py`，gate 集成到月度演化，研究 CLI 支持任意窗口。⚠️ MVP 引擎用简化版信号生成（low PE top-N），完整 `factor_pipeline` 集成仍是 Phase 2 工作（详见 §17）。
+- **历史回测**：已上线（`add-historical-backtest-engine`，2026-05-26）。引擎复用 `simulator.py`，gate 集成到月度演化，研究 CLI 支持任意窗口。完整 `factor_pipeline` 集成已落地：当 `backtest.use_full_pipeline` 为 true（A 股基线 `competition_a_share.yaml` 即为 true）时，引擎跑 overlay 真实的 winsorize → z-score → 行业中性化 → 加权流水线；low-PE top-N 仅作旧版兜底。
 - **历史指数成分**：用当下成分倒推历史会有幸存者偏差，回测时再补。
 - **组合优化器**：未引入 CVXPY / PyPortfolioOpt。当前组合控制是规则式。
 - **告警**：没有钉钉/邮件告警，全靠你看 dashboard。
@@ -637,9 +646,9 @@ CSS `:target` 切 tab,纯静态,无 JS 框架。
 
 按优先级建议：
 
-1. **Phase 2 backtest factor_pipeline 集成**（约 800-1200 行）：把 `stock_analyze.factor_pipeline` 适配到 `PointInTimeView`，让 gate 真正测试 overlay 的 factor 配置；MVP 当前用 low-PE top-N 简化信号生成。
+1. ✅ **已完成 — backtest factor_pipeline 集成**（`bridge-factor-pipeline-into-backtest`）：`backtest/scoring.py` 的 `score_with_overlay` 让 gate 跑 overlay 真实 factor 流水线；gate 把 overlay 合并到 baseline 后实测，`backtest.use_full_pipeline` 在 A 股基线已置 true。low-PE top-N 仅作旧版兜底。
 2. **Phase 2 sentiment Tushare 新闻包**：升级到 ¥1000/年 Tushare news endpoint + 新增 `news_volume` 因子 + 历史回填 + 回测集成。
-3. **Phase 3 sentiment per-stock 颗粒度**：把 LLM sentiment 从单标量升级到 per-stock Z 分（真正影响横截面排名）。
+3. ✅ **已完成 — sentiment per-stock 颗粒度**：行业级 per-stock 情感因子 `<agent>_sector_sentiment` 已上线（`record-sector-sentiment` 写入），走 winsorize / z-score、跳过行业中性化，真正参与横截面排序。
 4. `introduce-point-in-time-fundamentals`：按公告日生效财务因子。
 5. `add-research-factor-toolkit`：因子衰减、相关性、行业暴露归因、风格暴露归因。
 6. `migrate-run-ledger-to-sqlite`：CSV 账本 → SQLite/DuckDB，加索引、原子写、备份。
@@ -653,8 +662,8 @@ CSS `:target` 切 tab,纯静态,无 JS 框架。
 ## 18. 术语表
 
 - **agent**：参赛策略的拥有者。当前两个：`claude`（由 Claude Code 操作）、`codex`（由 Codex CLI 操作）。
-- **baseline**：`configs/competition.yaml` 中的共享公平字段。
-- **overlay**：`configs/agents/<agent>.yaml` 中的 agent 自由配置。
+- **baseline**：`configs/competition_a_share.yaml`（按市场分文件，另有 `_hk` / `_us`）中的共享公平字段。
+- **overlay**：`configs/agents/<agent>_a_share.yaml`（另有 `_hk` / `_us`）中的 agent 自由配置。
 - **briefing**：ECS 周/月自动生成给 agent 看的 markdown 任务包，位于 `data/<agent>/notes/briefings/`。
 - **note**：agent 自己写的分析 markdown，位于 `data/<agent>/notes/`。
 - **evolution**：agent 月度策略演化记录，包含 `data/<agent>/evolution_log/`、`data/<agent>/evolution_diff/` 与 `data/<agent>/config_evolution.csv`。

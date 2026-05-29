@@ -267,8 +267,8 @@ def validate(
         :func:`_parse_overlay` so file-only callers don't have to re-implement
         the parser.
     repo_root:
-        Repo root used to locate ``configs/competition.yaml`` if ``baseline``
-        is not provided. Defaults to ``Path.cwd()``.
+        Repo root used to locate ``configs/competition_<market>.yaml`` if
+        ``baseline`` is not provided. Defaults to ``Path.cwd()``.
     baseline:
         Optional pre-loaded baseline mapping (skip disk read).
     market:

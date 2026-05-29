@@ -6,10 +6,11 @@ interface that the simulator's execution + NAV code paths actually need
 (``next_trading_day`` / ``price_snapshot`` / ``benchmark_close`` /
 ``execution_quote`` / ``execution_price``).
 
-Signal generation on Fridays is currently a simplified top-N selection (low
-PE first) — not the full overlay-driven factor pipeline. The MVP delivers a
-working pipeline end-to-end; a follow-up task can bridge the full
-``factor_pipeline`` into the backtest's ``PointInTimeView`` if/when needed.
+Signal generation on Fridays runs the full overlay ``factor_pipeline``
+(winsorize → z-score → industry-neutralize → weighted combine) when
+``backtest.use_full_pipeline`` is true — the default in the A-share
+baseline — driving selection from the same factor mix as live trading. When
+the flag is off it falls back to a legacy low-PE top-N proxy.
 
 Output schema matches the forward simulator (daily_nav.csv, trades.csv,
 signals.csv, performance_summary.json), so the same dashboard renderer can
@@ -237,7 +238,8 @@ def _is_signal_day(d: date) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Signal generation (MVP: simple low-PE top-N from PointInTimeView)
+# Signal generation (two scoring paths: full overlay factor_pipeline
+# preferred; legacy low-PE top-N from PointInTimeView as fallback)
 # ---------------------------------------------------------------------------
 
 
@@ -251,10 +253,9 @@ def _compute_signals(view: PointInTimeView, overlay: dict,
       ``scoring.score_with_overlay``, which runs the overlay's actual
       factor mix through the same ``factor_pipeline.process_factors`` as
       live trading. This makes the gate test the real overlay.
-    - Otherwise (default) → the MVP low-PE top-N proxy below. Kept as the
-      default for one observation cycle so the operator can compare gate
-      verdicts side-by-side before flipping ``use_full_pipeline: true`` in
-      the baseline config.
+    - Otherwise → the legacy low-PE top-N proxy below, used only as a
+      fallback when ``use_full_pipeline`` is off. The A-share baseline sets
+      the flag to true, so the full pipeline is the normal path.
     """
     if overlay.get("backtest", {}).get("use_full_pipeline", False):
         from .scoring import score_with_overlay

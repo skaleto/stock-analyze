@@ -6,7 +6,7 @@ when the result trips any of three floor thresholds. The gate's role is to
 catch catastrophes, not to evaluate quality — the thresholds are intentionally
 loose (max DD ≤ 25%, Sharpe ≥ −0.5, cumulative ≥ −15%).
 
-Thresholds live in ``configs/competition.yaml::backtest.floor.*`` and are
+Thresholds live in ``configs/competition_a_share.yaml::backtest.floor.*`` and are
 operator-tunable (not in ``BASELINE_LOCKED_PATHS``).
 """
 from __future__ import annotations
@@ -104,7 +104,7 @@ def validate_overlay_via_backtest(
     returns the ``BacktestMetrics`` for the run (cumulative, annual, Sharpe,
     max drawdown, information ratio).
 
-    The three floors are read from ``configs/competition.yaml::backtest.floor``.
+    The three floors are read from ``configs/competition_a_share.yaml::backtest.floor``.
     Order of evaluation: max_drawdown, sharpe, cum_return (first breach wins,
     per the spec).
 

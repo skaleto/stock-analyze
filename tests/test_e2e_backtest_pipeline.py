@@ -172,7 +172,7 @@ class E2EBacktestPipelineTests(unittest.TestCase):
             (workdir / "data" / "shared").mkdir(parents=True)
             (workdir / "logs").mkdir(parents=True)
 
-            # Copy real competition.yaml so loader works
+            # Copy real competition_a_share.yaml so loader works
             comp = json.loads((PROJECT_ROOT / "configs/competition_a_share.yaml")
                                 .read_text())
             (workdir / "configs/competition_a_share.yaml").write_text(json.dumps(comp))
