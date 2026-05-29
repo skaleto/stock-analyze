@@ -30,12 +30,30 @@ UNCLASSIFIED = "未分类"
 # ``openspec/changes/add-llm-sentiment-alpha-factor/design.md`` §5.
 _BROADCAST_FACTOR_RE = re.compile(r"^(claude|codex)_market_sentiment_1w$")
 
+# Sector-sentiment factors (Phase 3): ``<agent>_sector_sentiment``. Unlike
+# the broadcast factor above, these ARE per-stock (each stock inherits its
+# industry's sentiment), so they flow through the normal winsorize/z-score
+# pipeline — EXCEPT industry-neutralization, which would demean an
+# industry-constant signal to zero. See ``is_sector_sentiment_factor``.
+_SECTOR_FACTOR_RE = re.compile(r"^(claude|codex)_sector_sentiment$")
+
 
 def is_broadcast_factor(name: str) -> bool:
     """Return True if ``name`` matches a broadcast (market-level) factor."""
     if not name:
         return False
     return bool(_BROADCAST_FACTOR_RE.match(name))
+
+
+def is_sector_sentiment_factor(name: str) -> bool:
+    """Return True if ``name`` is a per-stock sector-sentiment factor.
+
+    These are per-stock (not broadcast) but must skip industry
+    neutralization — neutralizing an industry-constant signal zeroes it out.
+    """
+    if not name:
+        return False
+    return bool(_SECTOR_FACTOR_RE.match(name))
 
 
 def load_broadcast_factor(
@@ -201,7 +219,10 @@ def process_factors(
         if pipeline_enabled:
             winsorized = winsorize_series(raw, winsor_lower, winsor_upper)
             zscore = zscore_series(winsorized)
-            neutralized = industry_neutralize(zscore, industries) if neutralize else zscore
+            # Sector-sentiment factors skip industry-neutralization: the signal
+            # IS the industry tilt, so demeaning within industry would zero it.
+            do_neutralize = neutralize and not is_sector_sentiment_factor(factor)
+            neutralized = industry_neutralize(zscore, industries) if do_neutralize else zscore
         else:
             winsorized = raw.copy()
             zscore = raw.rank(pct=True)
