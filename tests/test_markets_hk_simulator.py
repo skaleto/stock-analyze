@@ -232,9 +232,11 @@ class ShortOrderTests(unittest.TestCase):
         provider = _fake_provider(price=100.0)
         trades = execute_due_orders(store, provider, as_of=date.today())
         self.assertEqual(len(trades), 1)
-        # Gross = 10,000 → 100% collateral (10,000) + stamp (13) + commission (3) = 10,016 cash debit
+        # Model A (fix-short-sale-nav-accounting): proceeds (gross 10,000) go
+        # INTO cash_collateral; only fees leave cash. stamp (13) + commission
+        # (3) = 16 fees → cash = 100,000 - 16.
         self.assertAlmostEqual(
-            store.state["accounts"]["hsi"]["cash"], 100_000 - 10_016, places=2
+            store.state["accounts"]["hsi"]["cash"], 100_000 - 16, places=2
         )
         self.assertAlmostEqual(
             store.state["accounts"]["hsi"]["cash_collateral"], 10_000.0, places=2
@@ -245,12 +247,14 @@ class ShortOrderTests(unittest.TestCase):
 
     def test_cover_releases_collateral_and_applies_pnl(self):
         """Cover at lower price → positive P/L (we shorted high, bought back low)."""
-        # Initial: shorted 100 shares @ $100, collateral $10,000 frozen.
+        # Model A open-state (fix-short-sale-nav-accounting): shorting 100 @ $100
+        # deposited the $10,000 proceeds into cash_collateral and took only the
+        # $16 fees out of cash, so the open-state cash is 100,000 - 16 = 99,984.
         store = _FakeStore(
             state={
                 "accounts": {
                     "hsi": {
-                        "cash": 89_984.0,  # 100k - 10k collateral - 13 stamp - 3 commission
+                        "cash": 99_984.0,  # 100k - 16 fees (proceeds went to collateral)
                         "cash_collateral": 10_000.0,
                         "positions": {
                             "0700.HK": {"shares": -100, "avg_cost": 100.0,
@@ -270,16 +274,75 @@ class ShortOrderTests(unittest.TestCase):
         provider = _fake_provider(price=80.0)
         trades = execute_due_orders(store, provider, as_of=date.today())
         self.assertEqual(len(trades), 1)
-        # Collateral released: 10000.
-        # P/L: (100 - 80) × 100 = +2000 (profit since we shorted at higher price).
-        # Stamp/commission at cover price 80: gross=8000, stamp=10.4, comm=2.4 → 12.8 total fees
-        # Net cash back: 10000 + 2000 - 12.8 = 11,987.2
-        # Final cash: 89,984 + 11,987.2 = 101,971.2
+        # Model A: cash += released(10000) - buyback(8000) - fees(12.8) = +1987.2.
+        #   released - buyback = 10000 - 8000 = 2000 embeds the P/L
+        #   (shorted @100, covered @80, 100 shares = +2000 profit).
+        #   Final cash = 99,984 + 1,987.2 = 101,971.2 (same as before — only the
+        #   open-state intermediate split changed).
         self.assertAlmostEqual(
             store.state["accounts"]["hsi"]["cash"], 101_971.2, places=1
         )
         self.assertEqual(store.state["accounts"]["hsi"]["cash_collateral"], 0.0)
         self.assertNotIn("0700.HK", store.state["accounts"]["hsi"]["positions"])
+
+    # --- Model A NAV-invariant tests (fix-short-sale-nav-accounting) ---
+
+    def _open_short(self, price: float, shares: int = 100, start_cash: float = 100_000.0):
+        """Open a short via execute_due_orders; return the seeded store."""
+        store = _FakeStore(
+            state={"accounts": {"hsi": {"cash": start_cash, "cash_collateral": 0.0,
+                                          "positions": {}, "settlement_queue": [],
+                                          "benchmark": "^HSI"}}},
+            pending=[{"code": "0700.HK", "side": "short", "shares": shares,
+                       "trade_date": date.today().isoformat(), "account_id": "hsi"}],
+        )
+        execute_due_orders(store, _fake_provider(price=price), as_of=date.today())
+        return store
+
+    def test_short_open_at_fair_value_preserves_nav(self):
+        # design §Model A: opening a short at fair value leaves NAV unchanged
+        # net of fees. Short 100 @ $100 (fees 16), mark at $100 → NAV 99,984.
+        store = self._open_short(price=100.0)
+        rows = update_nav(store, _fake_provider(price=100.0), as_of=date.today())
+        self.assertAlmostEqual(rows[0]["total_value"], 100_000 - 16, places=2)
+
+    def test_short_round_trip_no_move_returns_nav_minus_fees(self):
+        # Open then cover at the same price → NAV = start - open_fees - cover_fees.
+        store = self._open_short(price=100.0)
+        store.pending = [{"code": "0700.HK", "side": "cover", "shares": 100,
+                           "trade_date": date.today().isoformat(), "account_id": "hsi"}]
+        execute_due_orders(store, _fake_provider(price=100.0), as_of=date.today())
+        rows = update_nav(store, _fake_provider(price=100.0), as_of=date.today())
+        # open fees: gross 10000 → 16. cover fees: gross 10000 → 16. total 32.
+        self.assertAlmostEqual(rows[0]["total_value"], 100_000 - 32, places=2)
+
+    def test_short_mark_to_market_reflects_unrealized_pnl(self):
+        # Adverse: price up $20 → short loses |shares|*(open-current)= -2000.
+        store = self._open_short(price=100.0)
+        adverse = update_nav(store, _fake_provider(price=120.0), as_of=date.today())
+        self.assertAlmostEqual(
+            adverse[0]["total_value"] - (100_000 - 16), 100 * (100.0 - 120.0), places=2
+        )
+        # Favorable: price down $20 → short gains +2000.
+        store2 = self._open_short(price=100.0)
+        fav = update_nav(store2, _fake_provider(price=80.0), as_of=date.today())
+        self.assertAlmostEqual(
+            fav[0]["total_value"] - (100_000 - 16), 100 * (100.0 - 80.0), places=2
+        )
+
+    def test_partial_cover_releases_proportional_collateral(self):
+        store = self._open_short(price=100.0, shares=100)
+        # cover 40 of the 100-share short
+        store.pending = [{"code": "0700.HK", "side": "cover", "shares": 40,
+                           "trade_date": date.today().isoformat(), "account_id": "hsi"}]
+        execute_due_orders(store, _fake_provider(price=100.0), as_of=date.today())
+        pos = store.state["accounts"]["hsi"]["positions"]["0700.HK"]
+        self.assertEqual(pos["shares"], -60)
+        # released 40% of 10,000 collateral; residual short_collateral 6,000
+        self.assertAlmostEqual(pos["short_collateral"], 6_000.0, places=2)
+        self.assertAlmostEqual(
+            store.state["accounts"]["hsi"]["cash_collateral"], 6_000.0, places=2
+        )
 
 
 class UpdateNAVTests(unittest.TestCase):
@@ -307,11 +370,15 @@ class UpdateNAVTests(unittest.TestCase):
         self.assertEqual(row["benchmark_code"], "^HSI")
 
     def test_nav_short_position_reduces_equity(self):
+        # Model A open-state: shorting 100 @ $100 put the $10,000 proceeds in
+        # cash_collateral and took $16 fees from cash → cash 99,984, collateral
+        # 10,000. Starting equity was 100,000; at the open price NAV = 99,984
+        # (only the fees were lost). Now the price moves adversely to $120.
         store = _FakeStore(
             state={
                 "accounts": {
                     "hsi": {
-                        "cash": 90_000.0,
+                        "cash": 99_984.0,
                         "cash_collateral": 10_000.0,
                         "positions": {"0700.HK": {"shares": -100, "avg_cost": 100.0,
                                                     "short_collateral": 10_000.0}},
@@ -321,11 +388,11 @@ class UpdateNAVTests(unittest.TestCase):
                 }
             }
         )
-        # Price now $120 → adverse move, short is at a loss
+        # Price now $120 → adverse move, short is at a $2k unrealized loss
         provider = _fake_provider(price=120.0)
         rows = update_nav(store, provider, as_of=date.today())
-        # 90000 + 10000 - 100*120 = 88,000  (we've lost $2k on the short)
-        self.assertAlmostEqual(rows[0]["total_value"], 88_000.0, places=2)
+        # 99984 + 10000 - 100*120 = 97,984 = (100000 - 16 fees) - 2000 loss.
+        self.assertAlmostEqual(rows[0]["total_value"], 97_984.0, places=2)
 
 
 class GenerateRebalanceOrdersTests(unittest.TestCase):
