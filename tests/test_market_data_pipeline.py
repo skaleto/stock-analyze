@@ -9,6 +9,7 @@ import pandas as pd
 
 from stock_analyze.markets.a_share.data_provider import AkshareProvider, CacheMiss, filter_financial_visible_as_of
 from stock_analyze.markets.a_share.market_data import (
+    _acquire_spot_with_retry,
     _merged_filters,
     prepare_market_data,
 )
@@ -323,6 +324,60 @@ class PointInTimeFinancialTests(unittest.TestCase):
 
         self.assertEqual(len(visible), 1)
         self.assertEqual(float(visible.iloc[0]["roe"]), 12.0)
+
+
+class _SeqSpotProvider:
+    """Minimal stub: spot() returns a preset sequence of frames, one per call."""
+
+    def __init__(self, frames: list) -> None:
+        self._frames = list(frames)
+        self._i = 0
+        self.resets = 0
+        self.sleeps: list = []
+
+    def spot(self):
+        frame = self._frames[min(self._i, len(self._frames) - 1)]
+        self._i += 1
+        return frame
+
+    def reset_spot_cache(self) -> None:
+        self.resets += 1
+
+
+_EMPTY_SPOT = pd.DataFrame(columns=["code", "name", "latest_price", "pe", "pb", "market_cap_yi"])
+_NONEMPTY_SPOT = pd.DataFrame([{"code": "600519", "name": "T", "latest_price": 1.0, "pe": 1, "pb": 1, "market_cap_yi": 1}])
+
+
+class AcquireSpotWithRetryTests(unittest.TestCase):
+    """Regression for the 2026-05-29 incident: Tushare EOD publish lag made
+    spot() empty at the trigger time, aborting the whole daily run. The retry
+    absorbs that lag; the happy path stays delay-free."""
+
+    def test_retries_until_data_appears(self):
+        prov = _SeqSpotProvider([_EMPTY_SPOT, _EMPTY_SPOT, _NONEMPTY_SPOT])
+        out = _acquire_spot_with_retry(
+            prov, max_attempts=3, sleep_s=0, sleep=lambda s: prov.sleeps.append(s)
+        )
+        self.assertFalse(out.empty)
+        self.assertEqual(prov.resets, 2)        # cache cleared before each re-fetch
+        self.assertEqual(len(prov.sleeps), 2)   # slept before each retry
+
+    def test_no_delay_when_first_attempt_has_data(self):
+        prov = _SeqSpotProvider([_NONEMPTY_SPOT])
+        out = _acquire_spot_with_retry(
+            prov, max_attempts=3, sleep_s=99, sleep=lambda s: prov.sleeps.append(s)
+        )
+        self.assertFalse(out.empty)
+        self.assertEqual(prov.resets, 0)
+        self.assertEqual(prov.sleeps, [])       # happy path: zero sleeps, zero re-fetch
+
+    def test_gives_up_after_max_attempts(self):
+        prov = _SeqSpotProvider([_EMPTY_SPOT, _EMPTY_SPOT, _EMPTY_SPOT])
+        out = _acquire_spot_with_retry(
+            prov, max_attempts=3, sleep_s=0, sleep=lambda s: prov.sleeps.append(s)
+        )
+        self.assertTrue(out.empty)              # still empty → caller treats as fatal
+        self.assertEqual(len(prov.sleeps), 2)   # exactly max_attempts-1 retries
 
 
 if __name__ == "__main__":

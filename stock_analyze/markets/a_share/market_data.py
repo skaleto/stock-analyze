@@ -37,6 +37,38 @@ from ...utils import ensure_dirs, parse_date, write_text_atomic
 CRITICAL_STEPS = {"spot", "all_benchmarks"}
 OPTIONAL_EMPTY_METHODS = {"dividend_yield"}
 
+# Tushare's same-day EOD daily/daily_basic is sometimes not yet published when
+# the fetch is triggered; spot() then returns empty and the whole run aborts
+# (empty spot is fatal). Retry the spot fetch a few times before giving up.
+# The happy path (data already published) incurs zero extra delay.
+SPOT_EMPTY_RETRY_MAX = 3
+SPOT_EMPTY_RETRY_SLEEP_S = 60.0
+
+
+def _acquire_spot_with_retry(
+    provider: DataProvider,
+    *,
+    max_attempts: int = SPOT_EMPTY_RETRY_MAX,
+    sleep_s: float = SPOT_EMPTY_RETRY_SLEEP_S,
+    sleep: Any = time.sleep,
+) -> pd.DataFrame:
+    """Fetch spot, retrying on an *empty* result (Tushare EOD publish lag).
+
+    Returns the (possibly still-empty) spot frame after at most
+    ``max_attempts`` tries. Between attempts the provider's in-memory spot
+    cache is cleared so the next call performs a fresh network fetch. When the
+    first attempt already has data, there is no sleep and no extra fetch.
+    """
+
+    spot = provider.spot()
+    attempts = 1
+    while spot.empty and attempts < max_attempts:
+        sleep(sleep_s)
+        provider.reset_spot_cache()
+        spot = provider.spot()
+        attempts += 1
+    return spot
+
 
 def _now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -247,6 +279,10 @@ def prepare_market_data(
         errors.append({"code": "", "method": "trading_calendar", "message": str(exc)[:200]})
 
     # 2. spot + 3. constituents → universe
+    # Warm spot with retry first: an empty spot aborts the whole run, and
+    # Tushare's same-day EOD data can lag the trigger. On success this
+    # populates the provider's spot cache so _build_universe reuses it.
+    _acquire_spot_with_retry(provider)
     universe = _build_universe(provider, scopes, errors)
     counters["spot"] = int(len(provider.spot()))
     for scope in scopes:

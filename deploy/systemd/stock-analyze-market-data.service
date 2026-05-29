@@ -2,6 +2,10 @@
 Description=Stock Analyze shared market-data fetch (writes data/shared/cache/ once per weekday)
 After=network-online.target
 Wants=network-online.target
+# Shared-layer failures (e.g. Tushare EOD data not yet published -> empty spot)
+# must NOT be silent: route them to the same failure notifier the per-agent
+# services use, so a failed fetch lands in PIPELINE_FAILURES.log + a DM alert.
+OnFailure=stock-analyze-pipeline-failure@%n.service
 
 [Service]
 Type=oneshot
