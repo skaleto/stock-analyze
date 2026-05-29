@@ -102,3 +102,38 @@ def write_report(result: BacktestResult) -> Path:
     out = result.out_dir / "report.md"
     out.write_text(md)
     return out
+
+
+def render_compare_panel_markdown(
+    result_full: BacktestResult,
+    result_mvp: BacktestResult,
+) -> str:
+    """Render a "full-pipeline vs MVP PE-only" comparison panel.
+
+    Emitted when ``backtest --compare-mvp`` runs the same overlay/window
+    twice (``use_full_pipeline`` True then False) so a human can see whether
+    the overlay's actual factor mix beats the naive low-PE proxy. Per
+    OpenSpec change bridge-factor-pipeline-into-backtest §6.
+
+    Compares the four BacktestMetrics that exist on both runs:
+    cumulative return, max drawdown, Sharpe, and information ratio.
+    (The design's "mean IC" row is represented by IR — the realised
+    information ratio — since per-factor IC is not on BacktestMetrics.)
+    """
+    f = result_full.metrics
+    v = result_mvp.metrics
+    rows = [
+        ("累计收益", f"{f.cum_return:+.1%}", f"{v.cum_return:+.1%}"),
+        ("最大回撤", f"{f.max_drawdown:+.1%}", f"{v.max_drawdown:+.1%}"),
+        ("Sharpe", f"{f.sharpe:.2f}", f"{v.sharpe:.2f}"),
+        ("信息比率", f"{f.information_ratio:.2f}", f"{v.information_ratio:.2f}"),
+    ]
+    lines = [
+        "## 与 MVP PE-only 信号对比",
+        "",
+        "| 指标 | 当前 overlay (full pipeline) | MVP PE-only |",
+        "| --- | --- | --- |",
+    ]
+    lines.extend(f"| {label} | {full} | {mvp} |" for label, full, mvp in rows)
+    lines.append("")
+    return "\n".join(lines)

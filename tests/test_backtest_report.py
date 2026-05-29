@@ -5,7 +5,10 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from stock_analyze.markets.a_share.backtest.report import render_markdown_report
+from stock_analyze.markets.a_share.backtest.report import (
+    render_compare_panel_markdown,
+    render_markdown_report,
+)
 from stock_analyze.markets.a_share.backtest.types import BacktestMetrics, BacktestResult
 
 
@@ -49,6 +52,31 @@ class RenderMarkdownReportTests(unittest.TestCase):
         )
         md = render_markdown_report(empty)
         self.assertIn("总结", md)
+
+
+class CompareMvpPanelTests(unittest.TestCase):
+    """--compare-mvp panel (bridge-factor-pipeline §6)."""
+
+    def _result(self, cum, dd, sharpe, ir):
+        return BacktestResult(
+            out_dir=Path("/tmp/x"), start=date(2025, 1, 1), end=date(2026, 4, 30),
+            metrics=BacktestMetrics(cum_return=cum, annual_return=cum,
+                                     sharpe=sharpe, max_drawdown=dd,
+                                     information_ratio=ir),
+        )
+
+    def test_panel_has_all_four_metric_rows_with_both_columns(self):
+        full = self._result(0.123, -0.072, 1.4, 0.6)
+        mvp = self._result(0.081, -0.114, 0.8, 0.3)
+        md = render_compare_panel_markdown(full, mvp)
+        self.assertIn("与 MVP PE-only 信号对比", md)
+        for label in ("累计收益", "最大回撤", "Sharpe", "信息比率"):
+            self.assertIn(label, md)
+        # both runs' numbers appear
+        self.assertIn("+12.3%", md)   # full cum
+        self.assertIn("+8.1%", md)    # mvp cum
+        self.assertIn("1.40", md)     # full sharpe
+        self.assertIn("0.80", md)     # mvp sharpe
 
 
 if __name__ == "__main__":
