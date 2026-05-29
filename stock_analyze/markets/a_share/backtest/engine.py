@@ -241,10 +241,21 @@ def _compute_signals(view: PointInTimeView, overlay: dict,
                        as_of: date, universe: List[str]) -> List[dict]:
     """Produce one signal-row per (account, code) for the top-N selection.
 
-    MVP simplification: rank candidates by ascending PE_TTM (low PE first),
-    take top N from each account's universe. Real forward simulator uses the
-    full factor_pipeline; bridging that is future work.
+    Two scoring paths (OpenSpec change bridge-factor-pipeline-into-backtest):
+
+    - ``overlay.backtest.use_full_pipeline == True`` → delegate to
+      ``scoring.score_with_overlay``, which runs the overlay's actual
+      factor mix through the same ``factor_pipeline.process_factors`` as
+      live trading. This makes the gate test the real overlay.
+    - Otherwise (default) → the MVP low-PE top-N proxy below. Kept as the
+      default for one observation cycle so the operator can compare gate
+      verdicts side-by-side before flipping ``use_full_pipeline: true`` in
+      the baseline config.
     """
+    if overlay.get("backtest", {}).get("use_full_pipeline", False):
+        from .scoring import score_with_overlay
+        return score_with_overlay(view, overlay, as_of, universe)
+
     daily_basic = view.daily_basic(as_of=as_of)
     if daily_basic.empty:
         return []

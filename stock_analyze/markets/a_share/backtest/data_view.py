@@ -120,6 +120,24 @@ class PointInTimeView:
             return set()
         return set(df["con_code"].astype(str))
 
+    # ------------------------------------------------------------------
+    # Broadcast factors (market-level scalars, e.g. LLM sentiment)
+    # ------------------------------------------------------------------
+
+    def broadcast(self, factor_name: str, as_of: Optional[date] = None) -> float:
+        """Return a broadcast factor's scalar at ``as_of`` (point-in-time).
+
+        Broadcast factors (``<agent>_market_sentiment_1w``) are LLM-curated
+        weekly sentiment that only exists from 2026-05 onward — after the
+        training (2021-2024) and validation (2025 → 2026-04) windows. There
+        is no historical sentiment to read for backtest dates, so this
+        returns ``0.0`` (neutral) and any broadcast factor contributes
+        nothing to historical scores. The gate therefore checks the
+        overlay's factor *structure*, not sentiment-conditioned alpha (per
+        OpenSpec change bridge-factor-pipeline-into-backtest design).
+        """
+        return 0.0
+
     def _filter_listed(self, codes: set[str], d: date) -> set[str]:
         sb_path = self.cache_root / "stock_basic.csv"
         if not sb_path.exists():
