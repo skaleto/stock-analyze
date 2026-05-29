@@ -194,17 +194,63 @@ class SimulatorShortTests(unittest.TestCase):
     def test_short_freezes_collateral(self):
         store = _FakeStore(
             state={"accounts": {"sp500": {"cash": 50_000.0, "cash_collateral": 0.0,
-                                            "positions": {}, "settlement_queue": []}}},
+                                            "positions": {}, "settlement_queue": [],
+                                            "benchmark": "^GSPC"}}},
             pending=[{"code": "TSLA", "side": "short", "shares": 100,
                        "trade_date": date.today().isoformat(),
                        "account_id": "sp500"}],
         )
         trades = execute_due_orders(store, _fake_provider(200.0), as_of=date.today())
         self.assertEqual(len(trades), 1)
-        # Collateral = 100*200 = 20000
-        self.assertAlmostEqual(store.state["accounts"]["sp500"]["cash"], 30_000.0)
+        # Model A (fix-short-sale-nav-accounting): proceeds (100*200=20000) go
+        # into cash_collateral; US is zero-fee so cash is UNCHANGED at open.
+        self.assertAlmostEqual(store.state["accounts"]["sp500"]["cash"], 50_000.0)
         self.assertAlmostEqual(store.state["accounts"]["sp500"]["cash_collateral"], 20_000.0)
         self.assertEqual(store.state["accounts"]["sp500"]["positions"]["TSLA"]["shares"], -100)
+
+    def test_short_open_at_fair_value_preserves_nav(self):
+        # US zero-fee: opening a short at fair value leaves NAV exactly equal
+        # to starting equity (design §Model A).
+        store = _FakeStore(
+            state={"accounts": {"sp500": {"cash": 50_000.0, "cash_collateral": 0.0,
+                                            "positions": {}, "settlement_queue": [],
+                                            "benchmark": "^GSPC"}}},
+            pending=[{"code": "TSLA", "side": "short", "shares": 100,
+                       "trade_date": date.today().isoformat(), "account_id": "sp500"}],
+        )
+        execute_due_orders(store, _fake_provider(200.0), as_of=date.today())
+        rows = update_nav(store, _fake_provider(200.0), as_of=date.today())
+        self.assertAlmostEqual(rows[0]["total_value"], 50_000.0, places=2)
+
+    def test_short_round_trip_no_move_returns_full_nav(self):
+        # US zero-fee: open then cover at the same price → NAV back to start.
+        store = _FakeStore(
+            state={"accounts": {"sp500": {"cash": 50_000.0, "cash_collateral": 0.0,
+                                            "positions": {}, "settlement_queue": [],
+                                            "benchmark": "^GSPC"}}},
+            pending=[{"code": "TSLA", "side": "short", "shares": 100,
+                       "trade_date": date.today().isoformat(), "account_id": "sp500"}],
+        )
+        execute_due_orders(store, _fake_provider(200.0), as_of=date.today())
+        store.pending = [{"code": "TSLA", "side": "cover", "shares": 100,
+                           "trade_date": date.today().isoformat(), "account_id": "sp500"}]
+        execute_due_orders(store, _fake_provider(200.0), as_of=date.today())
+        rows = update_nav(store, _fake_provider(200.0), as_of=date.today())
+        self.assertAlmostEqual(rows[0]["total_value"], 50_000.0, places=2)
+
+    def test_short_mark_to_market_reflects_unrealized_pnl(self):
+        # Cover-side P/L is embedded; mark-to-market a price drop = profit.
+        store = _FakeStore(
+            state={"accounts": {"sp500": {"cash": 50_000.0, "cash_collateral": 0.0,
+                                            "positions": {}, "settlement_queue": [],
+                                            "benchmark": "^GSPC"}}},
+            pending=[{"code": "TSLA", "side": "short", "shares": 100,
+                       "trade_date": date.today().isoformat(), "account_id": "sp500"}],
+        )
+        execute_due_orders(store, _fake_provider(200.0), as_of=date.today())
+        rows = update_nav(store, _fake_provider(180.0), as_of=date.today())
+        # short @200, mark @180 → +100*(200-180) = +2000 over starting equity.
+        self.assertAlmostEqual(rows[0]["total_value"] - 50_000.0, 100 * (200.0 - 180.0), places=2)
 
 
 class UpdateNAVTests(unittest.TestCase):

@@ -208,22 +208,27 @@ class SettlementSimulatorBase:
             return self._trade_record(order, px, gross, stamp, commission, settle_date, "sell")
 
         if order.side == "short":
-            gross = order.shares * px
-            stamp = gross * stamp_rate
-            commission = gross * commission_rate
-            coll = gross * collateral_ratio
-            net_debit = coll + stamp + commission  # collateral leaves cash too
-            if net_debit > cash:
-                return None
-            account_state["cash"] = cash - net_debit
-            account_state["cash_collateral"] = collateral + coll
+            # Model A (OpenSpec change fix-short-sale-nav-accounting): route
+            # the short-sale PROCEEDS into cash_collateral; cash only moves by
+            # fees. This keeps NAV (= cash + cash_collateral + positions_value)
+            # correct, because the +gross proceeds in cash_collateral net
+            # against the -gross liability that the short position contributes
+            # to positions_value. With SHORTING_COLLATERAL_RATIO == 1.0 the
+            # proceeds equal the 100% collateral, so "deposit proceeds" and
+            # "freeze full collateral" coincide.
             existing = positions.get(order.code, {"shares": 0, "avg_cost": 0.0})
             prior_shares = int(existing.get("shares", 0))
             # Shorting on top of an existing long is not supported in v1.
             if prior_shares > 0:
-                account_state["cash"] = cash  # undo
-                account_state["cash_collateral"] = collateral
                 return None
+            gross = order.shares * px
+            stamp = gross * stamp_rate
+            commission = gross * commission_rate
+            fees = stamp + commission
+            if fees > cash:
+                return None
+            account_state["cash"] = cash - fees
+            account_state["cash_collateral"] = collateral + gross
             new_shares = prior_shares - order.shares  # more negative
             old_cost_basis = abs(prior_shares) * float(existing.get("avg_cost", 0.0))
             new_cost_basis = old_cost_basis + gross
@@ -232,7 +237,7 @@ class SettlementSimulatorBase:
                 "avg_cost": new_cost_basis / abs(new_shares) if new_shares != 0 else 0.0,
                 "last_buy_date": as_of.isoformat(),
                 "hold_since": existing.get("hold_since", as_of.isoformat()),
-                "short_collateral": float(existing.get("short_collateral", 0.0)) + coll,
+                "short_collateral": float(existing.get("short_collateral", 0.0)) + gross,
             }
             return self._trade_record(order, px, gross, stamp, commission, settle_date, "short")
 
@@ -243,14 +248,17 @@ class SettlementSimulatorBase:
             prior_shares = int(existing["shares"])  # negative
             if order.shares > -prior_shares:
                 return None  # can't cover more than open short
-            gross = order.shares * px
+            gross = order.shares * px  # buyback cost
             stamp = gross * stamp_rate
             commission = gross * commission_rate
             per_pos_coll = float(existing.get("short_collateral", 0.0))
             coll_released = per_pos_coll * (order.shares / abs(prior_shares))
-            avg_cost = float(existing.get("avg_cost", 0.0))
-            pnl = (avg_cost - px) * order.shares  # cover px low = profit
-            cash_back = coll_released + pnl - stamp - commission
+            # Model A: cash += released_collateral − buyback − fees. The
+            # P/L is embedded in (released − buyback): with 100% ratio the
+            # released collateral equals shares×open_price, so
+            # released − buyback = shares×(open_price − cover_price). No
+            # separate pnl term (the old code added both, double-counting).
+            cash_back = coll_released - gross - stamp - commission
             account_state["cash"] = cash + cash_back
             account_state["cash_collateral"] = collateral - coll_released
             new_shares = prior_shares + order.shares  # less negative
