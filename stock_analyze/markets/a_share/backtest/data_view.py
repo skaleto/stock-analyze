@@ -78,7 +78,11 @@ class PointInTimeView:
         # ann_date arrives as int (YYYYMMDD) or string; coerce defensively
         ann_parsed = pd.to_datetime(df["ann_date"].astype(str),
                                       format="%Y%m%d", errors="coerce").dt.date
-        visible = ann_parsed.apply(lambda x: x is not None and x <= d)
+        # An unparseable ann_date coerces to NaT, and `NaT is not None` is
+        # True — so the old `x is not None` guard fell through to `NaT <= d`
+        # and raised "Cannot compare NaT with datetime.date". pd.notna(x)
+        # correctly rejects both NaT and None before the comparison.
+        visible = ann_parsed.apply(lambda x: pd.notna(x) and x <= d)
         return df[visible].reset_index(drop=True)
 
     # ------------------------------------------------------------------
@@ -154,7 +158,9 @@ class PointInTimeView:
         # list_date <= d
         list_parsed = pd.to_datetime(sb["list_date"], format="%Y%m%d",
                                        errors="coerce").dt.date
-        sb = sb[list_parsed.apply(lambda x: x is not None and x <= d)]
+        # pd.notna rejects NaT (unparseable list_date) and None; a bare
+        # `x is not None` would let NaT through and crash on `NaT <= d`.
+        sb = sb[list_parsed.apply(lambda x: pd.notna(x) and x <= d)]
         # delist_date empty/NaN OR > d
         if "delist_date" in sb.columns:
             def keep(val) -> bool:

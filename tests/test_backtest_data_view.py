@@ -112,6 +112,27 @@ class FinaAccessTests(unittest.TestCase):
         df = view.fina_for_code("999999.SZ", as_of=date(2023, 6, 30))
         self.assertTrue(df.empty)
 
+    def test_unparseable_ann_date_does_not_crash(self):
+        """Regression: an ann_date that coerces to NaT must not raise.
+
+        `NaT is not None` is True, so the old guard fell through to
+        `NaT <= as_of` → "Cannot compare NaT with datetime.date". The bad
+        row is simply treated as not-yet-visible and dropped.
+        """
+        self.builder.write_fina("000002.SZ", [
+            {"ts_code": "000002.SZ", "ann_date": "", "end_date": "20230331",
+             "roe": 1.0},               # empty → NaT
+            {"ts_code": "000002.SZ", "ann_date": "not_a_date",
+             "end_date": "20230331", "roe": 2.0},   # garbage → NaT
+            {"ts_code": "000002.SZ", "ann_date": "20230420",
+             "end_date": "20230331", "roe": 3.5},   # valid, visible
+        ])
+        view = PointInTimeView(as_of=date(2023, 6, 30), cache_root=self.cache)
+        df = view.fina_for_code("000002.SZ", as_of=date(2023, 6, 30))
+        # Only the parseable, in-the-past row survives.
+        self.assertEqual(len(df), 1)
+        self.assertAlmostEqual(df.iloc[0]["roe"], 3.5)
+
 
 class UniverseAccessTests(unittest.TestCase):
     def setUp(self):
@@ -149,6 +170,24 @@ class UniverseAccessTests(unittest.TestCase):
         self.assertIn("000001.SZ", codes)
         self.assertIn("000002.SZ", codes)
         self.assertNotIn("600000.SH", codes)
+
+    def test_unparseable_list_date_does_not_crash(self):
+        """Regression: a NaT list_date must not raise in _filter_listed.
+
+        Same NaT-vs-date trap as fina_for_code. A constituent whose
+        list_date is unparseable is conservatively dropped (treated as
+        not-yet-listed) rather than crashing the whole universe build.
+        """
+        self.builder.write_stock_basic([
+            {"ts_code": "000001.SZ", "name": "平安银行",
+             "list_date": "19910403", "delist_date": "", "industry": "银行"},
+            {"ts_code": "000002.SZ", "name": "万科A",
+             "list_date": "", "delist_date": "", "industry": "房地产"},  # NaT
+        ])
+        view = PointInTimeView(as_of=date(2023, 6, 30), cache_root=self.cache)
+        codes = view.universe(as_of=date(2023, 6, 30), indices=["hs300"])
+        self.assertIn("000001.SZ", codes)        # valid list_date kept
+        self.assertNotIn("000002.SZ", codes)     # NaT list_date dropped, no crash
 
     def test_uses_most_recent_monthly_snapshot(self):
         """Looking up universe(2023-07-15) should use 2023-06 snapshot (no 2023-07 file)."""

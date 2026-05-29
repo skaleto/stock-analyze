@@ -30,7 +30,7 @@ class ValidateOverlayViaBacktestTests(unittest.TestCase):
                         max_dd=-0.10, ir=0.6)
         with patch("stock_analyze.markets.a_share.backtest.engine.run_backtest",
                     return_value=good), \
-             patch("stock_analyze.competition.load",
+             patch("stock_analyze.competition.validate_overlay",
                     return_value={"backtest": {"floor": {
                         "max_drawdown": 0.25,
                         "sharpe_floor": -0.5,
@@ -46,7 +46,7 @@ class ValidateOverlayViaBacktestTests(unittest.TestCase):
                        max_dd=-0.32, ir=-1.4)
         with patch("stock_analyze.markets.a_share.backtest.engine.run_backtest",
                     return_value=bad), \
-             patch("stock_analyze.competition.load",
+             patch("stock_analyze.competition.validate_overlay",
                     return_value={"backtest": {"floor": {
                         "max_drawdown": 0.25,
                         "sharpe_floor": -0.5,
@@ -64,7 +64,7 @@ class ValidateOverlayViaBacktestTests(unittest.TestCase):
                        max_dd=-0.10, ir=-1.0)
         with patch("stock_analyze.markets.a_share.backtest.engine.run_backtest",
                     return_value=bad), \
-             patch("stock_analyze.competition.load",
+             patch("stock_analyze.competition.validate_overlay",
                     return_value={"backtest": {"floor": {
                         "max_drawdown": 0.25,
                         "sharpe_floor": -0.5,
@@ -81,7 +81,7 @@ class ValidateOverlayViaBacktestTests(unittest.TestCase):
                        max_dd=-0.10, ir=0.0)
         with patch("stock_analyze.markets.a_share.backtest.engine.run_backtest",
                     return_value=bad), \
-             patch("stock_analyze.competition.load",
+             patch("stock_analyze.competition.validate_overlay",
                     return_value={"backtest": {"floor": {
                         "max_drawdown": 0.25,
                         "sharpe_floor": -0.5,
@@ -99,7 +99,7 @@ class ValidateOverlayViaBacktestTests(unittest.TestCase):
                        max_dd=-0.40, ir=-2.0)
         with patch("stock_analyze.markets.a_share.backtest.engine.run_backtest",
                     return_value=bad), \
-             patch("stock_analyze.competition.load",
+             patch("stock_analyze.competition.validate_overlay",
                     return_value={"backtest": {"floor": {
                         "max_drawdown": 0.25,
                         "sharpe_floor": -0.5,
@@ -110,6 +110,49 @@ class ValidateOverlayViaBacktestTests(unittest.TestCase):
                     {"agent_id": "claude", "factors": {}}, agent_id="claude",
                 )
             self.assertEqual(ctx.exception.breach_type, "max_drawdown_exceeded")
+
+
+class GateMergesOverlayTests(unittest.TestCase):
+    """The gate must backtest the baseline-merged config, not the raw overlay.
+
+    A raw agent overlay has only the 7 permitted keys (no ``accounts`` /
+    ``trading``), so backtesting it directly yields an empty, trivially-
+    passing run. The gate merges it onto the baseline first; this test
+    captures the overlay actually handed to ``run_backtest`` and asserts the
+    baseline ``accounts`` are present and ``backtest.use_full_pipeline`` is
+    surfaced from the competition config (the switch-B flag).
+    """
+
+    def test_gate_backtests_merged_overlay_with_accounts_and_flag(self):
+        from stock_analyze import competition
+
+        captured: dict = {}
+        good = _result(cum=0.05, annual=0.04, sharpe=0.8, max_dd=-0.10, ir=0.6)
+
+        def _capture(**kwargs):
+            captured["overlay"] = kwargs["overlay"]
+            return good
+
+        # competition.validate_overlay runs for real (reads the live baseline);
+        # only run_backtest is stubbed so no cache is needed.
+        with patch("stock_analyze.markets.a_share.backtest.engine.run_backtest",
+                   side_effect=_capture):
+            gate.validate_overlay_via_backtest(
+                {"agent_id": "claude",
+                 "factors": {"pe": {"weight": 1.0, "direction": "low"}}},
+                agent_id="claude",
+            )
+
+        ov = captured["overlay"]
+        # Baseline accounts were merged in (raw overlay had none).
+        self.assertIn("accounts", ov)
+        self.assertGreaterEqual(len(ov["accounts"]), 1)
+        # backtest.use_full_pipeline is surfaced and matches the live config —
+        # this is what makes the gate honour switch B.
+        expected_flag = (
+            competition.load("claude").get("backtest", {}).get("use_full_pipeline", False)
+        )
+        self.assertEqual(ov.get("backtest", {}).get("use_full_pipeline"), expected_flag)
 
 
 if __name__ == "__main__":

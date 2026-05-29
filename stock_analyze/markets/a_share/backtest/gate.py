@@ -107,9 +107,20 @@ def validate_overlay_via_backtest(
     The three floors are read from ``configs/competition.yaml::backtest.floor``.
     Order of evaluation: max_drawdown, sharpe, cum_return (first breach wins,
     per the spec).
+
+    The proposed overlay is first merged onto the locked baseline via
+    ``competition.validate_overlay``. This is essential: a raw agent overlay
+    carries only the seven permitted keys (``factors`` / ``filters`` / …) and
+    has **no** ``accounts`` or ``trading`` block, so backtesting it directly
+    would build empty per-account state and produce a vacuous, trivially-
+    passing run. Merging restores the baseline ``accounts`` / ``trading`` /
+    ``schedule`` and surfaces ``backtest.use_full_pipeline`` — the flag the
+    engine reads to choose MVP-PE vs. full-overlay scoring — so the gate
+    actually evaluates the strategy the agent will trade.
     """
-    cfg = competition.load(agent_id)
-    floor_cfg = cfg.get("backtest", {}).get("floor", {})
+    merged = competition.validate_overlay(agent_id, overlay)
+    backtest_cfg = merged.get("backtest", {})
+    floor_cfg = backtest_cfg.get("floor", {})
     max_dd_floor = float(floor_cfg.get("max_drawdown", 0.25))
     sharpe_floor = float(floor_cfg.get("sharpe_floor", -0.5))
     cum_floor = float(floor_cfg.get("cum_return_floor", -0.15))
@@ -118,7 +129,7 @@ def validate_overlay_via_backtest(
     target_out.mkdir(parents=True, exist_ok=True)
 
     result = engine.run_backtest(
-        overlay=overlay,
+        overlay=merged,
         start=VALIDATION_START,
         end=VALIDATION_END,
         universe=["hs300", "zz500"],
@@ -143,7 +154,7 @@ def validate_overlay_via_backtest(
     # degenerate (all-tied) — a failure the return-based floors can't catch
     # because a tied universe still earns ordinary returns. No-ops on a thin
     # cache (sample days with no data are skipped).
-    samples = _sample_signal_scores(overlay, cache_root, ["hs300", "zz500"])
+    samples = _sample_signal_scores(merged, cache_root, ["hs300", "zz500"])
     check_structural_equivalence(samples)
 
     return m

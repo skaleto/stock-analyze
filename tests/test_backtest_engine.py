@@ -195,5 +195,77 @@ class RunBacktestSmokeTests(unittest.TestCase):
         self.assertIsNotNone(result.metrics.cum_return)
 
 
+class TradeDayOrderingTests(unittest.TestCase):
+    """Regression: trade_cal.csv ships newest-first; the engine must sort it.
+
+    With a descending trade-day list the loop runs backwards, so every
+    pending order's execute_after is perpetually in the (reverse) future and
+    nothing ever executes — a silent 0-trade backtest that trivially passes
+    every floor. Both checks below failed before the sort fix in
+    ``_load_trade_days``.
+    """
+
+    def test_load_trade_days_sorts_descending_cal_ascending(self):
+        with TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            # Tushare order: newest first.
+            _CacheBuilder(cache).add_trade_cal(
+                ["20240105", "20240104", "20240103", "20240102"]
+            )
+            days = engine._load_trade_days(cache, date(2024, 1, 1), date(2024, 1, 31))
+            self.assertEqual(days, sorted(days))
+            self.assertEqual(days[0], date(2024, 1, 2))
+            self.assertEqual(days[-1], date(2024, 1, 5))
+
+    def test_run_backtest_executes_trades_with_descending_cal(self):
+        with TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache"
+            out = Path(tmp) / "out"
+            cache.mkdir(parents=True)
+            out.mkdir(parents=True)
+            builder = _CacheBuilder(cache)
+            # Fri 2023-06-30 is a signal day; Mon 2023-07-03 is the next
+            # trade day the order executes on. Calendar stored DESCENDING.
+            iso = ["2023-06-30", "2023-07-03", "2023-07-04", "2023-07-05"]
+            raw = [d.replace("-", "") for d in iso]
+            builder.add_trade_cal(list(reversed(raw)))
+            for i, r in zip(iso, raw):
+                builder.add_daily(i, [
+                    {"ts_code": "000001.SZ", "trade_date": r, "open": 12.0,
+                     "close": 12.1, "high": 12.5, "low": 11.9,
+                     "vol": 1e6, "amount": 1.2e10},
+                    {"ts_code": "000002.SZ", "trade_date": r, "open": 20.0,
+                     "close": 20.05, "high": 20.5, "low": 19.8,
+                     "vol": 8e5, "amount": 1.6e10},
+                ])
+                builder.add_daily_basic(i, [
+                    {"ts_code": "000001.SZ", "trade_date": r, "pe_ttm": 5.5,
+                     "pb": 1.1, "dv_ttm": 4.5, "total_mv": 200_000,
+                     "circ_mv": 150_000},
+                    {"ts_code": "000002.SZ", "trade_date": r, "pe_ttm": 12.0,
+                     "pb": 1.8, "dv_ttm": 2.0, "total_mv": 250_000,
+                     "circ_mv": 200_000},
+                ])
+            builder.add_index_weight("000300", "2023-06", ["000001.SZ", "000002.SZ"])
+            builder.add_index_weight("000300", "2023-07", ["000001.SZ", "000002.SZ"])
+            builder.add_index_weight("000905", "2023-06", [])
+            builder.add_index_weight("000905", "2023-07", [])
+            builder.add_stock_basic([
+                {"ts_code": "000001.SZ", "name": "平安银行",
+                 "list_date": "19910403", "delist_date": "", "industry": "银行"},
+                {"ts_code": "000002.SZ", "name": "万科A",
+                 "list_date": "19910129", "delist_date": "", "industry": "房地产"},
+            ])
+            engine.run_backtest(
+                overlay=_minimal_overlay(),
+                start=date(2023, 6, 30), end=date(2023, 7, 5),
+                universe=["hs300"], market_data_root=cache,
+                out_dir=out, in_memory=False,
+            )
+            trades = pd.read_csv(out / "trades.csv")
+            self.assertGreater(len(trades), 0,
+                               "descending trade_cal must still produce trades")
+
+
 if __name__ == "__main__":
     unittest.main()
