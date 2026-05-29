@@ -1,7 +1,8 @@
 """Dual-agent competition runtime.
 
-Loads ``configs/competition.yaml`` as a shared fairness baseline plus
-``configs/agents/<agent_id>.yaml`` as per-agent strategy overlay, validates
+Loads ``configs/competition_<market>.yaml`` (e.g. ``competition_a_share.yaml``)
+as a shared fairness baseline plus ``configs/agents/<agent_id>_<market>.yaml``
+as per-agent strategy overlay, validates
 that the overlay does not override baseline-locked fields, and resolves
 on-disk paths so each agent has its own state/reports namespace while sharing
 market-data cache.

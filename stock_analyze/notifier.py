@@ -57,7 +57,7 @@ from .utils import today as _today
 LARK_BASE_URL = "https://open.feishu.cn/open-apis"
 
 #: Baseline starting cash per the locked competition configuration. Kept
-#: here as a constant (rather than re-loading competition.yaml) so the
+#: here as a constant (rather than re-loading competition_a_share.yaml) so the
 #: notifier stays import-cheap. If the baseline ever changes, this is
 #: the only line that needs updating in this module.
 COMPETITION_INITIAL_CASH = 1_000_000.0

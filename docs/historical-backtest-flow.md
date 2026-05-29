@@ -4,7 +4,7 @@
 > `openspec/changes/archive/`）。详细设计见该 change 的
 > `IMPLEMENTATION_REPORT.md` 与 `DATA_PIPELINE.md`。
 
-回测引擎服务两个独立场景，共享同一个核心引擎（`stock_analyze/backtest/engine.py`）。
+回测引擎服务两个独立场景，共享同一个核心引擎（`stock_analyze/markets/a_share/backtest/engine.py`）。
 
 ---
 
@@ -19,7 +19,7 @@
 
 | 阈值 | 默认值 | 来源 |
 |---|---|---|
-| `max_drawdown` ≤ | 25% | `configs/competition.yaml.backtest.floor.max_drawdown` |
+| `max_drawdown` ≤ | 25% | `configs/competition_a_share.yaml.backtest.floor.max_drawdown` |
 | `sharpe` ≥ | −0.5 | `...sharpe_floor` |
 | `cum_return` ≥ | −15% | `...cum_return_floor` |
 
@@ -36,7 +36,7 @@
 python3 -m stock_analyze backtest \
   --agent claude \
   --start 2023-01-01 --end 2024-12-31 \
-  --overlay configs/agents/claude.yaml \
+  --overlay configs/agents/claude_a_share.yaml \
   --output data/claude/backtest/<run_id>/ \
   [--in-memory] [--universe hs300|zz500|both]
 ```
@@ -96,9 +96,11 @@ python3 -m stock_analyze prepare-backtest-data \
 - 引擎按交易日序列调 `execute_due_orders` / `update_nav` / `generate_rebalance_orders`
 - `BacktestProvider` 是 `DataProvider` 的薄子集（5 个方法），通过 `PointInTimeView` 防未来泄漏
 
-**MVP 简化**：当前回测的信号生成是 low-PE top-N，未走完整 factor_pipeline。完整桥接是
-后续 OpenSpec change `bridge-factor-pipeline-into-backtest-engine`。Gate 的灾难底线
-仍有效（防 max DD > 25% 等），但"该 overlay 历史会跑出多少 Sharpe" 暂时不准确。
+**完整 factor_pipeline 已桥接**（由 OpenSpec change `bridge-factor-pipeline-into-backtest`
+交付）：当 `backtest.use_full_pipeline` 为 true（A 股 baseline `configs/competition_a_share.yaml`
+里即为 true）时，回测的信号生成走完整流水线（winsorize → z-score → 行业中性化 → 加权合成），
+和前向选股同一套打分逻辑；low-PE top-N 仅作为该开关关闭时的 legacy 兜底。因此回测的历史
+Sharpe 现在反映该 overlay 真实的因子组合，Gate 的灾难底线（防 max DD > 25% 等）同样有效。
 
 ---
 
@@ -114,10 +116,10 @@ python3 -m stock_analyze prepare-backtest-data --start 2021-01-01 --end 2026-04-
 ```bash
 python3 -m stock_analyze backtest \
   --agent claude --start 2023-01-01 --end 2024-12-31 \
-  --overlay configs/agents/claude.yaml \
+  --overlay configs/agents/claude_a_share.yaml \
   --output data/claude/backtest/sanity-$(date +%Y%m%d)/
 cat data/claude/backtest/sanity-*/report.md
 ```
 
 ### 5.3 应急回滚
-若 gate 错杀，调整 `competition.yaml.backtest.floor.*` 阈值或 `agent-rollback --to <hash>`。
+若 gate 错杀，调整 `competition_a_share.yaml.backtest.floor.*` 阈值或 `agent-rollback --to <hash>`。

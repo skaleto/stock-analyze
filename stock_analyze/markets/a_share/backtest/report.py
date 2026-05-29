@@ -87,9 +87,9 @@ def render_markdown_report(result: BacktestResult) -> str:
         "",
         "## 备注",
         "",
-        "本 MVP 回测引擎使用简化的信号生成（low PE top-N，等权目标），"
-        "未走完整 factor_pipeline。完整 overlay 驱动的回测是后续工作；"
-        "见 `openspec/changes/add-historical-backtest-engine/design.md` §12。",
+        "信号生成：当 `backtest.use_full_pipeline` 为真（A 股基线默认）时"
+        "走完整 overlay 因子流水线（winsorize→z-score→行业中性化→加权）；"
+        "否则回退到 low-PE top-N 近似。成交价用 T+1 开盘价，等权目标仓位。",
         "",
     ])
 

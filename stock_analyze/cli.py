@@ -550,7 +550,7 @@ def _command_validate_overlay(args: argparse.Namespace) -> int:
 
     - 0 = overlay passes all guard checks.
     - 1 = schema / factor / weight error (or unknown agent).
-    - 2 = baseline-lock violation (cannot live with current competition.yaml).
+    - 2 = baseline-lock violation (cannot live with current competition_a_share.yaml).
     """
 
     import json
