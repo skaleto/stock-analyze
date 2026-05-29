@@ -12,6 +12,7 @@ from .data_provider import CacheMiss, DataProvider
 from ...factor_pipeline import (
     UNCLASSIFIED,
     is_broadcast_factor,
+    is_sector_sentiment_factor,
     load_broadcast_factor,
     process_factors,
 )
@@ -67,6 +68,52 @@ def _resolve_broadcast_values(
         name: load_broadcast_factor(agent_id, name, as_of_date, root)
         for name in broadcast_names
     }
+
+
+def _as_of_date(as_of: str | None) -> _date_cls:
+    """Normalize an as_of (str | date | None) to a date, defaulting to today."""
+    if isinstance(as_of, _date_cls):
+        return as_of
+    if isinstance(as_of, str) and as_of:
+        try:
+            return _date_cls.fromisoformat(as_of)
+        except ValueError:
+            return _date_cls.today()
+    return _date_cls.today()
+
+
+def _resolve_sector_sentiment_column(
+    config: dict[str, Any],
+    candidates: pd.DataFrame,
+    as_of: str | None,
+    repo_root: _Path_cls | None,
+) -> tuple[str, pd.Series] | tuple[None, None]:
+    """If the overlay references ``<agent>_sector_sentiment``, build its
+    per-stock column by mapping each candidate's industry → that industry's
+    sentiment (score × confidence) for the latest week ≤ as_of.
+
+    Returns ``(factor_name, series)`` or ``(None, None)``. Industries with no
+    recorded sentiment (or no data at all) map to NaN, which the factor
+    pipeline's coverage logic handles like any other missing factor.
+    """
+    factors = config.get("factors", {}) or {}
+    sector_names = [n for n in factors if is_sector_sentiment_factor(n)]
+    if not sector_names:
+        return None, None
+    agent_id = config.get("agent_id")
+    if not agent_id:
+        return None, None
+    name = sector_names[0]  # one sector-sentiment factor per agent
+
+    root = _Path_cls(repo_root) if repo_root else _resolve_default_repo_root()
+    from .alt_factors.sentiment import load_latest_sector_sentiment
+    sector_map = load_latest_sector_sentiment(agent_id, _as_of_date(as_of), root)
+    if "industry" not in candidates.columns:
+        return name, pd.Series([float("nan")] * len(candidates), index=candidates.index)
+    col = candidates["industry"].map(sector_map) if sector_map else pd.Series(
+        [float("nan")] * len(candidates), index=candidates.index
+    )
+    return name, col
 
 
 def _resolve_default_repo_root() -> _Path_cls:
@@ -188,6 +235,14 @@ def build_signals(
     candidates = filtered
     if candidates.empty:
         raise RuntimeError(f"No candidates left after hard filters for {scope}")
+
+    # Phase 3: inject the per-stock sector-sentiment column (industry → score)
+    # before scoring, if the overlay references <agent>_sector_sentiment.
+    sector_name, sector_col = _resolve_sector_sentiment_column(
+        config, candidates, as_of, repo_root
+    )
+    if sector_name is not None:
+        candidates[sector_name] = sector_col
 
     broadcast_values = _resolve_broadcast_values(config, as_of, repo_root)
     scored, factor_table = process_factors(

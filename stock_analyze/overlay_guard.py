@@ -67,6 +67,9 @@ AVAILABLE_FACTORS_BY_MARKET: dict[str, set[str]] = {
         # cross-agent rule still rejects mismatched prefixes).
         "claude_market_sentiment_1w",
         "codex_market_sentiment_1w",
+        # Phase 3 per-stock sector-sentiment alt-factors (industry-level).
+        "claude_sector_sentiment",
+        "codex_sector_sentiment",
     },
     "hk": {
         # v1 factor set (Phase 2): 6 factors derivable from yfinance.info
@@ -93,8 +96,11 @@ AVAILABLE_FACTORS = AVAILABLE_FACTORS_BY_MARKET["a_share"]
 # MUST match the calling agent_id — claude cannot reference codex's
 # sentiment factor (transparency rule, see CLAUDE.md §7.1).
 import re as _re_module  # local alias to avoid shadowing
+# Matches both the broadcast market factor (Phase 1) and the per-stock
+# sector-sentiment factor (Phase 3). The captured agent prefix drives the
+# cross-agent rule: claude cannot reference codex_* and vice versa.
 AGENT_ALT_FACTOR_PATTERN = _re_module.compile(
-    r"^(claude|codex)_market_sentiment_1w$"
+    r"^(claude|codex)_(market_sentiment_1w|sector_sentiment)$"
 )
 
 # Top-level keys permitted in an agent overlay. Anything else raises

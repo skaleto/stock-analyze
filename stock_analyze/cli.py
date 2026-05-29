@@ -186,6 +186,27 @@ def build_parser() -> argparse.ArgumentParser:
     rec.add_argument("--force", action="store_true",
                       help="Overwrite an existing row for the same week_end.")
 
+    # Phase 3: per-industry sentiment (a real per-stock factor, unlike the
+    # broadcast market sentiment above). The operator's LLM scores each
+    # industry; --json carries the batch.
+    recsec = sub.add_parser(
+        "record-sector-sentiment",
+        help="Record one week of per-industry sentiment (Phase 3 per-stock factor).",
+    )
+    recsec.add_argument("--agent", required=True, choices=["claude", "codex"])
+    recsec.add_argument("--week-end", type=_parse_iso_date, required=True,
+                         help="Friday-end of the analysed week (YYYY-MM-DD).")
+    recsec.add_argument("--json", dest="sectors_json", default=None,
+                         help='Inline JSON: {"sectors":[{"industry":"银行","score":0.3,'
+                              '"confidence":0.8}, ...], "llm_model":"..."}.')
+    recsec.add_argument("--json-file", type=Path, default=None,
+                         help="Path to a JSON file with the same shape as --json.")
+    recsec.add_argument("--llm-model", default=None,
+                         help="LLM model id (overrides the JSON's llm_model if both set).")
+    recsec.add_argument("--prompt-version", default="sector_v1")
+    recsec.add_argument("--force", action="store_true",
+                         help="Overwrite existing rows for the same week_end.")
+
     slog = sub.add_parser(
         "sentiment-log",
         help="Inspect / remove sentiment history rows.",
@@ -339,6 +360,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "record-sentiment":
         ensure_dirs(args.logs_dir)
         return _command_record_sentiment(args)
+    if args.command == "record-sector-sentiment":
+        ensure_dirs(args.logs_dir)
+        return _command_record_sector_sentiment(args)
     if args.command == "sentiment-log":
         ensure_dirs(args.logs_dir)
         return _command_sentiment_log(args)
@@ -740,6 +764,52 @@ def _command_record_sentiment(args: argparse.Namespace) -> int:
         f"✓ recorded {args.agent} {args.week_end.isoformat()} "
         f"score={args.score:+.2f} confidence={args.confidence:.2f}; "
         f"csv now has {len(rows)} weeks"
+    )
+    return 0
+
+
+def _command_record_sector_sentiment(args: argparse.Namespace) -> int:
+    """Record one week of per-industry sentiment (Phase 3 per-stock factor)."""
+    import json as _json
+
+    from .markets.a_share.alt_factors import sentiment as alt_sent
+
+    if not args.sectors_json and not args.json_file:
+        print("✗ provide --json or --json-file", file=sys.stderr)
+        return 1
+    try:
+        raw = (args.json_file.read_text(encoding="utf-8")
+               if args.json_file else args.sectors_json)
+        payload = _json.loads(raw)
+    except (OSError, ValueError) as exc:
+        print(f"✗ failed to parse sector JSON: {exc}", file=sys.stderr)
+        return 1
+
+    sectors = payload.get("sectors") if isinstance(payload, dict) else payload
+    if not isinstance(sectors, list):
+        print("✗ JSON must contain a 'sectors' list (or be a list itself)", file=sys.stderr)
+        return 1
+    llm_model = args.llm_model or (payload.get("llm_model") if isinstance(payload, dict) else None) or "unknown"
+
+    try:
+        n = alt_sent.record_sector_sentiment(
+            agent_id=args.agent,
+            week_end=args.week_end,
+            sectors=sectors,
+            llm_model=llm_model,
+            prompt_version=args.prompt_version,
+            repo_root=Path.cwd(),
+            force=args.force,
+        )
+    except alt_sent.DuplicateSentimentEntry as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 1
+    except (ValueError, KeyError) as exc:
+        print(f"✗ validation: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"✓ recorded {args.agent} sector sentiment for {args.week_end.isoformat()}: "
+        f"{n} industries"
     )
     return 0
 
