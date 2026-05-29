@@ -214,5 +214,49 @@ class BroadcastAccessorTests(unittest.TestCase):
             self.assertEqual(_view(root).broadcast("claude_market_sentiment_1w", _AS_OF), 0.0)
 
 
+class StructuralEquivalenceTests(unittest.TestCase):
+    """Gate structural-equivalence guard (bridge-factor-pipeline §5)."""
+
+    def test_healthy_varied_scores_pass(self):
+        from stock_analyze.markets.a_share.backtest.gate import check_structural_equivalence
+        samples = [{"date": "2025-06-01", "scores": [0.9, 0.5, 0.1, -0.3, -0.8]}]
+        check_structural_equivalence(samples)  # no raise
+
+    def test_degenerate_all_tied_raises(self):
+        from stock_analyze.markets.a_share.backtest.gate import check_structural_equivalence
+        from stock_analyze.markets.a_share.backtest.exceptions import BacktestStructuralBreach
+        samples = [{"date": "2025-06-01", "scores": [0.0] * 50}]
+        with self.assertRaises(BacktestStructuralBreach) as ctx:
+            check_structural_equivalence(samples)
+        self.assertEqual(ctx.exception.detail["type"], "degenerate_scores")
+        self.assertEqual(ctx.exception.detail["date"], "2025-06-01")
+
+    def test_below_half_unique_raises(self):
+        from stock_analyze.markets.a_share.backtest.gate import check_structural_equivalence
+        from stock_analyze.markets.a_share.backtest.exceptions import BacktestStructuralBreach
+        # 10 scores, only 3 distinct → ratio 0.3 < 0.5 → degenerate
+        scores = [1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0]
+        with self.assertRaises(BacktestStructuralBreach):
+            check_structural_equivalence([{"date": "2025-06-01", "scores": scores}])
+
+    def test_empty_samples_no_op(self):
+        from stock_analyze.markets.a_share.backtest.gate import check_structural_equivalence
+        check_structural_equivalence([])  # no raise (thin-cache safe)
+        check_structural_equivalence([{"date": "x", "scores": []}])  # skipped
+        check_structural_equivalence([{"date": "x", "scores": [0.0]}])  # <2, skipped
+
+
+class DataViewEmptyUniverseTests(unittest.TestCase):
+    """Robustness: an index with no weight snapshot must not crash."""
+
+    def test_empty_universe_returns_empty_not_keyerror(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _build_cache(root)
+            # zz500 has no index_weight file in the fixture → empty universe.
+            # Pre-fix this raised KeyError('ts_code') in _filter_listed.
+            self.assertEqual(_view(root).universe(indices=["zz500"]), [])
+
+
 if __name__ == "__main__":
     unittest.main()

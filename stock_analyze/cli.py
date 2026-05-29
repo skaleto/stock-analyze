@@ -157,6 +157,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("data/shared/backtest_cache"),
         help="Where backtest_cache lives (default: data/shared/backtest_cache).",
     )
+    bt.add_argument(
+        "--compare-mvp",
+        action="store_true",
+        help="Also run the MVP low-PE proxy over the same window and append a "
+             "full-pipeline-vs-MVP comparison panel to report.md.",
+    )
 
     rec = sub.add_parser(
         "record-sentiment",
@@ -662,8 +668,35 @@ def _command_backtest(args: argparse.Namespace) -> int:
         return 2
 
     # Write markdown report
-    from .markets.a_share.backtest.report import write_report
+    from .markets.a_share.backtest.report import (
+        render_compare_panel_markdown,
+        write_report,
+    )
     report_path = write_report(result)
+
+    # --compare-mvp: run the same overlay/window under both scoring models
+    # (full pipeline vs MVP PE-only) and append a comparison panel so the
+    # operator can see whether the overlay's factor mix beats naive low-PE.
+    if getattr(args, "compare_mvp", False):
+        import copy
+
+        def _variant(use_full: bool) -> Any:
+            ov = copy.deepcopy(overlay)
+            ov.setdefault("backtest", {})["use_full_pipeline"] = use_full
+            sub_out = args.output / ("_full" if use_full else "_mvp")
+            sub_out.mkdir(parents=True, exist_ok=True)
+            return engine.run_backtest(
+                overlay=ov, start=args.start, end=args.end, universe=universe,
+                market_data_root=args.cache_root, out_dir=sub_out, in_memory=True,
+            )
+
+        try:
+            panel = render_compare_panel_markdown(_variant(True), _variant(False))
+            with report_path.open("a", encoding="utf-8") as fh:
+                fh.write("\n" + panel)
+            print("  compare: full-pipeline-vs-MVP panel appended to report.md")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  warning: --compare-mvp panel failed: {exc}", file=sys.stderr)
 
     m = result.metrics
     print(

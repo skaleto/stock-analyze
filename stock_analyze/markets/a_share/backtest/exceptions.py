@@ -27,3 +27,23 @@ class BacktestFloorBreach(Exception):
         super().__init__(
             f"Backtest floor breach: {breach_type}; metrics={metrics}"
         )
+
+
+class BacktestStructuralBreach(Exception):
+    """Raised when backtest scoring is structurally degenerate.
+
+    Distinct from ``BacktestFloorBreach`` (which is about *returns*): this
+    catches the failure mode where the scoring itself stops producing a
+    usable ranking — e.g. a refactor or broken overlay makes (nearly) every
+    candidate score identically, so "top-N selection" is meaningless and the
+    floor gate would pass it by accident (it buys an arbitrary slice of a
+    tied universe and earns ordinary returns). Per OpenSpec change
+    bridge-factor-pipeline-into-backtest §5.
+
+    Carries ``detail`` (the sampled signal day + measured score uniqueness)
+    so the breach log can point at exactly which day went degenerate.
+    """
+
+    def __init__(self, detail: dict) -> None:
+        self.detail = detail
+        super().__init__(f"Backtest structural breach: {detail}")

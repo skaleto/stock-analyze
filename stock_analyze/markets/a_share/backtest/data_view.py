@@ -139,6 +139,11 @@ class PointInTimeView:
         return 0.0
 
     def _filter_listed(self, codes: set[str], d: date) -> set[str]:
+        # Empty input → empty output. Without this guard the downstream
+        # boolean-index chain on an empty frame can drop the ts_code column
+        # and raise KeyError (e.g. when an index has no weight snapshot yet).
+        if not codes:
+            return set()
         sb_path = self.cache_root / "stock_basic.csv"
         if not sb_path.exists():
             return codes
