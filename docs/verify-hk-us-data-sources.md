@@ -111,3 +111,110 @@ python3 scripts/verify_data_sources.py
 2. 拉数时**开着香港住宅代理**,进程继承 `http_proxy`。代理节点选「住宅/家宽」线路,别用「机房」。
 3. 偶发 `curl:(35) TLS connect error` 是代理隧道抖动,**重跑即可**,非封锁。别短时间猛拉。
 4. 拉完上传 ECS(ECS 阿里云机房 IP 被 Yahoo 硬限流,故采「本地家宽拉 → 传 ECS」模式)。
+
+---
+
+## Clash 分流配置(让一台机器同时满足两家)· 2026-05-30 实测落地
+
+> operator 同条授权延续(临时覆盖 §7.0):把实际配出的 Clash 方案 + 验证结果写入本指南,供后续 agent 接手。
+> 适用客户端:**Clash Verge Rev**(Mihomo 核心,本机实测)。
+
+### 目标
+
+同一台家宽机器,按域名分流:
+
+- `*.eastmoney.com`(akshare/东财)→ **DIRECT**(走大陆联通出口,东财才认)
+- `*.yahoo.com` 等(yfinance/Yahoo)→ **香港住宅节点**(HKT 家宽,Yahoo 才放行)
+- 其它流量 → 订阅默认,不变
+
+这样代理常开也能两家同时可用(yfinance 是主源,东财 DIRECT 当备份)。
+
+### 踩坑:`prepend-rules` merge 指令在本版本不生效
+
+最初把规则写进「全局扩展配置 → **Merge**」,用 `prepend-rules` / `prepend-proxy-groups`。
+**本版本 Clash Verge 的 merge 引擎不消化这两个指令**——会把它们当普通字段原样输出成
+顶层 `prepend-rules:` 废 key,Mihomo 不认 → 规则等于没写(东财仍被转香港)。
+
+→ 结论:**别用 `prepend-rules` merge 写法,改用全局 Script(JS)**,程序化注入分组 + 前置规则,100% 生效。
+
+### 可用方案:全局 Script(JS)
+
+「全局扩展配置 → **Script**」整段替换为:
+
+```javascript
+function main(config, profileName) {
+  const groupName = "📈行情-港住宅";
+
+  // 1) 港住宅节点组:从订阅节点里筛名字含「香港家宽」的(HKT 住宅)
+  const hkHome = (config.proxies || [])
+    .map(p => p.name)
+    .filter(n => n && n.indexOf("香港家宽") !== -1);
+
+  config["proxy-groups"] = config["proxy-groups"] || [];
+  if (!config["proxy-groups"].some(g => g.name === groupName)) {
+    config["proxy-groups"].unshift({
+      name: groupName,
+      type: "select",
+      proxies: hkHome.length ? hkHome : ["DIRECT"]
+    });
+  }
+
+  // 2) 规则前置(first-match-wins):东财直连 + Yahoo 走港住宅
+  config.rules = [
+    "DOMAIN-SUFFIX,eastmoney.com,DIRECT",
+    "DOMAIN-SUFFIX,yahoo.com," + groupName,
+    "DOMAIN-SUFFIX,yimg.com," + groupName,
+    "DOMAIN-SUFFIX,yahooapis.com," + groupName
+  ].concat(config.rules || []);
+
+  // 3) 清掉之前 merge 误入的字面 key(防御)
+  delete config["prepend-rules"];
+  delete config["prepend-proxy-groups"];
+
+  return config;
+}
+```
+
+对应的「全局扩展配置 → Merge」还原成最简(别再留 `prepend-*`):
+
+```yaml
+profile:
+  store-selected: true
+dns:
+  use-system-hosts: false
+```
+
+保存后**回订阅页重选一次当前订阅**(或重启)触发重新生成 `clash-verge.yaml`。
+生成正确的标志:运行时配置 `rules:` 段**头 4 条**就是上面那 4 条,且**无残留** `prepend-rules:` 顶层 key。
+
+### 验证(实测结果 2026-05-30)
+
+```bash
+# 路由探测
+curl -s --max-time 15 -o /dev/null -w "东财(走代理) %{http_code}\n" \
+  "https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=2&fid=f3&fs=m:128&fields=f12,f14"
+curl -s --max-time 15 -o /dev/null -w "Yahoo(走代理) %{http_code}\n" \
+  "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=5d&interval=1d"
+# 官方脚本
+python3 scripts/verify_data_sources.py
+```
+
+实测:
+
+- **yfinance:`[OK]` 6/6 全绿**(港股 0700/0005/0941 + 美股 AAPL/MSFT/NVDA 基本面 3/3,
+  日线最新 2026-05-29)。「Yahoo → 港住宅」稳定 200/200/200。
+- **东财 → DIRECT 路由正确**(单发 `200`)。注意:脚本里 akshare 仍可能 `[FAIL]`,那是
+  **东财反爬假阴性**——短时间高频/burst(`stock_us_spot_em` 一次翻 133 页)会触发东财掐连接,
+  **不是路由问题**。冷却后单发即正常,akshare 自带重试。
+
+### 给接手 agent 的落地结论
+
+| 流量 | 路由 | 出口 | 状态 |
+|---|---|---|---|
+| `*.yahoo.com`(yfinance) | `📈行情-港住宅` 组 | 香港家宽 HKT | ✅ 稳定,数据新鲜 |
+| `*.eastmoney.com`(akshare) | DIRECT | 大陆联通 | ✅ 路由正确(反爬冷却后即用) |
+| 其它 | 订阅默认 | 不变 | ✅ 未受影响 |
+
+→ **每周拉数定为 yfinance(港美一体,代理常开走港住宅),provider 代码已就绪
+(`markets/hk` + `markets/us`)。东财 DIRECT 作备份。** 下一步可由后续 agent 把
+yfinance 每周拉数 → 上传 ECS 的流程串起来。
