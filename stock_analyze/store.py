@@ -93,6 +93,15 @@ class PortfolioStore:
     def save_pending(self, pending: list[dict[str, Any]]) -> None:
         write_json(self.pending_path, pending)
 
+    # The HK/US settlement engine (markets._settlement_simulator) reads and
+    # writes pending orders via a read_pending/write_pending vocabulary, while
+    # A-share uses load_pending/save_pending. These aliases let the single
+    # shared PortfolioStore back both call styles without the settlement
+    # engine needing to know which market it is serving. A-share behaviour is
+    # unchanged — it keeps calling load_pending/save_pending directly.
+    read_pending = load_pending
+    write_pending = save_pending
+
     def save_signals(self, df: pd.DataFrame) -> Path:
         path = self.data_dir / SIGNALS_FILE
         return write_dataframe_csv_atomic(df, path, index=False)

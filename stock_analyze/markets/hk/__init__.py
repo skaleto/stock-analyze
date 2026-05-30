@@ -18,10 +18,13 @@ simulator, and strategy modules exist (Phase 2 follow-up tasks).
 """
 
 from .data_provider import make_provider
-from .simulator import (
+from .simulator import initialize
+# High-level, config-driven run entry points (the CLI dispatches these
+# generically across markets). The low-level scored/store primitives stay in
+# .simulator; .run wraps them with build_signals scoring + per-account top-N.
+from .run import (
     execute_due_orders,
     generate_rebalance_orders,
-    initialize,
     update_nav,
 )
 from .strategy import build_signals

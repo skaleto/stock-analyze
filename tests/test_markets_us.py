@@ -11,10 +11,15 @@ import pandas as pd
 
 from stock_analyze.markets.us import (
     build_signals,
-    execute_due_orders,
-    generate_rebalance_orders,
     initialize,
     make_provider,
+)
+# These unit tests exercise the low-level settlement primitives, which live in
+# .simulator (the package now re-exports the high-level, config-first run
+# wrappers under these names — see markets/us/run.py).
+from stock_analyze.markets.us.simulator import (
+    execute_due_orders,
+    generate_rebalance_orders,
     update_nav,
 )
 from stock_analyze.markets.us.data_provider import (
