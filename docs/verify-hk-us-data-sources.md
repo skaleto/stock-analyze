@@ -66,3 +66,48 @@ python3 scripts/verify_data_sources.py
   curl -sI https://query1.finance.yahoo.com | head -1     # Yahoo 通不通
   curl -sI https://push2.eastmoney.com | head -1          # 东方财富通不通
   ```
+
+---
+
+## 实测结论(2026-05-30 · operator 本地 Mac,底层 = 杭州联通家宽)
+
+> 临时授权覆盖 CLAUDE.md §7.0 改文档禁令,把实测结论并入本指南(operator 2026-05-30 口头授权)。
+
+### TL;DR
+
+- **数据源选定:yfinance(Yahoo)** —— 港美一体、数据新鲜(实测到上一交易日 2026-05-29)。**不用 akshare/东财**。
+- **前提:必须走「香港住宅」代理出口**(HKT / AS4760,如 `42.200.172.x`)。机房节点不行。
+- 跑 yfinance 的进程**保持继承 `http_proxy` 环境变量**(走代理);别关代理。
+
+### 实测矩阵(出口 × 数据源)
+
+| 出口 | yfinance / Yahoo | akshare / 东财 |
+|---|---|---|
+| 联通家宽**直连**(CN) | ❌ 403/429(Yahoo 封 CN IP) | ✅ 通(代理关掉/绕过时,单发 200 + 真实数据) |
+| 香港**机房**代理(Akari AS38136) | ❌ 429 | ❌ 东财掐连接 |
+| 香港**住宅**代理(HKT AS4760) | ✅ **可用**(港股基本面 3/3、美股 3/3、日线最新 2026-05-29) | ❌ 东财掐连接(HTTP 000) |
+
+官方脚本最终判定:`[OK] 用 yfinance（能连 Yahoo；akshare 的东财行情连不上）`。
+
+### 两家封锁逻辑不同(关键认知)
+
+| | 封锁维度 | 需要的出口 |
+|---|---|---|
+| **Yahoo / yfinance** | 按 IP **类型/信誉**:机房 IP 吃 429,住宅 IP 放行 | 香港/境外**住宅** IP ✅(机房 ❌) |
+| **东财 / akshare** | 按**地理位置**:非大陆一律掐(住宅也掐) | **大陆** IP ✅(任何香港都 ❌) |
+
+→ 两者出口要求**互斥**,一条线路喂不饱两家。yfinance 港美一体,只用它即可。
+
+证据:把请求强制从香港**住宅** IP(HKT `42.200.173.220`)出去打东财 → `HTTP 000` 被掐;香港**机房**(Akari)也被掐 —— 两类香港都死,说明东财按地理封,与住宅/机房无关。而同一条香港住宅 IP,Yahoo chart API 返回 `200`、yfinance 全通。
+
+### 两个坑
+
+1. **verify 脚本结果强依赖当前代理状态**。脚本用 `requests`(默认 `trust_env=True`)会吃代理;若 Clash 开 **TUN/增强模式**,`env -u http_proxy` 都绕不掉,会**全红假阴性**。跑前先确认出口:`curl -s https://ipinfo.io/json | grep -E '"(ip|country|org)"'`,要 yfinance 须是香港住宅(HKT)。
+2. **本机 Clash 把 `*.eastmoney.com` 划进了「走代理」**。实测 `myip.ipip.net` 走 Clash 直连(出口仍 CN),但 `push2.eastmoney.com` 走 Clash 被转去香港 → 被东财掐。所以 akshare(`trust_env=True`)会被劫去香港而失败;只有显式绕代理(`trust_env=False` / `--noproxy` / 退出 Clash)才走大陆直连。若将来要用 akshare,需退出 Clash 或给 `*.eastmoney.com`(含 `push2*`、`*.push2his.eastmoney.com`)加 DIRECT 规则。
+
+### 每周拉数操作要点
+
+1. 数据源 = yfinance;provider 代码已就绪(`markets/hk` + `markets/us`)。
+2. 拉数时**开着香港住宅代理**,进程继承 `http_proxy`。代理节点选「住宅/家宽」线路,别用「机房」。
+3. 偶发 `curl:(35) TLS connect error` 是代理隧道抖动,**重跑即可**,非封锁。别短时间猛拉。
+4. 拉完上传 ECS(ECS 阿里云机房 IP 被 Yahoo 硬限流,故采「本地家宽拉 → 传 ECS」模式)。
