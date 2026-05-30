@@ -217,11 +217,21 @@ def resolve_agent_paths(agent_id: str, repo_root: str | Path | None = None) -> A
     )
 
 
-def load_baseline(repo_root: str | Path | None = None) -> dict[str, Any]:
-    """Load and return the competition baseline config."""
+def load_baseline(
+    repo_root: str | Path | None = None,
+    market: str = _DEFAULT_MARKET,
+) -> dict[str, Any]:
+    """Load and return the competition baseline config for ``market``.
 
+    ``market="a_share"`` (the default) reads ``configs/competition_a_share.yaml``
+    — byte-identical to the historical single-market behaviour. ``hk`` / ``us``
+    read their respective ``configs/competition_<market>.yaml``.
+    """
+
+    if market not in MARKETS:
+        raise UnknownMarket(market)
     root = Path(repo_root) if repo_root else Path.cwd()
-    return load_config(root / COMPETITION_CONFIG_FILE)
+    return load_config(root / "configs" / f"competition_{market}.yaml")
 
 
 def validate_overlay(
@@ -252,8 +262,12 @@ def validate_overlay(
     return merged
 
 
-def load(agent_id: str, repo_root: str | Path | None = None) -> dict[str, Any]:
-    """Load a merged config = baseline + agent overlay.
+def load(
+    agent_id: str,
+    repo_root: str | Path | None = None,
+    market: str = _DEFAULT_MARKET,
+) -> dict[str, Any]:
+    """Load a merged config = baseline + agent overlay for ``market``.
 
     Validates that the overlay does not override locked baseline fields and
     that overlay only declares allowed top-level keys. Applies the standard
@@ -263,13 +277,13 @@ def load(agent_id: str, repo_root: str | Path | None = None) -> dict[str, Any]:
     """
 
     root = Path(repo_root) if repo_root else Path.cwd()
-    paths = resolve_agent_paths(agent_id, repo_root=root)
+    config_path = root / AGENTS_CONFIG_DIR / f"{agent_id}_{market}.yaml"
 
-    if not paths.config_path.exists():
-        raise UnknownAgent(f"unknown_agent:{agent_id}; missing {paths.config_path}")
+    if not config_path.exists():
+        raise UnknownAgent(f"unknown_agent:{agent_id}; missing {config_path}")
 
-    baseline = load_baseline(root)
-    overlay = json.loads(paths.config_path.read_text(encoding="utf-8"))
+    baseline = load_baseline(root, market)
+    overlay = json.loads(config_path.read_text(encoding="utf-8"))
 
     _validate_overlay_top_level(overlay, agent_id)
     _validate_locked_paths(baseline, overlay)

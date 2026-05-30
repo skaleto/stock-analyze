@@ -1,40 +1,24 @@
-# HK competition baseline.
-#
-# Locked fields (cannot be overridden by agent overlays):
-#   competition_id, start_date, initial_cash,
-#   accounts.*.cash, accounts.*.top_n, accounts.*.scope, accounts.*.benchmark,
-#   schedule.*, trading.* (all sub-fields).
-#
-# Mirrors configs/competition_a_share.yaml's shape so the same
-# competition.py loader handles both markets.
-
-competition_id: "claude-vs-codex-hk"
-start_date: "2026-06-15"
-initial_cash: 1000000.0       # HK$1M ≈ ¥920K equivalent (no FX conversion)
-
-accounts:
-  - id: "hsi"
-    scope: "hsi"              # Hang Seng Index 50 blue chips
-    top_n: 50
-    cash: 500000
-    benchmark: "^HSI"
-  - id: "hscei"
-    scope: "hscei"            # Hang Seng China Enterprises Index 50
-    top_n: 50
-    cash: 500000
-    benchmark: "^HSCE"
-
-schedule:
-  execution: "weekly"
-  signal_day: "friday"
-
-trading:
-  commission_rate: 0.0003
-  stamp_tax_rate: 0.0013      # HK stamp duty (0.13% both sides)
-  slippage_bps: 5
-  settlement_days: 2          # T+2
-  daily_limit_pct: null       # no daily limit
-  max_single_weight: 0.05
-  allow_shorting: true
-  shorting_collateral_ratio: 1.0   # 100% cash collateral
-  lot_size_default: 100       # fallback; per-stock via mechanics.lot_size_for
+{
+  "competition_id": "claude-vs-codex-hk",
+  "start_date": "2026-06-15",
+  "initial_cash": 1000000.0,
+  "accounts": [
+    {"id": "hsi", "scope": "hsi", "top_n": 50, "cash": 500000, "benchmark": "^HSI"},
+    {"id": "hscei", "scope": "hscei", "top_n": 50, "cash": 500000, "benchmark": "^HSCE"}
+  ],
+  "schedule": {
+    "execution": "weekly",
+    "signal_day": "friday"
+  },
+  "trading": {
+    "commission_rate": 0.0003,
+    "stamp_tax_rate": 0.0013,
+    "slippage_bps": 5,
+    "settlement_days": 2,
+    "daily_limit_pct": null,
+    "max_single_weight": 0.05,
+    "allow_shorting": true,
+    "shorting_collateral_ratio": 1.0,
+    "lot_size_default": 100
+  }
+}

@@ -33,5 +33,36 @@ class MarketDispatchTests(unittest.TestCase):
             )
 
 
+class LoadMarketParamTests(unittest.TestCase):
+    """competition.load / load_baseline are market-aware (default a_share).
+
+    Exercised against the committed configs so the wiring that lets the CLI
+    run --market hk/us is regression-locked. The key invariant: default
+    behaviour is byte-identical to market="a_share".
+    """
+
+    def test_load_default_is_byte_identical_to_a_share(self):
+        self.assertEqual(competition.load("claude"),
+                         competition.load("claude", market="a_share"))
+
+    def test_load_dispatches_by_market(self):
+        a = competition.load("claude", market="a_share")
+        hk = competition.load("claude", market="hk")
+        us = competition.load("claude", market="us")
+        self.assertEqual([x["scope"] for x in a["accounts"]], ["hs300", "zz500"])
+        self.assertEqual([x["scope"] for x in hk["accounts"]], ["hsi", "hscei"])
+        self.assertEqual([x["scope"] for x in us["accounts"]], ["sp500", "ndx100"])
+
+    def test_load_baseline_market_aware(self):
+        self.assertEqual(
+            competition.load_baseline(market="hk")["competition_id"],
+            "claude-vs-codex-hk",
+        )
+
+    def test_load_baseline_unknown_market_raises(self):
+        with self.assertRaises(competition.UnknownMarket):
+            competition.load_baseline(market="moon")
+
+
 if __name__ == "__main__":
     unittest.main()
