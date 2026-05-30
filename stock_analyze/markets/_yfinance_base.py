@@ -22,6 +22,7 @@ A-share is NOT affected — it has a different (Tushare) provider lineage.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,17 @@ import pandas as pd
 
 
 logger = logging.getLogger(__name__)
+
+# yfinance hits Yahoo's public endpoints, which rate-limit bursts ("Too Many
+# Requests"). Fetching a full index universe (~80 tickers × info+history) trips
+# it, so we back off and retry when a call comes back rate-limited.
+_YF_RATE_RETRY_MAX = 4
+_YF_RATE_BACKOFF_S = 2.0
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "too many requests" in msg or "rate limit" in msg or "429" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -283,11 +295,30 @@ class YFinanceProviderBase:
 
     # --- internal cache wrappers -------------------------------------
 
+    def _fetch_with_retry(self, fn):
+        """Run a yfinance fetch ``fn``, retrying with exponential backoff when
+        Yahoo returns a rate-limit error ("Too Many Requests").
+
+        Backoff fires only on an actual rate-limit exception, so mocked tests
+        (which never raise it) incur no sleeps. After the first limit the
+        sequential per-ticker loop self-throttles via the backoff waits.
+        Non-rate-limit errors propagate immediately (the caller logs +
+        degrades to empty data).
+        """
+        for attempt in range(_YF_RATE_RETRY_MAX + 1):
+            try:
+                return fn()
+            except Exception as exc:  # noqa: BLE001
+                if _is_rate_limited(exc) and attempt < _YF_RATE_RETRY_MAX:
+                    time.sleep(_YF_RATE_BACKOFF_S * (2 ** attempt))
+                    continue
+                raise
+
     def _info(self, code: str) -> dict[str, Any]:
         if code in self._info_cache:
             return self._info_cache[code]
         try:
-            info = self._fetch_info(self.normalize_symbol(code))
+            info = self._fetch_with_retry(lambda: self._fetch_info(self.normalize_symbol(code)))
         except Exception as exc:  # noqa: BLE001
             logger.warning("yfinance info fetch failed for %s: %s", code, exc)
             info = {}
@@ -299,7 +330,9 @@ class YFinanceProviderBase:
         if cache_key in self._history_cache:
             return self._history_cache[cache_key]
         try:
-            hist = self._fetch_history(self.normalize_symbol(code), period=period)
+            hist = self._fetch_with_retry(
+                lambda: self._fetch_history(self.normalize_symbol(code), period=period)
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("yfinance history fetch failed for %s: %s", code, exc)
             hist = pd.DataFrame()
