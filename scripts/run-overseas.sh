@@ -22,6 +22,8 @@ LOG="$REPO/logs/overseas.log"
 cd "$REPO" || exit 1
 mkdir -p "$REPO/logs"
 export http_proxy="$PROXY" https_proxy="$PROXY" all_proxy="socks5://127.0.0.1:7897"
+# 飞书凭据(SA_LARK_*),供 overseas_summary.py 发卡片;缺了就只打印不发
+[ -f "$HOME/.stock-analyze.env" ] && { set -a; . "$HOME/.stock-analyze.env"; set +a; }
 RESULTS="$(mktemp -t overseas_results.XXXXXX)"
 trap 'rm -f "$RESULTS"' EXIT
 
