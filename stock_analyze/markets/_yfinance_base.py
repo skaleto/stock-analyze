@@ -130,6 +130,18 @@ class YFinanceProviderBase:
         self._info_cache: dict[str, dict[str, Any]] = {}
         self._history_cache: dict[str, pd.DataFrame] = {}
 
+    # --- health ledger (no-op) ---------------------------------------
+    # The a_share Tushare provider records per-fetch health and flushes it via
+    # persist_health(); yfinance providers don't maintain that ledger. These
+    # no-ops keep the provider interface uniform so shared callers (the CLI run
+    # loop, simulators) can call them unconditionally.
+
+    def record_health(self, *args: Any, **kwargs: Any) -> None:
+        """No-op: yfinance providers don't track per-fetch health."""
+
+    def persist_health(self) -> None:
+        """No-op: nothing to flush (see record_health)."""
+
     # --- subclass hooks (defaults) -----------------------------------
 
     def normalize_symbol(self, code: str) -> str:

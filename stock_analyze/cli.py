@@ -18,8 +18,11 @@ from .agent_briefing import (
 )
 from .competition import CompetitionBaselineLocked
 from .config import load_config
-from .markets.a_share.data_provider import make_provider
 from .dashboard_aggregator import generate_competition_dashboard
+# Per-market run primitives (make_provider / initialize / generate_rebalance_orders
+# / execute_due_orders / update_nav) are dispatched at call time via
+# competition.get_market_module(market); see main(). compute_pending_forward_ic
+# is an A-share diagnostic (forward IC) and stays A-share-only for now.
 from .markets.a_share.diagnostics import compute_pending_forward_ic
 from .monthly_review import compute_review, default_month_for, write_review
 from .overlay_guard import (
@@ -29,7 +32,6 @@ from .overlay_guard import (
 )
 from .reporting import generate_dashboard, generate_weekly_report
 from .run_ledger import RunLedger
-from .markets.a_share.simulator import execute_due_orders, generate_rebalance_orders, initialize, update_nav
 from .store import PortfolioStore
 from .utils import ensure_dirs, write_json
 
@@ -282,39 +284,52 @@ def _resolve_offline_as_of(cache_dir: Path) -> str | None:
     return f"{latest[:4]}-{latest[4:6]}-{latest[6:]}"
 
 
-def _resolve_runtime(args: argparse.Namespace) -> tuple[dict | None, str, str, Path]:
-    """Return (config, data_dir, reports_dir, cache_dir).
+def _resolve_runtime(args: argparse.Namespace) -> tuple[dict | None, str, str, Path, str]:
+    """Return (config, data_dir, reports_dir, cache_dir, market).
 
-    For competition agent mode, config is loaded via competition.load and the
-    cache lives under data/shared/cache. For legacy single-agent mode, config
-    falls back to configs/strategy_v1.yaml and the cache lives under
-    <data-dir>/cache.
+    Market is taken from ``--market`` (default ``a_share``). For the default
+    a_share market this is byte-identical to the historical single-market
+    behaviour (competition.load + resolve_agent_paths + data/shared/cache).
+    For hk/us the config, data/reports dirs, and a per-market shared cache are
+    resolved via ``resolve_market_paths``.
+
+    For competition agent mode, config is loaded via competition.load. For
+    legacy single-agent mode, config falls back to configs/strategy_v1.yaml.
 
     Returns ``config=None`` when the command does not need a strategy config
-    (e.g. serve-dashboard, competition-init, competition-monthly-review,
-    competition-dashboard handle their own resolution).
+    (handled by the early-return commands in ``main``).
     """
 
+    market = getattr(args, "market", None) or "a_share"
     explicit_config = args.config is not None
     if args.agent:
         if explicit_config:
             raise CompetitionBaselineLocked(
                 field="agent_config_override",
-                baseline_value=f"configs/agents/{args.agent}.yaml",
+                baseline_value=f"configs/agents/{args.agent}_{market}.yaml",
                 overlay_value=args.config,
             )
-        paths = competition.resolve_agent_paths(args.agent)
-        cfg = competition.load(args.agent)
-        data_dir = args.data_dir or str(paths.data_dir)
-        reports_dir = args.reports_dir or str(paths.reports_dir)
-        cache_dir = paths.shared_cache_dir
+        cfg = competition.load(args.agent, market=market)
+        if market == "a_share":
+            # Unchanged a_share layout: data/a_share/<agent>, shared prefetch cache.
+            paths = competition.resolve_agent_paths(args.agent)
+            data_dir = args.data_dir or str(paths.data_dir)
+            reports_dir = args.reports_dir or str(paths.reports_dir)
+            cache_dir = paths.shared_cache_dir
+        else:
+            mp = competition.resolve_market_paths(market, args.agent)
+            data_dir = args.data_dir or str(mp.data_dir)
+            reports_dir = args.reports_dir or str(mp.reports_dir)
+            # HK/US fetch yfinance online (no shared prefetch service); give the
+            # provider a per-market shared cache to memoise within a run.
+            cache_dir = mp.repo_root / "data" / market / "shared" / "cache"
     else:
         cfg_path = args.config or "configs/strategy_v1.yaml"
         cfg = load_config(cfg_path)
         data_dir = args.data_dir or "data"
         reports_dir = args.reports_dir or "reports"
         cache_dir = Path(data_dir) / "cache"
-    return cfg, data_dir, reports_dir, cache_dir
+    return cfg, data_dir, reports_dir, cache_dir, market
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -374,19 +389,23 @@ def main(argv: list[str] | None = None) -> int:
         return _command_notify_daily_summary(args)
 
     try:
-        config, data_dir, reports_dir, cache_dir = _resolve_runtime(args)
+        config, data_dir, reports_dir, cache_dir, market = _resolve_runtime(args)
     except CompetitionBaselineLocked as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     ensure_dirs(data_dir, reports_dir, args.logs_dir)
 
+    # Dispatch the run primitives (provider + simulator) to the resolved
+    # market. For a_share this is the same module the CLI used to import
+    # directly, so behaviour is unchanged.
+    market_module = competition.get_market_module(market)
     store = PortfolioStore(data_dir)
     offline = bool(getattr(args, "offline", False))
     # When offline and no explicit --as-of, resolve to the latest cache date
     # so Saturday weekly runs (no daily that day) naturally pick Friday's snapshot.
     if offline and not args.as_of:
         args.as_of = _resolve_offline_as_of(cache_dir)
-    provider = make_provider(cache_dir=cache_dir, offline=offline, as_of=args.as_of)
+    provider = market_module.make_provider(cache_dir=cache_dir, offline=offline, as_of=args.as_of)
     ledger = RunLedger(data_dir)
     migration_notes = (config or {}).get("_migration_notes") or []
     if migration_notes:
@@ -396,16 +415,16 @@ def main(argv: list[str] | None = None) -> int:
         with ledger.run(args.command, args.as_of, config) as context:
             run_id = context["run_id"]
             if args.command == "init":
-                initialize(config, store)
+                market_module.initialize(config, store)
                 print(f"Initialized {data_dir}")
             elif args.command == "rebalance":
-                batches = generate_rebalance_orders(config, store, provider, as_of=args.as_of, run_id=run_id)
+                batches = market_module.generate_rebalance_orders(config, store, provider, as_of=args.as_of, run_id=run_id)
                 print(f"Generated {sum(len(batch.get('orders', [])) for batch in batches)} pending orders")
             elif args.command == "execute":
-                trades = execute_due_orders(config, store, provider, as_of=args.as_of)
+                trades = market_module.execute_due_orders(config, store, provider, as_of=args.as_of)
                 print(f"Executed {len(trades)} trades")
             elif args.command == "update-nav":
-                rows = update_nav(config, store, provider, as_of=args.as_of)
+                rows = market_module.update_nav(config, store, provider, as_of=args.as_of)
                 print(f"Updated NAV for {len(rows)} accounts")
             elif args.command == "report":
                 path = generate_weekly_report(config, store, reports_dir, run_id=run_id)
@@ -415,22 +434,27 @@ def main(argv: list[str] | None = None) -> int:
                 fragment_path = generate_dashboard(config, store, reports_dir, mode="fragment")
                 print(f"Dashboard written to {page_path}; fragment {fragment_path}")
             elif args.command == "run-daily":
-                trades = execute_due_orders(config, store, provider, as_of=args.as_of)
-                rows = update_nav(config, store, provider, as_of=args.as_of, notes=f"daily; trades={len(trades)}")
-                compute_pending_forward_ic(config, store, provider, as_of=args.as_of)
+                trades = market_module.execute_due_orders(config, store, provider, as_of=args.as_of)
+                rows = market_module.update_nav(config, store, provider, as_of=args.as_of, notes=f"daily; trades={len(trades)}")
+                # Forward-IC diagnostic is A-share-only (uses Tushare-specific
+                # provider methods); skip for hk/us.
+                if market == "a_share":
+                    compute_pending_forward_ic(config, store, provider, as_of=args.as_of)
                 provider.persist_health()
                 page_path = generate_dashboard(config, store, reports_dir)
                 generate_dashboard(config, store, reports_dir, mode="fragment")
                 print(f"Daily run complete: trades={len(trades)}, nav_rows={len(rows)}, dashboard={page_path}")
             elif args.command == "run-weekly":
-                batches = generate_rebalance_orders(config, store, provider, as_of=args.as_of, run_id=run_id)
-                rows = update_nav(config, store, provider, as_of=args.as_of, notes="weekly signal")
-                compute_pending_forward_ic(config, store, provider, as_of=args.as_of)
+                batches = market_module.generate_rebalance_orders(config, store, provider, as_of=args.as_of, run_id=run_id)
+                rows = market_module.update_nav(config, store, provider, as_of=args.as_of, notes="weekly signal")
+                if market == "a_share":
+                    compute_pending_forward_ic(config, store, provider, as_of=args.as_of)
                 provider.persist_health()
                 report = generate_weekly_report(config, store, reports_dir, run_id=run_id)
                 dashboard = generate_dashboard(config, store, reports_dir)
                 generate_dashboard(config, store, reports_dir, mode="fragment")
-                briefing = _auto_write_weekly_briefing(args.agent, args.as_of)
+                # The weekly briefing is part of the A-share review workflow.
+                briefing = _auto_write_weekly_briefing(args.agent, args.as_of) if market == "a_share" else None
                 briefing_note = f", briefing={briefing}" if briefing else ""
                 print(f"Weekly run complete: batches={len(batches)}, nav_rows={len(rows)}, report={report}, dashboard={dashboard}{briefing_note}")
             else:
