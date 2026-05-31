@@ -188,7 +188,26 @@ def list_agents(repo_root: str | Path | None = None) -> list[str]:
     agents: list[str] = []
     for path in agent_dir.glob(f"*{_OVERLAY_SUFFIX}.yaml"):
         # Strip the "_a_share" suffix to recover the bare agent id.
-        agents.append(path.stem[: -len(_OVERLAY_SUFFIX)])
+            agents.append(path.stem[: -len(_OVERLAY_SUFFIX)])
+    return sorted(agents)
+
+
+def list_agents_for_market(
+    market: str,
+    repo_root: str | Path | None = None,
+) -> list[str]:
+    """Return agent IDs declared by ``configs/agents/<agent>_<market>.yaml``."""
+
+    if market not in MARKETS:
+        raise UnknownMarket(market)
+    root = Path(repo_root) if repo_root else Path.cwd()
+    agent_dir = root / AGENTS_CONFIG_DIR
+    if not agent_dir.exists():
+        return []
+    suffix = f"_{market}"
+    agents: list[str] = []
+    for path in agent_dir.glob(f"*{suffix}.yaml"):
+        agents.append(path.stem[: -len(suffix)])
     return sorted(agents)
 
 

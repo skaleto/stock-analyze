@@ -11,6 +11,7 @@ from stock_analyze.competition import (
     CompetitionBaselineLocked,
     UnknownAgent,
     list_agents,
+    list_agents_for_market,
     load,
     resolve_agent_paths,
 )
@@ -125,6 +126,20 @@ class CompetitionLoaderTests(unittest.TestCase):
             fixture.write_overlay("codex", {"factors": {}})
             agents = list_agents(tmp)
             self.assertEqual(agents, ["claude", "codex"])
+
+    def test_list_agents_for_market_uses_market_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "configs" / "agents").mkdir(parents=True, exist_ok=True)
+            (root / "configs" / "agents" / "claude_a_share.yaml").write_text("{}", encoding="utf-8")
+            (root / "configs" / "agents" / "codex_a_share.yaml").write_text("{}", encoding="utf-8")
+            (root / "configs" / "agents" / "claude_hk.yaml").write_text("{}", encoding="utf-8")
+            (root / "configs" / "agents" / "codex_hk.yaml").write_text("{}", encoding="utf-8")
+            (root / "configs" / "agents" / "claude_us.yaml").write_text("{}", encoding="utf-8")
+
+            self.assertEqual(list_agents_for_market("a_share", root), ["claude", "codex"])
+            self.assertEqual(list_agents_for_market("hk", root), ["claude", "codex"])
+            self.assertEqual(list_agents_for_market("us", root), ["claude"])
 
     def test_resolve_agent_paths_returns_expected_layout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

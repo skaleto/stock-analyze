@@ -61,13 +61,14 @@ def load_broadcast_factor(
     factor_name: str,
     as_of: date,
     repo_root: Path,
+    market: str = "a_share",
 ) -> Optional[float]:
     """Resolve a broadcast factor's scalar value for ``agent_id`` at ``as_of``.
 
     Currently only ``<agent>_market_sentiment_1w`` is supported (reads
-    ``data/<agent>/alt_factors/market_sentiment.csv``). Returns ``None``
-    when the factor name is unknown or no sentiment row exists for the
-    relevant week.
+    ``data/<market>/<agent>/alt_factors/market_sentiment.csv``). Returns
+    ``None`` when the factor name is unknown or no sentiment row exists for
+    the relevant week.
 
     For sentiment factors, the returned value is already
     **confidence-weighted**: ``sentiment_score × confidence`` (both ∈
@@ -84,7 +85,7 @@ def load_broadcast_factor(
     if factor_name != expected:
         return None
     from stock_analyze.markets.a_share.alt_factors import sentiment as alt_sent
-    rows = alt_sent.load_sentiment_history(agent_id, repo_root)
+    rows = alt_sent.load_sentiment_history(agent_id, repo_root, market=market)
     eligible = [r for r in rows if r.week_end <= as_of]
     if not eligible:
         return None

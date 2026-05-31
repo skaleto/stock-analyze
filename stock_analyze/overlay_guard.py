@@ -50,6 +50,14 @@ CLASSIC_FACTORS: frozenset[str] = frozenset(
         "dividend_yield",
     }
 )
+SENTIMENT_FACTORS: frozenset[str] = frozenset(
+    {
+        "claude_market_sentiment_1w",
+        "codex_market_sentiment_1w",
+        "claude_sector_sentiment",
+        "codex_sector_sentiment",
+    }
+)
 
 # Per-market factor whitelists. The 'a_share' set is the union of
 # A-share's classic factors + the sentiment alt-factors introduced by
@@ -63,26 +71,22 @@ AVAILABLE_FACTORS_BY_MARKET: dict[str, set[str]] = {
         "pe", "pb", "roe", "gross_margin", "debt_ratio",
         "net_profit_growth", "momentum_20", "momentum_60",
         "low_volatility_60", "dividend_yield",
-        # Broadcast alt-factors (one per agent — overlay_guard's
-        # cross-agent rule still rejects mismatched prefixes).
-        "claude_market_sentiment_1w",
-        "codex_market_sentiment_1w",
-        # Phase 3 per-stock sector-sentiment alt-factors (industry-level).
-        "claude_sector_sentiment",
-        "codex_sector_sentiment",
+        *SENTIMENT_FACTORS,
     },
     "hk": {
         # v1 factor set (Phase 2): 6 factors derivable from yfinance.info
         # + price history. ROE / gross_margin / debt_ratio /
         # net_profit_growth are deferred to v2 (require quarterly_financials
-        # DataFrame parsing). Sentiment alt-factors also deferred to v2.
+        # DataFrame parsing).
         "pe", "pb", "momentum_20", "momentum_60",
         "low_volatility_60", "dividend_yield",
+        *SENTIMENT_FACTORS,
     },
     "us": {
         # v1 factor set (Phase 3): same 6-factor set as HK.
         "pe", "pb", "momentum_20", "momentum_60",
         "low_volatility_60", "dividend_yield",
+        *SENTIMENT_FACTORS,
     },
 }
 

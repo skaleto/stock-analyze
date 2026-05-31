@@ -82,7 +82,7 @@ Available factors (as of this revision, per
 
 **Agent 特有 alt-factor**（由 OpenSpec change `add-llm-sentiment-alpha-factor` 引入）：
 
-- `codex_market_sentiment_1w` — codex 自己的市场情感因子（broadcast 因子，每周 1 个标量值，对所有候选股同样应用）。 *(MVP: broadcast factor, uniform shift, 不立即产生 alpha — 见 add-llm-sentiment-alpha-factor IMPLEMENTATION_REPORT §5.1)*
+- `codex_market_sentiment_1w` — codex 自己的市场情绪因子（broadcast 因子，每周 1 个标量值，对所有候选股同样应用）。 *(MVP: broadcast factor, uniform shift, 不立即产生 alpha — 见 add-llm-sentiment-alpha-factor IMPLEMENTATION_REPORT §5.1)*
 
 注意：codex 只能在自己的 overlay 里用 `codex_*` 前缀的 alt-factor；不能引用 `claude_market_sentiment_1w`（`overlay_guard` 会抛 `OverlayCrossAgentFactor` 拒绝）。
 
@@ -347,12 +347,12 @@ project.
      --sources "https://www.cls.cn/x|https://..."
    ```
 
-5. 验证 dashboard "市场情感" 面板出现新一周数据。
+5. 验证 dashboard "市场情绪" 面板出现新一周数据。
 
 每周 ~10 分钟。漏跑某周不致命（factor_pipeline 在 broadcast 因子缺失
 时跳过该因子贡献），但 dashboard 会显示"已 N 周未更新"警示。
 
-注意：你（Codex CLI）在 weekly review 笔记里可以**读** `data/codex/alt_factors/market_sentiment.csv` 自己的历史，作为情感叙事素材；但**不能**读 `data/claude/alt_factors/*`（见 §7.1）。
+注意：你（Codex CLI）在 weekly review 笔记里可以**读** `data/codex/alt_factors/market_sentiment.csv` 自己的历史，作为市场情绪叙事素材；但**不能**读 `data/claude/alt_factors/*`（见 §7.1）。
 
 ### 9.2 三段窗口纪律（由 `add-historical-backtest-engine` 引入）
 

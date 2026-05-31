@@ -104,6 +104,14 @@ def _pd_index_isoformat(index_value: Any) -> str:
     return str(index_value)[:10]
 
 
+def _industry_from_info(info: dict[str, Any]) -> str | None:
+    value = info.get("industry") or info.get("sector")
+    if value is None:
+        return None
+    label = str(value).strip()
+    return label or None
+
+
 # ---------------------------------------------------------------------------
 # Provider base
 # ---------------------------------------------------------------------------
@@ -200,6 +208,7 @@ class YFinanceProviderBase:
                 pe=None, pb=None, market_cap=None,
                 dividend_yield=None,
                 momentum_20=None, momentum_60=None, low_volatility_60=None,
+                industry=_industry_from_info(info),
                 paused=True, source="yfinance", warning="no history",
             )
         latest = hist.iloc[-1]
@@ -219,6 +228,7 @@ class YFinanceProviderBase:
             momentum_20=_pct_change(closes, 20),
             momentum_60=_pct_change(closes, 60),
             low_volatility_60=_trailing_volatility(closes, 60),
+            industry=_industry_from_info(info),
             paused=False,
             source="yfinance",
         )
@@ -239,6 +249,7 @@ class YFinanceProviderBase:
                 "pe": snap.pe,
                 "pb": snap.pb,
                 "market_cap": snap.market_cap,
+                "industry": snap.industry,
                 "dividend_yield": snap.dividend_yield,
                 "momentum_20": snap.momentum_20,
                 "momentum_60": snap.momentum_60,

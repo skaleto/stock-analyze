@@ -281,11 +281,11 @@ python3 -m stock_analyze backtest \
 python3 -m stock_analyze prepare-backtest-data --start 2021-01-01 --end 2026-04-30
 ```
 
-### 4f. LLM 情感因子
+### 4f. LLM 市场情绪因子
 
-> broadcast 标量由 OpenSpec change `add-llm-sentiment-alpha-factor` 引入（2026-05-26 全链路上线）；其后落地行业级 per-stock 情感因子 `<agent>_sector_sentiment`（参与横截面排序）。
+> broadcast 标量由 OpenSpec change `add-llm-sentiment-alpha-factor` 引入（2026-05-26 全链路上线）；其后落地行业级 per-stock 情绪因子 `<agent>_sector_sentiment`（参与横截面排序）。
 
-每周末（建议周六上午配合 weekly review）由 operator 手动跑一次"市场情感采集"：
+每周末（建议周六上午配合 weekly review）由 operator 手动跑一次"市场情绪采集"：
 
 ```
 operator 打开 Claude.ai / 桌面客户端
@@ -306,12 +306,12 @@ operator 再开 ChatGPT 同步给 codex 跑一次（写 data/codex/alt_factors/m
   → claude_market_sentiment_1w 作为 broadcast 因子,sign × weight × value 加在每个候选股 score 上
 ```
 
-**broadcast 与 per-stock 两类**：最初 MVP 的 broadcast factor（`<agent>_market_sentiment_1w`）值是跨股票常数，对横截面排名零影响（所有股票被同样数值上下平移），现仅作向后兼容保留。在此之上已落地**行业级 per-stock 情感因子**（`<agent>_sector_sentiment`，由 `record-sector-sentiment` 写入），它按行业给每只候选股不同的情感值，参与横截面排序（走 winsorize / z-score，但跳过行业中性化），真正影响选股。
+**broadcast 与 per-stock 两类**：最初 MVP 的 broadcast factor（`<agent>_market_sentiment_1w`）值是跨股票常数，对横截面排名零影响（所有股票被同样数值上下平移），现仅作向后兼容保留。在此之上已落地**行业级 per-stock 情绪因子**（`<agent>_sector_sentiment`，由 `record-sector-sentiment` 写入），它按行业给每只候选股不同的情绪值，参与横截面排序（走 winsorize / z-score，但跳过行业中性化），真正影响选股。
 
 CLI：
 
-- `record-sentiment` — 新增一周 broadcast 市场情感记录（duplicate 默认拒绝，`--force` 覆盖）
-- `record-sector-sentiment` — 新增一周行业级 per-stock 情感记录（参与横截面排序）
+- `record-sentiment` — 新增一周 broadcast 市场情绪记录（duplicate 默认拒绝，`--force` 覆盖）
+- `record-sector-sentiment` — 新增一周行业级 per-stock 情绪记录（参与横截面排序）
 - `sentiment-log --agent <id> [--last N] [--remove <date>]` — 查看 / 删除历史记录
 
 跨 agent 隔离：`overlay_guard` 拒绝在 claude 的 overlay 里引用 `codex_market_sentiment_1w`（`OverlayCrossAgentFactor`），反之亦然。
@@ -366,8 +366,8 @@ CLI：
   ↓ 按可用因子重新归一权重（缺失因子按比例分摊给其他因子）
   ↓ 覆盖率 < min_factor_coverage 的股票被剔除并写 insufficient_factor_coverage warning
   ↓ 综合分 = Σ (有效因子 z-score × 方向 × 归一权重)
-  ↓ + per-stock 行业情感因子（若 overlay 含 `<agent>_sector_sentiment`）
-     · 按行业映射给每只候选股一个情感值，走 winsorize / z-score
+  ↓ + per-stock 行业情绪因子（若 overlay 含 `<agent>_sector_sentiment`）
+     · 按行业映射给每只候选股一个情绪值，走 winsorize / z-score
      · 但跳过行业中性化（否则行业内常数会被 demean 抹平）
      · 参与横截面排序，真正影响选股
   ↓ + broadcast sentiment factor（若 overlay 含 `<agent>_market_sentiment_1w`，向后兼容保留）
@@ -380,7 +380,7 @@ CLI：
 
 **广播因子（broadcast factors）**：由 `add-llm-sentiment-alpha-factor` MVP 引入。当因子名匹配 `<agent_id>_market_sentiment_1w` 时，因子值是一个标量（不是 per-stock），跳过 winsorize / z-score / 行业中性化，直接广播到所有候选股的综合分上。因其是跨股票常数（统一平移），对横截面排名零影响，现仅作向后兼容保留。
 
-**行业情感因子（sector sentiment）**：在广播因子之上落地的 per-stock 情感因子。当因子名匹配 `<agent_id>_sector_sentiment` 时，按行业把情感值映射到每只候选股，走 winsorize / z-score，但**跳过行业中性化**（否则行业内常数会被 demean 抹平），参与横截面排序，真正影响选股。由 `record-sector-sentiment` 写入。
+**行业情绪因子（sector sentiment）**：在广播因子之上落地的 per-stock 情绪因子。当因子名匹配 `<agent_id>_sector_sentiment` 时，按行业把情绪值映射到每只候选股，走 winsorize / z-score，但**跳过行业中性化**（否则行业内常数会被 demean 抹平），参与横截面排序，真正影响选股。由 `record-sector-sentiment` 写入。
 
 ---
 
@@ -501,7 +501,7 @@ GET /claude/dashboard.html     → reports/claude/dashboard.html       (单 agen
 │  · 近期 agent 笔记(最近 5 篇 markdown 折叠)            │
 │  · 策略演进时间线(每月 evolution + 当月与次月实际收益) │
 │  · 历史回测 vs 真实运行(backtest 双线对比,本月引入)    │
-│  · 市场情感面板(本周 score / confidence / drivers)     │
+│  · 市场情绪面板(本周 score / confidence / drivers)     │
 │  · 本期分析任务包(最新 weekly + monthly briefing)      │
 │                                                       │
 │ Codex tab 同结构                                       │
@@ -512,7 +512,7 @@ GET /claude/dashboard.html     → reports/claude/dashboard.html       (单 agen
 │  · 9 行横向指标对比表                                  │
 │  · 持仓重叠条(独占 / 共有 / 独占 三段宽度)             │
 │  · 滚动战绩(按月色块)                                  │
-│  · 市场情感对比(claude vs codex 每周 score 双线)       │
+│  · 市场情绪对比(claude vs codex 每周 score 双线)       │
 │  · 月度报告链接列表                                    │
 │  · 本周双方观察对照(两侧最新周笔记并列)                │
 └───────────────────────────────────────────────────────┘
@@ -595,7 +595,7 @@ CSS `:target` 切 tab,纯静态,无 JS 框架。
 | `data/<agent>/backtest/<run_id>/performance_summary.json` | backtest engine | 回测全套指标 |
 | `data/<agent>/backtest/<run_id>/report.md` | backtest engine | 回测 markdown 报告 |
 | `data/<agent>/evolution_log/<YYYY-MM>-floor-breach.md` | evolution_writer | 回测 gate breach 时的报告 |
-| `data/<agent>/alt_factors/market_sentiment.csv` | record-sentiment CLI | 每周 1 行 LLM 情感记录 |
+| `data/<agent>/alt_factors/market_sentiment.csv` | record-sentiment CLI | 每周 1 行 LLM 市场情绪记录 |
 | `stock_analyze/alt_factors/prompts/market_sentiment_v1.md` | repo | operator 每周用的 LLM prompt 模板 |
 
 `data/` 与 `reports/` 全部 gitignored，不进版本控制。
@@ -648,7 +648,7 @@ CSS `:target` 切 tab,纯静态,无 JS 框架。
 
 1. ✅ **已完成 — backtest factor_pipeline 集成**（`bridge-factor-pipeline-into-backtest`）：`backtest/scoring.py` 的 `score_with_overlay` 让 gate 跑 overlay 真实 factor 流水线；gate 把 overlay 合并到 baseline 后实测，`backtest.use_full_pipeline` 在 A 股基线已置 true。low-PE top-N 仅作旧版兜底。
 2. **Phase 2 sentiment Tushare 新闻包**：升级到 ¥1000/年 Tushare news endpoint + 新增 `news_volume` 因子 + 历史回填 + 回测集成。
-3. ✅ **已完成 — sentiment per-stock 颗粒度**：行业级 per-stock 情感因子 `<agent>_sector_sentiment` 已上线（`record-sector-sentiment` 写入），走 winsorize / z-score、跳过行业中性化，真正参与横截面排序。
+3. ✅ **已完成 — sentiment per-stock 颗粒度**：行业级 per-stock 情绪因子 `<agent>_sector_sentiment` 已上线（`record-sector-sentiment` 写入），走 winsorize / z-score、跳过行业中性化，真正参与横截面排序。
 4. `introduce-point-in-time-fundamentals`：按公告日生效财务因子。
 5. `add-research-factor-toolkit`：因子衰减、相关性、行业暴露归因、风格暴露归因。
 6. `migrate-run-ledger-to-sqlite`：CSV 账本 → SQLite/DuckDB，加索引、原子写、备份。

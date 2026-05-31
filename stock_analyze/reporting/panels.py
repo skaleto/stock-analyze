@@ -20,22 +20,28 @@ import pandas as pd
 from ..utils import today as _today
 
 
-def render_market_sentiment_panel(agent_id: str, repo_root: Path | str) -> str:
+def render_market_sentiment_panel(
+    agent_id: str,
+    repo_root: Path | str,
+    market: str = "a_share",
+) -> str:
     """Render the per-agent market sentiment timeline panel (professional view).
 
-    Reads ``data/<agent>/alt_factors/market_sentiment.csv`` and shows:
+    Reads ``data/<market>/<agent>/alt_factors/market_sentiment.csv`` and shows:
     - Latest week's score + confidence + key_drivers
     - 4-week and 8-week rolling means
     - A "未更新 N 周" warning when the latest row is > 2 weeks old
     """
     from stock_analyze.markets.a_share.alt_factors import sentiment as _alt_sent
 
-    rows = _alt_sent.load_sentiment_history(agent_id, Path(repo_root), last_n=26)
+    rows = _alt_sent.load_sentiment_history(
+        agent_id, Path(repo_root), last_n=26, market=market,
+    )
     if not rows:
         return (
-            f'<div class="panel"><h3>{agent_id} 市场情感</h3>'
-            f'<p>尚无记录。请跑 <code>record-sentiment --agent {agent_id} ...</code>'
-            f' 把每周 LLM 客户端的情感判断落盘。</p></div>'
+            f'<div class="panel"><h3>{agent_id} 市场情绪</h3>'
+            f'<p>尚无记录。请跑 <code>record-sentiment --market {market} --agent {agent_id} ...</code>'
+            f' 把每周 LLM 客户端的市场情绪判断落盘。</p></div>'
         )
 
     latest = rows[-1]
@@ -50,7 +56,7 @@ def render_market_sentiment_panel(agent_id: str, repo_root: Path | str) -> str:
     if days_since > 14:
         weeks_stale = days_since // 7
         stale_html = (
-            f'<p class="warn">⚠️ {agent_id} 已 {weeks_stale} 周未更新市场情感'
+            f'<p class="warn">⚠️ {agent_id} 已 {weeks_stale} 周未更新市场情绪'
             f'（最近 {latest.week_end.isoformat()}）</p>'
         )
 
@@ -61,7 +67,7 @@ def render_market_sentiment_panel(agent_id: str, repo_root: Path | str) -> str:
 
     return (
         f'<div class="panel">\n'
-        f'  <h3>{agent_id} 市场情感（过去 {len(rows)} 周）</h3>\n'
+        f'  <h3>{agent_id} 市场情绪（过去 {len(rows)} 周）</h3>\n'
         f'  {stale_html}\n'
         f'  <ul class="metrics">\n'
         f'    <li>最新 ({latest.week_end.isoformat()}): '

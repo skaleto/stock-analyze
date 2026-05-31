@@ -46,7 +46,9 @@ def generate_rebalance_orders(
     by account at the settlement layer, so it is not threaded further.
     """
     d = _coerce_as_of(as_of)
-    scored = build_signals(config, provider, as_of=d)
+    scored = build_signals(
+        config, provider, as_of=d, repo_root=_ignored.get("repo_root"),
+    )
     accounts = config.get("accounts", []) or []
     # The low-level applies one top_n per account group; HK baseline uses a
     # uniform top_n across accounts, so take the max (== that value).

@@ -1,10 +1,10 @@
-# LLM 市场情感因子流程（Path 2 MVP）
+# LLM 市场情绪因子流程（Path 2 MVP）
 
 > 由 OpenSpec change `add-llm-sentiment-alpha-factor` 实施（仍在 active，
 > 待操作员完成 5/30 实战首跑）。详细设计见 `proposal.md` / `design.md` /
 > `IMPLEMENTATION_REPORT.md`。
 
-把"市场情感"作为 alpha 因子加入策略，**以最小成本**先把通路打通；后续按真实证据决定要不要升级到 Phase 2/3。
+把"市场情绪"作为 alpha 因子加入策略，**以最小成本**先把通路打通；后续按真实证据决定要不要升级到 Phase 2/3。
 
 ---
 
@@ -94,7 +94,7 @@ Dashboard 上"已 N 周未更新"警示提醒补录。
 - `reporting.render_market_sentiment_panel(agent)` — 单 agent 26 周时序
 - `dashboard_aggregator.render_sentiment_comparison_panel()` — claude vs codex 对比
 
-新手版 dashboard **不显示**情感因子（按 ≤80KB 限制）。
+新手版 dashboard **不显示**情绪因子（按 ≤80KB 限制）。
 
 ---
 

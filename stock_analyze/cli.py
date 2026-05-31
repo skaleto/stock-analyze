@@ -92,7 +92,14 @@ def build_parser() -> argparse.ArgumentParser:
     review = sub.add_parser("competition-monthly-review", help="Compute and persist the monthly comparison review")
     review.add_argument("--month", help="Target month in YYYY-MM (default: previous calendar month)")
     review.add_argument("--agents", nargs="*", help="Subset of agent ids to review (default: all)")
-    sub.add_parser("competition-dashboard", help="Render the three-tab competition dashboard")
+    dashboard = sub.add_parser("competition-dashboard", help="Render the competition dashboard")
+    dashboard.add_argument(
+        "--market",
+        dest="dashboard_market",
+        choices=["all", *competition.MARKETS],
+        default="all",
+        help="Dashboard market scope (default: all).",
+    )
     prep_weekly = sub.add_parser("agent-prepare-weekly", help="Write the weekly briefing markdown for an agent")
     prep_weekly.add_argument("--agent", required=True)
     prep_weekly.add_argument("--as-of", dest="briefing_as_of", help="Override briefing date (YYYY-MM-DD)")
@@ -170,6 +177,13 @@ def build_parser() -> argparse.ArgumentParser:
         "record-sentiment",
         help="Record one week of operator-curated market sentiment from LLM client.",
     )
+    rec.add_argument(
+        "--market",
+        dest="sentiment_market",
+        choices=competition.MARKETS,
+        default=None,
+        help="Market namespace for the sentiment row (default: global --market or a_share).",
+    )
     rec.add_argument("--agent", required=True, choices=["claude", "codex"])
     rec.add_argument("--week-end", type=_parse_iso_date, required=True,
                       help="Friday-end of the analysed week (YYYY-MM-DD).")
@@ -195,6 +209,13 @@ def build_parser() -> argparse.ArgumentParser:
         "record-sector-sentiment",
         help="Record one week of per-industry sentiment (Phase 3 per-stock factor).",
     )
+    recsec.add_argument(
+        "--market",
+        dest="sentiment_market",
+        choices=competition.MARKETS,
+        default=None,
+        help="Market namespace for the sector rows (default: global --market or a_share).",
+    )
     recsec.add_argument("--agent", required=True, choices=["claude", "codex"])
     recsec.add_argument("--week-end", type=_parse_iso_date, required=True,
                          help="Friday-end of the analysed week (YYYY-MM-DD).")
@@ -212,6 +233,13 @@ def build_parser() -> argparse.ArgumentParser:
     slog = sub.add_parser(
         "sentiment-log",
         help="Inspect / remove sentiment history rows.",
+    )
+    slog.add_argument(
+        "--market",
+        dest="sentiment_market",
+        choices=competition.MARKETS,
+        default=None,
+        help="Market namespace to inspect/remove (default: global --market or a_share).",
     )
     slog.add_argument("--agent", required=True, choices=["claude", "codex"])
     slog.add_argument("--last", type=int, default=None,
@@ -350,7 +378,7 @@ def main(argv: list[str] | None = None) -> int:
         return _command_competition_monthly_review(args)
     if args.command == "competition-dashboard":
         ensure_dirs(args.logs_dir)
-        return _command_competition_dashboard()
+        return _command_competition_dashboard(args)
     if args.command == "agent-prepare-weekly":
         ensure_dirs(args.logs_dir)
         return _command_agent_prepare_weekly(args)
@@ -526,13 +554,22 @@ def _command_competition_monthly_review(args: argparse.Namespace) -> int:
     return 0
 
 
-def _command_competition_dashboard() -> int:
+def _command_competition_dashboard(args: argparse.Namespace) -> int:
     repo_root = Path.cwd()
-    agents = competition.list_agents(repo_root)
+    scope = getattr(args, "dashboard_market", "all") or "all"
+    markets = list(competition.MARKETS) if scope == "all" else [scope]
+    agents: list[str] = []
+    for market in markets:
+        for agent in competition.list_agents_for_market(market, repo_root):
+            if agent not in agents:
+                agents.append(agent)
     if not agents:
-        print("error: no agent overlays found under configs/agents/", file=sys.stderr)
+        print(
+            f"error: no agent overlays found for market={scope} under configs/agents/",
+            file=sys.stderr,
+        )
         return 2
-    out_path = generate_competition_dashboard(agents=agents, repo_root=repo_root)
+    out_path = generate_competition_dashboard(agents=agents, repo_root=repo_root, markets=markets)
     print(f"Competition dashboard written: {out_path}")
     return 0
 
@@ -757,10 +794,19 @@ def _command_backtest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _sentiment_market(args: argparse.Namespace) -> str:
+    return (
+        getattr(args, "sentiment_market", None)
+        or getattr(args, "market", None)
+        or "a_share"
+    )
+
+
 def _command_record_sentiment(args: argparse.Namespace) -> int:
     """Record one operator-curated sentiment row from LLM-client chat."""
     from .markets.a_share.alt_factors import sentiment as alt_sent
 
+    market = _sentiment_market(args)
     drivers = [d.strip() for d in args.drivers.split(",") if d.strip()]
     sources_raw = args.sources or ""
     sources = [s.strip() for s in sources_raw.split("|") if s.strip()] if sources_raw else []
@@ -776,6 +822,7 @@ def _command_record_sentiment(args: argparse.Namespace) -> int:
             prompt_version=args.prompt_version,
             repo_root=Path.cwd(),
             force=args.force,
+            market=market,
         )
     except alt_sent.DuplicateSentimentEntry as exc:
         print(f"✗ {exc}", file=sys.stderr)
@@ -783,9 +830,9 @@ def _command_record_sentiment(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"✗ validation: {exc}", file=sys.stderr)
         return 1
-    rows = alt_sent.load_sentiment_history(args.agent, Path.cwd())
+    rows = alt_sent.load_sentiment_history(args.agent, Path.cwd(), market=market)
     print(
-        f"✓ recorded {args.agent} {args.week_end.isoformat()} "
+        f"✓ recorded {market}/{args.agent} {args.week_end.isoformat()} "
         f"score={args.score:+.2f} confidence={args.confidence:.2f}; "
         f"csv now has {len(rows)} weeks"
     )
@@ -798,6 +845,7 @@ def _command_record_sector_sentiment(args: argparse.Namespace) -> int:
 
     from .markets.a_share.alt_factors import sentiment as alt_sent
 
+    market = _sentiment_market(args)
     if not args.sectors_json and not args.json_file:
         print("✗ provide --json or --json-file", file=sys.stderr)
         return 1
@@ -824,6 +872,7 @@ def _command_record_sector_sentiment(args: argparse.Namespace) -> int:
             prompt_version=args.prompt_version,
             repo_root=Path.cwd(),
             force=args.force,
+            market=market,
         )
     except alt_sent.DuplicateSentimentEntry as exc:
         print(f"✗ {exc}", file=sys.stderr)
@@ -832,7 +881,7 @@ def _command_record_sector_sentiment(args: argparse.Namespace) -> int:
         print(f"✗ validation: {exc}", file=sys.stderr)
         return 1
     print(
-        f"✓ recorded {args.agent} sector sentiment for {args.week_end.isoformat()}: "
+        f"✓ recorded {market}/{args.agent} sector sentiment for {args.week_end.isoformat()}: "
         f"{n} industries"
     )
     return 0
@@ -842,23 +891,26 @@ def _command_sentiment_log(args: argparse.Namespace) -> int:
     """List or remove sentiment history rows."""
     from .markets.a_share.alt_factors import sentiment as alt_sent
 
+    market = _sentiment_market(args)
     if args.remove:
         if args.week_end is None:
             print("✗ --remove requires --week-end", file=sys.stderr)
             return 1
         try:
-            alt_sent.remove_sentiment(args.agent, args.week_end, args.repo_root)
+            alt_sent.remove_sentiment(
+                args.agent, args.week_end, args.repo_root, market=market,
+            )
         except ValueError as exc:
             print(f"✗ {exc}", file=sys.stderr)
             return 1
-        print(f"✓ removed {args.agent} {args.week_end.isoformat()}")
+        print(f"✓ removed {market}/{args.agent} {args.week_end.isoformat()}")
         return 0
 
     rows = alt_sent.load_sentiment_history(
-        args.agent, args.repo_root, last_n=args.last,
+        args.agent, args.repo_root, last_n=args.last, market=market,
     )
     if not rows:
-        print(f"(no sentiment rows for {args.agent})")
+        print(f"(no sentiment rows for {market}/{args.agent})")
         return 0
     for r in rows:
         print(
@@ -924,8 +976,9 @@ def _auto_write_weekly_briefing(agent_id: str | None, as_of: str | None) -> str 
 # - ``GET /simple/claude.html``     → reports/competition/simple/claude.html
 # - ``GET /simple/codex.html``      → reports/competition/simple/codex.html
 # - ``GET /pro.html``               → reports/competition/dashboard.html (alias)
-# - ``GET /pro/claude.html``        → reports/claude/dashboard.html     (alias, NEW 2026-05-24)
-# - ``GET /pro/codex.html``         → reports/codex/dashboard.html      (alias, NEW 2026-05-24)
+# - ``GET /pro/<market>/<agent>.html`` → reports/<market>/<agent>/dashboard.html
+# - ``GET /pro/claude.html``        → reports/claude/dashboard.html     (legacy alias)
+# - ``GET /pro/codex.html``         → reports/codex/dashboard.html      (legacy alias)
 # - ``GET /competition/...``        → reports/competition/...          (unchanged)
 DASHBOARD_ROUTES: dict[str, str] = {
     "/": "/competition/simple.html",
@@ -936,7 +989,33 @@ DASHBOARD_ROUTES: dict[str, str] = {
     "/pro.html": "/competition/dashboard.html",
     "/pro/claude.html": "/claude/dashboard.html",
     "/pro/codex.html": "/codex/dashboard.html",
+    "/pro/a_share/claude.html": "/a_share/claude/dashboard.html",
+    "/pro/a_share/codex.html": "/a_share/codex/dashboard.html",
+    "/pro/hk/claude.html": "/hk/claude/dashboard.html",
+    "/pro/hk/codex.html": "/hk/codex/dashboard.html",
+    "/pro/us/claude.html": "/us/claude/dashboard.html",
+    "/pro/us/codex.html": "/us/codex/dashboard.html",
 }
+DASHBOARD_ROUTE_FALLBACKS: dict[str, str] = {
+    "/pro/a_share/claude.html": "/claude/dashboard.html",
+    "/pro/a_share/codex.html": "/codex/dashboard.html",
+}
+
+
+def _resolve_dashboard_route(path: str, directory: Path) -> str | None:
+    target = DASHBOARD_ROUTES.get(path)
+    if target is None and path.startswith("/pro/") and path.endswith(".html"):
+        parts = path.removesuffix(".html").split("/")
+        if len(parts) == 4:
+            _, pro, market, agent = parts
+            if pro == "pro" and market in competition.MARKETS and agent:
+                target = f"/{market}/{agent}/dashboard.html"
+    if target is None:
+        return None
+    candidate = directory / target.lstrip("/")
+    if candidate.exists():
+        return target
+    return DASHBOARD_ROUTE_FALLBACKS.get(path, target)
 
 
 class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -952,7 +1031,7 @@ class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
         # Strip query / fragment for routing decisions; preserve them when
         # rewriting so deep links keep their parameters.
         path, _, suffix = self.path.partition("?")
-        target = DASHBOARD_ROUTES.get(path)
+        target = _resolve_dashboard_route(path, Path(self.directory))
         if target is not None:
             self.path = target + (("?" + suffix) if suffix else "")
         super().do_GET()
