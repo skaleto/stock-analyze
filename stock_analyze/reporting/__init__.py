@@ -323,8 +323,7 @@ def generate_dashboard(
     if mode == "fragment":
         nav_html = ""
     else:
-        agent_key = f"pro-{agent_id}" if agent_id in ("claude", "codex") else None
-        nav_html = render_nav_html(active=agent_key, data_as_of=summary.get("generated_at"))
+        nav_html = render_nav_html(active="pro", data_as_of=summary.get("generated_at"))
 
     html = f"""<!doctype html>
 <html lang="zh-CN">

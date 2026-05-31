@@ -221,7 +221,8 @@ def dashboard_fragment_path(reports_dir: str | Path) -> Path:
 
     Convention (introduced 2026-05-24, §7.0 override):
 
-    * Competition mode (``reports/<agent>/``) → ``data/_dashboard_build/<agent>/fragment.html``
+    * Market mode (``reports/<market>/<agent>/``) → ``data/_dashboard_build/<market>/<agent>/fragment.html``
+    * Legacy A-share mode (``reports/<agent>/``) → ``data/_dashboard_build/a_share/<agent>/fragment.html``
     * Single-agent / legacy mode (``reports/``) → ``data/_dashboard_build/_default/fragment.html``
 
     Caller is responsible for creating the parent directory (use
@@ -231,12 +232,19 @@ def dashboard_fragment_path(reports_dir: str | Path) -> Path:
     reports_path = Path(reports_dir)
     if reports_path.name == "reports":
         repo_root = reports_path.parent
-        agent_dir = "_default"
-    else:
-        # Expected: <repo_root>/reports/<agent>
+        return repo_root / "data" / "_dashboard_build" / "_default" / "fragment.html"
+    if reports_path.parent.name in {"a_share", "hk", "us"} and reports_path.parent.parent.name == "reports":
+        repo_root = reports_path.parent.parent.parent
+        market_dir = reports_path.parent.name
+        agent_dir = reports_path.name
+        return repo_root / "data" / "_dashboard_build" / market_dir / agent_dir / "fragment.html"
+    if reports_path.parent.name == "reports":
         repo_root = reports_path.parent.parent
         agent_dir = reports_path.name
-    return repo_root / "data" / "_dashboard_build" / agent_dir / "fragment.html"
+        return repo_root / "data" / "_dashboard_build" / "a_share" / agent_dir / "fragment.html"
+    else:
+        repo_root = reports_path.parent.parent
+        return repo_root / "data" / "_dashboard_build" / "_default" / "fragment.html"
 
 
 def unique_rows(rows: Iterable[dict[str, Any]], keys: list[str]) -> list[dict[str, Any]]:

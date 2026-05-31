@@ -182,9 +182,7 @@ _NAV_LINKS: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...] = (
     (
         "专业",
         (
-            ("pro", "/pro.html", "合并"),
-            ("pro-claude", "/pro/claude.html", "Claude"),
-            ("pro-codex", "/pro/codex.html", "Codex"),
+            ("pro", "/pro.html", "三市场"),
         ),
     ),
 )
@@ -201,8 +199,7 @@ def render_nav_html(
     ----------
     active : str | None
         Active page key. One of: simple, simple-claude, simple-codex,
-        pro, pro-claude, pro-codex. Pass ``None`` on a page not in the
-        nav (e.g. legacy single-agent), no link is highlighted.
+        pro. Pass ``None`` on a page not in the nav, no link is highlighted.
     generated_at : datetime | str | None
         When this HTML was generated. Defaults to now.
     data_as_of : str | None

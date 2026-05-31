@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import html
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -469,6 +470,170 @@ def _agents_for_markets(markets: list[str], root: Path) -> list[str]:
     return ordered
 
 
+def _run_status_data(row: dict[str, Any] | None, *, missing: str = "missing") -> dict[str, Any]:
+    if row is None:
+        return {"status": missing, "started_at": None, "finished_at": None, "error_summary": None}
+    return {
+        "status": _none_if_blank(row.get("status")) or "unknown",
+        "started_at": _none_if_blank(row.get("started_at")),
+        "finished_at": _none_if_blank(row.get("finished_at")),
+        "error_summary": _none_if_blank(row.get("error_summary")),
+    }
+
+
+def _none_if_blank(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str) and value == "":
+        return None
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        return value
+    if isinstance(missing, bool) and missing:
+        return None
+    return value
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    value = _none_if_blank(value)
+    if hasattr(value, "item"):
+        try:
+            return _json_safe(value.item())
+        except (TypeError, ValueError, AttributeError):
+            pass
+    return value
+
+
+def _weekly_report_href(market: str, agent: str, reports_dir: Path) -> str | None:
+    if not (reports_dir / "weekly_report.md").exists():
+        return None
+    return f"/{market}/{agent}/weekly_report.md"
+
+
+def _monthly_status_data(root: Path, market: str) -> dict[str, Any]:
+    if market != "a_share":
+        return {"status": "not_configured", "href": None, "label": None}
+    reports_dir = root / "reports" / "competition"
+    files = sorted(reports_dir.glob("monthly_review_*.md"))
+    if not files:
+        return {"status": "missing", "href": None, "label": None}
+    latest = files[-1]
+    month = latest.stem.replace("monthly_review_", "")
+    return {"status": "success", "href": f"/competition/{latest.name}", "label": month}
+
+
+def _latest_sentiment_rows(root: Path) -> list[dict[str, Any]]:
+    from stock_analyze.markets.a_share.alt_factors import sentiment as _alt_sent
+
+    rows: list[dict[str, Any]] = []
+    for market in DEFAULT_MARKETS:
+        item: dict[str, Any] = {
+            "market": market,
+            "market_label": MARKET_LABELS.get(market, market),
+            "agents": {},
+            "score_diff": None,
+            "drivers": [],
+        }
+        latest_by_agent = {}
+        for agent in DEFAULT_AGENT_ORDER:
+            history = _alt_sent.load_sentiment_history(agent, root, last_n=26, market=market)
+            if not history:
+                continue
+            latest = history[-1]
+            latest_by_agent[agent] = latest
+            item["agents"][agent] = {
+                "week_end": latest.week_end.isoformat(),
+                "score": latest.score,
+                "confidence": latest.confidence,
+                "drivers": list(latest.drivers),
+                "sources": list(latest.sources),
+            }
+        if "claude" in latest_by_agent and "codex" in latest_by_agent:
+            item["score_diff"] = latest_by_agent["claude"].score - latest_by_agent["codex"].score
+            item["drivers"] = (
+                list(latest_by_agent["claude"].drivers[:2])
+                + list(latest_by_agent["codex"].drivers[:2])
+            )
+        rows.append(item)
+    return rows
+
+
+def build_dashboard_summary_data(
+    *,
+    repo_root: str | Path | None = None,
+    markets: list[str] | None = None,
+    agents: list[str] | None = None,
+) -> dict[str, Any]:
+    """Return the structured tri-market dashboard data used by the UI.
+
+    The HTML page remains a static shell/fallback, while ``serve-dashboard``
+    can expose this payload at ``/api/dashboard/summary.json`` so the page can
+    fetch fresh data from disk without regenerating HTML.
+    """
+
+    root = Path(repo_root) if repo_root else Path.cwd()
+    selected_markets = _normalize_markets("all", markets)
+    selected_agents = agents or _agents_for_markets(selected_markets, root)
+    paths_by_market = _build_market_paths(selected_markets, selected_agents, root)
+    market_payloads: list[dict[str, Any]] = []
+    for market in selected_markets:
+        agent_paths = paths_by_market.get(market, {})
+        market_agents: list[dict[str, Any]] = []
+        for agent in selected_agents:
+            paths = agent_paths.get(agent)
+            if paths is None:
+                continue
+            nav = _read_latest_nav(paths.data_dir)
+            baseline = MARKET_INITIAL_CASH.get(market, 1.0)
+            latest = nav["latest"]
+            pending = _read_pending_summary(paths.data_dir)
+            market_agents.append(
+                {
+                    "agent": agent,
+                    "nav": {
+                        "latest": latest,
+                        "latest_display": _format_market_money(latest, market),
+                        "date": nav.get("date"),
+                        "return": (latest / baseline - 1.0) if latest is not None and baseline else None,
+                        "return_display": format_pct(
+                            (latest / baseline - 1.0) if latest is not None and baseline else None
+                        ),
+                    },
+                    "decision": {
+                        "href": f"/pro/{market}/{agent}.html",
+                        "pending_orders": pending,
+                        "weekly_report_href": _weekly_report_href(market, agent, paths.reports_dir),
+                    },
+                    "tasks": {
+                        "daily": _run_status_data(_read_latest_run(paths.data_dir, "run-daily")),
+                        "weekly": _run_status_data(_read_latest_run(paths.data_dir, "run-weekly")),
+                    },
+                }
+            )
+        market_payloads.append(
+            {
+                "market": market,
+                "label": MARKET_LABELS.get(market, market),
+                "currency": MARKET_CURRENCY.get(market, ""),
+                "agents": market_agents,
+                "monthly": _monthly_status_data(root, market),
+            }
+        )
+    payload = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "markets": market_payloads,
+        "sentiment": _latest_sentiment_rows(root),
+    }
+    return _json_safe(payload)
+
+
 def generate_competition_dashboard(
     agents: list[str] | None = None,
     repo_root: str | Path | None = None,
@@ -519,6 +684,15 @@ def generate_competition_dashboard(
 
     html = _render_page(tabs_nav, tab_sections, nav_json, leaderboard_json)
     out_path.write_text(html, encoding="utf-8")
+    summary_payload = build_dashboard_summary_data(
+        repo_root=root,
+        markets=selected_markets,
+        agents=agents,
+    )
+    (out_dir / "dashboard-data.json").write_text(
+        json.dumps(summary_payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
 
     # Also render the beginner simplified view alongside the professional dashboard.
     # Best-effort: if beginner rendering fails (e.g. unexpected data shape), the
@@ -885,7 +1059,7 @@ def _render_all_market_observer(
         + '</tbody></table>'
     )
     return (
-        '<section class="all-market-observer">'
+        '<section id="all-market-observer" class="all-market-observer" data-source="/api/dashboard/summary.json">'
         '<h2>三市场总览</h2>'
         f'<section class="grid market-overview-grid">{"".join(market_cards)}</section>'
         '<h2>三市场具体决策</h2>'
@@ -1239,6 +1413,7 @@ def _render_page(tabs_nav: str, tab_sections: str, nav_json: str, leaderboard_js
     }}
 
     drawComparisonNav();
+    {_DASHBOARD_DYNAMIC_JS}
   </script>
 </body>
 </html>
@@ -1248,6 +1423,94 @@ def _render_page(tabs_nav: str, tab_sections: str, nav_json: str, leaderboard_js
 # ---------------------------------------------------------------------------
 # Dark Bloomberg theme for the competition page. Class names preserved.
 # Color/spacing tokens pull from _dashboard_assets.BASE_CSS.
+
+_DASHBOARD_DYNAMIC_JS = r"""
+    function escapeText(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[ch]));
+    }
+
+    function statusLabel(row, missingText) {
+      if (!row || row.status === 'missing') return '<span class="pending">' + escapeText(missingText) + '</span>';
+      const started = row.started_at ? String(row.started_at).slice(0, 19).replace('T', ' ') : '';
+      if (row.status === 'success') return '<span class="ok">OK ' + escapeText(started) + '</span>';
+      if (row.status === 'failed') return '<span class="fail">失败 ' + escapeText(row.error_summary || '') + '</span>';
+      return '<span class="pending">' + escapeText(row.status) + ' ' + escapeText(started) + '</span>';
+    }
+
+    function renderDashboardSummary(payload) {
+      const marketCards = [];
+      const decisionRows = [];
+      const taskRows = [];
+      for (const market of payload.markets || []) {
+        const navBits = [];
+        for (const item of market.agents || []) {
+          const ret = Number(item.nav && item.nav.return);
+          const retClass = Number.isFinite(ret) && ret < 0 ? 'neg' : 'pos';
+          navBits.push(
+            '<div><strong>' + escapeText(item.agent) + '</strong> ' +
+            '<span class="num">' + escapeText(item.nav && item.nav.latest_display || '-') + '</span> ' +
+            '<span class="' + retClass + '">' + escapeText(item.nav && item.nav.return_display || '-') + '</span></div>'
+          );
+          const pending = (item.decision && item.decision.pending_orders) || {};
+          const reportHref = item.decision && item.decision.weekly_report_href;
+          decisionRows.push(
+            '<tr><td>' + escapeText(market.label) + '</td>' +
+            '<td>' + escapeText(item.agent) + '</td>' +
+            '<td><a href="' + escapeText(item.decision.href) + '">专业页</a></td>' +
+            '<td class="num">目标订单 ' + escapeText(pending.total ?? 0) +
+            ' (买 ' + escapeText(pending.buy ?? 0) + ' / 卖 ' + escapeText(pending.sell ?? 0) + ')</td>' +
+            '<td>' + (reportHref ? '<a href="' + escapeText(reportHref) + '">weekly_report.md</a>' : '<span class="pending">无周报</span>') + '</td></tr>'
+          );
+          taskRows.push(
+            '<tr><td>' + escapeText(market.label) + '</td><td>' + escapeText(item.agent) +
+            '</td><td>日任务 <code>run-daily</code></td><td>' + statusLabel(item.tasks && item.tasks.daily, '未运行') + '</td></tr>'
+          );
+          taskRows.push(
+            '<tr><td>' + escapeText(market.label) + '</td><td>' + escapeText(item.agent) +
+            '</td><td>周任务 <code>run-weekly</code></td><td>' + statusLabel(item.tasks && item.tasks.weekly, '未运行') + '</td></tr>'
+          );
+        }
+        const monthly = market.monthly || {};
+        let monthlyCell = '<span class="pending">' + (monthly.status === 'not_configured' ? '未配置' : '无月报') + '</span>';
+        if (monthly.href) monthlyCell = '<a href="' + escapeText(monthly.href) + '">' + escapeText(monthly.label || '月报') + '</a>';
+        taskRows.push(
+          '<tr><td>' + escapeText(market.label) + '</td><td>market</td>' +
+          '<td>月任务 <code>competition-monthly-review</code></td><td>' + monthlyCell + '</td></tr>'
+        );
+        marketCards.push(
+          '<section class="metric-card market-card"><div class="card-label">' + escapeText(market.label) +
+          '</div><div class="market-nav-lines">' + (navBits.join('') || '<p class="empty">暂无 NAV</p>') + '</div></section>'
+        );
+      }
+      return (
+        '<h2>三市场总览</h2><section class="grid market-overview-grid">' + marketCards.join('') + '</section>' +
+        '<h2>三市场具体决策</h2><div class="panel"><table class="comparison market-decisions"><thead>' +
+        '<tr><th>市场</th><th>Agent</th><th>决策入口</th><th>最新决策</th><th>周报</th></tr></thead><tbody>' +
+        decisionRows.join('') + '</tbody></table></div>' +
+        '<h2>日/周/月任务运行情况</h2><div class="panel"><table class="comparison market-task-matrix"><thead>' +
+        '<tr><th>市场</th><th>主体</th><th>任务</th><th>最近状态</th></tr></thead><tbody>' +
+        taskRows.join('') + '</tbody></table>' +
+        '<div class="hint">数据来自 <code>/api/dashboard/summary.json</code>；静态 HTML 仅作为首屏兜底。</div></div>'
+      );
+    }
+
+    async function hydrateDashboardSummary() {
+      const root = document.getElementById('all-market-observer');
+      if (!root || !window.fetch) return;
+      try {
+        const response = await fetch('/api/dashboard/summary.json', { cache: 'no-store' });
+        if (!response.ok) return;
+        const payload = await response.json();
+        root.innerHTML = renderDashboardSummary(payload);
+      } catch (err) {
+        root.dataset.apiStatus = 'fallback';
+      }
+    }
+
+    hydrateDashboardSummary();
+"""
 
 _COMPETITION_CSS = """
 .page-header { padding: var(--space-md) var(--space-xl) var(--space-sm); background: var(--bg-elevated); border-bottom: 1px solid var(--border-subtle); }
