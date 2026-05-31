@@ -8,8 +8,10 @@ behaviour directly.
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from stock_analyze.cli import DASHBOARD_ROUTES, _DashboardRequestHandler
+from stock_analyze.cli import DASHBOARD_ROUTES, _DashboardRequestHandler, _resolve_dashboard_route
 
 
 class DashboardRoutesTableTests(unittest.TestCase):
@@ -18,6 +20,20 @@ class DashboardRoutesTableTests(unittest.TestCase):
 
     def test_pro_alias_points_at_existing_dashboard(self) -> None:
         self.assertEqual(DASHBOARD_ROUTES["/pro.html"], "/competition/dashboard.html")
+
+    def test_market_agent_pro_routes(self) -> None:
+        self.assertEqual(
+            DASHBOARD_ROUTES["/pro/a_share/claude.html"],
+            "/a_share/claude/dashboard.html",
+        )
+        self.assertEqual(
+            DASHBOARD_ROUTES["/pro/hk/codex.html"],
+            "/hk/codex/dashboard.html",
+        )
+        self.assertEqual(
+            DASHBOARD_ROUTES["/pro/us/claude.html"],
+            "/us/claude/dashboard.html",
+        )
 
     def test_per_agent_simple_routes(self) -> None:
         self.assertEqual(
@@ -33,6 +49,30 @@ class DashboardRoutesTableTests(unittest.TestCase):
         # The pro view path itself is NOT rewritten (it's served directly).
         self.assertNotIn("/competition/dashboard.html", DASHBOARD_ROUTES)
         self.assertNotIn("/claude/dashboard.html", DASHBOARD_ROUTES)
+
+    def test_a_share_agent_route_falls_back_to_legacy_when_needed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            reports = Path(tmp)
+            legacy = reports / "claude" / "dashboard.html"
+            legacy.parent.mkdir(parents=True)
+            legacy.write_text("legacy", encoding="utf-8")
+
+            self.assertEqual(
+                _resolve_dashboard_route("/pro/a_share/claude.html", reports),
+                "/claude/dashboard.html",
+            )
+
+    def test_dynamic_market_agent_route(self) -> None:
+        with TemporaryDirectory() as tmp:
+            reports = Path(tmp)
+            target = reports / "hk" / "gemini" / "dashboard.html"
+            target.parent.mkdir(parents=True)
+            target.write_text("ok", encoding="utf-8")
+
+            self.assertEqual(
+                _resolve_dashboard_route("/pro/hk/gemini.html", reports),
+                "/hk/gemini/dashboard.html",
+            )
 
 
 class HandlerRewriteTests(unittest.TestCase):
@@ -52,6 +92,12 @@ class HandlerRewriteTests(unittest.TestCase):
 
     def test_pro_alias_rewrites(self) -> None:
         self.assertEqual(self._rewrite("/pro.html"), "/competition/dashboard.html")
+
+    def test_market_agent_pro_alias_rewrites(self) -> None:
+        self.assertEqual(
+            self._rewrite("/pro/hk/claude.html"),
+            "/hk/claude/dashboard.html",
+        )
 
     def test_query_string_preserved(self) -> None:
         self.assertEqual(

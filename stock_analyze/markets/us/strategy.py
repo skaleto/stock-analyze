@@ -12,6 +12,10 @@ from typing import Any
 import pandas as pd
 
 from ...factor_pipeline import process_factors
+from ...sentiment_integration import (
+    apply_sector_sentiment_columns,
+    resolve_broadcast_values,
+)
 from .data_provider import YFinanceUSProvider
 
 
@@ -33,6 +37,7 @@ def build_signals(
     provider: YFinanceUSProvider,
     *,
     as_of: date | None = None,
+    repo_root: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build per-account signals using the shared factor pipeline."""
     as_of = as_of or date.today()
@@ -58,21 +63,32 @@ def build_signals(
         if spot_df.empty:
             logger.warning("US %s universe spot is empty", scope)
             continue
+        spot_df = apply_sector_sentiment_columns(
+            config, spot_df, as_of, repo_root, market="us",
+        )
+        broadcast_values = resolve_broadcast_values(
+            config, as_of, repo_root, market="us",
+        )
 
         active_factor_cols = [n for n in factors_spec.keys()
                               if n in spot_df.columns]
-        if not active_factor_cols:
+        has_broadcast = bool(broadcast_values)
+        if not active_factor_cols and not has_broadcast:
             logger.warning(
                 "US %s: none of overlay factors %s found in spot",
                 scope, list(factors_spec),
             )
             continue
-        frame = spot_df[["code"] + active_factor_cols].copy()
+        frame_cols = ["code"] + active_factor_cols
+        if "industry" in spot_df.columns and "industry" not in frame_cols:
+            frame_cols.append("industry")
+        frame = spot_df[frame_cols].copy()
 
         scored, _ = process_factors(
             frame,
             factors=factors_spec,
             factor_processing=factor_processing,
+            broadcast_values=broadcast_values,
         )
 
         for _, r in scored.iterrows():

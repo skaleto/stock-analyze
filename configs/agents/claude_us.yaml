@@ -8,7 +8,9 @@
     "momentum_20": {"weight": 0.25, "direction": "high"},
     "momentum_60": {"weight": 0.20, "direction": "high"},
     "dividend_yield": {"weight": 0.10, "direction": "high"},
-    "low_volatility_60": {"weight": 0.10, "direction": "low"}
+    "low_volatility_60": {"weight": 0.10, "direction": "low"},
+    "claude_market_sentiment_1w": {"weight": 0.02, "direction": "high"},
+    "claude_sector_sentiment": {"weight": 0.05, "direction": "high"}
   },
   "factor_processing": {
     "winsorize_lower": 0.05,

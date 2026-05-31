@@ -11,7 +11,9 @@
     "momentum_20": {"weight": 0.0, "direction": "high"},
     "momentum_60": {"weight": 0.07, "direction": "high"},
     "low_volatility_60": {"weight": 0.17, "direction": "low"},
-    "dividend_yield": {"weight": 0.10, "direction": "high"}
+    "dividend_yield": {"weight": 0.10, "direction": "high"},
+    "codex_market_sentiment_1w": {"weight": 0.02, "direction": "high"},
+    "codex_sector_sentiment": {"weight": 0.05, "direction": "high"}
   },
   "factor_processing": {
     "enabled": true,

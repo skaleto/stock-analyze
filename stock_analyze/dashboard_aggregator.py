@@ -18,6 +18,8 @@ partial state shows placeholders, not errors.
 from __future__ import annotations
 
 import json
+import html
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -26,7 +28,8 @@ import pandas as pd
 
 from ._dashboard_assets import BASE_CSS, NAV_CSS, render_nav_html
 from .beginner_dashboard import write_beginner_views
-from .competition import resolve_agent_paths
+from . import competition
+from .competition import resolve_agent_paths, resolve_market_paths
 from .utils import (
     dashboard_fragment_path,
     ensure_dirs,
@@ -43,6 +46,32 @@ AGENT_COLORS = {
     "codex": "#06b6d4",
 }
 DEFAULT_AGENT_ORDER = ("claude", "codex")
+DEFAULT_MARKETS = tuple(competition.MARKETS)
+MARKET_LABELS = {
+    "a_share": "A股",
+    "hk": "港股",
+    "us": "美股",
+}
+MARKET_CURRENCY = {
+    "a_share": "¥",
+    "hk": "HK$",
+    "us": "$",
+}
+MARKET_INITIAL_CASH = {
+    "a_share": 1_000_000.0,
+    "hk": 1_000_000.0,
+    "us": 150_000.0,
+}
+
+
+@dataclass
+class DashboardAgentPaths:
+    market: str
+    agent_id: str
+    repo_root: Path
+    data_dir: Path
+    reports_dir: Path
+    config_path: Path
 
 
 # _today is imported from .utils as a single canonical helper.
@@ -298,43 +327,146 @@ def render_pipeline_status_panel(
 
 
 def render_sentiment_comparison_panel(repo_root: Path | str) -> str:
-    """Render the cross-LLM market-sentiment comparison panel.
-
-    Aggregates ``data/<agent>/alt_factors/market_sentiment.csv`` for both
-    agents and shows: the latest week's score per agent and the diff, plus
-    a 26-week alignment table. Operator-visible only — agent isolation per
-    CLAUDE.md §7.1 means agents themselves cannot read each other's CSV.
-    """
+    """Render the cross-LLM, tri-market sentiment comparison panel."""
     from stock_analyze.markets.a_share.alt_factors import sentiment as _alt_sent
 
     root = Path(repo_root)
-    claude_rows = _alt_sent.load_sentiment_history("claude", root, last_n=26)
-    codex_rows = _alt_sent.load_sentiment_history("codex", root, last_n=26)
-    if not claude_rows or not codex_rows:
-        return (
-            '<div class="panel"><h3>claude vs codex 市场情感</h3>'
-            '<p>尚无足够数据：至少需要两个 agent 都有记录。</p></div>'
+    market_rows: list[str] = []
+    has_complete_pair = False
+    for market in DEFAULT_MARKETS:
+        label = MARKET_LABELS.get(market, market)
+        claude_rows = _alt_sent.load_sentiment_history(
+            "claude", root, last_n=26, market=market,
+        )
+        codex_rows = _alt_sent.load_sentiment_history(
+            "codex", root, last_n=26, market=market,
+        )
+        if not claude_rows or not codex_rows:
+            market_rows.append(
+                '<tr>'
+                f'<td>{html.escape(label)}</td>'
+                '<td colspan="5">尚无足够数据：至少需要两个 agent 都有记录。</td>'
+                '</tr>'
+            )
+            continue
+
+        has_complete_pair = True
+        latest_c = claude_rows[-1]
+        latest_x = codex_rows[-1]
+        diff = latest_c.score - latest_x.score
+        market_rows.append(
+            '<tr>'
+            f'<td>{html.escape(label)}</td>'
+            f'<td>{latest_c.week_end.isoformat()}</td>'
+            f'<td>claude {latest_c.score:+.2f} / {latest_c.confidence:.2f}</td>'
+            f'<td>codex {latest_x.score:+.2f} / {latest_x.confidence:.2f}</td>'
+            f'<td>{diff:+.2f}</td>'
+            f'<td>{html.escape("; ".join(latest_c.drivers[:2] + latest_x.drivers[:2]))}</td>'
+            '</tr>'
         )
 
-    latest_c = claude_rows[-1]
-    latest_x = codex_rows[-1]
-    diff = latest_c.score - latest_x.score
+    if not has_complete_pair:
+        return (
+            '<div class="panel">\n'
+            '  <h3>claude vs codex 三市场情绪（过去 26 周）</h3>\n'
+            '  <table>\n'
+            '    <tr><th>市场</th><th>week_end</th><th>claude score/conf</th>'
+            '<th>codex score/conf</th><th>差值</th><th>关键驱动</th></tr>\n'
+            f'    {"".join(market_rows)}\n'
+            '  </table>\n'
+            '</div>'
+        )
 
     return (
         f'<div class="panel">\n'
-        f'  <h3>claude vs codex 市场情感（过去 26 周）</h3>\n'
-        f'  <p>本周对比：</p>\n'
+        f'  <h3>claude vs codex 三市场情绪（过去 26 周）</h3>\n'
         f'  <table>\n'
-        f'    <tr><th>agent</th><th>week_end</th><th>score</th><th>confidence</th></tr>\n'
-        f'    <tr><td>claude</td><td>{latest_c.week_end.isoformat()}</td>'
-        f'<td>{latest_c.score:+.2f}</td><td>{latest_c.confidence:.2f}</td></tr>\n'
-        f'    <tr><td>codex</td><td>{latest_x.week_end.isoformat()}</td>'
-        f'<td>{latest_x.score:+.2f}</td><td>{latest_x.confidence:.2f}</td></tr>\n'
-        f'    <tr><td colspan="2">差值 (claude − codex)</td>'
-        f'<td colspan="2">{diff:+.2f}</td></tr>\n'
+        f'    <tr><th>市场</th><th>week_end</th><th>claude score/conf</th>'
+        f'<th>codex score/conf</th><th>差值</th><th>关键驱动</th></tr>\n'
+        f'    {"".join(market_rows)}\n'
         f'  </table>\n'
         f'</div>'
     )
+
+
+def _normalize_markets(market: str, markets: list[str] | tuple[str, ...] | None) -> list[str]:
+    requested = list(markets) if markets is not None else ([market] if market != "all" else list(DEFAULT_MARKETS))
+    if not requested:
+        requested = list(DEFAULT_MARKETS)
+    selected: list[str] = []
+    for item in requested:
+        if item == "all":
+            for known in DEFAULT_MARKETS:
+                if known not in selected:
+                    selected.append(known)
+            continue
+        if item not in competition.MARKETS:
+            raise competition.UnknownMarket(item)
+        if item not in selected:
+            selected.append(item)
+    return selected
+
+
+def _has_runtime_data(data_dir: Path) -> bool:
+    return any(
+        (data_dir / name).exists()
+        for name in (
+            "daily_nav.csv",
+            "runs.csv",
+            "pending_orders.json",
+            "performance_summary.json",
+            "positions.csv",
+            "latest_signals.csv",
+        )
+    )
+
+
+def _resolve_dashboard_paths(market: str, agent: str, root: Path) -> DashboardAgentPaths:
+    paths = resolve_market_paths(market, agent, repo_root=root)
+    data_dir = paths.data_dir
+    reports_dir = paths.reports_dir
+    if market == "a_share" and not _has_runtime_data(data_dir):
+        legacy_data = root / "data" / agent
+        legacy_reports = root / "reports" / agent
+        if _has_runtime_data(legacy_data):
+            data_dir = legacy_data
+            if legacy_reports.exists():
+                reports_dir = legacy_reports
+    return DashboardAgentPaths(
+        market=market,
+        agent_id=agent,
+        repo_root=root,
+        data_dir=data_dir,
+        reports_dir=reports_dir,
+        config_path=paths.config_path,
+    )
+
+
+def _build_market_paths(
+    markets: list[str],
+    agents: list[str],
+    root: Path,
+) -> dict[str, dict[str, DashboardAgentPaths]]:
+    return {
+        market: {
+            agent: _resolve_dashboard_paths(market, agent, root)
+            for agent in agents
+            if (root / "configs" / "agents" / f"{agent}_{market}.yaml").exists()
+        }
+        for market in markets
+    }
+
+
+def _agents_for_markets(markets: list[str], root: Path) -> list[str]:
+    ordered: list[str] = []
+    for preferred in DEFAULT_AGENT_ORDER:
+        if any(preferred in competition.list_agents_for_market(market, root) for market in markets):
+            ordered.append(preferred)
+    for market in markets:
+        for agent in competition.list_agents_for_market(market, root):
+            if agent not in ordered:
+                ordered.append(agent)
+    return ordered
 
 
 def generate_competition_dashboard(
@@ -342,15 +474,22 @@ def generate_competition_dashboard(
     repo_root: str | Path | None = None,
     *,
     market: str = "a_share",
+    markets: list[str] | None = None,
 ) -> Path:
     """Render and persist ``reports/competition/dashboard.html``."""
 
     root = Path(repo_root) if repo_root else Path.cwd()
-    agents = agents or list(DEFAULT_AGENT_ORDER)
-    paths_by_agent = {agent: resolve_agent_paths(agent, repo_root=root) for agent in agents}
+    selected_markets = _normalize_markets(market, markets)
+    agents = agents or _agents_for_markets(selected_markets, root)
+    paths_by_market = _build_market_paths(selected_markets, agents, root)
+    primary_market = "a_share" if "a_share" in paths_by_market else selected_markets[0]
+    paths_by_agent = paths_by_market.get(primary_market) or {
+        agent: resolve_agent_paths(agent, repo_root=root) for agent in agents
+    }
+    primary_agents = [agent for agent in agents if agent in paths_by_agent]
 
-    fragments = {agent: _read_fragment(paths_by_agent[agent].reports_dir) for agent in agents}
-    perf = {agent: _read_performance_summary(paths_by_agent[agent].data_dir) for agent in agents}
+    fragments = {agent: _read_fragment(paths_by_agent[agent].reports_dir) for agent in primary_agents}
+    perf = {agent: _read_performance_summary(paths_by_agent[agent].data_dir) for agent in primary_agents}
     nav_panel = _build_nav_panel(paths_by_agent)
     leaderboard = _read_leaderboard(root / "data" / "competition" / "leaderboard.csv")
     monthly_links = _list_monthly_reviews(root / "reports" / "competition")
@@ -359,14 +498,15 @@ def generate_competition_dashboard(
     summary_cards = _render_summary_cards(perf, leaderboard)
     nav_json = json.dumps(nav_panel, ensure_ascii=False)
     leaderboard_json = json.dumps(leaderboard, ensure_ascii=False)
+    all_market_html = _render_all_market_observer(selected_markets, agents, paths_by_market, root)
 
     out_dir = root / "reports" / "competition"
     ensure_dirs(out_dir)
     out_path = out_dir / "dashboard.html"
 
-    tabs_nav = _render_tabs_nav(agents)
+    tabs_nav = _render_tabs_nav(primary_agents)
     tab_sections = _render_tab_sections(
-        agents,
+        primary_agents,
         fragments,
         summary_cards,
         comparison_table,
@@ -374,6 +514,7 @@ def generate_competition_dashboard(
         leaderboard,
         monthly_links,
         paths_by_agent,
+        all_market_html=all_market_html,
     )
 
     html = _render_page(tabs_nav, tab_sections, nav_json, leaderboard_json)
@@ -384,7 +525,7 @@ def generate_competition_dashboard(
     # professional view must still be produced. We re-raise the error after a
     # warning so the failure surfaces in the run ledger.
     try:
-        write_beginner_views(agents=agents, repo_root=root)
+        write_beginner_views(agents=primary_agents, repo_root=root)
     except Exception as exc:  # noqa: BLE001
         # Don't let beginner-view crashes break the professional dashboard write
         # that the caller already depends on. The error message is logged but
@@ -551,6 +692,210 @@ def _pick_winner(raw: dict[str, float | None], prefer_higher: bool) -> str | Non
     return min(valid, key=valid.get)
 
 
+def _read_latest_nav(data_dir: Path) -> dict[str, Any]:
+    path = data_dir / "daily_nav.csv"
+    if not path.exists():
+        return {"latest": None, "change_1d": None, "date": None}
+    try:
+        df = pd.read_csv(path, dtype={"date": str, "account_id": str})
+    except Exception:  # noqa: BLE001
+        return {"latest": None, "change_1d": None, "date": None}
+    if df.empty or "total_value" not in df.columns or "date" not in df.columns:
+        return {"latest": None, "change_1d": None, "date": None}
+    grouped = df.groupby("date")["total_value"].sum().sort_index()
+    if grouped.empty:
+        return {"latest": None, "change_1d": None, "date": None}
+    latest = safe_float(grouped.iloc[-1])
+    prev = safe_float(grouped.iloc[-2]) if len(grouped) >= 2 else None
+    change = (latest / prev - 1.0) if latest is not None and prev not in (None, 0) else None
+    return {"latest": latest, "change_1d": change, "date": str(grouped.index[-1])}
+
+
+def _format_market_money(value: float | None, market: str) -> str:
+    if value is None:
+        return "-"
+    currency = MARKET_CURRENCY.get(market, "")
+    if abs(value) >= 1_000_000:
+        return f"{currency}{value / 1_000_000:.2f}M"
+    if abs(value) >= 1_000:
+        return f"{currency}{value / 1_000:.0f}K"
+    return f"{currency}{value:.0f}"
+
+
+def _read_latest_run(data_dir: Path, command: str) -> dict[str, Any] | None:
+    path = data_dir / "runs.csv"
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_csv(path, dtype=str)
+    except Exception:  # noqa: BLE001
+        return None
+    if df.empty or "command" not in df.columns:
+        return None
+    rows = df[(df["command"] == command) & (df.get("status", "") != "running")]
+    if rows.empty:
+        return None
+    return rows.iloc[-1].to_dict()
+
+
+def _status_badge(row: dict[str, Any] | None, *, missing: str = "未运行") -> str:
+    if row is None:
+        return f'<span class="pending">{html.escape(missing)}</span>'
+    status = row.get("status") or "unknown"
+    started = str(row.get("started_at") or "")[:19].replace("T", " ")
+    if status == "success":
+        return f'<span class="ok">OK {html.escape(started)}</span>'
+    if status == "failed":
+        err = str(row.get("error_summary") or "")
+        return f'<span class="fail">失败 {html.escape(err[:48])}</span>'
+    return f'<span class="pending">{html.escape(status)} {html.escape(started)}</span>'
+
+
+def _read_pending_summary(data_dir: Path) -> dict[str, int]:
+    path = data_dir / "pending_orders.json"
+    if not path.exists():
+        return {"total": 0, "buy": 0, "sell": 0}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {"total": 0, "buy": 0, "sell": 0}
+    if isinstance(payload, dict):
+        raw_orders = payload.get("orders") or []
+    elif isinstance(payload, list):
+        raw_orders = payload
+    else:
+        raw_orders = []
+    orders: list[dict[str, Any]] = []
+    for item in raw_orders:
+        if isinstance(item, dict) and isinstance(item.get("orders"), list):
+            orders.extend(order for order in item["orders"] if isinstance(order, dict))
+        elif isinstance(item, dict):
+            orders.append(item)
+    buy = sum(1 for order in orders if str(order.get("side", "")).lower() == "buy")
+    sell = sum(1 for order in orders if str(order.get("side", "")).lower() == "sell")
+    return {"total": len(orders), "buy": buy, "sell": sell}
+
+
+def _latest_weekly_report_link(market: str, agent: str, reports_dir: Path) -> str:
+    path = reports_dir / "weekly_report.md"
+    if not path.exists():
+        return '<span class="pending">无周报</span>'
+    if reports_dir.parent.name == "reports":
+        href = f"/{agent}/weekly_report.md"
+    else:
+        href = f"/{market}/{agent}/weekly_report.md"
+    return (
+        f'<a href="{html.escape(href)}">'
+        f'{html.escape(path.name)}</a>'
+    )
+
+
+def _latest_monthly_status(root: Path, market: str) -> str:
+    if market != "a_share":
+        return '<span class="pending">未配置</span>'
+    reports_dir = root / "reports" / "competition"
+    files = sorted(reports_dir.glob("monthly_review_*.md"))
+    if not files:
+        return '<span class="pending">无月报</span>'
+    latest = files[-1]
+    return f'<a href="/competition/{html.escape(latest.name)}">{html.escape(latest.stem.replace("monthly_review_", ""))}</a>'
+
+
+def _render_all_market_observer(
+    markets: list[str],
+    agents: list[str],
+    paths_by_market: dict[str, dict[str, DashboardAgentPaths]],
+    root: Path,
+) -> str:
+    market_cards: list[str] = []
+    decision_rows: list[str] = []
+    task_rows: list[str] = []
+    for market in markets:
+        label = MARKET_LABELS.get(market, market)
+        agent_paths = paths_by_market.get(market, {})
+        nav_bits: list[str] = []
+        for agent in agents:
+            paths = agent_paths.get(agent)
+            if paths is None:
+                continue
+            nav = _read_latest_nav(paths.data_dir)
+            baseline = MARKET_INITIAL_CASH.get(market, 1.0)
+            latest = nav["latest"]
+            ret = (latest / baseline - 1.0) if latest is not None and baseline else None
+            nav_bits.append(
+                f'<div><strong>{html.escape(agent)}</strong> '
+                f'<span class="num">{_format_market_money(latest, market)}</span> '
+                f'<span class="{"pos" if (ret or 0) >= 0 else "neg"}">{format_pct(ret)}</span></div>'
+            )
+            pending = _read_pending_summary(paths.data_dir)
+            decision_rows.append(
+                '<tr>'
+                f'<td>{html.escape(label)}</td>'
+                f'<td>{html.escape(agent)}</td>'
+                f'<td><a href="/pro/{html.escape(market)}/{html.escape(agent)}.html">专业页</a></td>'
+                f'<td class="num">目标订单 {pending["total"]} '
+                f'(买 {pending["buy"]} / 卖 {pending["sell"]})</td>'
+                f'<td>{_latest_weekly_report_link(market, agent, paths.reports_dir)}</td>'
+                '</tr>'
+            )
+            task_rows.append(
+                '<tr>'
+                f'<td>{html.escape(label)}</td>'
+                f'<td>{html.escape(agent)}</td>'
+                '<td>日任务 <code>run-daily</code></td>'
+                f'<td>{_status_badge(_read_latest_run(paths.data_dir, "run-daily"))}</td>'
+                '</tr>'
+            )
+            task_rows.append(
+                '<tr>'
+                f'<td>{html.escape(label)}</td>'
+                f'<td>{html.escape(agent)}</td>'
+                '<td>周任务 <code>run-weekly</code></td>'
+                f'<td>{_status_badge(_read_latest_run(paths.data_dir, "run-weekly"))}</td>'
+                '</tr>'
+            )
+        task_rows.append(
+            '<tr>'
+            f'<td>{html.escape(label)}</td>'
+            '<td>market</td>'
+            '<td>月任务 <code>competition-monthly-review</code></td>'
+            f'<td>{_latest_monthly_status(root, market)}</td>'
+            '</tr>'
+        )
+        nav_html = "".join(nav_bits) or '<p class="empty">暂无 NAV</p>'
+        market_cards.append(
+            '<section class="metric-card market-card">'
+            f'<div class="card-label">{html.escape(label)}</div>'
+            f'<div class="market-nav-lines">{nav_html}</div>'
+            '</section>'
+        )
+
+    decisions = (
+        '<table class="comparison market-decisions"><thead>'
+        '<tr><th>市场</th><th>Agent</th><th>决策入口</th><th>最新决策</th><th>周报</th></tr>'
+        '</thead><tbody>'
+        + "".join(decision_rows)
+        + '</tbody></table>'
+    )
+    tasks = (
+        '<table class="comparison market-task-matrix"><thead>'
+        '<tr><th>市场</th><th>主体</th><th>任务</th><th>最近状态</th></tr>'
+        '</thead><tbody>'
+        + "".join(task_rows)
+        + '</tbody></table>'
+    )
+    return (
+        '<section class="all-market-observer">'
+        '<h2>三市场总览</h2>'
+        f'<section class="grid market-overview-grid">{"".join(market_cards)}</section>'
+        '<h2>三市场具体决策</h2>'
+        f'<div class="panel">{decisions}</div>'
+        '<h2>日/周/月任务运行情况</h2>'
+        f'<div class="panel">{tasks}</div>'
+        '</section>'
+    )
+
+
 # ---------------------------------------------------------------------------
 # Rendering
 
@@ -619,6 +964,8 @@ def _render_tab_sections(
     leaderboard: list[dict[str, Any]],
     monthly_links: list[dict[str, str]],
     paths_by_agent: dict[str, Any] | None = None,
+    *,
+    all_market_html: str = "",
 ) -> str:
     sections: list[str] = []
     for agent in agents:
@@ -669,10 +1016,20 @@ def _render_tab_sections(
         pipeline_status_html = (
             f'<div class="panel"><p>pipeline-status panel render error: {exc}</p></div>'
         )
+    try:
+        sentiment_status_html = render_sentiment_comparison_panel(repo_root=Path.cwd())
+    except Exception as exc:  # noqa: BLE001
+        sentiment_status_html = (
+            f'<div class="panel"><p>sentiment panel render error: {exc}</p></div>'
+        )
 
     compare_section = (
         '<section id="tab-compare" class="tab-section">\n'
-        '<h1 class="tab-title">对比</h1>\n'
+        '<h1 class="tab-title">三市场观察台</h1>\n'
+        f'{all_market_html}\n'
+        '<h2>三市场情绪反馈</h2>\n'
+        f'{sentiment_status_html}\n'
+        '<h2>A股双 Agent 对比</h2>\n'
         f'<section class="grid summary-grid">{cards_html}</section>\n'
         '<h2>📋 Pipeline 任务清单</h2>\n'
         f'{pipeline_status_html}\n'
@@ -952,6 +1309,14 @@ table.comparison strong { color: var(--accent); font-weight: 600; }
 /* Empty / hint */
 .empty { color: var(--text-tertiary); font-size: 13px; }
 .hint { color: var(--text-tertiary); font-size: 11px; margin-top: var(--space-xs); font-family: var(--font-mono); }
+.ok { color: var(--pos); font-family: var(--font-mono); font-size: 12px; }
+.pending { color: var(--text-tertiary); font-family: var(--font-mono); font-size: 12px; }
+.fail { color: var(--neg); font-family: var(--font-mono); font-size: 12px; }
+.all-market-observer { margin-bottom: var(--space-xl); }
+.market-overview-grid { margin-bottom: var(--space-lg); }
+.market-nav-lines { display: grid; gap: var(--space-xs); font-family: var(--font-mono); font-size: 12px; }
+.market-nav-lines strong { color: var(--text-secondary); font-family: var(--font-sans); margin-right: var(--space-xs); }
+.market-decisions td, .market-task-matrix td { vertical-align: top; }
 
 /* Observation pairing (side-by-side weekly notes) */
 .observation-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-md); }

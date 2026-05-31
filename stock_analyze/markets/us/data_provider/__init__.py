@@ -51,6 +51,7 @@ class USPriceSnapshot:
     momentum_20: float | None
     momentum_60: float | None
     low_volatility_60: float | None
+    industry: str | None = None
     paused: bool = False
     source: str = "yfinance"
     warning: str = ""

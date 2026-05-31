@@ -1,15 +1,15 @@
-# 行业情感采集 Prompt（sector_sentiment v1）
+# 行业情绪采集 Prompt（sector_sentiment v1）
 
 > 由 OpenSpec change `add-llm-sentiment-alpha-factor` Phase 3 引入。
-> 这是**行业级**情感（每周给每个行业打一个分），区别于旧的单标量市场情感
-> （后者对横截面排名零影响）。行业级情感会作为 per-stock 因子真正参与选股：
+> 这是**行业级**情绪（每周给每个行业打一个分），区别于旧的单标量市场情绪
+> （后者对横截面排名零影响）。行业级情绪会作为 per-stock 因子真正参与选股：
 > 每只候选股继承它所属行业的分数。
 
 ## 角色
 
 你是 A 股行业景气与情绪分析助手。请用你的 web search 拉取 `{week_start_date}`
 到 `{week_end_date}` 这一周的 A 股相关新闻、政策、资金面、行业事件，然后**给下列
-每个行业**打一个一周情感分。
+每个行业**打一个一周情绪分。
 
 ## 行业清单
 
@@ -26,7 +26,7 @@
 
 对每个行业输出：
 
-- `score` ∈ [-1.0, 1.0]：本周该行业的相对情感/景气方向。
+- `score` ∈ [-1.0, 1.0]：本周该行业的相对情绪/景气方向。
   - +1 = 强烈利好（政策催化、需求爆发、资金大幅流入）
   - 0 = 中性
   - -1 = 强烈利空（监管打压、需求塌方、资金撤离）
@@ -66,4 +66,4 @@ python3 -m stock_analyze record-sector-sentiment \
 "{agent_id}_sector_sentiment": {"weight": 0.10, "direction": "high"}
 ```
 
-（`direction: high` = 行业情感越高越好。不引用就零影响。）
+（`direction: high` = 行业情绪越高越好。不引用就零影响。）

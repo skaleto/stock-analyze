@@ -40,7 +40,9 @@ def generate_rebalance_orders(
 ) -> list[dict[str, Any]]:
     """Score each account's universe and emit pending rebalance orders."""
     d = _coerce_as_of(as_of)
-    scored = build_signals(config, provider, as_of=d)
+    scored = build_signals(
+        config, provider, as_of=d, repo_root=_ignored.get("repo_root"),
+    )
     accounts = config.get("accounts", []) or []
     top_n = max((int(a.get("top_n", 50)) for a in accounts), default=50)
     max_single_weight = float((config.get("trading", {}) or {}).get("max_single_weight", 0.05))

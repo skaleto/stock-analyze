@@ -41,7 +41,7 @@ class SingleAgentMarketSentimentPanelTests(unittest.TestCase):
         html = reporting.render_market_sentiment_panel(
             "claude", repo_root=self.repo,
         )
-        self.assertIn("市场情感", html)
+        self.assertIn("市场情绪", html)
         self.assertIn("2026-05-15", html)
         self.assertIn("+0.30", html)
 

@@ -26,6 +26,8 @@ CSV_HEADER = (
     "week_end_date,sentiment_score,confidence,key_drivers,sources,"
     "llm_model,prompt_version,recorded_at"
 )
+DEFAULT_MARKET = "a_share"
+SUPPORTED_MARKETS = ("a_share", "hk", "us")
 
 
 class DuplicateSentimentEntry(Exception):
@@ -44,10 +46,21 @@ class SentimentRow:
     recorded_at: str
 
 
-def _csv_path(agent_id: str, repo_root: Path) -> Path:
-    # Phase 1 (Task 10) migration: A-share data now lives under data/a_share/<agent>/.
-    # Phase 2/3 will refactor this to accept a `market` kwarg.
-    return Path(repo_root) / "data" / "a_share" / agent_id / "alt_factors" / "market_sentiment.csv"
+def _validate_market(market: str) -> str:
+    if market not in SUPPORTED_MARKETS:
+        raise ValueError(
+            f"market must be one of {', '.join(SUPPORTED_MARKETS)}, got {market!r}"
+        )
+    return market
+
+
+def _csv_path(
+    agent_id: str,
+    repo_root: Path,
+    market: str = DEFAULT_MARKET,
+) -> Path:
+    market = _validate_market(market)
+    return Path(repo_root) / "data" / market / agent_id / "alt_factors" / "market_sentiment.csv"
 
 
 def _parse_row(row: dict) -> SentimentRow:
@@ -108,6 +121,7 @@ def record_market_sentiment(
     prompt_version: str,
     repo_root: Path,
     force: bool = False,
+    market: str = DEFAULT_MARKET,
 ) -> None:
     """Append (or replace) one sentiment row for (agent_id, week_end).
 
@@ -132,8 +146,8 @@ def record_market_sentiment(
             f"drivers must have between 1 and 5 entries, got {len(drivers)}"
         )
 
-    path = _csv_path(agent_id, repo_root)
-    existing = load_sentiment_history(agent_id, repo_root)
+    path = _csv_path(agent_id, repo_root, market=market)
+    existing = load_sentiment_history(agent_id, repo_root, market=market)
     matching = [r for r in existing if r.week_end == week_end]
     if matching and not force:
         raise DuplicateSentimentEntry(
@@ -162,12 +176,13 @@ def load_sentiment_history(
     agent_id: str,
     repo_root: Path,
     last_n: Optional[int] = None,
+    market: str = DEFAULT_MARKET,
 ) -> List[SentimentRow]:
     """Return all recorded rows for ``agent_id`` in chronological order.
 
     ``last_n`` (when set) keeps only the most recent N rows.
     """
-    path = _csv_path(agent_id, repo_root)
+    path = _csv_path(agent_id, repo_root, market=market)
     if not path.exists():
         return []
     rows: List[SentimentRow] = []
@@ -184,9 +199,10 @@ def load_latest_market_sentiment(
     agent_id: str,
     as_of: date,
     repo_root: Path,
+    market: str = DEFAULT_MARKET,
 ) -> Optional[float]:
     """Return the sentiment score for the most recent week_end ≤ as_of, or None."""
-    rows = load_sentiment_history(agent_id, repo_root)
+    rows = load_sentiment_history(agent_id, repo_root, market=market)
     eligible = [r for r in rows if r.week_end <= as_of]
     if not eligible:
         return None
@@ -197,15 +213,16 @@ def remove_sentiment(
     agent_id: str,
     week_end: date,
     repo_root: Path,
+    market: str = DEFAULT_MARKET,
 ) -> None:
     """Remove the row matching ``week_end``. Raises ``ValueError`` if not found."""
-    existing = load_sentiment_history(agent_id, repo_root)
+    existing = load_sentiment_history(agent_id, repo_root, market=market)
     new_rows = [r for r in existing if r.week_end != week_end]
     if len(new_rows) == len(existing):
         raise ValueError(
             f"No row found for {agent_id} week_end={week_end.isoformat()}"
         )
-    _atomic_write(_csv_path(agent_id, repo_root), new_rows)
+    _atomic_write(_csv_path(agent_id, repo_root, market=market), new_rows)
 
 
 # ---------------------------------------------------------------------------
@@ -235,9 +252,14 @@ class SectorSentimentRow:
     recorded_at: str
 
 
-def _sector_csv_path(agent_id: str, repo_root: Path) -> Path:
+def _sector_csv_path(
+    agent_id: str,
+    repo_root: Path,
+    market: str = DEFAULT_MARKET,
+) -> Path:
+    market = _validate_market(market)
     return (
-        Path(repo_root) / "data" / "a_share" / agent_id
+        Path(repo_root) / "data" / market / agent_id
         / "alt_factors" / "sector_sentiment.csv"
     )
 
@@ -274,9 +296,10 @@ def _atomic_write_sector(path: Path, rows: List[SectorSentimentRow]) -> None:
 def load_sector_sentiment(
     agent_id: str,
     repo_root: Path,
+    market: str = DEFAULT_MARKET,
 ) -> List[SectorSentimentRow]:
     """Return all recorded sector-sentiment rows in chronological order."""
-    path = _sector_csv_path(agent_id, repo_root)
+    path = _sector_csv_path(agent_id, repo_root, market=market)
     if not path.exists():
         return []
     rows: List[SectorSentimentRow] = []
@@ -303,6 +326,7 @@ def record_sector_sentiment(
     prompt_version: str,
     repo_root: Path,
     force: bool = False,
+    market: str = DEFAULT_MARKET,
 ) -> int:
     """Record one week of per-industry sentiment for ``agent_id``.
 
@@ -341,7 +365,7 @@ def record_sector_sentiment(
             prompt_version=prompt_version, recorded_at=recorded_at,
         ))
 
-    existing = load_sector_sentiment(agent_id, repo_root)
+    existing = load_sector_sentiment(agent_id, repo_root, market=market)
     matching = [r for r in existing if r.week_end == week_end]
     if matching and not force:
         raise DuplicateSentimentEntry(
@@ -352,7 +376,7 @@ def record_sector_sentiment(
         existing = [r for r in existing if r.week_end != week_end]
     existing.extend(parsed)
     existing.sort(key=lambda r: (r.week_end, r.industry))
-    _atomic_write_sector(_sector_csv_path(agent_id, repo_root), existing)
+    _atomic_write_sector(_sector_csv_path(agent_id, repo_root, market=market), existing)
     return len(parsed)
 
 
@@ -360,6 +384,7 @@ def load_latest_sector_sentiment(
     agent_id: str,
     as_of: date,
     repo_root: Path,
+    market: str = DEFAULT_MARKET,
 ) -> dict[str, float]:
     """Return ``{industry: score × confidence}`` for the latest week ≤ as_of.
 
@@ -367,7 +392,7 @@ def load_latest_sector_sentiment(
     baked in here (same convention as the broadcast market factor) so the
     strategy layer just maps industry → scalar.
     """
-    rows = load_sector_sentiment(agent_id, repo_root)
+    rows = load_sector_sentiment(agent_id, repo_root, market=market)
     eligible = [r for r in rows if r.week_end <= as_of]
     if not eligible:
         return {}
