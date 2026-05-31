@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import http.server
+import json
 import socketserver
 import sys
 from datetime import date
@@ -977,8 +978,8 @@ def _auto_write_weekly_briefing(agent_id: str | None, as_of: str | None) -> str 
 # - ``GET /simple/codex.html``      → reports/competition/simple/codex.html
 # - ``GET /pro.html``               → reports/competition/dashboard.html (alias)
 # - ``GET /pro/<market>/<agent>.html`` → reports/<market>/<agent>/dashboard.html
-# - ``GET /pro/claude.html``        → reports/claude/dashboard.html     (legacy alias)
-# - ``GET /pro/codex.html``         → reports/codex/dashboard.html      (legacy alias)
+# - ``GET /pro/claude.html``        → reports/a_share/claude/dashboard.html (compat alias)
+# - ``GET /pro/codex.html``         → reports/a_share/codex/dashboard.html  (compat alias)
 # - ``GET /competition/...``        → reports/competition/...          (unchanged)
 DASHBOARD_ROUTES: dict[str, str] = {
     "/": "/competition/simple.html",
@@ -987,18 +988,14 @@ DASHBOARD_ROUTES: dict[str, str] = {
     "/simple/claude.html": "/competition/simple/claude.html",
     "/simple/codex.html": "/competition/simple/codex.html",
     "/pro.html": "/competition/dashboard.html",
-    "/pro/claude.html": "/claude/dashboard.html",
-    "/pro/codex.html": "/codex/dashboard.html",
+    "/pro/claude.html": "/a_share/claude/dashboard.html",
+    "/pro/codex.html": "/a_share/codex/dashboard.html",
     "/pro/a_share/claude.html": "/a_share/claude/dashboard.html",
     "/pro/a_share/codex.html": "/a_share/codex/dashboard.html",
     "/pro/hk/claude.html": "/hk/claude/dashboard.html",
     "/pro/hk/codex.html": "/hk/codex/dashboard.html",
     "/pro/us/claude.html": "/us/claude/dashboard.html",
     "/pro/us/codex.html": "/us/codex/dashboard.html",
-}
-DASHBOARD_ROUTE_FALLBACKS: dict[str, str] = {
-    "/pro/a_share/claude.html": "/claude/dashboard.html",
-    "/pro/a_share/codex.html": "/codex/dashboard.html",
 }
 
 
@@ -1015,7 +1012,11 @@ def _resolve_dashboard_route(path: str, directory: Path) -> str | None:
     candidate = directory / target.lstrip("/")
     if candidate.exists():
         return target
-    return DASHBOARD_ROUTE_FALLBACKS.get(path, target)
+    return target
+
+
+def _is_dashboard_api_path(path: str) -> bool:
+    return path in {"/api/dashboard/summary.json", "/api/dashboard.json"}
 
 
 class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -1031,16 +1032,43 @@ class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
         # Strip query / fragment for routing decisions; preserve them when
         # rewriting so deep links keep their parameters.
         path, _, suffix = self.path.partition("?")
+        if _is_dashboard_api_path(path):
+            self._serve_dashboard_summary()
+            return
         target = _resolve_dashboard_route(path, Path(self.directory))
         if target is not None:
             self.path = target + (("?" + suffix) if suffix else "")
         super().do_GET()
 
+    def _serve_dashboard_summary(self) -> None:
+        repo_root = Path(self.directory).resolve().parent
+        try:
+            from .dashboard_aggregator import build_dashboard_summary_data
+
+            payload = build_dashboard_summary_data(repo_root=repo_root, markets=list(competition.MARKETS))
+            raw = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
+            self.send_response(200)
+        except Exception as exc:  # noqa: BLE001
+            raw = json.dumps(
+                {"error": "dashboard_summary_failed", "message": str(exc)},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            self.send_response(500)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
 
 def serve_dashboard(reports_dir: str, host: str, port: int) -> int:
     directory = Path(reports_dir).resolve()
     handler = partial(_DashboardRequestHandler, directory=str(directory))
-    with socketserver.TCPServer((host, port), handler) as httpd:
+
+    class ReusableTCPServer(socketserver.TCPServer):
+        allow_reuse_address = True
+
+    with ReusableTCPServer((host, port), handler) as httpd:
         print(f"Serving {directory} at http://{host}:{port}")
         print("Routes: / → /competition/simple.html (beginner), /pro.html → /competition/dashboard.html")
         httpd.serve_forever()

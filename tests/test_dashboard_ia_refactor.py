@@ -131,9 +131,14 @@ def _seed_agent(tmp: Path, agent: str) -> None:
 
 class FragmentPathTests(unittest.TestCase):
     def test_competition_mode_writes_to_dashboard_build(self) -> None:
+        reports_dir = Path("/somewhere/repo/reports/a_share/claude")
+        path = dashboard_fragment_path(reports_dir)
+        self.assertEqual(path, Path("/somewhere/repo/data/_dashboard_build/a_share/claude/fragment.html"))
+
+    def test_legacy_a_share_mode_writes_to_market_bucket(self) -> None:
         reports_dir = Path("/somewhere/repo/reports/claude")
         path = dashboard_fragment_path(reports_dir)
-        self.assertEqual(path, Path("/somewhere/repo/data/_dashboard_build/claude/fragment.html"))
+        self.assertEqual(path, Path("/somewhere/repo/data/_dashboard_build/a_share/claude/fragment.html"))
 
     def test_legacy_mode_writes_to_default_bucket(self) -> None:
         reports_dir = Path("/somewhere/repo/reports")
@@ -143,7 +148,13 @@ class FragmentPathTests(unittest.TestCase):
     def test_fragment_path_is_never_inside_reports(self) -> None:
         # The whole point of the 2026-05-24 refactor: fragments must not
         # land in reports/ or operators will see build artifacts.
-        for mode in ("/somewhere/repo/reports", "/somewhere/repo/reports/claude", "/somewhere/repo/reports/codex"):
+        for mode in (
+            "/somewhere/repo/reports",
+            "/somewhere/repo/reports/claude",
+            "/somewhere/repo/reports/codex",
+            "/somewhere/repo/reports/a_share/claude",
+            "/somewhere/repo/reports/hk/codex",
+        ):
             path = dashboard_fragment_path(Path(mode))
             self.assertNotIn("reports", path.parts, f"fragment path leaked into reports for {mode}")
             self.assertIn("_dashboard_build", path.parts)
@@ -151,20 +162,22 @@ class FragmentPathTests(unittest.TestCase):
 
 class DashboardRoutesTests(unittest.TestCase):
     def test_simple_and_pro_url_symmetry(self) -> None:
-        # Six user-facing URLs: combined + per-agent for simple AND pro.
+        # Simple keeps per-agent URLs; professional views use market-aware URLs.
         for url in (
             "/",
             "/simple/claude.html",
             "/simple/codex.html",
             "/pro.html",
-            "/pro/claude.html",
-            "/pro/codex.html",
+            "/pro/a_share/claude.html",
+            "/pro/a_share/codex.html",
+            "/pro/hk/claude.html",
+            "/pro/us/codex.html",
         ):
             self.assertIn(url, cli.DASHBOARD_ROUTES, f"missing route alias: {url}")
 
     def test_pro_per_agent_aliases_point_to_agent_dashboard(self) -> None:
-        self.assertEqual(cli.DASHBOARD_ROUTES["/pro/claude.html"], "/claude/dashboard.html")
-        self.assertEqual(cli.DASHBOARD_ROUTES["/pro/codex.html"], "/codex/dashboard.html")
+        self.assertEqual(cli.DASHBOARD_ROUTES["/pro/claude.html"], "/a_share/claude/dashboard.html")
+        self.assertEqual(cli.DASHBOARD_ROUTES["/pro/codex.html"], "/a_share/codex/dashboard.html")
 
     def test_legacy_aliases_still_resolve(self) -> None:
         # Backwards-compat: outside bookmarks that point at the old paths
@@ -189,13 +202,12 @@ class NavInjectionTests(unittest.TestCase):
             self.assertIn('class="dashboard-nav"', html)
             # Combined link is the active one.
             self.assertIn('href="/" data-active="true"', html)
-            # Other 5 links are present.
+            # Professional nav is now the tri-market entry only; market/agent
+            # deep links live in the decision table.
             for href in (
                 "/simple/claude.html",
                 "/simple/codex.html",
                 "/pro.html",
-                "/pro/claude.html",
-                "/pro/codex.html",
             ):
                 self.assertIn(f'href="{href}"', html)
             # Dual timestamp metadata.
@@ -302,8 +314,8 @@ class ProSubTabTests(unittest.TestCase):
             self.assertIn('data-tab="evolution"', html)
             # The unified top nav is also present in page mode.
             self.assertIn('class="dashboard-nav"', html)
-            # Active key is pro-claude (since agent_id is claude).
-            self.assertIn('href="/pro/claude.html" data-active="true"', html)
+            # Single-agent pages point users back to the tri-market pro entry.
+            self.assertIn('href="/pro.html" data-active="true"', html)
 
 
 if __name__ == "__main__":

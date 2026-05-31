@@ -11,7 +11,12 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from stock_analyze.cli import DASHBOARD_ROUTES, _DashboardRequestHandler, _resolve_dashboard_route
+from stock_analyze.cli import (
+    DASHBOARD_ROUTES,
+    _DashboardRequestHandler,
+    _is_dashboard_api_path,
+    _resolve_dashboard_route,
+)
 
 
 class DashboardRoutesTableTests(unittest.TestCase):
@@ -50,7 +55,7 @@ class DashboardRoutesTableTests(unittest.TestCase):
         self.assertNotIn("/competition/dashboard.html", DASHBOARD_ROUTES)
         self.assertNotIn("/claude/dashboard.html", DASHBOARD_ROUTES)
 
-    def test_a_share_agent_route_falls_back_to_legacy_when_needed(self) -> None:
+    def test_a_share_agent_route_does_not_fall_back_to_legacy(self) -> None:
         with TemporaryDirectory() as tmp:
             reports = Path(tmp)
             legacy = reports / "claude" / "dashboard.html"
@@ -59,8 +64,12 @@ class DashboardRoutesTableTests(unittest.TestCase):
 
             self.assertEqual(
                 _resolve_dashboard_route("/pro/a_share/claude.html", reports),
-                "/claude/dashboard.html",
+                "/a_share/claude/dashboard.html",
             )
+
+    def test_compat_pro_agent_routes_point_to_a_share_namespace(self) -> None:
+        self.assertEqual(DASHBOARD_ROUTES["/pro/claude.html"], "/a_share/claude/dashboard.html")
+        self.assertEqual(DASHBOARD_ROUTES["/pro/codex.html"], "/a_share/codex/dashboard.html")
 
     def test_dynamic_market_agent_route(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -73,6 +82,11 @@ class DashboardRoutesTableTests(unittest.TestCase):
                 _resolve_dashboard_route("/pro/hk/gemini.html", reports),
                 "/hk/gemini/dashboard.html",
             )
+
+    def test_dashboard_summary_api_route(self) -> None:
+        self.assertTrue(_is_dashboard_api_path("/api/dashboard/summary.json"))
+        self.assertTrue(_is_dashboard_api_path("/api/dashboard.json"))
+        self.assertFalse(_is_dashboard_api_path("/pro.html"))
 
 
 class HandlerRewriteTests(unittest.TestCase):

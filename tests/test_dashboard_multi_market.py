@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from stock_analyze.dashboard_aggregator import generate_competition_dashboard
+from stock_analyze.dashboard_aggregator import build_dashboard_summary_data, generate_competition_dashboard
 
 
 def _seed_market_repo(root: Path) -> None:
@@ -102,10 +102,39 @@ class MultiMarketDashboardTests(unittest.TestCase):
             self.assertIn("run-daily", html)
             self.assertIn("run-weekly", html)
             self.assertIn("competition-monthly-review", html)
+            self.assertIn('id="all-market-observer"', html)
+            self.assertIn("/api/dashboard/summary.json", html)
             self.assertIn("/pro/a_share/claude.html", html)
             self.assertIn("/pro/hk/codex.html", html)
             self.assertIn("/pro/us/claude.html", html)
             self.assertIn("目标订单", html)
+            data_path = root / "reports" / "competition" / "dashboard-data.json"
+            self.assertTrue(data_path.exists())
+            payload = json.loads(data_path.read_text(encoding="utf-8"))
+            self.assertEqual([item["market"] for item in payload["markets"]], ["a_share", "hk", "us"])
+            json.dumps(payload, allow_nan=False)
+
+    def test_dashboard_summary_data_exposes_dynamic_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_market_repo(root)
+
+            payload = build_dashboard_summary_data(
+                repo_root=root,
+                markets=["a_share", "hk", "us"],
+                agents=["claude", "codex"],
+            )
+
+            self.assertIn("generated_at", payload)
+            self.assertEqual([item["market"] for item in payload["markets"]], ["a_share", "hk", "us"])
+            a_share = payload["markets"][0]
+            self.assertEqual(a_share["agents"][0]["decision"]["pending_orders"]["total"], 2)
+            self.assertEqual(
+                a_share["agents"][0]["tasks"]["weekly"]["status"],
+                "success",
+            )
+            self.assertIsNone(a_share["agents"][0]["tasks"]["weekly"]["error_summary"])
+            json.dumps(payload, allow_nan=False)
 
     def test_all_market_dashboard_includes_agents_that_exist_only_outside_a_share(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

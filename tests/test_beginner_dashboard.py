@@ -228,12 +228,10 @@ class TabBarAndShellTests(unittest.TestCase):
             # Unified nav present and the simple-combined entry is active.
             self.assertIn('class="dashboard-nav"', html)
             self.assertIn('href="/" data-active="true"', html)
-            # All six cross-page links are reachable.
+            # Top nav exposes simple per-agent pages plus the tri-market pro entry.
             self.assertIn('href="/simple/claude.html"', html)
             self.assertIn('href="/simple/codex.html"', html)
             self.assertIn('href="/pro.html"', html)
-            self.assertIn('href="/pro/claude.html"', html)
-            self.assertIn('href="/pro/codex.html"', html)
             # Section cards 1..3 still emitted.
             self.assertIn("data-id=\"1\"", html)
             self.assertIn("data-id=\"2\"", html)
