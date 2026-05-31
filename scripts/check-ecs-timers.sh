@@ -9,7 +9,7 @@
 #      single-agent/per-agent timers are not enabled.
 #   2. ledger consistency — for each (agent, cadence), the latest service
 #      `Finished` timestamp from journalctl is within 1 day of the latest
-#      matching row in `data/<agent>/runs.csv`. Detects the regression where
+#      matching row in `data/a_share/<agent>/runs.csv`. Detects the regression where
 #      a `.service` runs but `run_ledger` writes no row (observed historically
 #      on 2026-05-20/21 before the per-agent run_ledger path was wired up).
 #
@@ -75,7 +75,7 @@ echo "OK: stock-analyze dual-agent pipeline timers are enabled and old timers ar
 # -------- ledger consistency check --------
 # For each (agent, cadence), compare the most recent service `Finished` event
 # (from journalctl, restricted to systemd-generated lines) against the most
-# recent matching `started_at` in data/<agent>/runs.csv. A gap of more than
+# recent matching `started_at` in data/a_share/<agent>/runs.csv. A gap of more than
 # one day means the service ran but the python `RunLedger` never appended
 # a row — the regression we want to catch.
 
@@ -87,7 +87,7 @@ drift=0
 for agent in claude codex; do
   for cadence in daily weekly; do
     unit="stock-analyze-${agent}-${cadence}.service"
-    runs_csv="${app_dir}/data/${agent}/runs.csv"
+    runs_csv="${app_dir}/data/a_share/${agent}/runs.csv"
     case "$cadence" in
       daily)  cmd="run-daily" ;;
       weekly) cmd="run-weekly" ;;
