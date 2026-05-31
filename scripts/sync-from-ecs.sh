@@ -9,7 +9,8 @@
 #   - configs/ (incl. competition.yaml + agents/*.yaml in case ECS-side edits happened)
 #   - reports/ (so dashboard fragments + monthly markdown round-trip locally)
 #
-# With --exclude-cache, the heavy data/shared/cache/ is skipped (default keeps it for full parity).
+# With --exclude-cache, the heavy shared cache directories are skipped
+# (default keeps them for full parity).
 
 set -euo pipefail
 
@@ -41,7 +42,8 @@ done
 
 extra_excludes=()
 if [[ "$EXCLUDE_CACHE" == "1" ]]; then
-  extra_excludes+=(--exclude 'data/shared/cache/')
+  # Source root is remote data/, so the exclude must be relative to data/.
+  extra_excludes+=(--exclude 'shared/cache/' --exclude 'shared/backtest_cache/')
 fi
 
 echo "Pulling data/ from $SA_ECS_REMOTE -> $LOCAL_REPO/data/"
