@@ -1484,7 +1484,9 @@ _DASHBOARD_DYNAMIC_JS = r"""
           '</div><div class="market-nav-lines">' + (navBits.join('') || '<p class="empty">暂无 NAV</p>') + '</div></section>'
         );
       }
+      const updatedDisplay = (payload && payload.generated_at) ? String(payload.generated_at).replace('T', ' ') : new Date().toLocaleTimeString();
       return (
+        '<div class="live-badge">🟢 实时 · 更新于 ' + escapeText(updatedDisplay) + ' · 每 30 秒自动刷新</div>' +
         '<h2>三市场总览</h2><section class="grid market-overview-grid">' + marketCards.join('') + '</section>' +
         '<h2>三市场具体决策</h2><div class="panel"><table class="comparison market-decisions"><thead>' +
         '<tr><th>市场</th><th>Agent</th><th>决策入口</th><th>最新决策</th><th>周报</th></tr></thead><tbody>' +
@@ -1510,6 +1512,8 @@ _DASHBOARD_DYNAMIC_JS = r"""
     }
 
     hydrateDashboardSummary();
+    // 动态刷新:页面打开期间每 30 秒重新拉一次 /api/dashboard/summary.json(live 重读磁盘)
+    if (window.fetch) { setInterval(hydrateDashboardSummary, 30000); }
 """
 
 _COMPETITION_CSS = """
@@ -1517,6 +1521,7 @@ _COMPETITION_CSS = """
 .page-header h1 { margin: 0; font-size: 22px; font-weight: 600; color: var(--text-primary); letter-spacing: 0.02em; }
 .page-header h1 .vs { color: var(--text-tertiary); font-weight: 400; padding: 0 6px; font-size: 18px; }
 .page-header .subhead { margin-top: 4px; color: var(--text-tertiary); font-size: 12px; font-family: var(--font-mono); }
+.live-badge { display: inline-block; margin: 0 0 var(--space-sm); padding: 3px 10px; border-radius: var(--radius-sm); background: var(--bg-overlay); border: 1px solid var(--border-subtle); color: var(--text-secondary); font-size: 11px; font-family: var(--font-mono); letter-spacing: 0.04em; }
 
 /* Competition tab bar (per-agent + compare) — separate from the global top nav */
 .tabs { display: flex; gap: var(--space-xs); padding: var(--space-sm) var(--space-xl); background: var(--bg-elevated); border-bottom: 1px solid var(--border-subtle); }
