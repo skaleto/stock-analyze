@@ -179,6 +179,33 @@ def send_lark_dm(message_text: str, creds: LarkCredentials, timeout: int = 8) ->
     return resp
 
 
+def send_lark_card(card: dict[str, Any], creds: LarkCredentials, timeout: int = 8) -> dict[str, Any]:
+    """Send an interactive (``msg_type=interactive``) card DM to the operator.
+
+    Mirrors :func:`send_lark_dm` but ships a Lark interactive card instead of
+    plain text. The ``content`` field is the card JSON encoded as a string,
+    per the Lark Open API contract. Raises :class:`LarkAPIError` on non-zero
+    API code; the caller is expected to fall back to :func:`send_lark_dm` so a
+    card-rendering or schema issue never costs the operator the daily summary.
+    """
+    token = get_tenant_access_token(creds.app_id, creds.app_secret, timeout=timeout)
+    url = f"{LARK_BASE_URL}/im/v1/messages?receive_id_type=open_id"
+    payload = {
+        "receive_id": creds.user_open_id,
+        "msg_type": "interactive",
+        "content": json.dumps(card, ensure_ascii=False),
+    }
+    resp = _http_post_json(
+        url,
+        payload,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=timeout,
+    )
+    if resp.get("code") != 0:
+        raise LarkAPIError(f"send card: code={resp.get('code')} msg={resp.get('msg')}")
+    return resp
+
+
 # ---------------------------------------------------------------------------
 # Daily summary body
 # ---------------------------------------------------------------------------
@@ -571,6 +598,141 @@ def build_daily_summary(
 
 
 # ---------------------------------------------------------------------------
+# Interactive-card variant of the daily summary
+# ---------------------------------------------------------------------------
+
+
+def _daily_health(
+    agent_ids: list[str],
+    repo_root: Path,
+    markets: list[str],
+    today_d: date,
+) -> tuple[str, str]:
+    """Pick the card header color + badge from worst sanity severity + failures.
+
+    Returns ``(template_color, badge_text)`` where color is one of
+    ``green`` / ``orange`` / ``red`` (Lark card header templates). Any recent
+    PIPELINE_FAILURES entry or a ``critical`` anomaly forces red; a ``warn``
+    anomaly is orange; otherwise green.
+    """
+    order = {"info": 0, "warn": 1, "critical": 2}
+    worst = 0
+    for market in markets:
+        for agent in agent_ids:
+            try:
+                findings = check_agent(agent, repo_root=repo_root, market=market)
+            except TypeError:
+                findings = check_agent(agent, repo_root=repo_root)
+            except Exception:  # noqa: BLE001 — a sanity-check crash must not break the card
+                continue
+            for f in findings:
+                worst = max(worst, order.get(f.severity, 0))
+    if _collect_recent_failures(today_d) or worst >= 2:
+        return "red", "❌ 需处理"
+    if worst == 1:
+        return "orange", "⚠️ 注意"
+    return "green", "✅ 正常"
+
+
+def _card_field_body(section_lines: list[str]) -> str:
+    """Turn a ``_format_*_section`` block into card-field body text.
+
+    Drops the section header line (index 0 — the card renders its own field
+    label) and strips the fixed-width indentation so values read cleanly
+    inside a Lark card field. Returns ``—`` when there is nothing to show.
+    """
+    body = [ln.strip() for ln in section_lines[1:] if ln.strip()]
+    return "\n".join(body) if body else "—"
+
+
+def build_daily_summary_card(
+    agent_ids: list[str],
+    repo_root: Path | None = None,
+    today_d: date | None = None,
+    *,
+    markets: list[str] | None = None,
+) -> dict[str, Any]:
+    """Assemble the daily summary as a Lark interactive card.
+
+    Same source data as :func:`build_daily_summary` (NAV / 持仓 / Sanity per
+    market, ECS timeline, 待办, recent failures) but laid out as a
+    colored-header card with a per-market NAV/持仓 field grid. Pairs with
+    :func:`send_lark_card`; callers keep :func:`build_daily_summary` as the
+    plain-text fallback so a card issue never drops the summary.
+    """
+    repo_root = Path(repo_root) if repo_root else Path.cwd()
+    today_d = today_d or _today()
+    weekday_cn = "一二三四五六日"[today_d.weekday()]
+    markets = markets if markets is not None else ["a_share"]
+
+    color, badge = _daily_health(agent_ids, repo_root, markets, today_d)
+
+    elements: list[dict[str, Any]] = []
+
+    timeline = _collect_ecs_timeline(today_d)
+    if timeline:
+        elements.append(
+            {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(timeline)}}
+        )
+
+    for market in markets:
+        label = MARKET_LABELS.get(market, market)
+        nav_lines = _format_nav_section(agent_ids, repo_root, market)
+        pos_lines = _format_positions_section(agent_ids, repo_root, market)
+        san_lines = _format_sanity_section(agent_ids, repo_root, market)
+        elements.append({"tag": "hr"})
+        elements.append(
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"**{label}**"}}
+        )
+        elements.append(
+            {
+                "tag": "div",
+                "fields": [
+                    {"is_short": True, "text": {"tag": "lark_md",
+                        "content": "**💰 NAV**\n" + _card_field_body(nav_lines)}},
+                    {"is_short": True, "text": {"tag": "lark_md",
+                        "content": "**📈 持仓**\n" + _card_field_body(pos_lines)}},
+                    {"is_short": False, "text": {"tag": "lark_md",
+                        "content": "**✅ Sanity**\n" + _card_field_body(san_lines)}},
+                ],
+            }
+        )
+
+    pending = collect_pending_actions(agent_ids, repo_root, today_d)
+    if pending:
+        elements.append({"tag": "hr"})
+        elements.append(
+            {"tag": "div", "text": {"tag": "lark_md",
+                "content": "**⏰ 待办**\n" + "\n".join(f"• {p}" for p in pending)}}
+        )
+
+    failures = _collect_recent_failures(today_d)
+    if failures:
+        elements.append({"tag": "hr"})
+        elements.append(
+            {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(failures)}}
+        )
+
+    elements.append(
+        {"tag": "note", "elements": [
+            {"tag": "plain_text",
+             "content": f"Stock-Analyze · 模拟盘(非投资建议) · {today_d.isoformat()}"}]}
+    )
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": color,
+            "title": {
+                "tag": "plain_text",
+                "content": f"📊 Stock-Analyze 日报 {today_d.isoformat()} (周{weekday_cn}) · {badge}",
+            },
+        },
+        "elements": elements,
+    }
+
+
+# ---------------------------------------------------------------------------
 # CLI entry
 # ---------------------------------------------------------------------------
 
@@ -609,6 +771,22 @@ def cli_send_daily_summary(repo_root: Path | None = None) -> int:
         )
         return 0
 
+    # Card-first: ship the interactive card. If it fails for any reason
+    # (card schema / render / API), fall back to the plain-text DM so the
+    # operator always gets the summary. Mirrors scripts/overseas_summary.py.
+    try:
+        card = build_daily_summary_card(
+            ["claude", "codex"],
+            repo_root=repo_root,
+            markets=markets_to_include,
+        )
+        send_lark_card(card, creds)
+    except Exception as exc:  # noqa: BLE001 — a card issue must not drop the summary
+        print(f"Lark card push failed ({exc}); falling back to text DM", file=sys.stderr)
+    else:
+        print("✓ daily summary sent via Lark (card)")
+        return 0
+
     try:
         send_lark_dm(summary, creds)
     except (urllib.error.URLError, LarkAPIError) as exc:
@@ -620,7 +798,7 @@ def cli_send_daily_summary(repo_root: Path | None = None) -> int:
         print(summary, file=sys.stderr)
         return 1
 
-    print("✓ daily summary sent via Lark")
+    print("✓ daily summary sent via Lark (text fallback)")
     return 0
 
 
@@ -630,8 +808,10 @@ __all__ = [
     "LarkAPIError",
     "LarkCredentials",
     "build_daily_summary",
+    "build_daily_summary_card",
     "cli_send_daily_summary",
     "collect_pending_actions",
     "get_tenant_access_token",
+    "send_lark_card",
     "send_lark_dm",
 ]
