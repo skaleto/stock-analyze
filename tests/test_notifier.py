@@ -19,6 +19,7 @@ from stock_analyze.notifier import (
     _months_first_day,
     _most_recent_friday_on_or_before,
     build_daily_summary,
+    build_daily_summary_card,
     collect_pending_actions,
 )
 
@@ -306,6 +307,92 @@ class SendLarkDMTests(unittest.TestCase):
         self.assertEqual(send_payload["msg_type"], "text")
         # content is a JSON-encoded string per Lark API contract
         self.assertEqual(json.loads(send_payload["content"]), {"text": "hi"})
+
+
+class SendLarkCardTests(unittest.TestCase):
+    """Mock-based tests for the interactive-card send path."""
+
+    def test_send_lark_card_payload_uses_interactive(self):
+        from stock_analyze import notifier
+
+        captured: list[tuple[str, dict]] = []
+
+        def fake_post(url, payload, **kwargs):
+            captured.append((url, payload))
+            if "auth/v3/tenant_access_token" in url:
+                return {"code": 0, "tenant_access_token": "t_x"}
+            return {"code": 0}
+
+        with patch.object(notifier, "_http_post_json", side_effect=fake_post):
+            creds = LarkCredentials(app_id="a", app_secret="b", user_open_id="ou_X")
+            card = {"header": {"template": "green"}, "elements": []}
+            notifier.send_lark_card(card, creds)
+
+        # Second call is the message send (first is the token fetch).
+        send_url, send_payload = captured[1]
+        self.assertIn("im/v1/messages?receive_id_type=open_id", send_url)
+        self.assertEqual(send_payload["receive_id"], "ou_X")
+        self.assertEqual(send_payload["msg_type"], "interactive")
+        # content is the card JSON encoded as a string, per Lark API contract.
+        self.assertEqual(json.loads(send_payload["content"]), card)
+
+    def test_send_lark_card_raises_on_non_zero_code(self):
+        from stock_analyze import notifier
+
+        responses = iter(
+            [
+                {"code": 0, "tenant_access_token": "t_x"},
+                {"code": 230006, "msg": "invalid card json"},
+            ]
+        )
+        with patch.object(
+            notifier, "_http_post_json", side_effect=lambda *a, **k: next(responses)
+        ):
+            creds = LarkCredentials(app_id="a", app_secret="b", user_open_id="c")
+            with self.assertRaises(LarkAPIError) as ctx:
+                notifier.send_lark_card({"elements": []}, creds)
+            self.assertIn("invalid card json", str(ctx.exception))
+
+
+class BuildDailySummaryCardTests(unittest.TestCase):
+    def test_card_structure_and_header(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cd = _seed_agent_dir(root, "claude")
+            _seed_agent_dir(root, "codex")
+            _write_nav(
+                cd,
+                [
+                    ("2026-05-25", "hs300", 500_000),
+                    ("2026-05-26", "hs300", 500_500),
+                ],
+            )
+            _write_positions(cd, {"hs300": 50, "zz500": 50})
+            card = build_daily_summary_card(
+                ["claude", "codex"], repo_root=root, today_d=date(2026, 5, 27)
+            )
+            # Top-level interactive-card shape.
+            self.assertIn("header", card)
+            self.assertIsInstance(card["elements"], list)
+            self.assertTrue(card["elements"])
+            # Colored header template + date in the title.
+            self.assertIn(card["header"]["template"], {"green", "orange", "red"})
+            self.assertIn("2026-05-27", card["header"]["title"]["content"])
+            # NAV + 持仓 field labels appear in the serialized card.
+            blob = json.dumps(card, ensure_ascii=False)
+            self.assertIn("NAV", blob)
+            self.assertIn("持仓", blob)
+
+    def test_card_is_json_serializable(self):
+        # send_lark_card json-encodes the card; a non-serializable card would
+        # only blow up at send time, so guard it here.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_agent_dir(root, "claude")
+            card = build_daily_summary_card(
+                ["claude"], repo_root=root, today_d=date(2026, 5, 27)
+            )
+            json.dumps(card, ensure_ascii=False)
 
 
 if __name__ == "__main__":
