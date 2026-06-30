@@ -12,19 +12,19 @@
       "direction": "low"
     },
     "roe": {
-      "weight": 0.2,
+      "weight": 0.22,
       "direction": "high"
     },
     "gross_margin": {
-      "weight": 0.12,
+      "weight": 0.11,
       "direction": "high"
     },
     "debt_ratio": {
-      "weight": 0.08,
+      "weight": 0.11,
       "direction": "low"
     },
     "momentum_20": {
-      "weight": 0.08,
+      "weight": 0.11,
       "direction": "high"
     },
     "momentum_60": {
@@ -32,7 +32,7 @@
       "direction": "high"
     },
     "low_volatility_60": {
-      "weight": 0.06,
+      "weight": 0.0,
       "direction": "low"
     },
     "dividend_yield": {
@@ -44,7 +44,7 @@
       "direction": "high"
     },
     "claude_sector_sentiment": {
-      "weight": 0.02,
+      "weight": 0.05,
       "direction": "high"
     }
   },
