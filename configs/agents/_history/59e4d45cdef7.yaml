@@ -57,7 +57,7 @@
   },
   "portfolio_controls": {
     "max_industry_weight": 0.3,
-    "hold_buffer_pct": 0.7,
+    "hold_buffer_pct": 0.5,
     "max_holding_days": 60,
     "industry_unclassified_label": "未分类"
   },
