@@ -1,0 +1,23 @@
+configs/agents/_history/59e4d45cdef7.yaml
+  s_13ade5288c847a::t_5e87f52e53c893 1-87
+configs/agents/claude_a_share.yaml
+  s_13ade5288c847a::t_d90bccfff05b00 60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "b79c0140c26c4fca1a304191206cd41abb338975",
+  "prompts": {},
+  "sessions": {
+    "s_13ade5288c847a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dea70205-4c48-4901-8eef-de4b80d089cd",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
