@@ -1,0 +1,21 @@
+scripts/sync-to-ecs.sh
+  s_13ade5288c847a::t_524210ce067c12 81-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "bacda91c104aa56988b51e3aab628f2cdd40dd15",
+  "prompts": {},
+  "sessions": {
+    "s_13ade5288c847a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dea70205-4c48-4901-8eef-de4b80d089cd",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
