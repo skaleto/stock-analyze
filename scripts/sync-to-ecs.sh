@@ -78,8 +78,25 @@ push_agent_payload() {
     rsync -av "$diff_local" "$remote_data_dir/evolution_diff/"
   fi
   if [[ -f "$csv_local" ]]; then
-    echo "Pushing $label/config_evolution.csv -> $remote_data_dir/config_evolution.csv"
-    rsync -av "$csv_local" "$remote_data_dir/config_evolution.csv"
+    # config_evolution.csv is append-only audit history that can gain rows on
+    # EITHER side (local LLM evolutions vs ECS-side evolutions). A blind rsync
+    # replace lets a stale local copy wipe ECS-side rows (happened 2026-07-0x:
+    # claude's 2026-06 row was clobbered by a stale sync). Merge by line-union
+    # instead, sorted by event_at (column 2); fall back to plain push only when
+    # the remote file can't be read (first sync).
+    remote_csv="$remote_data_dir/config_evolution.csv"
+    remote_csv_path="${remote_csv#*:}"
+    merged="$(mktemp)" remote_tmp="$(mktemp)"
+    if [[ -n "$REMOTE_HOST" ]] && ssh ${SA_ECS_SSH_OPTS:-} "$REMOTE_HOST" "cat '$remote_csv_path'" >"$remote_tmp" 2>/dev/null && [[ -s "$remote_tmp" ]]; then
+      echo "Merging $label/config_evolution.csv -> $remote_csv (union, keeps ECS-side rows)"
+      head -n1 "$csv_local" >"$merged"
+      { tail -n +2 "$remote_tmp"; tail -n +2 "$csv_local"; } | awk 'NF && !seen[$0]++' | sort -t, -k2,2 >>"$merged"
+      rsync -av "$merged" "$remote_csv"
+    else
+      echo "Pushing $label/config_evolution.csv -> $remote_csv"
+      rsync -av "$csv_local" "$remote_csv"
+    fi
+    rm -f "$merged" "$remote_tmp"
   fi
   if [[ -d "$alt_local" ]]; then
     echo "Pushing $label/alt_factors/ -> $remote_data_dir/alt_factors/"
