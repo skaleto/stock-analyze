@@ -1,0 +1,81 @@
+configs/agents/claude_cn_qdii_etf.yaml
+  s_db9afa53cf7b72::t_bf9294db007991 1-29
+configs/agents/codex_cn_qdii_etf.yaml
+  s_db9afa53cf7b72::t_d77b612dd717c9 1-29
+configs/competition_cn_qdii_etf.yaml
+  s_db9afa53cf7b72::t_b96c9c44228068 1-24
+docs/superpowers/plans/2026-07-10-cn-qdii-etf-market.md
+  s_db9afa53cf7b72::t_60ec60e699e6bf 1-167
+docs/superpowers/specs/2026-07-10-cn-qdii-etf-market-design.md
+  s_db9afa53cf7b72::t_9361b5411e2af7 1-83
+scripts/sync-to-ecs.sh
+  s_db9afa53cf7b72::t_5f80b630d49ab7 131,154
+stock_analyze/cli.py
+  s_db9afa53cf7b72::t_4f366233c77390 54,622,624-627,646,658
+stock_analyze/competition.py
+  s_db9afa53cf7b72::t_ec520254eac90b 78
+stock_analyze/dashboard_aggregator.py
+  s_db9afa53cf7b72::t_ebd806d72ea274 55,61,67
+stock_analyze/markets/__init__.py
+  s_db9afa53cf7b72::t_2a5e14dc043fd4 3
+stock_analyze/markets/_settlement_simulator.py
+  s_db9afa53cf7b72::t_ee132349d3a7df 330,334,337
+stock_analyze/markets/a_share/alt_factors/sentiment.py
+  s_db9afa53cf7b72::t_c779d7a424eed6 30
+stock_analyze/markets/cn_qdii_etf/__init__.py
+  s_db9afa53cf7b72::t_cd22fc3ef94b7f 1-19
+stock_analyze/markets/cn_qdii_etf/data_provider.py
+  s_db9afa53cf7b72::t_7781f1c9c20e0d 1-454
+stock_analyze/markets/cn_qdii_etf/mechanics.py
+  s_db9afa53cf7b72::t_1cb10026d51c46 1-21
+stock_analyze/markets/cn_qdii_etf/run.py
+  s_db9afa53cf7b72::t_9b81edce39cc76 1-64
+stock_analyze/markets/cn_qdii_etf/simulator.py
+  s_db9afa53cf7b72::t_7e901fae4ed956 1-72
+stock_analyze/markets/cn_qdii_etf/strategy.py
+  s_db9afa53cf7b72::t_0849150a8f1036 1-90
+stock_analyze/markets/cn_qdii_etf/universe.py
+  s_db9afa53cf7b72::t_125d5be8b01a5d 1-45
+stock_analyze/notifier.py
+  s_db9afa53cf7b72::t_4d031c648da171 228,234,240,538
+stock_analyze/overlay_guard.py
+  s_db9afa53cf7b72::t_91271380b93197 91-95
+stock_analyze/store.py
+  s_db9afa53cf7b72::t_5057dabd382b4c 154
+stock_analyze/utils.py
+  s_db9afa53cf7b72::t_79d012d7517960 236
+tests/test_dashboard_multi_market.py
+  s_db9afa53cf7b72::t_8d7163b186b4f4 11,84-90
+tests/test_markets_cn_qdii_etf_bootstrap.py
+  s_db9afa53cf7b72::t_4ad8b90d635ee1 1-49
+tests/test_markets_cn_qdii_etf_provider.py
+  s_db9afa53cf7b72::t_03df13e458714c 1-153
+tests/test_markets_cn_qdii_etf_simulator.py
+  s_db9afa53cf7b72::t_919ffdc52f78ff 1-142
+tests/test_markets_cn_qdii_etf_strategy.py
+  s_db9afa53cf7b72::t_3309c817ae8eeb 1-70
+tests/test_notifier_multi_market.py
+  s_db9afa53cf7b72::t_0aeb179b297c11 20,126-127,134
+tests/test_store_nav_append.py
+  s_db9afa53cf7b72::t_b4cbba689d9b17 1-37
+tests/test_sync_to_ecs.py
+  s_db9afa53cf7b72::t_23b2de11d4bd26 31-36,75-76,79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "db834134770bda081ef0c987e46ae03421a83e68",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
