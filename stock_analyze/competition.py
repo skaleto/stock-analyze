@@ -75,7 +75,7 @@ OVERLAY_ALLOWED_TOP_LEVEL: frozenset[str] = frozenset(
 # ---------------------------------------------------------------------------
 # Multi-market dispatch
 
-MARKETS = ["a_share", "hk", "us"]
+MARKETS = ["a_share", "hk", "us", "cn_qdii_etf"]
 
 
 class UnknownMarket(ValueError):

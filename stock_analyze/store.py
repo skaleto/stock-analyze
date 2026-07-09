@@ -151,7 +151,7 @@ class PortfolioStore:
         else:
             existing = pd.DataFrame(columns=columns)
         new_rows = pd.DataFrame(rows, columns=columns)
-        combined = pd.concat([existing, new_rows], ignore_index=True)
+        combined = new_rows.copy() if existing.empty else pd.concat([existing, new_rows], ignore_index=True)
         combined = combined.drop_duplicates(["date", "account_id"], keep="last")
         combined = combined.sort_values(["date", "account_id"])
         write_dataframe_csv_atomic(combined, path, index=False)

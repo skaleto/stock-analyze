@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--market",
         choices=competition.MARKETS,
         default="a_share",
-        help="Market (a_share | hk | us). Default: a_share (back-compat).",
+        help="Market (a_share | hk | us | cn_qdii_etf). Default: a_share (back-compat).",
     )
     parser.add_argument("--as-of", help="Override run date in YYYY-MM-DD format")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -619,8 +619,12 @@ def _command_validate_overlay(args: argparse.Namespace) -> int:
 
     repo_root = Path.cwd()
     agent_id = args.agent
+    market = getattr(args, "market", None) or "a_share"
     try:
-        paths = competition.resolve_agent_paths(agent_id, repo_root=repo_root)
+        if market == "a_share":
+            paths = competition.resolve_agent_paths(agent_id, repo_root=repo_root)
+        else:
+            paths = competition.resolve_market_paths(market, agent_id, repo_root=repo_root)
     except competition.UnknownAgent as exc:
         print(f"错误：未知 agent: {exc}", file=sys.stderr)
         return 1
@@ -639,7 +643,7 @@ def _command_validate_overlay(args: argparse.Namespace) -> int:
         )
         return 1
     try:
-        validate_overlay_guard(agent_id, overlay, repo_root=repo_root)
+        validate_overlay_guard(agent_id, overlay, repo_root=repo_root, market=market)
     except OverlayBaselineLocked as exc:
         print(
             f"错误：overlay 改动了基线锁字段 `{exc.field}`（baseline={exc.baseline_value!r}, "
@@ -651,7 +655,7 @@ def _command_validate_overlay(args: argparse.Namespace) -> int:
         print(f"错误：overlay 守卫检查失败 — {exc}", file=sys.stderr)
         return 1
     print(
-        f"OK: agent={agent_id} overlay 通过守卫检查 ({paths.config_path})"
+        f"OK: market={market} agent={agent_id} overlay 通过守卫检查 ({paths.config_path})"
     )
     return 0
 

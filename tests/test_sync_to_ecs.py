@@ -28,6 +28,12 @@ class SyncToEcsScriptTests(unittest.TestCase):
             (root / "configs" / "agents").mkdir(parents=True)
             (root / "configs" / "agents" / "claude_a_share.yaml").write_text("{}", encoding="utf-8")
             (root / "configs" / "agents" / "codex_hk.yaml").write_text("{}", encoding="utf-8")
+            (root / "data" / "cn_qdii_etf" / "codex" / "alt_factors").mkdir(parents=True)
+            (root / "data" / "cn_qdii_etf" / "codex" / "alt_factors" / "market_sentiment.csv").write_text(
+                "week_end_date,sentiment_score,confidence,key_drivers,sources,llm_model,prompt_version,recorded_at\n",
+                encoding="utf-8",
+            )
+            (root / "configs" / "agents" / "codex_cn_qdii_etf.yaml").write_text("{}", encoding="utf-8")
 
             fake_bin = root / "fake-bin"
             fake_bin.mkdir()
@@ -66,8 +72,11 @@ class SyncToEcsScriptTests(unittest.TestCase):
             self.assertIn("fakehost:/remote/app/data/a_share/claude/alt_factors/", calls)
             self.assertIn("data/hk/codex/alt_factors/", calls)
             self.assertIn("fakehost:/remote/app/data/hk/codex/alt_factors/", calls)
+            self.assertIn("data/cn_qdii_etf/codex/alt_factors/", calls)
+            self.assertIn("fakehost:/remote/app/data/cn_qdii_etf/codex/alt_factors/", calls)
             self.assertIn("configs/agents/claude_a_share.yaml", calls)
             self.assertIn("configs/agents/codex_hk.yaml", calls)
+            self.assertIn("configs/agents/codex_cn_qdii_etf.yaml", calls)
 
     def test_remote_refresh_explicitly_uses_all_market_dashboard(self):
         with TemporaryDirectory() as tmp:

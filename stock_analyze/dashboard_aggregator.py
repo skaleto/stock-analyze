@@ -52,16 +52,19 @@ MARKET_LABELS = {
     "a_share": "A股",
     "hk": "港股",
     "us": "美股",
+    "cn_qdii_etf": "跨境ETF",
 }
 MARKET_CURRENCY = {
     "a_share": "¥",
     "hk": "HK$",
     "us": "$",
+    "cn_qdii_etf": "¥",
 }
 MARKET_INITIAL_CASH = {
     "a_share": 1_000_000.0,
     "hk": 1_000_000.0,
     "us": 150_000.0,
+    "cn_qdii_etf": 1_000_000.0,
 }
 
 

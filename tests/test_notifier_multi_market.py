@@ -17,6 +17,7 @@ from stock_analyze.notifier import (
     MARKET_INITIAL_CASH,
     build_daily_summary,
 )
+from stock_analyze import competition
 
 
 def _seed_dir(repo: Path, market: str, agent: str) -> Path:
@@ -122,14 +123,15 @@ class MultiMarketBuildSummaryTests(unittest.TestCase):
 
 
 class MarketConstantsTests(unittest.TestCase):
-    def test_market_labels_cover_three_markets(self):
-        for m in ("a_share", "hk", "us"):
+    def test_market_labels_cover_supported_markets(self):
+        for m in competition.MARKETS:
             self.assertIn(m, MARKET_LABELS)
 
     def test_initial_cash_values(self):
         self.assertEqual(MARKET_INITIAL_CASH["a_share"], 1_000_000.0)
         self.assertEqual(MARKET_INITIAL_CASH["hk"], 1_000_000.0)
         self.assertEqual(MARKET_INITIAL_CASH["us"], 150_000.0)
+        self.assertEqual(MARKET_INITIAL_CASH["cn_qdii_etf"], 1_000_000.0)
 
 
 if __name__ == "__main__":

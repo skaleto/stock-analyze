@@ -327,11 +327,14 @@ class SettlementSimulatorBase:
                 "account_id": account_id,
                 "cash": cash,
                 "cash_collateral": coll,
+                "market_value": positions_value,
                 "positions_value": positions_value,
                 "total_value": total,
                 "benchmark_code": account_state.get("benchmark", ""),
+                "benchmark_close": None,
                 "benchmark_value": None,
                 "benchmark_date": as_of.isoformat(),
+                "notes": None,
                 "source": f"{self.market_id}-daily",
             })
         store.append_nav(rows)

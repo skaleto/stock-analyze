@@ -128,7 +128,7 @@ push_agent_payload() {
   fi
 }
 
-markets=(a_share hk us)
+markets=(a_share hk us cn_qdii_etf)
 market_agent_pairs=()
 market_agent_count=0
 for market in "${markets[@]}"; do
@@ -151,7 +151,7 @@ for dir in "$LOCAL_REPO"/data/*/; do
   [[ -d "$dir" ]] || continue
   agent="$(basename "$dir")"
   case "$agent" in
-    a_share|hk|us|shared|competition|_dashboard_build) continue ;;
+    a_share|hk|us|cn_qdii_etf|shared|competition|_dashboard_build) continue ;;
   esac
   legacy_agents+=("$agent:$dir")
   legacy_agent_count=$((legacy_agent_count + 1))

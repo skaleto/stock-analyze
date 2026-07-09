@@ -225,16 +225,19 @@ MARKET_LABELS: dict[str, str] = {
     "a_share": "A股",
     "hk": "港股",
     "us": "美股",
+    "cn_qdii_etf": "跨境ETF",
 }
 MARKET_CURRENCY: dict[str, str] = {
     "a_share": "¥",
     "hk": "HK$",
     "us": "$",
+    "cn_qdii_etf": "¥",
 }
 MARKET_INITIAL_CASH: dict[str, float] = {
     "a_share": 1_000_000.0,
     "hk": 1_000_000.0,   # HK$1M
     "us": 150_000.0,
+    "cn_qdii_etf": 1_000_000.0,
 }
 
 
@@ -532,7 +535,7 @@ def build_daily_summary(
     a hand-crafted ``repo_root`` directory.
 
     ``markets`` defaults to ``["a_share"]`` for backward compatibility.
-    Phase 2/3 callers pass ``["a_share", "hk", "us"]`` for the cross-market
+    Cross-market callers pass market ids such as ``["a_share", "hk", "us", "cn_qdii_etf"]``
     summary; each market gets its own NAV / 持仓 / Sanity blocks with
     market-label prefixes (``💰 A股 NAV``, ``💰 港股 NAV``, ``💰 美股 NAV``).
     """
