@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from stock_analyze.dashboard_aggregator import build_dashboard_summary_data, generate_competition_dashboard
+from stock_analyze import competition
 
 
 def _seed_market_repo(root: Path) -> None:
@@ -80,6 +81,13 @@ def _seed_market_repo(root: Path) -> None:
 
 
 class MultiMarketDashboardTests(unittest.TestCase):
+    def test_dashboard_labels_cover_supported_markets(self) -> None:
+        from stock_analyze.dashboard_aggregator import MARKET_LABELS, MARKET_INITIAL_CASH
+
+        for market in competition.MARKETS:
+            self.assertIn(market, MARKET_LABELS)
+            self.assertIn(market, MARKET_INITIAL_CASH)
+
     def test_competition_dashboard_surfaces_three_markets_and_task_cadences(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

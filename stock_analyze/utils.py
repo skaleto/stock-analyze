@@ -233,7 +233,7 @@ def dashboard_fragment_path(reports_dir: str | Path) -> Path:
     if reports_path.name == "reports":
         repo_root = reports_path.parent
         return repo_root / "data" / "_dashboard_build" / "_default" / "fragment.html"
-    if reports_path.parent.name in {"a_share", "hk", "us"} and reports_path.parent.parent.name == "reports":
+    if reports_path.parent.name in {"a_share", "hk", "us", "cn_qdii_etf"} and reports_path.parent.parent.name == "reports":
         repo_root = reports_path.parent.parent.parent
         market_dir = reports_path.parent.name
         agent_dir = reports_path.name

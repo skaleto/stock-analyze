@@ -1,0 +1,29 @@
+{
+  "agent_id": "codex",
+  "strategy_id": "codex-cn-qdii-etf-v1",
+  "name": "Codex CN QDII ETF",
+  "factors": {
+    "momentum_20": {"weight": 0.30, "direction": "high"},
+    "momentum_60": {"weight": 0.25, "direction": "high"},
+    "low_volatility_60": {"weight": 0.20, "direction": "low"},
+    "avg_amount_20": {"weight": 0.15, "direction": "high"},
+    "discount_premium": {"weight": 0.10, "direction": "low"}
+  },
+  "factor_processing": {
+    "winsorize_lower": 0.05,
+    "winsorize_upper": 0.95,
+    "neutralize_industry": false,
+    "min_factor_coverage": 0.60
+  },
+  "portfolio_controls": {
+    "max_industry_weight": 1.0,
+    "hold_buffer_pct": 0.20,
+    "max_holding_days": 90,
+    "industry_unclassified_label": "ETF"
+  },
+  "filters": {
+    "max_fetch_candidates": 50,
+    "min_listing_days": 30,
+    "min_avg_amount_20": 50000
+  }
+}

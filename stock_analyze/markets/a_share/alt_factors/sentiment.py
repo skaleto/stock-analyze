@@ -27,7 +27,7 @@ CSV_HEADER = (
     "llm_model,prompt_version,recorded_at"
 )
 DEFAULT_MARKET = "a_share"
-SUPPORTED_MARKETS = ("a_share", "hk", "us")
+SUPPORTED_MARKETS = ("a_share", "hk", "us", "cn_qdii_etf")
 
 
 class DuplicateSentimentEntry(Exception):
