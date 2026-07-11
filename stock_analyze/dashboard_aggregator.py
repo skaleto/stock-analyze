@@ -41,6 +41,8 @@ from .dashboard_finance import (
     read_instrument_history,
     read_latest_factor_values,
 )
+from .strategy_comparison import build_strategy_comparison
+from .strategy_registry import PAIR_SLOTS, StrategyRegistryInvalid, load_strategy_registry
 from .utils import (
     dashboard_fragment_path,
     ensure_dirs,
@@ -76,6 +78,17 @@ MARKET_INITIAL_CASH = {
     "us": 150_000.0,
     "cn_qdii_etf": 1_000_000.0,
 }
+
+
+def _strategy_labels(root: Path) -> dict[str, str]:
+    try:
+        registry = load_strategy_registry(root)
+        return {
+            agent: str(registry["slots"][agent].get("label") or agent)
+            for agent in PAIR_SLOTS
+        }
+    except StrategyRegistryInvalid:
+        return {"claude": "稳健防守", "codex": "趋势进攻"}
 
 
 @dataclass
@@ -349,10 +362,11 @@ def render_pipeline_status_panel(
 
 
 def render_sentiment_comparison_panel(repo_root: Path | str) -> str:
-    """Render the cross-LLM, tri-market sentiment comparison panel."""
+    """Render the cross-strategy, multi-market sentiment comparison panel."""
     from stock_analyze.markets.a_share.alt_factors import sentiment as _alt_sent
 
     root = Path(repo_root)
+    labels = _strategy_labels(root)
     market_rows: list[str] = []
     has_complete_pair = False
     for market in DEFAULT_MARKETS:
@@ -367,7 +381,7 @@ def render_sentiment_comparison_panel(repo_root: Path | str) -> str:
             market_rows.append(
                 '<tr>'
                 f'<td>{html.escape(label)}</td>'
-                '<td colspan="5">尚无足够数据：至少需要两个 agent 都有记录。</td>'
+                '<td colspan="5">尚无足够数据：至少需要两个策略都有记录。</td>'
                 '</tr>'
             )
             continue
@@ -380,8 +394,8 @@ def render_sentiment_comparison_panel(repo_root: Path | str) -> str:
             '<tr>'
             f'<td>{html.escape(label)}</td>'
             f'<td>{latest_c.week_end.isoformat()}</td>'
-            f'<td>claude {latest_c.score:+.2f} / {latest_c.confidence:.2f}</td>'
-            f'<td>codex {latest_x.score:+.2f} / {latest_x.confidence:.2f}</td>'
+            f'<td>{html.escape(labels["claude"])} {latest_c.score:+.2f} / {latest_c.confidence:.2f}</td>'
+            f'<td>{html.escape(labels["codex"])} {latest_x.score:+.2f} / {latest_x.confidence:.2f}</td>'
             f'<td>{diff:+.2f}</td>'
             f'<td>{html.escape("; ".join(latest_c.drivers[:2] + latest_x.drivers[:2]))}</td>'
             '</tr>'
@@ -390,10 +404,10 @@ def render_sentiment_comparison_panel(repo_root: Path | str) -> str:
     if not has_complete_pair:
         return (
             '<div class="panel">\n'
-            '  <h3>claude vs codex 三市场情绪（过去 26 周）</h3>\n'
+            f'  <h3>{html.escape(labels["claude"])} vs {html.escape(labels["codex"])} 市场情绪（过去 26 周）</h3>\n'
             '  <table>\n'
-            '    <tr><th>市场</th><th>week_end</th><th>claude score/conf</th>'
-            '<th>codex score/conf</th><th>差值</th><th>关键驱动</th></tr>\n'
+            f'    <tr><th>市场</th><th>week_end</th><th>{html.escape(labels["claude"])} score/conf</th>'
+            f'<th>{html.escape(labels["codex"])} score/conf</th><th>差值</th><th>关键驱动</th></tr>\n'
             f'    {"".join(market_rows)}\n'
             '  </table>\n'
             '</div>'
@@ -401,10 +415,10 @@ def render_sentiment_comparison_panel(repo_root: Path | str) -> str:
 
     return (
         f'<div class="panel">\n'
-        f'  <h3>claude vs codex 三市场情绪（过去 26 周）</h3>\n'
+        f'  <h3>{html.escape(labels["claude"])} vs {html.escape(labels["codex"])} 市场情绪（过去 26 周）</h3>\n'
         f'  <table>\n'
-        f'    <tr><th>市场</th><th>week_end</th><th>claude score/conf</th>'
-        f'<th>codex score/conf</th><th>差值</th><th>关键驱动</th></tr>\n'
+        f'    <tr><th>市场</th><th>week_end</th><th>{html.escape(labels["claude"])} score/conf</th>'
+        f'<th>{html.escape(labels["codex"])} score/conf</th><th>差值</th><th>关键驱动</th></tr>\n'
         f'    {"".join(market_rows)}\n'
         f'  </table>\n'
         f'</div>'
@@ -704,6 +718,9 @@ def _read_nav_detail(data_dir: Path, market: str) -> dict[str, Any]:
         return empty
 
     numeric_columns = ["cash", "market_value", "total_value", "benchmark_close"]
+    for column in ("cash", "market_value"):
+        if column not in df.columns:
+            df[column] = 0.0
     df = _coerce_numeric_columns(df, numeric_columns)
     baseline = MARKET_INITIAL_CASH.get(market, 1.0)
     grouped = (
@@ -925,7 +942,7 @@ def build_dashboard_detail_data(
     )
     runs_all = _collapse_run_transitions(runs_all)
     try:
-        strategy = build_strategy_profile(paths.config_path)
+        strategy = build_strategy_profile(paths.config_path, repo_root=root)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise DashboardDataError("strategy_overlay") from exc
     activity = build_activity(trades_all, orders)
@@ -1130,25 +1147,73 @@ def build_dashboard_summary_data(
     selected_markets = _normalize_markets("all", markets)
     selected_agents = agents or _agents_for_markets(selected_markets, root)
     paths_by_market = _build_market_paths(selected_markets, selected_agents, root)
+    try:
+        strategy_registry = load_strategy_registry(root)
+    except StrategyRegistryInvalid:
+        strategy_registry = {
+            "season_id": "legacy",
+            "name": "双策略对抗",
+            "effective_date": "1970-01-01",
+            "factor_distance_floor": 0.0,
+            "slots": {
+                "claude": {
+                    "label": "稳健防守",
+                    "description": "价值质量、低波与低换手",
+                    "color": "#d6a84b",
+                },
+                "codex": {
+                    "label": "趋势进攻",
+                    "description": "动量成长与主动换仓",
+                    "color": "#22d3ee",
+                },
+            },
+        }
     market_payloads: list[dict[str, Any]] = []
     for market in selected_markets:
         agent_paths = paths_by_market.get(market, {})
+        details = {
+            agent: build_dashboard_detail_data(
+                repo_root=root,
+                market=market,
+                agent=agent,
+                limit=100_000,
+            )
+            for agent in selected_agents
+            if agent in agent_paths
+        }
+        comparison = (
+            build_strategy_comparison(market, details, registry=strategy_registry)
+            if all(agent in details for agent in PAIR_SLOTS)
+            else None
+        )
         market_agents: list[dict[str, Any]] = []
         for agent in selected_agents:
             paths = agent_paths.get(agent)
             if paths is None:
                 continue
-            nav = _read_latest_nav(paths.data_dir)
+            detail = details[agent]
+            nav_latest = detail.get("nav", {}).get("latest") or {}
+            latest = safe_float(nav_latest.get("total_value"))
             baseline = MARKET_INITIAL_CASH.get(market, 1.0)
-            latest = nav["latest"]
             pending = _read_pending_summary(paths.data_dir)
+            strategy = (
+                comparison.get("strategies", {}).get(agent)
+                if comparison is not None
+                else None
+            ) or {
+                "agent": agent,
+                "label": detail.get("strategy", {}).get("name") or agent,
+                "strategy_id": detail.get("strategy", {}).get("strategy_id"),
+                "strategy_name": detail.get("strategy", {}).get("name"),
+            }
             market_agents.append(
                 {
                     "agent": agent,
+                    "strategy": strategy,
                     "nav": {
                         "latest": latest,
                         "latest_display": _format_market_money(latest, market),
-                        "date": nav.get("date"),
+                        "date": nav_latest.get("date"),
                         "return": (latest / baseline - 1.0) if latest is not None and baseline else None,
                         "return_display": format_pct(
                             (latest / baseline - 1.0) if latest is not None and baseline else None
@@ -1171,6 +1236,7 @@ def build_dashboard_summary_data(
                 "label": MARKET_LABELS.get(market, market),
                 "currency": MARKET_CURRENCY.get(market, ""),
                 "agents": market_agents,
+                "comparison": comparison,
                 "monthly": _monthly_status_data(root, market),
             }
         )
@@ -1192,6 +1258,7 @@ def generate_competition_dashboard(
     """Render and persist ``reports/competition/dashboard.html``."""
 
     root = Path(repo_root) if repo_root else Path.cwd()
+    strategy_labels = _strategy_labels(root)
     selected_markets = _normalize_markets(market, markets)
     agents = agents or _agents_for_markets(selected_markets, root)
     paths_by_market = _build_market_paths(selected_markets, agents, root)
@@ -1208,16 +1275,22 @@ def generate_competition_dashboard(
     monthly_links = _list_monthly_reviews(root / "reports" / "competition")
     positions_overlap = _compute_position_overlap(paths_by_agent)
     comparison_table = _build_comparison_table(perf)
-    summary_cards = _render_summary_cards(perf, leaderboard)
+    summary_cards = _render_summary_cards(perf, leaderboard, strategy_labels)
     nav_json = json.dumps(nav_panel, ensure_ascii=False)
     leaderboard_json = json.dumps(leaderboard, ensure_ascii=False)
-    all_market_html = _render_all_market_observer(selected_markets, agents, paths_by_market, root)
+    all_market_html = _render_all_market_observer(
+        selected_markets,
+        agents,
+        paths_by_market,
+        root,
+        strategy_labels,
+    )
 
     out_dir = root / "reports" / "competition"
     ensure_dirs(out_dir)
     out_path = out_dir / "dashboard.html"
 
-    tabs_nav = _render_tabs_nav(primary_agents)
+    tabs_nav = _render_tabs_nav(primary_agents, strategy_labels)
     tab_sections = _render_tab_sections(
         primary_agents,
         fragments,
@@ -1228,9 +1301,16 @@ def generate_competition_dashboard(
         monthly_links,
         paths_by_agent,
         all_market_html=all_market_html,
+        strategy_labels=strategy_labels,
     )
 
-    html = _render_page(tabs_nav, tab_sections, nav_json, leaderboard_json)
+    html = _render_page(
+        tabs_nav,
+        tab_sections,
+        nav_json,
+        leaderboard_json,
+        strategy_labels,
+    )
     out_path.write_text(html, encoding="utf-8")
     summary_payload = build_dashboard_summary_data(
         repo_root=root,
@@ -1528,6 +1608,7 @@ def _render_all_market_observer(
     agents: list[str],
     paths_by_market: dict[str, dict[str, DashboardAgentPaths]],
     root: Path,
+    strategy_labels: dict[str, str],
 ) -> str:
     market_cards: list[str] = []
     decision_rows: list[str] = []
@@ -1545,7 +1626,7 @@ def _render_all_market_observer(
             latest = nav["latest"]
             ret = (latest / baseline - 1.0) if latest is not None and baseline else None
             nav_bits.append(
-                f'<div><strong>{html.escape(agent)}</strong> '
+                f'<div><strong>{html.escape(strategy_labels.get(agent, agent))}</strong> '
                 f'<span class="num">{_format_market_money(latest, market)}</span> '
                 f'<span class="{"pos" if (ret or 0) >= 0 else "neg"}">{format_pct(ret)}</span></div>'
             )
@@ -1553,7 +1634,7 @@ def _render_all_market_observer(
             decision_rows.append(
                 '<tr>'
                 f'<td>{html.escape(label)}</td>'
-                f'<td>{html.escape(agent)}</td>'
+                f'<td>{html.escape(strategy_labels.get(agent, agent))}</td>'
                 f'<td><a href="/pro/{html.escape(market)}/{html.escape(agent)}.html">专业页</a></td>'
                 f'<td class="num">目标订单 {pending["total"]} '
                 f'(买 {pending["buy"]} / 卖 {pending["sell"]})</td>'
@@ -1563,7 +1644,7 @@ def _render_all_market_observer(
             task_rows.append(
                 '<tr>'
                 f'<td>{html.escape(label)}</td>'
-                f'<td>{html.escape(agent)}</td>'
+                f'<td>{html.escape(strategy_labels.get(agent, agent))}</td>'
                 '<td>日任务 <code>run-daily</code></td>'
                 f'<td>{_status_badge(_read_latest_run(paths.data_dir, "run-daily"))}</td>'
                 '</tr>'
@@ -1571,7 +1652,7 @@ def _render_all_market_observer(
             task_rows.append(
                 '<tr>'
                 f'<td>{html.escape(label)}</td>'
-                f'<td>{html.escape(agent)}</td>'
+                f'<td>{html.escape(strategy_labels.get(agent, agent))}</td>'
                 '<td>周任务 <code>run-weekly</code></td>'
                 f'<td>{_status_badge(_read_latest_run(paths.data_dir, "run-weekly"))}</td>'
                 '</tr>'
@@ -1579,7 +1660,7 @@ def _render_all_market_observer(
         task_rows.append(
             '<tr>'
             f'<td>{html.escape(label)}</td>'
-            '<td>market</td>'
+            '<td>市场级</td>'
             '<td>月任务 <code>competition-monthly-review</code></td>'
             f'<td>{_latest_monthly_status(root, market)}</td>'
             '</tr>'
@@ -1594,7 +1675,7 @@ def _render_all_market_observer(
 
     decisions = (
         '<table class="comparison market-decisions"><thead>'
-        '<tr><th>市场</th><th>Agent</th><th>决策入口</th><th>最新决策</th><th>周报</th></tr>'
+        '<tr><th>市场</th><th>策略</th><th>决策入口</th><th>最新决策</th><th>周报</th></tr>'
         '</thead><tbody>'
         + "".join(decision_rows)
         + '</tbody></table>'
@@ -1622,7 +1703,11 @@ def _render_all_market_observer(
 # Rendering
 
 
-def _render_summary_cards(perf: dict[str, dict[str, Any]], leaderboard: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _render_summary_cards(
+    perf: dict[str, dict[str, Any]],
+    leaderboard: list[dict[str, Any]],
+    strategy_labels: dict[str, str],
+) -> list[dict[str, str]]:
     cumulative: dict[str, float | None] = {}
     for agent, summary in perf.items():
         accounts = (summary or {}).get("accounts") or {}
@@ -1637,7 +1722,8 @@ def _render_summary_cards(perf: dict[str, dict[str, Any]], leaderboard: list[dic
 
     if leaderboard:
         latest = leaderboard[-1]
-        winner = latest.get("winner_return") or "-"
+        winner_id = str(latest.get("winner_return") or "")
+        winner = strategy_labels.get(winner_id, winner_id) or "-"
         month = latest.get("month") or "-"
     else:
         winner = "-"
@@ -1647,14 +1733,17 @@ def _render_summary_cards(perf: dict[str, dict[str, Any]], leaderboard: list[dic
     for agent in DEFAULT_AGENT_ORDER:
         cards.append(
             {
-                "label": f"{agent.capitalize()} 累计收益",
+                "label": f"{strategy_labels.get(agent, agent)} 累计收益",
                 "value": format_pct(cumulative.get(agent)),
                 "tone": "primary",
             }
         )
     cards.append(
         {
-            "label": "累计差(Claude − Codex)",
+            "label": (
+                f"累计差({strategy_labels.get('claude', 'claude')} − "
+                f"{strategy_labels.get('codex', 'codex')})"
+            ),
             "value": format_pct(spread) if spread is not None else "-",
             "tone": "primary",
         }
@@ -1669,10 +1758,13 @@ def _render_summary_cards(perf: dict[str, dict[str, Any]], leaderboard: list[dic
     return cards
 
 
-def _render_tabs_nav(agents: list[str]) -> str:
+def _render_tabs_nav(agents: list[str], strategy_labels: dict[str, str]) -> str:
     items = []
     for agent in agents:
-        items.append(f'<a href="#tab-{agent}" class="tab-link">{agent.capitalize()}</a>')
+        items.append(
+            f'<a href="#tab-{agent}" class="tab-link">'
+            f'{html.escape(strategy_labels.get(agent, agent))}</a>'
+        )
     items.append('<a href="#tab-compare" class="tab-link">对比</a>')
     return '<nav class="tabs">' + "".join(items) + "</nav>"
 
@@ -1688,6 +1780,7 @@ def _render_tab_sections(
     paths_by_agent: dict[str, Any] | None = None,
     *,
     all_market_html: str = "",
+    strategy_labels: dict[str, str],
 ) -> str:
     sections: list[str] = []
     for agent in agents:
@@ -1695,12 +1788,14 @@ def _render_tab_sections(
         if fragment:
             body = fragment
         else:
+            label = strategy_labels.get(agent, agent)
             body = (
-                f'<p class="empty">尚未生成 {agent.capitalize()} 仪表盘；'
+                f'<p class="empty">尚未生成 {html.escape(label)} 仪表盘；'
                 f'请先跑 <code>python3 -m stock_analyze --agent {agent} run-weekly</code>。</p>'
             )
         sections.append(
-            f'<section id="tab-{agent}" class="tab-section">\n<h1 class="tab-title">{agent.capitalize()}</h1>\n{body}\n</section>'
+            f'<section id="tab-{agent}" class="tab-section">\n<h1 class="tab-title">'
+            f'{html.escape(strategy_labels.get(agent, agent))}</h1>\n{body}\n</section>'
         )
 
     cards_html = "".join(
@@ -1711,25 +1806,33 @@ def _render_tab_sections(
 
     table_rows = []
     agent_names = [agent for agent in agents]
-    header_cells = "".join(f"<th>{agent.capitalize()}</th>" for agent in agent_names)
+    header_cells = "".join(
+        f"<th>{html.escape(strategy_labels.get(agent, agent))}</th>"
+        for agent in agent_names
+    )
     table_rows.append(f'<tr><th>指标</th>{header_cells}<th>胜方</th></tr>')
     for row in comparison_table:
         cells = []
         for agent in agent_names:
             cells.append(f'<td>{row["values"].get(agent, "-")}</td>')
-        winner = row.get("winner") or "-"
+        winner_id = row.get("winner")
+        winner = strategy_labels.get(winner_id, winner_id) if winner_id else "-"
         table_rows.append(
             f'<tr><th class="metric-label">{row["label"]}</th>{"".join(cells)}<td><strong>{winner}</strong></td></tr>'
         )
     table_html = '<table class="comparison"><thead>' + table_rows[0] + "</thead><tbody>" + "".join(table_rows[1:]) + "</tbody></table>"
 
-    overlap_html = _render_overlap_bar(positions_overlap)
-    leaderboard_html = _render_leaderboard_strip(leaderboard)
+    overlap_html = _render_overlap_bar(positions_overlap, strategy_labels)
+    leaderboard_html = _render_leaderboard_strip(leaderboard, strategy_labels)
     monthly_html = _render_monthly_links(monthly_links)
     if paths_by_agent:
-        observation_html = _render_observation_pairing(agents, {agent: paths_by_agent[agent].data_dir for agent in agents if agent in paths_by_agent})
+        observation_html = _render_observation_pairing(
+            agents,
+            {agent: paths_by_agent[agent].data_dir for agent in agents if agent in paths_by_agent},
+            strategy_labels,
+        )
     else:
-        observation_html = _render_observation_pairing(agents, {})
+        observation_html = _render_observation_pairing(agents, {}, strategy_labels)
 
     # Pipeline status (refreshes with the aggregate dashboard via OnSuccess)
     try:
@@ -1751,13 +1854,13 @@ def _render_tab_sections(
         f'{all_market_html}\n'
         '<h2>投资账户情绪反馈</h2>\n'
         f'{sentiment_status_html}\n'
-        '<h2>A股双 Agent 对比</h2>\n'
+        '<h2>A股双策略对比</h2>\n'
         f'<section class="grid summary-grid">{cards_html}</section>\n'
         '<h2>📋 Pipeline 任务清单</h2>\n'
         f'{pipeline_status_html}\n'
         '<h2>累计净值曲线</h2>\n'
         '<div class="panel"><canvas id="comparisonNav" width="1200" height="320"></canvas>'
-        '<div class="hint">两条曲线分别代表两个 agent 的总资产；颜色与 tab 颜色一致。</div></div>\n'
+        '<div class="hint">两条曲线分别代表两个策略的总资产；颜色与 tab 颜色一致。</div></div>\n'
         '<h2>关键指标横向对比</h2>\n'
         f'<div class="panel">{table_html}</div>\n'
         '<h2>持仓重叠度</h2>\n'
@@ -1800,7 +1903,11 @@ def _latest_weekly_note(data_dir: Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
-def _render_observation_pairing(agents: list[str], data_dirs: dict[str, Path]) -> str:
+def _render_observation_pairing(
+    agents: list[str],
+    data_dirs: dict[str, Path],
+    strategy_labels: dict[str, str],
+) -> str:
     """Render side-by-side latest weekly observations for the given agents."""
 
     if len(agents) < 2 or not data_dirs:
@@ -1810,7 +1917,7 @@ def _render_observation_pairing(agents: list[str], data_dirs: dict[str, Path]) -
     have_any = False
     for agent in agents:
         path = _latest_weekly_note(data_dirs.get(agent, Path("/dev/null/missing")))
-        label = agent.capitalize()
+        label = strategy_labels.get(agent, agent)
         if path is None:
             panels.append(
                 f'<div class="observation-cell"><h3>{label}</h3>'
@@ -1842,10 +1949,15 @@ def _render_observation_pairing(agents: list[str], data_dirs: dict[str, Path]) -
     )
 
 
-def _render_overlap_bar(overlap: dict[str, Any]) -> str:
+def _render_overlap_bar(
+    overlap: dict[str, Any],
+    strategy_labels: dict[str, str],
+) -> str:
     if not overlap.get("agents"):
         return '<p class="empty">尚无持仓数据。</p>'
     a, b = overlap["agents"]
+    label_a = strategy_labels.get(a, a)
+    label_b = strategy_labels.get(b, b)
     shared = overlap.get("shared", [])
     ex_a = overlap["exclusives"].get(a, [])
     ex_b = overlap["exclusives"].get(b, [])
@@ -1855,15 +1967,18 @@ def _render_overlap_bar(overlap: dict[str, Any]) -> str:
     seg_b = len(ex_b) / total * 100
     return (
         '<div class="overlap-bar">'
-        f'<span class="seg seg-a" style="width:{seg_a:.1f}%" title="仅 {a}: {len(ex_a)} 只">{a} 独占 {len(ex_a)}</span>'
+        f'<span class="seg seg-a" style="width:{seg_a:.1f}%" title="仅 {html.escape(label_a)}: {len(ex_a)} 只">{html.escape(label_a)} 独占 {len(ex_a)}</span>'
         f'<span class="seg seg-shared" style="width:{seg_shared:.1f}%" title="共有: {len(shared)} 只">共有 {len(shared)}</span>'
-        f'<span class="seg seg-b" style="width:{seg_b:.1f}%" title="仅 {b}: {len(ex_b)} 只">{b} 独占 {len(ex_b)}</span>'
+        f'<span class="seg seg-b" style="width:{seg_b:.1f}%" title="仅 {html.escape(label_b)}: {len(ex_b)} 只">{html.escape(label_b)} 独占 {len(ex_b)}</span>'
         '</div>'
         f'<div class="hint">Jaccard 重叠度 = {len(shared) / max(len(shared) + len(ex_a) + len(ex_b), 1):.2%}</div>'
     )
 
 
-def _render_leaderboard_strip(rows: list[dict[str, Any]]) -> str:
+def _render_leaderboard_strip(
+    rows: list[dict[str, Any]],
+    strategy_labels: dict[str, str],
+) -> str:
     if not rows:
         return '<p class="empty">尚未生成月度对比。运行 <code>competition-monthly-review</code> 后会出现。</p>'
     blocks = []
@@ -1871,7 +1986,11 @@ def _render_leaderboard_strip(rows: list[dict[str, Any]]) -> str:
         month = row.get("month") or "-"
         winner = row.get("winner_return") or "-"
         cls = "win-claude" if winner == "claude" else "win-codex" if winner == "codex" else "win-tie"
-        blocks.append(f'<span class="month-block {cls}" title="{month}: {winner}">{month}</span>')
+        winner_label = strategy_labels.get(str(winner), str(winner))
+        blocks.append(
+            f'<span class="month-block {cls}" title="{month}: '
+            f'{html.escape(winner_label)}">{month}</span>'
+        )
     return "".join(blocks)
 
 
@@ -1882,18 +2001,30 @@ def _render_monthly_links(links: list[dict[str, str]]) -> str:
     return f'<ul class="monthly-review-links">{items}</ul>'
 
 
-def _render_page(tabs_nav: str, tab_sections: str, nav_json: str, leaderboard_json: str) -> str:
+def _render_page(
+    tabs_nav: str,
+    tab_sections: str,
+    nav_json: str,
+    leaderboard_json: str,
+    strategy_labels: dict[str, str],
+) -> str:
     generated = datetime.now()
     generated_at = generated.strftime("%Y-%m-%d %H:%M:%S")
     color_claude = AGENT_COLORS.get("claude", "#f59e0b")
     color_codex = AGENT_COLORS.get("codex", "#06b6d4")
-    top_nav = render_nav_html(active="pro", generated_at=generated)
+    top_nav = render_nav_html(
+        active="pro",
+        generated_at=generated,
+        strategy_labels=strategy_labels,
+    )
+    defensive_label = html.escape(strategy_labels.get("claude", "稳健防守"))
+    trend_label = html.escape(strategy_labels.get("codex", "趋势进攻"))
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Claude vs Codex · Competition Dashboard</title>
+  <title>{defensive_label} vs {trend_label} · 策略竞技场</title>
   <style>{BASE_CSS}
 {NAV_CSS}
 {_COMPETITION_CSS}
@@ -1905,7 +2036,7 @@ def _render_page(tabs_nav: str, tab_sections: str, nav_json: str, leaderboard_js
 <body>
   {top_nav}
   <header class="page-header">
-    <h1>Claude <span class="vs">vs</span> Codex · Paper Trading Competition</h1>
+    <h1>{defensive_label} <span class="vs">vs</span> {trend_label} · 双策略模拟竞技场</h1>
     <div class="subhead">生成时间 {generated_at} · 仅模拟交易，不构成任何投资建议</div>
   </header>
   {tabs_nav}
@@ -1916,6 +2047,7 @@ def _render_page(tabs_nav: str, tab_sections: str, nav_json: str, leaderboard_js
     const navPanel = {nav_json};
     const leaderboardData = {leaderboard_json};
     const colors = {{ claude: "{color_claude}", codex: "{color_codex}" }};
+    const strategyLabels = {json.dumps(strategy_labels, ensure_ascii=False)};
 
     function drawComparisonNav() {{
       const canvas = document.getElementById('comparisonNav');
@@ -1956,7 +2088,7 @@ def _render_page(tabs_nav: str, tab_sections: str, nav_json: str, leaderboard_js
         }});
         ctx.stroke();
         ctx.fillStyle = colors[agent] || '#5a6478';
-        ctx.fillText(agent, canvas.width - 130, 28 + idx * 20);
+        ctx.fillText(strategyLabels[agent] || agent, canvas.width - 130, 28 + idx * 20);
       }});
     }}
 
@@ -1994,10 +2126,11 @@ _DASHBOARD_DYNAMIC_JS = r"""
       for (const market of payload.markets || []) {
         const navBits = [];
         for (const item of market.agents || []) {
+          const displayName = item.strategy && item.strategy.label || item.agent;
           const ret = Number(item.nav && item.nav.return);
           const retClass = Number.isFinite(ret) && ret < 0 ? 'neg' : 'pos';
           navBits.push(
-            '<div><strong>' + escapeText(item.agent) + '</strong> ' +
+            '<div><strong>' + escapeText(displayName) + '</strong> ' +
             '<span class="num">' + escapeText(item.nav && item.nav.latest_display || '-') + '</span> ' +
             '<span class="' + retClass + '">' + escapeText(item.nav && item.nav.return_display || '-') + '</span></div>'
           );
@@ -2005,18 +2138,18 @@ _DASHBOARD_DYNAMIC_JS = r"""
           const reportHref = item.decision && item.decision.weekly_report_href;
           decisionRows.push(
             '<tr><td>' + escapeText(market.label) + '</td>' +
-            '<td>' + escapeText(item.agent) + '</td>' +
+            '<td>' + escapeText(displayName) + '</td>' +
             '<td><a href="' + escapeText(item.decision.href) + '">专业页</a></td>' +
             '<td class="num">目标订单 ' + escapeText(pending.total ?? 0) +
             ' (买 ' + escapeText(pending.buy ?? 0) + ' / 卖 ' + escapeText(pending.sell ?? 0) + ')</td>' +
             '<td>' + (reportHref ? '<a href="' + escapeText(reportHref) + '">weekly_report.md</a>' : '<span class="pending">无周报</span>') + '</td></tr>'
           );
           taskRows.push(
-            '<tr><td>' + escapeText(market.label) + '</td><td>' + escapeText(item.agent) +
+            '<tr><td>' + escapeText(market.label) + '</td><td>' + escapeText(displayName) +
             '</td><td>日任务 <code>run-daily</code></td><td>' + statusLabel(item.tasks && item.tasks.daily, '未运行') + '</td></tr>'
           );
           taskRows.push(
-            '<tr><td>' + escapeText(market.label) + '</td><td>' + escapeText(item.agent) +
+            '<tr><td>' + escapeText(market.label) + '</td><td>' + escapeText(displayName) +
             '</td><td>周任务 <code>run-weekly</code></td><td>' + statusLabel(item.tasks && item.tasks.weekly, '未运行') + '</td></tr>'
           );
         }
@@ -2024,7 +2157,7 @@ _DASHBOARD_DYNAMIC_JS = r"""
         let monthlyCell = '<span class="pending">' + (monthly.status === 'not_configured' ? '未配置' : '无月报') + '</span>';
         if (monthly.href) monthlyCell = '<a href="' + escapeText(monthly.href) + '">' + escapeText(monthly.label || '月报') + '</a>';
         taskRows.push(
-          '<tr><td>' + escapeText(market.label) + '</td><td>market</td>' +
+          '<tr><td>' + escapeText(market.label) + '</td><td>市场级</td>' +
           '<td>月任务 <code>competition-monthly-review</code></td><td>' + monthlyCell + '</td></tr>'
         );
         marketCards.push(
@@ -2037,7 +2170,7 @@ _DASHBOARD_DYNAMIC_JS = r"""
         '<div class="live-badge">🟢 实时 · 更新于 ' + escapeText(updatedDisplay) + ' · 每 30 秒自动刷新</div>' +
         '<h2>投资账户总览</h2><section class="grid market-overview-grid">' + marketCards.join('') + '</section>' +
         '<h2>投资账户具体决策</h2><div class="panel"><table class="comparison market-decisions"><thead>' +
-        '<tr><th>市场</th><th>Agent</th><th>决策入口</th><th>最新决策</th><th>周报</th></tr></thead><tbody>' +
+        '<tr><th>市场</th><th>策略</th><th>决策入口</th><th>最新决策</th><th>周报</th></tr></thead><tbody>' +
         decisionRows.join('') + '</tbody></table></div>' +
         '<h2>日/周/月任务运行情况</h2><div class="panel"><table class="comparison market-task-matrix"><thead>' +
         '<tr><th>市场</th><th>主体</th><th>任务</th><th>最近状态</th></tr></thead><tbody>' +

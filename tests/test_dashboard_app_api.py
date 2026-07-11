@@ -180,7 +180,7 @@ class DashboardAppApiTests(unittest.TestCase):
             self.assertEqual(payload["trades"]["rows"][0]["code"], "513100.SH")
             self.assertEqual(payload["trades"]["rows"][0]["side_label"], "买入")
             self.assertEqual(payload["runs"]["rows"][0]["run_id"], "run-weekly-20260710T005635-8fmi")
-            self.assertEqual(payload["strategy"]["agent_label"], "Codex 策略")
+            self.assertEqual(payload["strategy"]["agent_label"], "趋势进攻")
             self.assertEqual(payload["activity"]["summary"]["total"], 3)
             self.assertEqual(payload["activity"]["rows"][0]["status"], "planned")
             self.assertIn("目标订单", payload["weekly_report"]["markdown"])

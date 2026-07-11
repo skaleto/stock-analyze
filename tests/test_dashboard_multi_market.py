@@ -13,6 +13,29 @@ from stock_analyze import competition
 
 def _seed_market_repo(root: Path) -> None:
     (root / "configs" / "agents").mkdir(parents=True, exist_ok=True)
+    (root / "configs" / "strategy_competition.json").write_text(
+        json.dumps(
+            {
+                "season_id": "dual_strategy_2026_s1",
+                "name": "双策略对抗 · 赛季1",
+                "effective_date": "2026-05-29",
+                "factor_distance_floor": 0.45,
+                "slots": {
+                    "claude": {
+                        "label": "稳健防守",
+                        "description": "价值质量、低波与低换手",
+                        "color": "#d6a84b",
+                    },
+                    "codex": {
+                        "label": "趋势进攻",
+                        "description": "动量成长与主动换仓",
+                        "color": "#22d3ee",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     for market in ("a_share", "cn_qdii_etf"):
         (root / "configs" / f"competition_{market}.yaml").write_text(
             json.dumps({"competition_id": f"{market}_test", "initial_cash": 1000000}),
@@ -20,7 +43,19 @@ def _seed_market_repo(root: Path) -> None:
         )
         for agent in ("claude", "codex"):
             (root / "configs" / "agents" / f"{agent}_{market}.yaml").write_text(
-                json.dumps({"agent_id": agent, "strategy_id": f"{agent}_{market}_v1", "factors": {}}),
+                json.dumps(
+                    {
+                        "agent_id": agent,
+                        "strategy_id": f"{agent}_{market}_v1",
+                        "name": "稳健防守" if agent == "claude" else "趋势进攻",
+                        "factors": {
+                            ("pe" if agent == "claude" else "momentum_20"): {
+                                "weight": 1.0,
+                                "direction": "low" if agent == "claude" else "high",
+                            }
+                        },
+                    }
+                ),
                 encoding="utf-8",
             )
             data_dir = root / "data" / market / agent
@@ -143,6 +178,11 @@ class MultiMarketDashboardTests(unittest.TestCase):
             )
             a_share = payload["markets"][0]
             self.assertEqual(a_share["agents"][0]["decision"]["pending_orders"]["total"], 2)
+            self.assertEqual(a_share["agents"][0]["strategy"]["label"], "稳健防守")
+            self.assertEqual(a_share["agents"][1]["strategy"]["label"], "趋势进攻")
+            self.assertEqual(a_share["comparison"]["season"]["id"], "dual_strategy_2026_s1")
+            self.assertAlmostEqual(a_share["comparison"]["pair"]["factor_distance"], 1.0)
+            self.assertEqual(len(a_share["comparison"]["nav_series"]), 2)
             self.assertEqual(
                 a_share["agents"][0]["tasks"]["weekly"]["status"],
                 "success",

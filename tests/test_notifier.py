@@ -25,9 +25,50 @@ from stock_analyze.notifier import (
 
 
 def _seed_agent_dir(repo_root: Path, agent: str) -> Path:
+    config_dir = repo_root / "configs" / "agents"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    registry_path = repo_root / "configs" / "strategy_competition.json"
+    if not registry_path.exists():
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "season_id": "s1",
+                    "name": "双策略对抗",
+                    "effective_date": "2026-07-11",
+                    "factor_distance_floor": 0.45,
+                    "slots": {
+                        "claude": {"label": "稳健防守", "description": "", "color": "#d6a84b"},
+                        "codex": {"label": "趋势进攻", "description": "", "color": "#22d3ee"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+    overlay = config_dir / f"{agent}_a_share.yaml"
+    if not overlay.exists():
+        overlay.write_text(
+            json.dumps(
+                {
+                    "agent_id": agent,
+                    "strategy_id": f"{agent}_v1",
+                    "name": "稳健防守" if agent == "claude" else "趋势进攻",
+                    "factors": {"pe": {"weight": 1.0, "direction": "low"}},
+                }
+            ),
+            encoding="utf-8",
+        )
     data_dir = repo_root / "data" / "a_share" / agent
     data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir
+
+
+def _enable_sentiment(repo_root: Path, agent: str) -> None:
+    overlay = repo_root / "configs" / "agents" / f"{agent}_a_share.yaml"
+    payload = json.loads(overlay.read_text(encoding="utf-8"))
+    payload["factors"] = {
+        f"{agent}_market_sentiment_1w": {"weight": 1.0, "direction": "high"}
+    }
+    overlay.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _write_nav(data_dir: Path, rows: list[tuple[str, str, float]]) -> None:
@@ -118,6 +159,8 @@ class PendingActionsTests(unittest.TestCase):
     def test_saturday_with_missing_sentiment_flags_action(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
+            _seed_agent_dir(root, "claude")
+            _enable_sentiment(root, "claude")
             alt_dir = root / "data" / "a_share" / "claude" / "alt_factors"
             alt_dir.mkdir(parents=True)
             # Sentiment exists but doesn't cover this Friday (2026-05-22)
@@ -132,6 +175,8 @@ class PendingActionsTests(unittest.TestCase):
     def test_saturday_with_recorded_sentiment_no_action(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
+            _seed_agent_dir(root, "claude")
+            _enable_sentiment(root, "claude")
             alt_dir = root / "data" / "a_share" / "claude" / "alt_factors"
             alt_dir.mkdir(parents=True)
             (alt_dir / "market_sentiment.csv").write_text(
@@ -139,6 +184,15 @@ class PendingActionsTests(unittest.TestCase):
                 encoding="utf-8",
             )
             actions = collect_pending_actions(["claude"], root, date(2026, 5, 23))
+            self.assertEqual(actions, [])
+
+    def test_saturday_without_active_sentiment_factor_has_no_reminder(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_agent_dir(root, "claude")
+
+            actions = collect_pending_actions(["claude"], root, date(2026, 5, 23))
+
             self.assertEqual(actions, [])
 
     def test_three_days_before_month_start_flags_monthly_review(self):
@@ -193,7 +247,8 @@ class BuildDailySummaryTests(unittest.TestCase):
                 ["claude"], repo_root=root, today_d=date(2026, 5, 27)
             )
             # NAV: 5/26 total = 499608 + 502812 = 1002420 → close to ¥1M
-            self.assertIn("claude", text)
+            self.assertIn("稳健防守", text)
+            self.assertNotIn("claude", text)
             # Position breakdown
             self.assertIn("hs300=46", text)
             self.assertIn("zz500=47", text)
@@ -226,6 +281,7 @@ class BuildDailySummaryTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             _seed_agent_dir(root, "claude")
+            _enable_sentiment(root, "claude")
             # Saturday + no sentiment CSV at all → cold-start prompt fires
             text_sat = build_daily_summary(
                 ["claude"], repo_root=root, today_d=date(2026, 5, 23)
