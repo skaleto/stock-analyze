@@ -3,6 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
+vi.mock("./FinancialCharts", () => ({
+  PerformanceChart: ({ benchmarkLabel }: { benchmarkLabel: string }) => <div>净值图 · {benchmarkLabel}</div>,
+  CandlestickChart: () => <div>K线图</div>,
+}));
+
 const summaryPayload = {
   generated_at: "2026-07-10T01:00:00",
   markets: [
@@ -49,13 +54,30 @@ const detailPayload = {
       total_value: 1000000,
       total_value_display: "¥1.00M",
       return_display: "0.00%",
-      benchmark_code: "513100.SH"
+      benchmark_code: "513100.SH",
+      benchmark_return: 0.004
     },
     series: [
-      { date: "2026-07-09", total_value: 999000, return: -0.001 },
-      { date: "2026-07-10", total_value: 1000000, return: 0 }
+      { date: "2026-07-09", total_value: 999000, return: -0.001, benchmark_return: -0.002 },
+      { date: "2026-07-10", total_value: 1000000, return: 0, benchmark_return: 0.004 }
     ],
-    accounts: []
+    accounts: [],
+    benchmark_label: "纳斯达克100基准"
+  },
+  strategy: {
+    agent: "codex",
+    agent_label: "Codex 策略",
+    strategy_id: "codex-etf",
+    name: "Codex 跨境ETF策略",
+    factors: [
+      { key: "momentum_20", label: "近20日涨跌", explanation: "观察近期趋势。", weight: 0.6, direction: "high", direction_label: "偏好高值" }
+    ]
+  },
+  activity: {
+    summary: { total: 1 },
+    rows: [
+      { date: "2026-07-13", code: "513100.SH", name: "纳指ETF", status: "planned", status_label: "计划买入", shares: 1000 }
+    ]
   },
   orders: {
     summary: { total: 1, buy: 1, sell: 0 },
@@ -93,6 +115,18 @@ const detailPayload = {
     href: "/cn_qdii_etf/codex/weekly_report.md",
     markdown: "# 跨境 ETF 周报\n\n生成 1 笔订单。"
   }
+};
+
+const instrumentPayload = {
+  generated_at: "2026-07-10T01:00:03",
+  market: "cn_qdii_etf",
+  agent: "codex",
+  instrument: { code: "513100.SH", name: "纳指ETF", exposure_group: "美国市场", theme: "纳斯达克100" },
+  latest: null,
+  candles: [],
+  metrics: [],
+  related_trades: [],
+  warning: "暂无可用的历史行情缓存"
 };
 
 const aShareMarket = {
@@ -133,6 +167,12 @@ const aShareDetail = {
         name: "平安银行"
       }
     ]
+  },
+  activity: {
+    summary: { total: 1 },
+    rows: [
+      { date: "2026-07-13", code: "000001.SZ", name: "平安银行", status: "planned", status_label: "计划买入", shares: 1000 }
+    ]
   }
 };
 
@@ -162,6 +202,9 @@ describe("Dashboard app", () => {
       if (url.includes("/api/dashboard/detail.json")) {
         return Promise.resolve(new Response(JSON.stringify(detailPayload), { status: 200 }));
       }
+      if (url.includes("/api/dashboard/instrument.json")) {
+        return Promise.resolve(jsonResponse(instrumentPayload));
+      }
       return Promise.reject(new Error(`unexpected url: ${url}`));
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -169,11 +212,17 @@ describe("Dashboard app", () => {
     render(<App />);
 
     expect(await screen.findByRole("button", { name: "跨境ETF" })).toBeInTheDocument();
-    expect(await screen.findByText("513100.SH")).toBeInTheDocument();
+    expect((await screen.findAllByText("513100.SH")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("run-weekly").length).toBeGreaterThan(0);
 
     const ordersPanel = screen.getByRole("region", { name: "目标订单" });
     expect(within(ordersPanel).getByText("纳指ETF")).toBeInTheDocument();
+    expect(screen.getByText("Codex 跨境ETF策略")).toBeInTheDocument();
+    expect(screen.getAllByText("纳斯达克100基准").length).toBeGreaterThan(0);
+    expect(screen.queryByText("周报摘录")).not.toBeInTheDocument();
+
+    const portfolio = screen.getByRole("region", { name: "持仓组合" });
+    expect(portfolio.compareDocumentPosition(ordersPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     await userEvent.click(screen.getByRole("button", { name: "刷新 dashboard" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/dashboard/summary.json", expect.anything()));
@@ -182,27 +231,28 @@ describe("Dashboard app", () => {
   it("opens an order row with Enter and closes the dialog with Escape", async () => {
     vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
-      return Promise.resolve(
-        url.includes("summary") ? jsonResponse(summaryPayload) : jsonResponse(detailPayload)
-      );
+      if (url.includes("summary")) return Promise.resolve(jsonResponse(summaryPayload));
+      if (url.includes("instrument")) return Promise.resolve(jsonResponse(instrumentPayload));
+      return Promise.resolve(jsonResponse(detailPayload));
     }));
     const user = userEvent.setup();
     render(<App />);
 
-    const cell = await screen.findByText("纳指ETF");
+    const ordersPanel = await screen.findByRole("region", { name: "目标订单" });
+    const cell = within(ordersPanel).getByText("纳指ETF");
     const row = cell.closest("tr");
     expect(row).not.toBeNull();
     row?.focus();
     await user.keyboard("{Enter}");
 
-    expect(screen.getByRole("dialog", { name: "订单明细" })).toBeVisible();
+    expect(screen.getByRole("dialog", { name: "证券详情" })).toBeVisible();
     const closeButton = screen.getByRole("button", { name: "关闭明细" });
     expect(closeButton).toHaveFocus();
     await user.tab();
     expect(closeButton).toHaveFocus();
     await user.keyboard("{Escape}");
-    expect(screen.queryByRole("dialog", { name: "订单明细" })).not.toBeInTheDocument();
-    expect(row).toHaveFocus();
+    expect(screen.queryByRole("dialog", { name: "证券详情" })).not.toBeInTheDocument();
+    await waitFor(() => expect(row).toHaveFocus());
   });
 
   it("ignores an older detail response after the market changes", async () => {
@@ -218,14 +268,14 @@ describe("Dashboard app", () => {
     render(<App />);
 
     await user.click(await screen.findByRole("button", { name: "A股" }));
-    expect(await screen.findByText("平安银行")).toBeInTheDocument();
+    expect((await screen.findAllByText("平安银行")).length).toBeGreaterThan(0);
 
     await act(async () => {
       oldDetail.resolve(jsonResponse(detailPayload));
       await oldDetail.promise;
       await Promise.resolve();
     });
-    expect(screen.queryByText("纳指ETF")).not.toBeInTheDocument();
+    expect(screen.queryAllByText("纳指ETF")).toHaveLength(0);
     expect(screen.getByRole("heading", { name: "codex 策略工作台" })).toBeInTheDocument();
     expect(screen.getAllByText("A股").length).toBeGreaterThan(0);
   });
@@ -246,11 +296,11 @@ describe("Dashboard app", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    expect(await screen.findByText("纳指ETF")).toBeInTheDocument();
+    expect((await screen.findAllByText("纳指ETF")).length).toBeGreaterThan(0);
     await user.click(screen.getByRole("button", { name: "A股" }));
 
     expect(await screen.findByText("Dashboard data source is unreadable: positions")).toBeInTheDocument();
-    expect(screen.queryByText("纳指ETF")).not.toBeInTheDocument();
+    expect(screen.queryAllByText("纳指ETF")).toHaveLength(0);
   });
 
   it("keeps a summary error when a concurrent detail refresh succeeds", async () => {
@@ -274,7 +324,7 @@ describe("Dashboard app", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    expect(await screen.findByText("纳指ETF")).toBeInTheDocument();
+    expect((await screen.findAllByText("纳指ETF")).length).toBeGreaterThan(0);
     await user.click(screen.getByRole("button", { name: "刷新 dashboard" }));
     expect(await screen.findByText("Summary refresh failed")).toBeInTheDocument();
 

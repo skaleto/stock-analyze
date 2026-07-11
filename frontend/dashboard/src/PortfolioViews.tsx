@@ -161,7 +161,7 @@ export function StrategyBrief({ strategy, reportHref }: { strategy: StrategyProf
         {reportHref ? <a className="text-link" href={reportHref} target="_blank" rel="noreferrer">查看完整周报</a> : null}
       </header>
       <div className="factor-grid">
-        {strategy.factors.map((factor) => (
+        {strategy.factors.length === 0 ? <div className="terminal-empty">策略因子将在配置加载后显示</div> : strategy.factors.map((factor) => (
           <article className="factor-item" key={factor.key}>
             <header><b>{factor.label}</b><strong>{formatPercent(factor.weight)}</strong></header>
             <div className="factor-track"><span style={{ width: `${Math.max(3, factor.weight * 100)}%` }} /></div>

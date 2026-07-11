@@ -289,7 +289,7 @@ git commit -m "feat: expose portfolio and instrument analytics"
 - Create: `frontend/dashboard/src/PortfolioViews.test.tsx`
 - Create: `frontend/dashboard/src/InstrumentDrawer.test.tsx`
 
-- [ ] **Step 1: Install the proven chart engine**
+- [x] **Step 1: Install the proven chart engine**
 
 ```bash
 cd frontend/dashboard
@@ -298,7 +298,7 @@ npm install lightweight-charts@^5.0.0
 
 Confirm `package-lock.json` records the Apache-2.0 package and no unrelated dependency upgrade.
 
-- [ ] **Step 2: Write failing field dictionary and component tests**
+- [x] **Step 2: Write failing field dictionary and component tests**
 
 Require:
 
@@ -310,14 +310,14 @@ expect(sideLabel("buy")).toBe("买入");
 
 Render grouped holdings and verify group headings, market values, allocation percentages, and planned-position empty state. Mock Lightweight Charts and verify selecting an instrument creates candlestick and histogram series, sets data, and removes the chart on unmount.
 
-- [ ] **Step 3: Run Vitest and verify RED**
+- [x] **Step 3: Run Vitest and verify RED**
 
 ```bash
 cd frontend/dashboard
 npm test
 ```
 
-- [ ] **Step 4: Implement finance utilities and API types**
+- [x] **Step 4: Implement finance utilities and API types**
 
 `finance.ts` contains typed label, format, percent, money, factor-reason parsing, account label, and exposure grouping helpers. Extend `types.ts` with `StrategyProfile`, `ActivityEvent`, `InstrumentDetail`, and `benchmark_return`.
 
@@ -332,19 +332,19 @@ export function fetchInstrument(
 ): Promise<InstrumentDetail>
 ```
 
-- [ ] **Step 5: Implement interactive charts**
+- [x] **Step 5: Implement interactive charts**
 
 `PerformanceChart` uses percentage line series for portfolio and benchmark, a visible legend, crosshair subscription, hover date/value panel, and range buttons `近1月 / 近3月 / 全部`.
 
 `CandlestickChart` uses a candlestick series plus volume histogram, ResizeObserver, crosshair OHLC tooltip, and `fitContent()`. Both charts use transparent backgrounds and the existing dark tokens.
 
-- [ ] **Step 6: Implement grouped portfolio, timeline, and drawer**
+- [x] **Step 6: Implement grouped portfolio, timeline, and drawer**
 
 `PortfolioViews.tsx` exports `PortfolioSection`, `TradeTimeline`, `StrategyBrief`, and `RuntimeHistory`. Holdings are grouped by `exposure_group`; pending-only data is labelled `计划持仓`.
 
 `InstrumentDrawer.tsx` fetches instrument data only for security rows, aborts stale requests, renders Chinese fields and explanations, and falls back to a translated generic drawer for run records.
 
-- [ ] **Step 7: Run component tests and verify GREEN**
+- [x] **Step 7: Run component tests and verify GREEN**
 
 ```bash
 cd frontend/dashboard
@@ -355,7 +355,7 @@ npm audit --omit=dev
 
 Expected: tests and TypeScript build pass; zero production vulnerabilities.
 
-- [ ] **Step 8: Commit reusable financial UI**
+- [x] **Step 8: Commit reusable financial UI**
 
 ```bash
 git add frontend/dashboard
@@ -369,7 +369,7 @@ git commit -m "feat: add interactive financial components"
 - Modify: `frontend/dashboard/src/styles.css`
 - Modify: `frontend/dashboard/src/App.test.tsx`
 
-- [ ] **Step 1: Rewrite acceptance fixtures and tests first**
+- [x] **Step 1: Rewrite acceptance fixtures and tests first**
 
 The App test must assert document order by comparing DOM positions:
 
@@ -380,14 +380,14 @@ expect(orders.compareDocumentPosition(runtime) & Node.DOCUMENT_POSITION_PRECEDIN
 
 Also require `账户范围`, `策略模型`, `A股组合`, `全球ETF组合`, Chinese strategy factors, activity dates, grouped exposures, and that raw weekly Markdown is absent from the main page.
 
-- [ ] **Step 2: Run App tests and verify RED**
+- [x] **Step 2: Run App tests and verify RED**
 
 ```bash
 cd frontend/dashboard
 npm test -- App.test.tsx
 ```
 
-- [ ] **Step 3: Recompose App.tsx**
+- [x] **Step 3: Recompose App.tsx**
 
 Keep request-id and abort-controller protections. Replace the current content with:
 
@@ -403,13 +403,13 @@ Keep request-id and abort-controller protections. Replace the current content wi
 
 Move the search box into the sections where it filters data. The top bar contains account range, strategy model, update state, and refresh only.
 
-- [ ] **Step 4: Apply the professional dark-terminal system**
+- [x] **Step 4: Apply the professional dark-terminal system**
 
 Use a 240px rail on desktop and compact top control deck below 1080px. Use full-width bands and split panes, not nested cards. Add 180-240ms opacity/transform transitions, selected-row highlight, visible focus states, stable chart heights, responsive table scroll containers, and `prefers-reduced-motion` fallbacks.
 
 Do not change the dark palette family. Remove the decorative page radial gradient, preserve cyan as the one selection accent, and reserve green/red for financial direction.
 
-- [ ] **Step 5: Verify frontend GREEN**
+- [x] **Step 5: Verify frontend GREEN**
 
 ```bash
 ./scripts/build-dashboard-app.sh

@@ -62,10 +62,10 @@ or marketing composition.
 
 Replace ambiguous labels:
 
-- `市场` becomes `账户范围`.
-- `A股` becomes `A股组合`.
-- `跨境ETF` becomes `全球ETF组合`.
-- `Agent` becomes `策略模型`.
+- `市场` becomes `市场账户`, with copy explaining that it shows what happened.
+- `A股` remains the familiar `A股` market name.
+- `跨境ETF` remains the familiar `跨境ETF` market name.
+- `Agent` becomes `策略版本`, with copy explaining that it controls selection and rebalancing.
 - `claude` and `codex` become `Claude 策略` and `Codex 策略`.
 
 The selected strategy profile exposes its configured factor weights using

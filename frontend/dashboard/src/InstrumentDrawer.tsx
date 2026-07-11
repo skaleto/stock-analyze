@@ -72,7 +72,7 @@ export default function InstrumentDrawer({
   const dialogName = row.code ? "证券详情" : `${title}明细`;
   return (
     <>
-      <button className="drawer-backdrop" type="button" aria-label="关闭明细" onClick={onClose} />
+      <button className="drawer-backdrop" type="button" aria-label="关闭遮罩" onClick={onClose} />
       <aside ref={drawerRef} className="instrument-drawer" role="dialog" aria-modal="true" aria-label={dialogName}>
         <header className="instrument-head">
           <div>
