@@ -1,0 +1,35 @@
+frontend/dashboard/src/App.test.tsx
+  s_db9afa53cf7b72::t_9d3a089ff170ce 8,12-69,80,97-117,119,150,152,301,305-310,366
+frontend/dashboard/src/App.tsx
+  s_db9afa53cf7b72::t_427ea7eccc4d6c 16,152,154,298-301,335,354,365-372
+frontend/dashboard/src/CompetitionPanel.test.tsx
+  s_db9afa53cf7b72::t_ddb08339729f06 1-176
+frontend/dashboard/src/CompetitionPanel.tsx
+  s_db9afa53cf7b72::t_5c4ae4c198a819 1-181
+frontend/dashboard/src/FinancialCharts.test.tsx
+  s_db9afa53cf7b72::t_2c17b3b4f5e9a1 31,91-112
+frontend/dashboard/src/FinancialCharts.tsx
+  s_db9afa53cf7b72::t_636c5b92293299 12,131-229
+frontend/dashboard/src/styles.css
+  s_db9afa53cf7b72::t_01359655ea8fa2 235-386,712-715,749-769
+frontend/dashboard/src/types.ts
+  s_db9afa53cf7b72::t_190d1b7c4dd633 10-80,83,107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "a04407209468bb40da16ea7cdac5e2436f5456cb",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
