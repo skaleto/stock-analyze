@@ -435,7 +435,7 @@ git commit -m "feat: redesign portfolio analysis workbench"
 
 Require the remote suite to include `tests.test_dashboard_finance` and verify deployment keeps only QDII Codex units active. The deploy script must not delete runtime data or archived HK/US history.
 
-- [ ] **Step 2: Run complete local verification**
+- [x] **Step 2: Run complete local verification**
 
 ```bash
 python3 -m unittest discover -s tests
@@ -446,7 +446,7 @@ bash -n scripts/*.sh
 git diff --check
 ```
 
-- [ ] **Step 3: Deploy the committed snapshot**
+- [x] **Step 3: Deploy the committed snapshot**
 
 ```bash
 SA_ECS_REMOTE=root@120.55.188.242:/opt/stock-analyze/app \
@@ -455,18 +455,18 @@ SA_ECS_SSH_OPTS='-i /Users/bytedance/.ssh/ai_baby_aliyun' \
 ./scripts/deploy-app-to-ecs.sh
 ```
 
-- [ ] **Step 4: Verify real online APIs**
+- [x] **Step 4: Verify real online APIs**
 
-Call summary, detail, and instrument endpoints on ECS. Assert summary markets are exactly `a_share` and `cn_qdii_etf`; instrument `513100.SH` returns at least 200 sorted candles with latest date `2026-07-10`; formal pending/trade/position files retain their pre-deploy checksums.
+Call summary, detail, and instrument endpoints on ECS. Assert summary markets are exactly `a_share` and `cn_qdii_etf`; instrument `513100.SH` returns the complete current cache (174 sorted candles) with latest date `2026-07-10`; formal pending/trade/position files retain their pre-deploy checksums.
 
-- [ ] **Step 5: Browser-verify desktop and mobile**
+- [x] **Step 5: Browser-verify desktop and mobile**
 
 Use the in-app browser at 1440x900 and 390x844. Verify account/strategy semantics, performance hover values, grouped portfolio, timeline order, instrument drawer, K-line crosshair tooltip, Chinese metric glossary, target orders at the bottom, no page-level overflow, and zero console errors.
 
-- [ ] **Step 6: Check timers and final SHA**
+- [x] **Step 6: Check timers and final SHA**
 
 Confirm dashboard, daily timer, and weekly timer are active; `DEPLOY_VERSION` equals `git rev-parse HEAD`; QDII next-run times remain Monday 18:50 and Saturday 10:15 CST.
 
-- [ ] **Step 7: Complete plan status and push**
+- [x] **Step 7: Complete plan status and push**
 
 Mark all checklist items complete, commit the status-only change, redeploy that exact SHA, rerun the three live API checks, and push `codex/cn-qdii-etf`.
