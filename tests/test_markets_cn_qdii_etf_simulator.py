@@ -66,6 +66,18 @@ class PausedProvider(FakeProvider):
         )
 
 
+class InterruptingStore(PortfolioStore):
+    def __init__(self, data_dir: str) -> None:
+        super().__init__(data_dir)
+        self.fail_next_pending_write = False
+
+    def write_pending(self, pending):
+        if self.fail_next_pending_write:
+            self.fail_next_pending_write = False
+            raise RuntimeError("simulated interruption")
+        return super().write_pending(pending)
+
+
 def _config():
     return {
         "competition_id": "test-cn-qdii-etf",
@@ -174,6 +186,38 @@ class ETFSimulatorTests(unittest.TestCase):
         self.assertEqual(str(trades.iloc[0]["trade_date"]), "2026-07-13")
         self.assertEqual(str(positions.iloc[0]["code"]), "513100.SH")
 
+    def test_interrupted_fill_recovers_without_double_execution(self):
+        with TemporaryDirectory() as tmp:
+            store = InterruptingStore(tmp)
+            initialize(_config(), store)
+            store.write_pending([self._pending("2026-07-13")])
+            store.fail_next_pending_write = True
+
+            with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+                execute_due_orders(
+                    store,
+                    FakeProvider(price=2.0),
+                    as_of=date(2026, 7, 13),
+                )
+
+            journal = store.data_dir / ".settlement_transaction.json"
+            self.assertTrue(journal.exists())
+
+            recovered = PortfolioStore(tmp)
+            execute_due_orders(
+                recovered,
+                FakeProvider(price=2.0),
+                as_of=date(2026, 7, 13),
+            )
+            state = recovered.load_state()
+            trades = recovered.read_trades()
+            pending = recovered.read_pending()
+            self.assertFalse(journal.exists())
+
+        self.assertEqual(state["accounts"]["us_exposure"]["positions"]["513100.SH"]["shares"], 100)
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(pending, [])
+
     def test_generate_rebalance_orders_rounds_target_to_100_share_lot(self):
         with TemporaryDirectory() as tmp:
             store = PortfolioStore(tmp)
@@ -193,6 +237,34 @@ class ETFSimulatorTests(unittest.TestCase):
         self.assertEqual(len(orders), 2)
         self.assertTrue(all(order["shares"] % 100 == 0 for order in orders))
         self.assertTrue(all(order["side"] == "buy" for order in orders))
+
+    def test_rebalance_preserves_an_existing_retry_order(self):
+        with TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            initialize(_config(), store)
+            store.write_pending(
+                [
+                    {
+                        **self._pending("2026-07-08"),
+                        "unfilled_reason": "no quote",
+                    }
+                ]
+            )
+
+            new_orders = generate_rebalance_orders(
+                store,
+                FakeProvider(price=2.0),
+                [{"code": "159941.SZ", "account_id": "us_exposure", "score": 1.0}],
+                as_of=date(2026, 7, 9),
+                top_n=1,
+                max_single_weight=0.5,
+            )
+            pending = store.read_pending()
+
+        self.assertEqual({order["code"] for order in pending}, {"513100.SH", "159941.SZ"})
+        retry = next(order for order in pending if order["code"] == "513100.SH")
+        self.assertEqual(retry["unfilled_reason"], "no quote")
+        self.assertEqual([order["code"] for order in new_orders], ["159941.SZ"])
 
     def test_generate_rebalance_orders_uses_each_account_top_n(self):
         config = {

@@ -94,6 +94,36 @@ class ETFStrategyTests(unittest.TestCase):
         self.assertEqual(codes, {"LIQ-A", "LIQ-B"})
         self.assertLessEqual(len(rows), config["filters"]["max_fetch_candidates"])
 
+    def test_build_signals_excludes_insufficient_factor_coverage(self):
+        provider = MagicMock()
+        provider.spot.return_value = pd.DataFrame(
+            {
+                "code": ["FULL", "PARTIAL"],
+                "momentum_20": [0.1, 0.2],
+                "momentum_60": [0.2, None],
+                "avg_amount_20": [100_000, 100_000],
+                "listing_age_days": [100, 100],
+                "paused": [False, False],
+                "industry": ["us_exposure", "us_exposure"],
+            }
+        )
+        config = {
+            "accounts": [{"id": "us_exposure", "scope": "us_exposure", "top_n": 2}],
+            "factors": {
+                "momentum_20": {"weight": 0.5, "direction": "high"},
+                "momentum_60": {"weight": 0.5, "direction": "high"},
+            },
+            "factor_processing": {
+                "neutralize_industry": False,
+                "min_factor_coverage": 0.75,
+            },
+            "filters": {"min_avg_amount_20": 0, "min_listing_days": 0},
+        }
+
+        rows = build_signals(config, provider, as_of=date(2026, 7, 9))
+
+        self.assertEqual([row["code"] for row in rows], ["FULL"])
+
 
 if __name__ == "__main__":
     unittest.main()

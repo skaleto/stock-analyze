@@ -74,6 +74,8 @@ def build_signals(
             factors=factors_spec,
             factor_processing=factor_processing,
         )
+        if "insufficient_factor_coverage" in scored.columns:
+            scored = scored.loc[~scored["insufficient_factor_coverage"]].copy()
         for _, r in scored.iterrows():
             rows.append(
                 {
