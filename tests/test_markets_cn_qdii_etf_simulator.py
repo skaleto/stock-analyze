@@ -313,6 +313,40 @@ class ETFSimulatorTests(unittest.TestCase):
             2,
         )
 
+    def test_config_rebalance_reserves_enough_cash_for_all_initial_buys(self):
+        config = _config()
+        config["accounts"][0]["cash"] = 500_000.0
+        config["accounts"][0]["top_n"] = 5
+        config["trading"] = {"max_single_weight": 0.20}
+        scored = [
+            {
+                "code": f"51{index:04d}.SH",
+                "account_id": "us_exposure",
+                "score": 1.0 - index * 0.1,
+            }
+            for index in range(5)
+        ]
+        with TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            initialize(config, store)
+            with patch("stock_analyze.markets.cn_qdii_etf.run.build_signals", return_value=scored):
+                orders = generate_config_orders(
+                    config,
+                    store,
+                    FakeProvider(price=2.0),
+                    as_of=date(2026, 7, 9),
+                )
+            trades = execute_due_orders(
+                store,
+                FakeProvider(price=2.0),
+                as_of=date(2026, 7, 10),
+            )
+            pending = store.read_pending()
+
+        self.assertEqual(len(orders), 5)
+        self.assertEqual(len(trades), 5)
+        self.assertEqual(pending, [])
+
     def test_recent_holding_inside_rank_buffer_is_not_sold(self):
         config = _config()
         config["accounts"][0]["top_n"] = 1

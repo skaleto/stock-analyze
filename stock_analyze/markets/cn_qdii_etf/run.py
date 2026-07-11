@@ -9,6 +9,9 @@ from . import simulator as _sim
 from .strategy import build_signals
 
 
+QDII_CASH_RESERVE_PCT = 0.02
+
+
 def _coerce_as_of(as_of: Any) -> date | None:
     if as_of is None or isinstance(as_of, date):
         return as_of
@@ -47,6 +50,7 @@ def generate_rebalance_orders(
             if portfolio_controls.get("max_holding_days") is not None
             else None
         ),
+        cash_reserve_pct=QDII_CASH_RESERVE_PCT,
     )
 
 

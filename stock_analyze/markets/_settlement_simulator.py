@@ -514,12 +514,19 @@ class SettlementSimulatorBase:
         top_n_by_account: dict[str, int] | None = None,
         hold_buffer_pct: float = 0.0,
         max_holding_days: int | None = None,
+        cash_reserve_pct: float = 0.0,
     ) -> list[dict[str, Any]]:
         """Generate buy/sell orders to bring portfolio toward the top-N of ``scored``."""
         as_of = as_of or date.today()
         trade_date = self._next_business_day(as_of, 1).isoformat()
         state = store.load_state()
         new_orders: list[dict[str, Any]] = []
+        existing_pending = store.read_pending()
+        existing_keys = {
+            (str(order.get("account_id", "")), str(order.get("code", "")))
+            for order in existing_pending
+            if isinstance(order, dict)
+        }
 
         by_account: dict[str, list[dict[str, Any]]] = {}
         for row in scored:
@@ -544,10 +551,13 @@ class SettlementSimulatorBase:
                 px = quote.close or float(pos.get("avg_cost", 0.0))
                 account_value += shares * px
 
+            reserve = min(max(float(cash_reserve_pct), 0.0), 0.5)
+            investable_value = account_value * (1.0 - reserve)
             per_target = min(
-                account_value / account_top_n,
-                account_value * max_single_weight,
+                investable_value / account_top_n,
+                investable_value * max_single_weight,
             )
+            remaining_buying_power = max(cash * (1.0 - reserve), 0.0)
 
             # Sell what's no longer wanted
             for code, pos in list(account_state.get("positions", {}).items()):
@@ -563,7 +573,12 @@ class SettlementSimulatorBase:
                         holding_expired = False
                 outside_retention = code not in retention_codes
                 expired_outside_target = holding_expired and code not in target_codes
-                if shares > 0 and (outside_retention or expired_outside_target):
+                order_key = (str(account_id), str(code))
+                if (
+                    shares > 0
+                    and (outside_retention or expired_outside_target)
+                    and order_key not in existing_keys
+                ):
                     new_orders.append({
                         "code": code, "side": "sell", "shares": shares,
                         "trade_date": trade_date, "account_id": account_id,
@@ -582,29 +597,28 @@ class SettlementSimulatorBase:
                 current_shares = int(account_state.get("positions", {}).get(code, {}).get("shares", 0))
                 target_shares = max(int(per_target / (px * lot)), 0) * lot
                 delta = target_shares - current_shares
-                if delta > 0:
+                order_key = (str(account_id), str(code))
+                estimated_share_cost = px * (
+                    1.0 + self.mechanics.STAMP_TAX_RATE + self.mechanics.COMMISSION_RATE
+                )
+                affordable_shares = (
+                    max(int(remaining_buying_power / (estimated_share_cost * lot)), 0) * lot
+                    if estimated_share_cost > 0
+                    else 0
+                )
+                buy_shares = min(delta, affordable_shares)
+                if buy_shares > 0 and order_key not in existing_keys:
                     new_orders.append({
-                        "code": code, "side": "buy", "shares": delta,
+                        "code": code, "side": "buy", "shares": buy_shares,
                         "trade_date": trade_date, "account_id": account_id,
-                        "target_value": per_target,
+                        "target_value": buy_shares * px,
                         "score": float(r.get("score", 0.0)),
                         "reason": r.get("reason", "top_n"),
                     })
+                    remaining_buying_power -= buy_shares * estimated_share_cost
 
-        existing_pending = store.read_pending()
-        existing_keys = {
-            (str(order.get("account_id", "")), str(order.get("code", "")))
-            for order in existing_pending
-            if isinstance(order, dict)
-        }
-        accepted_orders = [
-            order
-            for order in new_orders
-            if (str(order.get("account_id", "")), str(order.get("code", "")))
-            not in existing_keys
-        ]
-        store.write_pending([*existing_pending, *accepted_orders])
-        return accepted_orders
+        store.write_pending([*existing_pending, *new_orders])
+        return new_orders
 
 
 __all__ = ["MechanicsProtocol", "SettlementSimulatorBase"]
