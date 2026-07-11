@@ -51,6 +51,13 @@ class FakeTushareClient:
         )
 
 
+class BoundedTushareClient(FakeTushareClient):
+    def fund_daily(self, **kwargs):
+        self.daily_calls.append(kwargs)
+        frame = _daily_frame()
+        return frame.loc[frame["trade_date"] <= "20260710"].copy()
+
+
 def _daily_frame() -> pd.DataFrame:
     rows = []
     start = pd.Timestamp("2026-04-01")
@@ -120,6 +127,20 @@ class ProviderSnapshotTests(unittest.TestCase):
         raw_open = _daily_frame().sort_values("trade_date")
         raw_open = raw_open[raw_open["trade_date"] >= "20260505"].iloc[0]["open"]
         self.assertAlmostEqual(quote.price, raw_open * 1.0005, places=6)
+
+    def test_execution_quote_does_not_backfill_a_prior_close(self):
+        provider = CNQDIETFProvider(pro_client=BoundedTushareClient(), cache_dir=None)
+
+        quote = provider.execution_quote(
+            "513100.SH",
+            execute_after="2026-07-13",
+            side="buy",
+            as_of="2026-07-13",
+        )
+
+        self.assertTrue(quote.paused)
+        self.assertIsNone(quote.trade_date)
+        self.assertIsNone(quote.price)
 
     def test_offline_cache_miss_raises_structured_cache_miss(self):
         with TemporaryDirectory() as tmp:

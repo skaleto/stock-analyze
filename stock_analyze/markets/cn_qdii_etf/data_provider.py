@@ -267,21 +267,24 @@ class CNQDIETFProvider:
                 reason="no fund_daily history",
             )
         hist = hist.sort_values("trade_date")
-        matching = hist[hist["trade_date"].astype(str) >= target]
-        reason = ""
+        trade_dates = hist["trade_date"].astype(str)
+        matching = hist[(trade_dates >= target) & (trade_dates <= as_of_key)]
         if matching.empty:
-            row = hist.iloc[-1]
-            reason = "execute_after beyond history; used latest close"
-            raw_price = _safe_float(row.get("close"))
-        else:
-            row = matching.iloc[0]
-            raw_price = _safe_float(row.get("open")) or _safe_float(row.get("close"))
+            return ETFExecutionQuote(
+                code=ts_code,
+                trade_date=None,
+                price=None,
+                paused=True,
+                reason="no quote in execution window",
+            )
+        row = matching.iloc[0]
+        raw_price = _safe_float(row.get("open")) or _safe_float(row.get("close"))
         return ETFExecutionQuote(
             code=ts_code,
             trade_date=_iso(row.get("trade_date")),
             price=_apply_slippage(raw_price, side, mechanics.SLIPPAGE_BPS),
             paused=False,
-            reason=reason,
+            reason="",
         )
 
     def fund_adj(self, code: str, as_of: str | None = None) -> pd.DataFrame:

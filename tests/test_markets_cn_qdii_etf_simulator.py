@@ -52,6 +52,18 @@ class FakeProvider:
         )
 
 
+class PausedProvider(FakeProvider):
+    def execution_quote(self, code: str, execute_after: str, side: str, as_of: str | None = None):
+        return ETFExecutionQuote(
+            code=code,
+            trade_date=None,
+            price=None,
+            paused=True,
+            source="tushare-fund",
+            reason="no quote",
+        )
+
+
 def _config():
     return {
         "competition_id": "test-cn-qdii-etf",
@@ -68,6 +80,16 @@ def _config():
 
 
 class ETFSimulatorTests(unittest.TestCase):
+    @staticmethod
+    def _pending(trade_date: str) -> dict[str, object]:
+        return {
+            "code": "513100.SH",
+            "side": "buy",
+            "shares": 100,
+            "trade_date": trade_date,
+            "account_id": "us_exposure",
+        }
+
     def test_initialize_sets_market_and_empty_settlement_queue(self):
         with TemporaryDirectory() as tmp:
             store = PortfolioStore(tmp)
@@ -98,6 +120,57 @@ class ETFSimulatorTests(unittest.TestCase):
         self.assertEqual(trades[0]["stamp_tax"], 0.0)
         self.assertEqual(trades[0]["shares"], 100)
         self.assertAlmostEqual(trades[0]["commission"], 2.0 * 100 * 0.0003)
+
+    def test_late_due_order_executes_on_retry_day(self):
+        with TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            initialize(_config(), store)
+            store.write_pending([self._pending("2026-07-13")])
+
+            trades = execute_due_orders(
+                store,
+                FakeProvider(price=2.0),
+                as_of=date(2026, 7, 14),
+            )
+
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0]["trade_date"], "2026-07-14")
+
+    def test_missing_quote_retains_pending_order_with_reason(self):
+        with TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            initialize(_config(), store)
+            store.write_pending([self._pending("2026-07-13")])
+
+            trades = execute_due_orders(
+                store,
+                PausedProvider(),
+                as_of=date(2026, 7, 13),
+            )
+            pending = store.read_pending()
+
+        self.assertEqual(trades, [])
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["unfilled_reason"], "no quote")
+
+    def test_successful_fill_persists_trade_and_position_csv(self):
+        with TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            initialize(_config(), store)
+            store.write_pending([self._pending("2026-07-13")])
+
+            execute_due_orders(
+                store,
+                FakeProvider(price=2.0),
+                as_of=date(2026, 7, 13),
+            )
+            trades = store.read_trades()
+            positions = store.read_positions()
+
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(len(positions), 1)
+        self.assertEqual(str(trades.iloc[0]["trade_date"]), "2026-07-13")
+        self.assertEqual(str(positions.iloc[0]["code"]), "513100.SH")
 
     def test_generate_rebalance_orders_rounds_target_to_100_share_lot(self):
         with TemporaryDirectory() as tmp:
@@ -131,11 +204,15 @@ class ETFSimulatorTests(unittest.TestCase):
 
             rows = update_nav(store, FakeProvider(price=2.0), as_of=date(2026, 7, 9))
             nav = store.read_nav()
+            positions = store.read_positions()
 
         self.assertEqual(rows[0]["market_value"], 200.0)
         self.assertIn("market_value", nav.columns)
         self.assertEqual(float(nav.iloc[-1]["market_value"]), 200.0)
         self.assertEqual(str(nav.iloc[-1]["benchmark_code"]), "513100.SH")
+        self.assertEqual(float(positions.iloc[-1]["last_price"]), 2.0)
+        self.assertEqual(float(positions.iloc[-1]["market_value"]), 200.0)
+        self.assertEqual(float(positions.iloc[-1]["unrealized_pnl"]), 20.0)
 
 
 if __name__ == "__main__":
