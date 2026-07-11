@@ -77,24 +77,24 @@ class TriMarketSentimentStoreTests(unittest.TestCase):
             )
 
 
-class TriMarketSentimentCLITests(unittest.TestCase):
+class ActiveMarketSentimentCLITests(unittest.TestCase):
     def test_record_sentiment_accepts_market_flag(self):
         with patch(
             "stock_analyze.markets.a_share.alt_factors.sentiment.record_market_sentiment"
         ) as mocked:
             rc = cli.main([
                 "record-sentiment",
-                "--market", "us",
+                "--market", "cn_qdii_etf",
                 "--agent", "claude",
                 "--week-end", "2026-05-29",
                 "--score", "0.25",
                 "--confidence", "0.8",
                 "--drivers", "Fed降息预期,科技股财报上修",
-                "--sources", "https://example.com/us",
+                "--sources", "https://example.com/etf",
                 "--llm-model", "gpt-5.5",
             ])
         self.assertEqual(rc, 0)
-        self.assertEqual(mocked.call_args.kwargs["market"], "us")
+        self.assertEqual(mocked.call_args.kwargs["market"], "cn_qdii_etf")
 
     def test_record_sector_sentiment_accepts_market_flag(self):
         with patch(
@@ -102,13 +102,13 @@ class TriMarketSentimentCLITests(unittest.TestCase):
         ) as mocked:
             rc = cli.main([
                 "record-sector-sentiment",
-                "--market", "hk",
+                "--market", "cn_qdii_etf",
                 "--agent", "codex",
                 "--week-end", "2026-05-29",
                 "--json", '{"llm_model":"gpt-5.5","sectors":[{"industry":"Technology","score":0.5,"confidence":0.8}]}',
             ])
         self.assertEqual(rc, 0)
-        self.assertEqual(mocked.call_args.kwargs["market"], "hk")
+        self.assertEqual(mocked.call_args.kwargs["market"], "cn_qdii_etf")
 
     def test_sentiment_log_accepts_market_flag(self):
         with TemporaryDirectory() as tmp:
@@ -123,12 +123,12 @@ class TriMarketSentimentCLITests(unittest.TestCase):
                 "gpt-5.5",
                 "v1",
                 root,
-                market="us",
+                market="cn_qdii_etf",
             )
             with patch("sys.stdout", new=io.StringIO()) as captured:
                 rc = cli.main([
                     "sentiment-log",
-                    "--market", "us",
+                    "--market", "cn_qdii_etf",
                     "--agent", "claude",
                     "--repo-root", str(root),
                 ])
@@ -220,11 +220,11 @@ class TriMarketSentimentGuardTests(unittest.TestCase):
             )
 
 
-class TriMarketSentimentDashboardTests(unittest.TestCase):
-    def test_sentiment_panel_lists_all_markets(self):
+class ActiveMarketSentimentDashboardTests(unittest.TestCase):
+    def test_sentiment_panel_lists_only_active_markets(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for market, score in (("a_share", 0.1), ("hk", 0.2), ("us", -0.3)):
+            for market, score in (("a_share", 0.1), ("cn_qdii_etf", 0.2)):
                 for agent in ("claude", "codex"):
                     sentiment.record_market_sentiment(
                         agent,
@@ -240,8 +240,9 @@ class TriMarketSentimentDashboardTests(unittest.TestCase):
                     )
             html = render_sentiment_comparison_panel(root)
             self.assertIn("A股", html)
-            self.assertIn("港股", html)
-            self.assertIn("美股", html)
+            self.assertIn("跨境ETF", html)
+            self.assertNotIn("<td>港股</td>", html)
+            self.assertNotIn("<td>美股</td>", html)
             self.assertIn("claude", html)
             self.assertIn("codex", html)
 
