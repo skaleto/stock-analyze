@@ -1,0 +1,47 @@
+scripts/install-harness.sh
+  s_db9afa53cf7b72::t_845e28405b98b4 21-22,42
+scripts/notify-overseas.sh
+  s_db9afa53cf7b72::t_99fbc3d7eafb4d 8-11,25
+scripts/notify-pipeline-failure.sh
+  s_db9afa53cf7b72::t_64b6a314e3dd1c 20-22,63-87
+scripts/overseas_summary.py
+  s_db9afa53cf7b72::t_b2b36c585c699c 17,22
+scripts/run-overseas.sh
+  s_db9afa53cf7b72::t_d18b5386e20a56 15-16,18-19
+scripts/statusline.sh
+  s_db9afa53cf7b72::t_30b4190527ea9d 11-12,15-25,27-28,33-34,47-48,64-65
+stock_analyze/markets/a_share/backtest/engine.py
+  s_db9afa53cf7b72::t_8b719b1f77fceb 25,74-96,344,453,455-461,465-473,485,516
+stock_analyze/markets/a_share/diagnostics.py
+  s_db9afa53cf7b72::t_2acec751e4b60f 10,138-141
+stock_analyze/markets/a_share/market_data.py
+  s_db9afa53cf7b72::t_9a39d90e18b946 177-248,333-334,371-372,374,378,380
+tests/test_backtest_engine.py
+  s_db9afa53cf7b72::t_d7b313bdc90c53 270-352
+tests/test_factor_diagnostics.py
+  s_db9afa53cf7b72::t_642eaf685b9a6c 8,23-33,75-104
+tests/test_market_data_pipeline.py
+  s_db9afa53cf7b72::t_334e8cc61f6663 29,57,315-347
+tests/test_notify_pipeline_failure_script.py
+  s_db9afa53cf7b72::t_0a6df950f44dae 1-57
+tests/test_overseas_script_paths.py
+  s_db9afa53cf7b72::t_e543b8a6b76a6d 1-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "3703f7980cc27c49da891270fef5b25eb0dd25e6",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
