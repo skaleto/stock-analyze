@@ -8,8 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from stock_analyze.markets.a_share.backtest.types import BacktestMetrics
+from stock_analyze.markets.a_share.backtest.exceptions import BacktestFloorBreach
 from stock_analyze.strategy_registry import StrategyPairInvalid
-from stock_analyze.strategy_release import apply_strategy_release
+from stock_analyze.strategy_release import StrategyReleaseInvalid, apply_strategy_release
 
 
 class StrategyReleaseTests(unittest.TestCase):
@@ -128,6 +129,81 @@ class StrategyReleaseTests(unittest.TestCase):
 
         with self.assertRaises(StrategyPairInvalid):
             apply_strategy_release(self.manifest, self.root)
+
+        self.assertEqual(
+            before,
+            {path: path.read_text(encoding="utf-8") for path in before},
+        )
+        self.assertFalse((self.root / "data").exists())
+
+    def test_release_archives_pre_release_pending_orders_once(self) -> None:
+        seeded: dict[tuple[str, str], list[dict[str, object]]] = {}
+        for entry in self.entries:
+            market = entry["market"]
+            agent_id = entry["agent_id"]
+            data_dir = self.root / "data" / market / agent_id
+            data_dir.mkdir(parents=True, exist_ok=True)
+            if market == "a_share":
+                payload: list[dict[str, object]] = [{
+                    "strategy_id": f"old-{agent_id}-{market}",
+                    "orders": [{"code": "000001", "side": "buy"}],
+                }]
+            else:
+                payload = [{"code": "513500.SH", "side": "buy"}]
+            seeded[(market, agent_id)] = payload
+            (data_dir / "pending_orders.json").write_text(
+                json.dumps(payload), encoding="utf-8"
+            )
+
+        metrics = BacktestMetrics(0.1, 0.08, 1.0, -0.05, 0.7)
+        with patch(
+            "stock_analyze.markets.a_share.backtest.gate.validate_overlay_via_backtest",
+            return_value=metrics,
+        ):
+            first = apply_strategy_release(self.manifest, self.root)
+
+            for entry in self.entries:
+                market = entry["market"]
+                agent_id = entry["agent_id"]
+                data_dir = self.root / "data" / market / agent_id
+                self.assertEqual(
+                    json.loads((data_dir / "pending_orders.json").read_text()), []
+                )
+                archive_path = (
+                    data_dir / "pending_order_archive" / "release.json"
+                )
+                archive = json.loads(archive_path.read_text(encoding="utf-8"))
+                self.assertEqual(archive["pending"], seeded[(market, agent_id)])
+                self.assertEqual(archive["order_count"], 1)
+
+            fresh = [{"code": "513100.SH", "side": "buy"}]
+            fresh_path = (
+                self.root / "data" / "cn_qdii_etf" / "codex" / "pending_orders.json"
+            )
+            fresh_path.write_text(json.dumps(fresh), encoding="utf-8")
+            second = apply_strategy_release(self.manifest, self.root)
+
+        self.assertEqual(
+            [row["pending_orders_archived"] for row in first["entries"]],
+            [1, 1, 1, 1],
+        )
+        self.assertEqual([row["status"] for row in second["entries"]], ["unchanged"] * 4)
+        self.assertEqual(json.loads(fresh_path.read_text(encoding="utf-8")), fresh)
+
+    def test_all_a_share_gates_pass_before_any_overlay_is_written(self) -> None:
+        before = {
+            path: path.read_text(encoding="utf-8")
+            for path in (self.root / "configs" / "agents").glob("*.yaml")
+        }
+        metrics = BacktestMetrics(0.1, 0.08, 1.0, -0.05, 0.7)
+        breach = BacktestFloorBreach("sharpe_below_floor", metrics)
+
+        with patch(
+            "stock_analyze.markets.a_share.backtest.gate.validate_overlay_via_backtest",
+            side_effect=[metrics, breach],
+        ):
+            with self.assertRaises(StrategyReleaseInvalid):
+                apply_strategy_release(self.manifest, self.root)
 
         self.assertEqual(
             before,

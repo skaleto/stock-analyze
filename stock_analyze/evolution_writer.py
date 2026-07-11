@@ -73,6 +73,9 @@ _LEGACY_COLUMNS: list[str] = [
 ]
 
 
+_BACKTEST_NOT_PREVALIDATED = object()
+
+
 def write_evolution(
     agent_id: str,
     old_overlay: dict[str, Any],
@@ -83,6 +86,7 @@ def write_evolution(
     reviewer: str = "llm-direct",
     *,
     market: str = "a_share",
+    validated_backtest_metrics: Any = _BACKTEST_NOT_PREVALIDATED,
 ) -> dict[str, Any]:
     """Persist the four artifacts and return a summary dict.
 
@@ -104,6 +108,9 @@ def write_evolution(
         Target month (``YYYY-MM``). Defaults to ``default_month_for()``.
     reviewer:
         Free-form label recorded in the CSV. Defaults to ``llm-direct``.
+    validated_backtest_metrics:
+        Internal release-orchestration hook. When supplied for A-share, the
+        caller has already run the gate as part of a multi-overlay preflight.
 
     Returns
     -------
@@ -138,29 +145,33 @@ def write_evolution(
     backtest_status = "not_available"
     backtest_metrics = None
     if market == "a_share":
-        try:
-            backtest_metrics = backtest_gate.validate_overlay_via_backtest(
-                new_overlay, agent_id=agent_id,
-            )
+        if validated_backtest_metrics is not _BACKTEST_NOT_PREVALIDATED:
+            backtest_metrics = validated_backtest_metrics
             backtest_status = "passed"
-        except BacktestFloorBreach as breach:
-            _write_floor_breach_log(
-                agent_id=agent_id,
-                market=market,
-                month=target_month,
-                breach=breach,
-                reasoning_md=reasoning_md,
-                repo_root=root,
-            )
-            raise
-        except Exception as exc:  # noqa: BLE001
-            # Local development may not have the 1.6 GB historical cache.
-            # Production release runs on ECS where the cache is available.
-            import logging
-            logging.warning(
-                "backtest gate skipped (cache missing or engine error): %s", exc
-            )
-            backtest_status = "skipped"
+        else:
+            try:
+                backtest_metrics = backtest_gate.validate_overlay_via_backtest(
+                    new_overlay, agent_id=agent_id,
+                )
+                backtest_status = "passed"
+            except BacktestFloorBreach as breach:
+                _write_floor_breach_log(
+                    agent_id=agent_id,
+                    market=market,
+                    month=target_month,
+                    breach=breach,
+                    reasoning_md=reasoning_md,
+                    repo_root=root,
+                )
+                raise
+            except Exception as exc:  # noqa: BLE001
+                # Direct local evolution may not have the historical cache.
+                # Manifest releases use strict preflight in strategy_release.
+                import logging
+                logging.warning(
+                    "backtest gate skipped (cache missing or engine error): %s", exc
+                )
+                backtest_status = "skipped"
 
     # Resolve hashes through the same `competition.load`-style merge so
     # they are comparable with the hashes already in `runs.csv`.
