@@ -35,6 +35,7 @@ class DeployAppScriptTests(unittest.TestCase):
         self.assertIn('if [[ ! -e "$stamp" ]]', script)
         self.assertIn("tests.test_dashboard_finance", script)
         self.assertIn("tests.test_archived_markets", script)
+        self.assertIn("./archive/direct-overseas/", script)
         self.assertIn("systemctl disable --now", script)
         self.assertIn("stock-analyze-codex-hk-daily.timer", script)
         self.assertIn("stock-analyze-codex-us-weekly.timer", script)
