@@ -20,6 +20,10 @@ from . import mechanics
 from .universe import classify_scope, resolve_universe
 from ..a_share.data_provider import CacheMiss, TushareTokenMissing
 from ..a_share.data_provider.base import TUSHARE_TOKEN_ENV
+from ...utils import write_json
+
+
+MAX_NAV_AGE_DAYS = 7
 
 
 @dataclass
@@ -40,6 +44,8 @@ class ETFPriceSnapshot:
     nav: float | None
     nav_date: str | None
     discount_premium: float | None
+    list_date: str | None = None
+    listing_age_days: int | None = None
     industry: str | None = None
     paused: bool = False
     source: str = "tushare-fund"
@@ -129,10 +135,25 @@ class CNQDIETFProvider:
         return ts.pro_api(resolved)
 
     def persist_health(self) -> None:
-        """No-op health hook for CLI parity with other providers."""
+        if self.cache_dir is not None:
+            write_json(self.cache_dir.parent / "data_health.json", self._health)
 
-    def record_health(self, *args: Any, **kwargs: Any) -> None:
-        """No-op health hook for CLI parity with other providers."""
+    def record_health(
+        self,
+        source: str,
+        status: str,
+        message: str = "",
+        rows: int | None = None,
+    ) -> None:
+        self._health.append(
+            {
+                "time": pd.Timestamp.now().isoformat(timespec="seconds"),
+                "source": source,
+                "status": status,
+                "message": message[:300],
+                "rows": rows,
+            }
+        )
 
     def universe(self, scope: str) -> list[str]:
         return resolve_universe(scope)
@@ -159,6 +180,8 @@ class CNQDIETFProvider:
                     "nav": snap.nav,
                     "nav_date": snap.nav_date,
                     "discount_premium": snap.discount_premium,
+                    "list_date": snap.list_date,
+                    "listing_age_days": snap.listing_age_days,
                     "industry": scope,
                     "paused": snap.paused,
                     "source": snap.source,
@@ -170,7 +193,7 @@ class CNQDIETFProvider:
         ts_code = normalize_ts_code(code)
         as_of_key = _yyyymmdd(as_of or self.as_of)
         hist = self._fund_daily(ts_code, as_of_key)
-        name = self._fund_name(ts_code)
+        name, list_date = self._fund_metadata(ts_code)
         if hist.empty:
             return ETFPriceSnapshot(
                 code=ts_code,
@@ -189,20 +212,38 @@ class CNQDIETFProvider:
                 nav=None,
                 nav_date=None,
                 discount_premium=None,
+                list_date=list_date,
+                listing_age_days=None,
                 industry=classify_scope(ts_code),
                 paused=True,
                 warning="no fund_daily history",
             )
         hist = hist[hist["trade_date"].astype(str) <= as_of_key].copy()
         if hist.empty:
-            return self._paused_snapshot(ts_code, name, "no history on or before as_of")
+            return self._paused_snapshot(
+                ts_code,
+                name,
+                "no history on or before as_of",
+                list_date=list_date,
+            )
         hist = hist.sort_values("trade_date")
         latest = hist.iloc[-1]
-        closes = pd.to_numeric(hist["close"], errors="coerce")
+        closes = self._adjusted_closes(ts_code, hist, as_of_key)
         amounts = pd.to_numeric(hist.get("amount"), errors="coerce")
         nav, nav_date = self._latest_nav(ts_code, str(latest["trade_date"]))
         close = _safe_float(latest.get("close"))
-        discount = close / nav - 1.0 if close is not None and nav not in (None, 0) else None
+        nav_is_fresh = self._nav_is_fresh(nav_date, str(latest["trade_date"]))
+        discount = (
+            close / nav - 1.0
+            if nav_is_fresh and close is not None and nav not in (None, 0)
+            else None
+        )
+        if nav is not None and not nav_is_fresh:
+            self.record_health(
+                "fund_nav",
+                "stale",
+                f"{ts_code} nav_date={nav_date} trade_date={_iso(latest.get('trade_date'))}",
+            )
         return ETFPriceSnapshot(
             code=ts_code,
             name=name,
@@ -220,11 +261,20 @@ class CNQDIETFProvider:
             nav=nav,
             nav_date=nav_date,
             discount_premium=discount,
+            list_date=list_date,
+            listing_age_days=self._listing_age_days(list_date, str(latest["trade_date"])),
             industry=classify_scope(ts_code),
             paused=False,
         )
 
-    def _paused_snapshot(self, ts_code: str, name: str | None, warning: str) -> ETFPriceSnapshot:
+    def _paused_snapshot(
+        self,
+        ts_code: str,
+        name: str | None,
+        warning: str,
+        *,
+        list_date: str | None = None,
+    ) -> ETFPriceSnapshot:
         return ETFPriceSnapshot(
             code=ts_code,
             name=name,
@@ -242,6 +292,8 @@ class CNQDIETFProvider:
             nav=None,
             nav_date=None,
             discount_premium=None,
+            list_date=list_date,
+            listing_age_days=None,
             industry=classify_scope(ts_code),
             paused=True,
             warning=warning,
@@ -293,56 +345,90 @@ class CNQDIETFProvider:
         cache_name = self._cache_name("fund_adj", ts_code, as_of_key)
         cached = self._read_cache(cache_name)
         if cached is not None:
+            self.record_health("fund_adj", "cache_hit", cache_name, rows=len(cached))
             return cached
         if self.offline:
+            self.record_health("fund_adj", "cache_miss", cache_name)
             raise CacheMiss(method="fund_adj", cache_name=cache_name)
-        df = self.pro.fund_adj(ts_code=ts_code, end_date=as_of_key)
+        try:
+            df = self.pro.fund_adj(ts_code=ts_code, end_date=as_of_key)
+        except Exception as exc:
+            self.record_health("fund_adj", "failed", str(exc))
+            raise
+        df = self._normalize_adj(df)
+        self.record_health("fund_adj", "ok", rows=len(df))
         return self._write_cache(cache_name, df)
 
     def _fund_daily(self, ts_code: str, as_of_key: str) -> pd.DataFrame:
         cache_name = self._cache_name("fund_daily", ts_code, as_of_key)
         if cache_name in self._daily_cache:
+            self.record_health(
+                "fund_daily",
+                "memory_cache",
+                cache_name,
+                rows=len(self._daily_cache[cache_name]),
+            )
             return self._daily_cache[cache_name]
         cached = self._read_cache(cache_name)
         if cached is not None:
             self._daily_cache[cache_name] = cached
+            self.record_health("fund_daily", "cache_hit", cache_name, rows=len(cached))
             return cached
         if self.offline:
+            self.record_health("fund_daily", "cache_miss", cache_name)
             raise CacheMiss(method="fund_daily", cache_name=cache_name)
         end = datetime.strptime(as_of_key, "%Y%m%d").date()
         start = (end - timedelta(days=260)).strftime("%Y%m%d")
-        df = self.pro.fund_daily(
-            ts_code=ts_code,
-            start_date=start,
-            end_date=as_of_key,
-            fields="ts_code,trade_date,open,high,low,close,vol,amount",
-        )
+        try:
+            df = self.pro.fund_daily(
+                ts_code=ts_code,
+                start_date=start,
+                end_date=as_of_key,
+                fields="ts_code,trade_date,open,high,low,close,vol,amount",
+            )
+        except Exception as exc:
+            self.record_health("fund_daily", "failed", str(exc))
+            raise
         df = self._normalize_daily(df)
+        self.record_health("fund_daily", "ok", rows=len(df))
         self._daily_cache[cache_name] = self._write_cache(cache_name, df)
         return self._daily_cache[cache_name]
 
     def _fund_nav(self, ts_code: str, as_of_key: str) -> pd.DataFrame:
         cache_name = self._cache_name("fund_nav", ts_code, as_of_key)
         if cache_name in self._nav_cache:
+            self.record_health(
+                "fund_nav",
+                "memory_cache",
+                cache_name,
+                rows=len(self._nav_cache[cache_name]),
+            )
             return self._nav_cache[cache_name]
         cached = self._read_cache(cache_name)
         if cached is not None:
             self._nav_cache[cache_name] = cached
+            self.record_health("fund_nav", "cache_hit", cache_name, rows=len(cached))
             return cached
         if self.offline:
+            self.record_health("fund_nav", "offline_unavailable", cache_name)
             return pd.DataFrame()
         try:
-            df = self.pro.fund_nav(
-                ts_code=ts_code,
-                end_date=as_of_key,
-                fields="ts_code,ann_date,nav_date,unit_nav,accum_nav,adj_nav",
-            )
-        except TypeError:
-            df = self.pro.fund_nav(
-                ts_code=ts_code,
-                fields="ts_code,ann_date,nav_date,unit_nav,accum_nav,adj_nav",
-            )
+            try:
+                df = self.pro.fund_nav(
+                    ts_code=ts_code,
+                    end_date=as_of_key,
+                    fields="ts_code,ann_date,nav_date,unit_nav,accum_nav,adj_nav",
+                )
+            except TypeError:
+                df = self.pro.fund_nav(
+                    ts_code=ts_code,
+                    fields="ts_code,ann_date,nav_date,unit_nav,accum_nav,adj_nav",
+                )
+        except Exception as exc:
+            self.record_health("fund_nav", "failed", str(exc))
+            raise
         df = self._normalize_nav(df)
+        self.record_health("fund_nav", "ok", rows=len(df))
         self._nav_cache[cache_name] = self._write_cache(cache_name, df)
         return self._nav_cache[cache_name]
 
@@ -353,25 +439,83 @@ class CNQDIETFProvider:
         cached = self._read_cache(cache_name)
         if cached is not None:
             self._basic_cache = cached
+            self.record_health("fund_basic", "cache_hit", cache_name, rows=len(cached))
             return cached
         if self.offline:
             self._basic_cache = pd.DataFrame()
+            self.record_health("fund_basic", "offline_unavailable", cache_name)
             return self._basic_cache
-        df = self.pro.fund_basic(
-            market="E",
-            fields="ts_code,name,management,custodian,fund_type,found_date,list_date,delist_date",
-        )
+        try:
+            df = self.pro.fund_basic(
+                market="E",
+                fields="ts_code,name,management,custodian,fund_type,found_date,list_date,delist_date",
+            )
+        except Exception as exc:
+            self.record_health("fund_basic", "failed", str(exc))
+            raise
+        self.record_health("fund_basic", "ok", rows=len(df))
         self._basic_cache = self._write_cache(cache_name, df)
         return self._basic_cache
 
     def _fund_name(self, ts_code: str) -> str | None:
+        name, _list_date = self._fund_metadata(ts_code)
+        return name
+
+    def _fund_metadata(self, ts_code: str) -> tuple[str | None, str | None]:
         basic = self._fund_basic()
         if basic.empty or "ts_code" not in basic.columns:
-            return None
+            return None, None
         rows = basic[basic["ts_code"].astype(str) == ts_code]
         if rows.empty:
+            return None, None
+        row = rows.iloc[0]
+        name = str(row.get("name") or "") or None
+        return name, _iso(row.get("list_date"))
+
+    def _adjusted_closes(
+        self,
+        ts_code: str,
+        hist: pd.DataFrame,
+        as_of_key: str,
+    ) -> pd.Series:
+        raw = pd.to_numeric(hist["close"], errors="coerce").reset_index(drop=True)
+        try:
+            adj = self.fund_adj(ts_code, as_of=as_of_key)
+        except Exception:  # noqa: BLE001 - adjustment is optional; health records the failure
+            return raw
+        if adj.empty or not {"trade_date", "adj_factor"}.issubset(adj.columns):
+            return raw
+        base = hist[["trade_date", "close"]].copy().reset_index(drop=True)
+        base["trade_date"] = base["trade_date"].astype(str)
+        factors = adj[["trade_date", "adj_factor"]].copy()
+        factors["trade_date"] = factors["trade_date"].astype(str)
+        factors["adj_factor"] = pd.to_numeric(factors["adj_factor"], errors="coerce")
+        merged = base.merge(factors, on="trade_date", how="left")
+        close = pd.to_numeric(merged["close"], errors="coerce")
+        factor = merged["adj_factor"].fillna(1.0)
+        return close * factor
+
+    @staticmethod
+    def _listing_age_days(list_date: str | None, trade_date: str) -> int | None:
+        if not list_date:
             return None
-        return str(rows.iloc[0].get("name") or "") or None
+        try:
+            listed = date.fromisoformat(list_date)
+            traded = datetime.strptime(_yyyymmdd(trade_date), "%Y%m%d").date()
+        except ValueError:
+            return None
+        return max((traded - listed).days, 0)
+
+    @staticmethod
+    def _nav_is_fresh(nav_date: str | None, trade_date: str) -> bool:
+        if not nav_date:
+            return False
+        try:
+            nav_day = date.fromisoformat(nav_date)
+            trade_day = datetime.strptime(_yyyymmdd(trade_date), "%Y%m%d").date()
+        except ValueError:
+            return False
+        return 0 <= (trade_day - nav_day).days <= MAX_NAV_AGE_DAYS
 
     def _latest_nav(self, ts_code: str, trade_date: str) -> tuple[float | None, str | None]:
         nav_df = self._fund_nav(ts_code, trade_date)
@@ -435,6 +579,16 @@ class CNQDIETFProvider:
             if col in out.columns:
                 out[col] = pd.to_numeric(out[col], errors="coerce")
         for col in ("ts_code", "ann_date", "nav_date"):
+            if col in out.columns:
+                out[col] = out[col].astype(str)
+        return out
+
+    @staticmethod
+    def _normalize_adj(df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy() if df is not None else pd.DataFrame()
+        if "adj_factor" in out.columns:
+            out["adj_factor"] = pd.to_numeric(out["adj_factor"], errors="coerce")
+        for col in ("ts_code", "trade_date"):
             if col in out.columns:
                 out[col] = out[col].astype(str)
         return out

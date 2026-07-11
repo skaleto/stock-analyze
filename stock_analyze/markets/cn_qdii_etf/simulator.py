@@ -52,6 +52,9 @@ def generate_rebalance_orders(
     as_of: date | None = None,
     top_n: int = 5,
     max_single_weight: float = 0.20,
+    top_n_by_account: dict[str, int] | None = None,
+    hold_buffer_pct: float = 0.0,
+    max_holding_days: int | None = None,
 ) -> list[dict[str, Any]]:
     return _SIM.generate_rebalance_orders(
         store,
@@ -60,6 +63,9 @@ def generate_rebalance_orders(
         as_of=as_of,
         top_n=top_n,
         max_single_weight=max_single_weight,
+        top_n_by_account=top_n_by_account,
+        hold_buffer_pct=hold_buffer_pct,
+        max_holding_days=max_holding_days,
     )
 
 

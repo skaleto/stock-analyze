@@ -26,8 +26,13 @@ def generate_rebalance_orders(
     d = _coerce_as_of(as_of)
     scored = build_signals(config, provider, as_of=d, repo_root=_ignored.get("repo_root"))
     accounts = config.get("accounts", []) or []
-    top_n = max((int(a.get("top_n", 5)) for a in accounts), default=5)
+    top_n_by_account = {
+        str(account["id"]): int(account.get("top_n", 5))
+        for account in accounts
+    }
+    top_n = max(top_n_by_account.values(), default=5)
     max_single_weight = float((config.get("trading", {}) or {}).get("max_single_weight", 0.20))
+    portfolio_controls = dict(config.get("portfolio_controls", {}) or {})
     return _sim.generate_rebalance_orders(
         store,
         provider,
@@ -35,6 +40,13 @@ def generate_rebalance_orders(
         as_of=d,
         top_n=top_n,
         max_single_weight=max_single_weight,
+        top_n_by_account=top_n_by_account,
+        hold_buffer_pct=float(portfolio_controls.get("hold_buffer_pct", 0.0)),
+        max_holding_days=(
+            int(portfolio_controls["max_holding_days"])
+            if portfolio_controls.get("max_holding_days") is not None
+            else None
+        ),
     )
 
 

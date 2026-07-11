@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
+from math import ceil
 from typing import Any, Protocol
 
 
@@ -404,6 +405,16 @@ class SettlementSimulatorBase:
                 pos["market_value"] = market_value
                 pos["unrealized_pnl"] = (px - avg_cost) * shares
             total = cash + coll + positions_value
+            benchmark_code = account_state.get("benchmark", "")
+            benchmark_close = None
+            benchmark_date = as_of.isoformat()
+            if benchmark_code:
+                benchmark_quote = provider.price_snapshot(
+                    benchmark_code,
+                    as_of=as_of.isoformat(),
+                )
+                benchmark_close = benchmark_quote.close
+                benchmark_date = benchmark_quote.trade_date or benchmark_date
             rows.append({
                 "date": as_of.isoformat(),
                 "account_id": account_id,
@@ -412,10 +423,10 @@ class SettlementSimulatorBase:
                 "market_value": positions_value,
                 "positions_value": positions_value,
                 "total_value": total,
-                "benchmark_code": account_state.get("benchmark", ""),
-                "benchmark_close": None,
+                "benchmark_code": benchmark_code,
+                "benchmark_close": benchmark_close,
                 "benchmark_value": None,
-                "benchmark_date": as_of.isoformat(),
+                "benchmark_date": benchmark_date,
                 "notes": None,
                 "source": f"{self.market_id}-daily",
             })
@@ -436,6 +447,9 @@ class SettlementSimulatorBase:
         as_of: date | None = None,
         top_n: int = 50,
         max_single_weight: float = 0.05,
+        top_n_by_account: dict[str, int] | None = None,
+        hold_buffer_pct: float = 0.0,
+        max_holding_days: int | None = None,
     ) -> list[dict[str, Any]]:
         """Generate buy/sell orders to bring portfolio toward the top-N of ``scored``."""
         as_of = as_of or date.today()
@@ -450,7 +464,14 @@ class SettlementSimulatorBase:
         for account_id, account_state in state.get("accounts", {}).items():
             rows = by_account.get(account_id, [])
             rows.sort(key=lambda r: float(r.get("score", 0.0)), reverse=True)
-            target_codes = {r["code"] for r in rows[:top_n]}
+            account_top_n = max(int((top_n_by_account or {}).get(account_id, top_n)), 1)
+            target_rows = rows[:account_top_n]
+            target_codes = {r["code"] for r in target_rows}
+            retention_count = max(
+                account_top_n,
+                ceil(account_top_n * (1.0 + max(float(hold_buffer_pct), 0.0))),
+            )
+            retention_codes = {r["code"] for r in rows[:retention_count]}
             cash = float(account_state.get("cash", 0.0))
             account_value = cash + float(account_state.get("cash_collateral", 0.0))
             for code, pos in account_state.get("positions", {}).items():
@@ -460,22 +481,34 @@ class SettlementSimulatorBase:
                 account_value += shares * px
 
             per_target = min(
-                account_value / max(top_n, 1),
+                account_value / account_top_n,
                 account_value * max_single_weight,
             )
 
             # Sell what's no longer wanted
             for code, pos in list(account_state.get("positions", {}).items()):
                 shares = int(pos.get("shares", 0))
-                if shares > 0 and code not in target_codes:
+                holding_expired = False
+                hold_since = pos.get("hold_since")
+                if max_holding_days is not None and hold_since:
+                    try:
+                        holding_expired = (
+                            as_of - date.fromisoformat(str(hold_since))
+                        ).days >= int(max_holding_days)
+                    except ValueError:
+                        holding_expired = False
+                outside_retention = code not in retention_codes
+                expired_outside_target = holding_expired and code not in target_codes
+                if shares > 0 and (outside_retention or expired_outside_target):
                     new_orders.append({
                         "code": code, "side": "sell", "shares": shares,
                         "trade_date": trade_date, "account_id": account_id,
-                        "target_value": 0.0, "reason": "not_in_top_n",
+                        "target_value": 0.0,
+                        "reason": "max_holding_days" if expired_outside_target else "not_in_top_n",
                     })
 
             # Buy / top-up for target
-            for r in rows[:top_n]:
+            for r in target_rows:
                 code = r["code"]
                 quote = provider.price_snapshot(code, as_of=as_of.isoformat())
                 px = quote.close

@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import date
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from stock_analyze.markets.cn_qdii_etf.data_provider import ETFExecutionQuote, ETFPriceSnapshot
 from stock_analyze.markets.cn_qdii_etf.simulator import (
@@ -12,6 +13,7 @@ from stock_analyze.markets.cn_qdii_etf.simulator import (
     initialize,
     update_nav,
 )
+from stock_analyze.markets.cn_qdii_etf.run import generate_rebalance_orders as generate_config_orders
 from stock_analyze.store import PortfolioStore
 
 
@@ -192,6 +194,125 @@ class ETFSimulatorTests(unittest.TestCase):
         self.assertTrue(all(order["shares"] % 100 == 0 for order in orders))
         self.assertTrue(all(order["side"] == "buy" for order in orders))
 
+    def test_generate_rebalance_orders_uses_each_account_top_n(self):
+        config = {
+            "competition_id": "test-cn-qdii-etf",
+            "accounts": [
+                {
+                    "id": "us_exposure",
+                    "scope": "us_exposure",
+                    "benchmark": "513100.SH",
+                    "cash": 100_000.0,
+                    "top_n": 1,
+                },
+                {
+                    "id": "hk_exposure",
+                    "scope": "hk_exposure",
+                    "benchmark": "159920.SZ",
+                    "cash": 100_000.0,
+                    "top_n": 2,
+                },
+            ],
+            "trading": {"max_single_weight": 0.5},
+        }
+        scored = [
+            {"code": "US-A", "account_id": "us_exposure", "score": 1.0},
+            {"code": "US-B", "account_id": "us_exposure", "score": 0.9},
+            {"code": "HK-A", "account_id": "hk_exposure", "score": 1.0},
+            {"code": "HK-B", "account_id": "hk_exposure", "score": 0.9},
+        ]
+        with TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            initialize(config, store)
+            with patch("stock_analyze.markets.cn_qdii_etf.run.build_signals", return_value=scored):
+                orders = generate_config_orders(
+                    config,
+                    store,
+                    FakeProvider(price=2.0),
+                    as_of=date(2026, 7, 9),
+                )
+
+        self.assertEqual(
+            sum(order["account_id"] == "us_exposure" for order in orders),
+            1,
+        )
+        self.assertEqual(
+            sum(order["account_id"] == "hk_exposure" for order in orders),
+            2,
+        )
+
+    def test_recent_holding_inside_rank_buffer_is_not_sold(self):
+        config = _config()
+        config["accounts"][0]["top_n"] = 1
+        config["trading"] = {"max_single_weight": 0.5}
+        config["portfolio_controls"] = {
+            "hold_buffer_pct": 1.0,
+            "max_holding_days": 30,
+        }
+        scored = [
+            {"code": "TOP.SH", "account_id": "us_exposure", "score": 1.0},
+            {"code": "BUFFERED.SH", "account_id": "us_exposure", "score": 0.9},
+        ]
+        with TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            initialize(config, store)
+            state = store.load_state()
+            state["accounts"]["us_exposure"]["positions"] = {
+                "BUFFERED.SH": {
+                    "shares": 100,
+                    "avg_cost": 2.0,
+                    "hold_since": "2026-07-01",
+                }
+            }
+            store.save_state(state)
+            with patch("stock_analyze.markets.cn_qdii_etf.run.build_signals", return_value=scored):
+                orders = generate_config_orders(
+                    config,
+                    store,
+                    FakeProvider(price=2.0),
+                    as_of=date(2026, 7, 9),
+                )
+
+        self.assertFalse(
+            any(order["code"] == "BUFFERED.SH" and order["side"] == "sell" for order in orders)
+        )
+
+    def test_expired_holding_loses_rank_buffer_protection(self):
+        config = _config()
+        config["accounts"][0]["top_n"] = 1
+        config["trading"] = {"max_single_weight": 0.5}
+        config["portfolio_controls"] = {
+            "hold_buffer_pct": 1.0,
+            "max_holding_days": 30,
+        }
+        scored = [
+            {"code": "TOP.SH", "account_id": "us_exposure", "score": 1.0},
+            {"code": "BUFFERED.SH", "account_id": "us_exposure", "score": 0.9},
+        ]
+        with TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            initialize(config, store)
+            state = store.load_state()
+            state["accounts"]["us_exposure"]["positions"] = {
+                "BUFFERED.SH": {
+                    "shares": 100,
+                    "avg_cost": 2.0,
+                    "hold_since": "2026-05-01",
+                }
+            }
+            store.save_state(state)
+            with patch("stock_analyze.markets.cn_qdii_etf.run.build_signals", return_value=scored):
+                orders = generate_config_orders(
+                    config,
+                    store,
+                    FakeProvider(price=2.0),
+                    as_of=date(2026, 7, 9),
+                )
+
+        self.assertTrue(
+            any(order["code"] == "BUFFERED.SH" and order["side"] == "sell" for order in orders)
+        )
+
     def test_update_nav_persists_market_value_column(self):
         with TemporaryDirectory() as tmp:
             store = PortfolioStore(tmp)
@@ -210,6 +331,8 @@ class ETFSimulatorTests(unittest.TestCase):
         self.assertIn("market_value", nav.columns)
         self.assertEqual(float(nav.iloc[-1]["market_value"]), 200.0)
         self.assertEqual(str(nav.iloc[-1]["benchmark_code"]), "513100.SH")
+        self.assertEqual(rows[0]["benchmark_close"], 2.0)
+        self.assertEqual(rows[0]["benchmark_date"], "2026-07-09")
         self.assertEqual(float(positions.iloc[-1]["last_price"]), 2.0)
         self.assertEqual(float(positions.iloc[-1]["market_value"]), 200.0)
         self.assertEqual(float(positions.iloc[-1]["unrealized_pnl"]), 20.0)
