@@ -55,6 +55,7 @@ def generate_rebalance_orders(
     top_n_by_account: dict[str, int] | None = None,
     hold_buffer_pct: float = 0.0,
     max_holding_days: int | None = None,
+    cash_reserve_pct: float = 0.0,
 ) -> list[dict[str, Any]]:
     return _SIM.generate_rebalance_orders(
         store,
@@ -66,6 +67,7 @@ def generate_rebalance_orders(
         top_n_by_account=top_n_by_account,
         hold_buffer_pct=hold_buffer_pct,
         max_holding_days=max_holding_days,
+        cash_reserve_pct=cash_reserve_pct,
     )
 
 
