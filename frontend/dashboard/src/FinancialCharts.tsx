@@ -42,6 +42,10 @@ export function PerformanceChart({
   const filtered = useMemo(() => (range === 0 ? points : points.slice(-range)), [points, range]);
 
   useEffect(() => {
+    setHovered(filtered[filtered.length - 1] ?? null);
+  }, [filtered]);
+
+  useEffect(() => {
     const container = containerRef.current;
     if (!container || filtered.length === 0) return undefined;
     const chart = createChart(container, {
