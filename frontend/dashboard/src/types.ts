@@ -53,6 +53,8 @@ export type NavPoint = {
   benchmark_codes?: string[];
   benchmark_close?: number | null;
   benchmark_date?: string | null;
+  benchmark_return?: number | null;
+  benchmark_coverage?: number | null;
 };
 
 export type OrderRow = Record<string, string | number | null | undefined> & {
@@ -67,6 +69,76 @@ export type OrderRow = Record<string, string | number | null | undefined> & {
   score?: number;
   execute_after?: string;
   reason?: string;
+  exposure_group?: string;
+  theme?: string;
+  industry?: string;
+  account_label?: string;
+  side_label?: string;
+  market_value?: number;
+  unrealized_pnl?: number;
+  last_price?: number;
+  avg_cost?: number;
+  price?: number;
+  net_amount?: number;
+  status?: string;
+  status_label?: string;
+  date?: string;
+  command?: string;
+  started_at?: string;
+  duration_ms?: number;
+  run_id?: string;
+};
+
+export type StrategyFactor = {
+  key: string;
+  label: string;
+  explanation: string;
+  weight: number;
+  direction: string;
+  direction_label: string;
+};
+
+export type StrategyProfile = {
+  agent: string;
+  agent_label: string;
+  strategy_id?: string | null;
+  name: string;
+  factors: StrategyFactor[];
+};
+
+export type Candle = {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number | null;
+  amount?: number | null;
+};
+
+export type InstrumentMetric = {
+  key: string;
+  label: string;
+  explanation: string;
+  value: number;
+  format: "percent" | "money" | "number" | string;
+};
+
+export type InstrumentDetail = {
+  generated_at: string;
+  market: string;
+  agent: string;
+  instrument: {
+    code: string;
+    name?: string | null;
+    exposure_group?: string;
+    theme?: string;
+  };
+  latest: (Candle & { change_pct?: number | null }) | null;
+  candles: Candle[];
+  metrics: InstrumentMetric[];
+  related_trades: OrderRow[];
+  warning?: string | null;
 };
 
 export type DashboardDetail = {
@@ -75,11 +147,17 @@ export type DashboardDetail = {
   market_label: string;
   currency: string;
   agent: string;
+  strategy: StrategyProfile;
   nav: {
     latest: NavPoint | null;
     series: NavPoint[];
     accounts: Record<string, unknown>[];
     benchmark_codes?: string[];
+    benchmark_label?: string;
+  };
+  activity: {
+    summary: { total: number };
+    rows: OrderRow[];
   };
   orders: {
     summary: { total: number; buy: number; sell: number };
