@@ -3,7 +3,16 @@ import type { DashboardDetail, DashboardSummary } from "./types";
 async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, { cache: "no-store", signal });
   if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
+    let message = `${response.status} ${response.statusText}`.trim();
+    try {
+      const payload = await response.json() as { message?: unknown };
+      if (typeof payload.message === "string" && payload.message.trim()) {
+        message = payload.message.trim();
+      }
+    } catch {
+      // Keep the HTTP fallback when the error body is not JSON.
+    }
+    throw new Error(message);
   }
   return response.json() as Promise<T>;
 }

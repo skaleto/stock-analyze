@@ -230,7 +230,12 @@ describe("Dashboard app", () => {
       const url = String(input);
       if (url.includes("summary")) return Promise.resolve(jsonResponse(multiMarketSummary));
       if (url.includes("market=cn_qdii_etf")) return Promise.resolve(jsonResponse(detailPayload));
-      if (url.includes("market=a_share")) return Promise.resolve(jsonResponse({ error: "failed" }, 500));
+      if (url.includes("market=a_share")) {
+        return Promise.resolve(jsonResponse({
+          error: "dashboard_data_invalid",
+          message: "Dashboard data source is unreadable: positions"
+        }, 500));
+      }
       return Promise.reject(new Error(`unexpected url: ${url}`));
     }));
     const user = userEvent.setup();
@@ -239,7 +244,7 @@ describe("Dashboard app", () => {
     expect(await screen.findByText("纳指ETF")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "A股" }));
 
-    expect(await screen.findByText(/500/)).toBeInTheDocument();
+    expect(await screen.findByText("Dashboard data source is unreadable: positions")).toBeInTheDocument();
     expect(screen.queryByText("纳指ETF")).not.toBeInTheDocument();
   });
 });
