@@ -78,6 +78,14 @@ class DashboardAgentPaths:
     config_path: Path
 
 
+class DashboardDataError(RuntimeError):
+    """An existing dashboard artifact could not be parsed safely."""
+
+    def __init__(self, source: str) -> None:
+        self.source = source
+        super().__init__(f"dashboard data source is unreadable: {source}")
+
+
 # _today is imported from .utils as a single canonical helper.
 # Tests can still patch `stock_analyze.dashboard_aggregator._today` —
 # that targets the local alias name in this module's namespace.
@@ -518,6 +526,329 @@ def _weekly_report_href(market: str, agent: str, reports_dir: Path) -> str | Non
     if not (reports_dir / "weekly_report.md").exists():
         return None
     return f"/{market}/{agent}/weekly_report.md"
+
+
+def _coerce_numeric_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    for column in columns:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+    return df
+
+
+def _limited_csv_rows(
+    path: Path,
+    *,
+    source: str,
+    text_columns: list[str],
+    numeric_columns: list[str],
+    limit: int,
+    sort_by: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    if not path.exists() or path.stat().st_size == 0:
+        return []
+    try:
+        df = pd.read_csv(
+            path,
+            dtype={column: str for column in text_columns},
+            keep_default_na=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise DashboardDataError(source) from exc
+    if df.empty:
+        return []
+    df = _coerce_numeric_columns(df, numeric_columns)
+    if sort_by:
+        existing = [column for column in sort_by if column in df.columns]
+        if existing:
+            df = df.sort_values(existing)
+    if limit > 0:
+        df = df.tail(limit)
+    return _json_safe(df.to_dict(orient="records"))
+
+
+def _read_fund_name_lookup(root: Path, market: str) -> dict[str, str]:
+    path = root / "data" / market / "shared" / "cache" / "fund_basic_E.csv"
+    if not path.exists() or path.stat().st_size == 0:
+        return {}
+    try:
+        df = pd.read_csv(path, dtype={"ts_code": str, "name": str}, keep_default_na=False)
+    except Exception as exc:  # noqa: BLE001
+        raise DashboardDataError("fund_basic") from exc
+    if df.empty or "ts_code" not in df.columns or "name" not in df.columns:
+        return {}
+    return {
+        str(row["ts_code"]): str(row["name"])
+        for row in df[["ts_code", "name"]].to_dict(orient="records")
+        if str(row.get("ts_code") or "") and str(row.get("name") or "")
+    }
+
+
+def _flatten_pending_orders(data_dir: Path, *, name_lookup: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    path = data_dir / "pending_orders.json"
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise DashboardDataError("pending_orders") from exc
+    if isinstance(payload, dict):
+        raw_orders = payload.get("orders") or []
+    elif isinstance(payload, list):
+        raw_orders = payload
+    else:
+        raise DashboardDataError("pending_orders")
+
+    orders: list[dict[str, Any]] = []
+    for item in raw_orders:
+        if not isinstance(item, dict):
+            continue
+        nested = item.get("orders")
+        if isinstance(nested, list):
+            parent = {key: value for key, value in item.items() if key != "orders"}
+            for order in nested:
+                if isinstance(order, dict):
+                    merged = dict(parent)
+                    merged.update(order)
+                    orders.append(merged)
+        else:
+            orders.append(item)
+    return [_normalise_order_row(order, name_lookup=name_lookup or {}) for order in orders]
+
+
+def _normalise_order_row(order: dict[str, Any], *, name_lookup: dict[str, str]) -> dict[str, Any]:
+    numeric_fields = {
+        "shares",
+        "price",
+        "target_weight",
+        "target_value",
+        "current_weight",
+        "score",
+        "gross_amount",
+        "commission",
+        "stamp_tax",
+        "slippage",
+        "net_amount",
+    }
+    row: dict[str, Any] = {}
+    for key, value in order.items():
+        if key in numeric_fields:
+            row[key] = safe_float(value)
+        else:
+            row[key] = _none_if_blank(value)
+    row["side"] = str(row.get("side") or "").lower() or None
+    code = str(row.get("code") or "")
+    if code and not row.get("name"):
+        row["name"] = name_lookup.get(code)
+    if not row.get("execute_after"):
+        row["execute_after"] = row.get("trade_date")
+    return _json_safe(row)
+
+
+def _read_nav_detail(data_dir: Path, market: str) -> dict[str, Any]:
+    path = data_dir / "daily_nav.csv"
+    empty = {"latest": None, "series": [], "accounts": [], "benchmark_codes": []}
+    if not path.exists() or path.stat().st_size == 0:
+        return empty
+    try:
+        df = pd.read_csv(
+            path,
+            dtype={
+                "date": str,
+                "account_id": str,
+                "benchmark_code": str,
+                "benchmark_date": str,
+                "notes": str,
+            },
+            keep_default_na=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise DashboardDataError("daily_nav") from exc
+    if df.empty or "date" not in df.columns or "total_value" not in df.columns:
+        return empty
+
+    numeric_columns = ["cash", "market_value", "total_value", "benchmark_close"]
+    df = _coerce_numeric_columns(df, numeric_columns)
+    baseline = MARKET_INITIAL_CASH.get(market, 1.0)
+    grouped = (
+        df.groupby("date", as_index=False)[["cash", "market_value", "total_value"]]
+        .sum(numeric_only=True)
+        .sort_values("date")
+    )
+    series: list[dict[str, Any]] = []
+    for row in grouped.to_dict(orient="records"):
+        total_value = safe_float(row.get("total_value"))
+        series.append(
+            {
+                "date": str(row.get("date")),
+                "cash": safe_float(row.get("cash")),
+                "market_value": safe_float(row.get("market_value")),
+                "total_value": total_value,
+                "total_value_display": _format_market_money(total_value, market),
+                "return": (total_value / baseline - 1.0) if total_value is not None and baseline else None,
+                "return_display": format_pct(
+                    (total_value / baseline - 1.0) if total_value is not None and baseline else None
+                ),
+            }
+        )
+    latest_date = series[-1]["date"] if series else None
+    latest_row = None
+    if latest_date is not None:
+        latest_rows = df[df["date"] == latest_date]
+        benchmark_codes = sorted(
+            {
+                str(value)
+                for value in latest_rows.get("benchmark_code", pd.Series(dtype=str)).tolist()
+                if _none_if_blank(value) is not None
+            }
+        )
+        benchmark_code = None
+        benchmark_close = None
+        benchmark_date = None
+        if len(benchmark_codes) == 1:
+            benchmark_code = benchmark_codes[0]
+            benchmark_rows = latest_rows[
+                latest_rows["benchmark_code"].astype(str) == benchmark_code
+            ]
+            first = benchmark_rows.iloc[0].to_dict()
+            benchmark_code = _none_if_blank(first.get("benchmark_code"))
+            benchmark_close = safe_float(first.get("benchmark_close"))
+            benchmark_date = _none_if_blank(first.get("benchmark_date"))
+        latest_row = {
+            **series[-1],
+            "benchmark_codes": benchmark_codes,
+            "benchmark_code": benchmark_code,
+            "benchmark_close": benchmark_close,
+            "benchmark_date": benchmark_date,
+        }
+    else:
+        benchmark_codes = []
+    accounts = _json_safe(df.tail(100).to_dict(orient="records"))
+    return {
+        "latest": latest_row,
+        "series": _json_safe(series[-260:]),
+        "accounts": accounts,
+        "benchmark_codes": benchmark_codes,
+    }
+
+
+def build_dashboard_detail_data(
+    *,
+    repo_root: str | Path | None = None,
+    market: str,
+    agent: str,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Return runtime detail data for one dashboard market/agent selection."""
+
+    if market not in competition.MARKETS:
+        raise competition.UnknownMarket(market)
+    root = Path(repo_root) if repo_root else Path.cwd()
+    if agent not in competition.list_agents_for_market(market, root):
+        raise competition.UnknownAgent(f"unknown_agent:{agent}; market={market}")
+    paths = _resolve_dashboard_paths(market, agent, root)
+
+    orders = _flatten_pending_orders(
+        paths.data_dir,
+        name_lookup=_read_fund_name_lookup(root, market),
+    )
+    positions = _limited_csv_rows(
+        paths.data_dir / "positions.csv",
+        source="positions",
+        text_columns=[
+            "account_id",
+            "code",
+            "name",
+            "industry",
+            "last_buy_date",
+            "hold_since",
+            "reason",
+            "updated_at",
+        ],
+        numeric_columns=[
+            "shares",
+            "available_shares",
+            "avg_cost",
+            "last_price",
+            "market_value",
+            "unrealized_pnl",
+            "score",
+        ],
+        limit=limit,
+        sort_by=["account_id", "code"],
+    )
+    trades = _limited_csv_rows(
+        paths.data_dir / "trades.csv",
+        source="trades",
+        text_columns=["trade_date", "account_id", "code", "name", "side", "reason"],
+        numeric_columns=[
+            "shares",
+            "price",
+            "gross_amount",
+            "commission",
+            "stamp_tax",
+            "slippage",
+            "net_amount",
+            "cash_after",
+        ],
+        limit=limit,
+        sort_by=["trade_date"],
+    )
+    runs = _limited_csv_rows(
+        paths.data_dir / "runs.csv",
+        source="runs",
+        text_columns=[
+            "run_id",
+            "command",
+            "as_of",
+            "started_at",
+            "finished_at",
+            "status",
+            "error_summary",
+            "config_hash",
+            "code_version",
+        ],
+        numeric_columns=["duration_ms"],
+        limit=limit,
+        sort_by=["started_at"],
+    )
+    report_path = paths.reports_dir / "weekly_report.md"
+    report_markdown = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
+    position_value = sum(
+        safe_float(row.get("market_value")) or 0.0
+        for row in positions
+    )
+    payload = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "market": market,
+        "market_label": MARKET_LABELS.get(market, market),
+        "currency": MARKET_CURRENCY.get(market, ""),
+        "agent": agent,
+        "nav": _read_nav_detail(paths.data_dir, market),
+        "orders": {
+            "summary": {
+                "total": len(orders),
+                "buy": sum(1 for order in orders if order.get("side") == "buy"),
+                "sell": sum(1 for order in orders if order.get("side") == "sell"),
+            },
+            "rows": orders[:limit],
+        },
+        "positions": {
+            "summary": {
+                "total": len(positions),
+                "market_value": position_value,
+                "market_value_display": _format_market_money(position_value, market),
+            },
+            "rows": positions,
+        },
+        "trades": {"summary": {"total": len(trades)}, "rows": trades},
+        "runs": {"summary": {"total": len(runs)}, "rows": list(reversed(runs))},
+        "weekly_report": {
+            "exists": report_path.exists(),
+            "href": _weekly_report_href(market, agent, paths.reports_dir),
+            "markdown": report_markdown[:12000],
+        },
+    }
+    return _json_safe(payload)
 
 
 def _monthly_status_data(root: Path, market: str) -> dict[str, Any]:
