@@ -33,6 +33,11 @@ class DeployAppScriptTests(unittest.TestCase):
         self.assertLess(script.index("python -m unittest"), script.index("systemctl enable --now"))
         self.assertIn("/var/lib/systemd/timers/stamp-$timer", script)
         self.assertIn('if [[ ! -e "$stamp" ]]', script)
+        self.assertIn("tests.test_dashboard_finance", script)
+        self.assertIn("tests.test_archived_markets", script)
+        self.assertIn("systemctl disable --now", script)
+        self.assertIn("stock-analyze-codex-hk-daily.timer", script)
+        self.assertIn("stock-analyze-codex-us-weekly.timer", script)
         self.assertNotIn("--delete data/", script)
 
 

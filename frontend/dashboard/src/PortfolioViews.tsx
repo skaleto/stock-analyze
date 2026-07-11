@@ -1,6 +1,6 @@
 import { Activity, ArrowDownRight, ArrowUpRight, CalendarDays, Layers3, Radio, Target } from "lucide-react";
 import type { OrderRow, StrategyProfile } from "./types";
-import { formatFieldValue, formatMoney, formatPercent, sideLabel } from "./finance";
+import { formatFieldValue, formatMoney, formatPercent, formatStrategyReason, sideLabel } from "./finance";
 
 type SelectHandler = (row: OrderRow, title: string, trigger: HTMLElement) => void;
 
@@ -136,7 +136,7 @@ export function TradeTimeline({ events, onSelect }: { events: OrderRow[]; onSele
                     <span className="timeline-copy">
                       <b>{event.status_label || `${event.status === "completed" ? "已" : "计划"}${sideLabel(String(event.side || ""))}`}</b>
                       <span>{event.name || event.code}</span>
-                      <small>{event.code} · {formatFieldValue("shares", event.shares)} 份 · {event.reason || "策略调仓"}</small>
+                      <small>{event.code} · {formatFieldValue("shares", event.shares)} 份 · {formatStrategyReason(event.reason)}</small>
                     </span>
                   </button>
                 ))}

@@ -417,7 +417,7 @@ Do not change the dark palette family. Remove the decorative page radial gradien
 
 Expected: all Vitest tests pass, TypeScript and Vite build pass, and production audit reports zero vulnerabilities.
 
-- [ ] **Step 6: Commit the workbench redesign**
+- [x] **Step 6: Commit the workbench redesign**
 
 ```bash
 git add frontend/dashboard
@@ -431,7 +431,7 @@ git commit -m "feat: redesign portfolio analysis workbench"
 - Modify: `tests/test_deploy_app_script.py`
 - Modify: `docs/superpowers/plans/2026-07-11-domestic-investment-terminal-redesign.md`
 
-- [ ] **Step 1: Extend remote deployment tests**
+- [x] **Step 1: Extend remote deployment tests**
 
 Require the remote suite to include `tests.test_dashboard_finance` and verify deployment keeps only QDII Codex units active. The deploy script must not delete runtime data or archived HK/US history.
 

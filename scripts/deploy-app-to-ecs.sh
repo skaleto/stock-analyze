@@ -63,10 +63,23 @@ python -m unittest \
   tests.test_markets_cn_qdii_etf_simulator \
   tests.test_dashboard_app_api \
   tests.test_cli_dashboard_routes \
+  tests.test_dashboard_finance \
+  tests.test_archived_markets \
   tests.test_qdii_systemd_units \
   tests.test_deploy_app_script
 
 systemctl daemon-reload
+for archived_timer in \
+  stock-analyze-codex-hk-daily.timer \
+  stock-analyze-codex-hk-weekly.timer \
+  stock-analyze-codex-us-daily.timer \
+  stock-analyze-codex-us-weekly.timer \
+  stock-analyze-claude-hk-daily.timer \
+  stock-analyze-claude-hk-weekly.timer \
+  stock-analyze-claude-us-daily.timer \
+  stock-analyze-claude-us-weekly.timer; do
+  systemctl disable --now "$archived_timer" >/dev/null 2>&1 || true
+done
 install -d -m 0755 /var/lib/systemd/timers
 for timer in \
   stock-analyze-codex-cn-qdii-etf-daily.timer \

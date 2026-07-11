@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountLabel, fieldMeta, formatFieldValue, sideLabel } from "./finance";
+import { accountLabel, fieldMeta, formatFieldValue, formatStrategyReason, sideLabel } from "./finance";
 
 
 describe("finance field dictionary", () => {
@@ -20,5 +20,12 @@ describe("finance field dictionary", () => {
     expect(formatFieldValue("roe", 0.1532)).toBe("15.32%");
     expect(formatFieldValue("avg_amount_20", 12345678)).toContain("1,234.57万");
     expect(formatFieldValue("shares", 1200)).toBe("1,200");
+  });
+
+  it("translates factor reasons into readable Chinese", () => {
+    expect(formatStrategyReason("momentum_20=+0.0231; low_volatility_60=+0.0135"))
+      .toBe("近20日涨跌 +2.31% · 近60日波动率 +1.35%");
+    expect(formatFieldValue("reason", "momentum_60=-0.0353"))
+      .toBe("近60日涨跌 -3.53%");
   });
 });

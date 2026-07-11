@@ -99,6 +99,7 @@ export function formatFieldValue(key: string, value: unknown, currency = "¥"): 
   if (value === null || value === undefined || value === "") return "-";
   if (key === "side" || key === "side_label") return sideLabel(String(value));
   if (key === "account_id" || key === "account_label") return accountLabel(String(value));
+  if (key === "reason") return formatStrategyReason(value);
   const definition = fieldMeta(key);
   const number = finiteNumber(value);
   if (definition.format === "percent") return formatPercent(value);
@@ -118,4 +119,21 @@ export function formatFieldValue(key: string, value: unknown, currency = "¥"): 
 export function visibleRowEntries(row: Record<string, unknown>): [string, unknown][] {
   const hidden = new Set(["account_label", "side_label", "status_label", "event_type"]);
   return Object.entries(row).filter(([key]) => !hidden.has(key));
+}
+
+export function formatStrategyReason(reason: unknown): string {
+  const text = String(reason ?? "").trim();
+  if (!text) return "策略调仓";
+  const translated = text.split(/\s*;\s*/).map((part) => {
+    const match = part.match(/^([a-z0-9_]+)=([+-]?\d+(?:\.\d+)?)$/i);
+    if (!match) return part;
+    const [, key, rawValue] = match;
+    const metadata = fieldMeta(key);
+    if (metadata.label === key) return part;
+    const value = Number(rawValue);
+    const formatted = metadata.format === "percent" ? formatPercent(value) : formatFieldValue(key, value);
+    const sign = rawValue.startsWith("+") && !formatted.startsWith("-") ? "+" : "";
+    return `${metadata.label} ${sign}${formatted}`;
+  });
+  return translated.join(" · ");
 }
