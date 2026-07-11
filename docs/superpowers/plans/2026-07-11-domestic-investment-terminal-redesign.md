@@ -27,7 +27,7 @@
 - Modify: `tests/test_sync_to_ecs.py`
 - Create: `tests/test_archived_markets.py`
 
-- [ ] **Step 1: Write active-market and archive tests**
+- [x] **Step 1: Write active-market and archive tests**
 
 Add assertions equivalent to:
 
@@ -45,7 +45,7 @@ def test_dashboard_routes_do_not_publish_direct_overseas_pages():
 
 Update sync-script tests to require `markets=(a_share cn_qdii_etf)` and to reject HK/US runtime rsync calls.
 
-- [ ] **Step 2: Run the archive tests and verify RED**
+- [x] **Step 2: Run the archive tests and verify RED**
 
 ```bash
 python3 -m unittest \
@@ -57,7 +57,7 @@ python3 -m unittest \
 
 Expected: active-market, route, and sync assertions fail against the four-market implementation.
 
-- [ ] **Step 3: Implement the logical archive**
+- [x] **Step 3: Implement the logical archive**
 
 Use these public constants:
 
@@ -76,7 +76,7 @@ exit 2
 
 Keep source, configs, reports, and runtime data on disk. The archive README records the 2026-07-11 decision and restoration requirements.
 
-- [ ] **Step 4: Run focused tests and verify GREEN**
+- [x] **Step 4: Run focused tests and verify GREEN**
 
 Run the command from Step 2 plus:
 
@@ -87,7 +87,7 @@ python3 -m stock_analyze --market hk --agent codex run-daily
 
 Expected: tests pass; help lists only `a_share` and `cn_qdii_etf`; the archived market command exits 2 in argument parsing.
 
-- [ ] **Step 5: Commit runtime retirement**
+- [x] **Step 5: Commit runtime retirement**
 
 ```bash
 git add archive scripts/run-overseas.sh scripts/sync-to-ecs.sh \

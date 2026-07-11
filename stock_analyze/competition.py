@@ -73,9 +73,11 @@ OVERLAY_ALLOWED_TOP_LEVEL: frozenset[str] = frozenset(
 
 
 # ---------------------------------------------------------------------------
-# Multi-market dispatch
+# Active market dispatch. Direct HK/US paper accounts were retired on
+# 2026-07-11; their source and historical artifacts remain for audit only.
 
-MARKETS = ["a_share", "hk", "us", "cn_qdii_etf"]
+MARKETS = ["a_share", "cn_qdii_etf"]
+ARCHIVED_MARKETS = ["hk", "us"]
 
 
 class UnknownMarket(ValueError):
@@ -243,8 +245,7 @@ def load_baseline(
     """Load and return the competition baseline config for ``market``.
 
     ``market="a_share"`` (the default) reads ``configs/competition_a_share.yaml``
-    — byte-identical to the historical single-market behaviour. ``hk`` / ``us``
-    read their respective ``configs/competition_<market>.yaml``.
+    and ``cn_qdii_etf`` reads the mainland-listed cross-border ETF baseline.
     """
 
     if market not in MARKETS:

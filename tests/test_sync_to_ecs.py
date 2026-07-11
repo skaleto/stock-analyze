@@ -12,7 +12,7 @@ SCRIPT = REPO_ROOT / "scripts" / "sync-to-ecs.sh"
 
 
 class SyncToEcsScriptTests(unittest.TestCase):
-    def test_pushes_market_namespaced_sentiment_and_overlays(self):
+    def test_pushes_active_market_sentiment_and_ignores_archived_market(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "data" / "a_share" / "claude" / "alt_factors").mkdir(parents=True)
@@ -70,18 +70,18 @@ class SyncToEcsScriptTests(unittest.TestCase):
             calls = calls_log.read_text(encoding="utf-8") if calls_log.exists() else ""
             self.assertIn("data/a_share/claude/alt_factors/", calls)
             self.assertIn("fakehost:/remote/app/data/a_share/claude/alt_factors/", calls)
-            self.assertIn("data/hk/codex/alt_factors/", calls)
-            self.assertIn("fakehost:/remote/app/data/hk/codex/alt_factors/", calls)
+            self.assertNotIn("data/hk/codex/alt_factors/", calls)
+            self.assertNotIn("fakehost:/remote/app/data/hk/codex/alt_factors/", calls)
             self.assertIn("data/cn_qdii_etf/codex/alt_factors/", calls)
             self.assertIn("fakehost:/remote/app/data/cn_qdii_etf/codex/alt_factors/", calls)
             self.assertIn("configs/agents/claude_a_share.yaml", calls)
-            self.assertIn("configs/agents/codex_hk.yaml", calls)
+            self.assertNotIn("configs/agents/codex_hk.yaml", calls)
             self.assertIn("configs/agents/codex_cn_qdii_etf.yaml", calls)
 
     def test_remote_refresh_explicitly_uses_all_market_dashboard(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "data" / "us" / "claude").mkdir(parents=True)
+            (root / "data" / "a_share" / "claude").mkdir(parents=True)
 
             fake_bin = root / "fake-bin"
             fake_bin.mkdir()
@@ -121,9 +121,10 @@ class SyncToEcsScriptTests(unittest.TestCase):
             self.assertIn("fakehost", calls)
             self.assertIn("competition-dashboard --market all", calls)
 
-    def test_pushes_local_owned_overseas_run_artifacts(self):
+    def test_does_not_push_archived_overseas_run_artifacts(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
+            (root / "data" / "a_share" / "codex").mkdir(parents=True)
             data_dir = root / "data" / "hk" / "codex"
             data_dir.mkdir(parents=True)
             (data_dir / "runs.csv").write_text(
@@ -171,12 +172,12 @@ class SyncToEcsScriptTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             calls = calls_log.read_text(encoding="utf-8") if calls_log.exists() else ""
-            self.assertIn("data/hk/codex/runs.csv", calls)
-            self.assertIn("fakehost:/remote/app/data/hk/codex/runs.csv", calls)
-            self.assertIn("data/hk/codex/pending_orders.json", calls)
-            self.assertIn("data/hk/codex/daily_nav.csv", calls)
-            self.assertIn("reports/hk/codex/", calls)
-            self.assertIn("fakehost:/remote/app/reports/hk/codex/", calls)
+            self.assertNotIn("data/hk/codex/runs.csv", calls)
+            self.assertNotIn("fakehost:/remote/app/data/hk/codex/runs.csv", calls)
+            self.assertNotIn("data/hk/codex/pending_orders.json", calls)
+            self.assertNotIn("data/hk/codex/daily_nav.csv", calls)
+            self.assertNotIn("reports/hk/codex/", calls)
+            self.assertNotIn("fakehost:/remote/app/reports/hk/codex/", calls)
 
 
 if __name__ == "__main__":

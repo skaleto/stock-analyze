@@ -11,13 +11,10 @@
 #   - data/<market>/<agent>/config_evolution.csv (audit row)
 #   - data/<market>/<agent>/alt_factors/        (sentiment records per add-llm-sentiment-alpha-factor)
 #   - configs/agents/<agent>_<market>.yaml      (LLM-direct overlay edits)
-#   - data/<hk|us>/<agent>/{runs.csv,daily_nav.csv,pending_orders.json,...}
-#   - reports/<hk|us>/<agent>/                  (local-owned overseas run reports)
 #   - configs/agents/_history/                  (overlay backups)
 #
-# ECS keeps ownership of A-share deterministic state. The local machine keeps
-# ownership of HK/US yfinance runs because they require the local HK proxy, so
-# their run artifacts are published back to ECS for remote observability.
+# ECS keeps ownership of deterministic paper-trading state. Direct HK/US
+# simulation is archived and is never pushed by this script.
 # After push, the script refreshes the competition dashboard. Set
 # SA_ECS_AFTER_SYNC=0 to push files only.
 
@@ -53,17 +50,12 @@ push_agent_payload() {
   local overlay_local="$3"
   local overlay_remote="$4"
   local label="$5"
-  local reports_local="$6"
-  local reports_remote="$7"
-  local sync_run_artifacts="$8"
 
   local notes_local="$agent_dir/notes/"
   local log_local="$agent_dir/evolution_log/"
   local diff_local="$agent_dir/evolution_diff/"
   local csv_local="$agent_dir/config_evolution.csv"
   local alt_local="$agent_dir/alt_factors/"
-  local file_local
-  local dir_local
 
   if [[ -d "$notes_local" ]]; then
     echo "Pushing $label/notes/ -> $remote_data_dir/notes/"
@@ -106,29 +98,9 @@ push_agent_payload() {
     echo "Pushing $overlay_local -> $overlay_remote"
     rsync -av "$overlay_local" "$overlay_remote"
   fi
-  if [[ "$sync_run_artifacts" == "1" ]]; then
-    for file in runs.csv state.json daily_nav.csv pending_orders.json trades.csv positions.csv; do
-      file_local="$agent_dir/$file"
-      if [[ -f "$file_local" ]]; then
-        echo "Pushing $label/$file -> $remote_data_dir/$file"
-        rsync -av "$file_local" "$remote_data_dir/$file"
-      fi
-    done
-    for dir in factor_runs factor_diagnostics; do
-      dir_local="$agent_dir/$dir/"
-      if [[ -d "$dir_local" ]]; then
-        echo "Pushing $label/$dir/ -> $remote_data_dir/$dir/"
-        rsync -av "$dir_local" "$remote_data_dir/$dir/"
-      fi
-    done
-    if [[ -d "$reports_local" ]]; then
-      echo "Pushing $reports_local/ -> $reports_remote/"
-      rsync -av "$reports_local/" "$reports_remote/"
-    fi
-  fi
 }
 
-markets=(a_share hk us cn_qdii_etf)
+markets=(a_share cn_qdii_etf)
 market_agent_pairs=()
 market_agent_count=0
 for market in "${markets[@]}"; do
@@ -165,19 +137,12 @@ fi
 if [[ "$market_agent_count" -gt 0 ]]; then
   for item in "${market_agent_pairs[@]}"; do
     IFS=: read -r market agent dir <<<"$item"
-    sync_run_artifacts=0
-    case "$market" in
-      hk|us) sync_run_artifacts=1 ;;
-    esac
     push_agent_payload \
       "$dir" \
       "$SA_ECS_REMOTE/data/$market/$agent" \
       "$LOCAL_REPO/configs/agents/${agent}_${market}.yaml" \
       "$SA_ECS_REMOTE/configs/agents/${agent}_${market}.yaml" \
-      "data/$market/$agent" \
-      "$LOCAL_REPO/reports/$market/$agent" \
-      "$SA_ECS_REMOTE/reports/$market/$agent" \
-      "$sync_run_artifacts"
+      "data/$market/$agent"
   done
 fi
 
@@ -189,10 +154,7 @@ if [[ "$legacy_agent_count" -gt 0 ]]; then
       "$SA_ECS_REMOTE/data/$agent" \
       "$LOCAL_REPO/configs/agents/${agent}.yaml" \
       "$SA_ECS_REMOTE/configs/agents/${agent}.yaml" \
-      "data/$agent" \
-      "$LOCAL_REPO/reports/$agent" \
-      "$SA_ECS_REMOTE/reports/$agent" \
-      "0"
+      "data/$agent"
   done
 fi
 

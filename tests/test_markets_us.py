@@ -89,9 +89,10 @@ def _fake_provider(price: float = 100.0):
 
 
 class USBootstrapTests(unittest.TestCase):
-    def test_us_in_markets(self):
+    def test_us_is_archived_from_markets(self):
         from stock_analyze import competition
-        self.assertIn("us", competition.MARKETS)
+        self.assertNotIn("us", competition.MARKETS)
+        self.assertIn("us", competition.ARCHIVED_MARKETS)
 
     def test_us_factor_whitelist(self):
         from stock_analyze.overlay_guard import AVAILABLE_FACTORS_BY_MARKET
