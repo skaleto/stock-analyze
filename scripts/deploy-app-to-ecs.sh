@@ -29,6 +29,7 @@ rsync -az --relative \
   ./stock_analyze/ \
   ./scripts/ \
   ./deploy/ \
+  ./archive/direct-overseas/ \
   ./tests/ \
   ./frontend/dashboard/ \
   ./configs/competition_cn_qdii_etf.yaml \
