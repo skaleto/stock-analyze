@@ -1,0 +1,27 @@
+stock_analyze/markets/_settlement_simulator.py
+  s_db9afa53cf7b72::t_f182bcbe66a543 517,524-529,554-555,557-558,560,576-581,600-610,612,614,618,620-621
+stock_analyze/markets/cn_qdii_etf/run.py
+  s_db9afa53cf7b72::t_fab469c239a437 12-14,53
+stock_analyze/markets/cn_qdii_etf/simulator.py
+  s_db9afa53cf7b72::t_93e3479cd50aee 58,70
+tests/test_markets_cn_qdii_etf_simulator.py
+  s_db9afa53cf7b72::t_cee1fde0069316 316-349
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "52913c85424e77f17d391d0ed9b4792c33d05f8e",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
