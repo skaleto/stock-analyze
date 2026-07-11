@@ -31,6 +31,7 @@ from ._dashboard_assets import BASE_CSS, NAV_CSS, render_nav_html
 from .beginner_dashboard import write_beginner_views
 from . import competition
 from .competition import resolve_agent_paths, resolve_market_paths
+from .dashboard_finance import build_activity, build_strategy_profile, enrich_rows
 from .utils import (
     dashboard_fragment_path,
     ensure_dirs,
@@ -768,53 +769,62 @@ def build_dashboard_detail_data(
         raise competition.UnknownAgent(f"unknown_agent:{agent}; market={market}")
     paths = _resolve_dashboard_paths(market, agent, root)
 
-    orders = _flatten_pending_orders(
-        paths.data_dir,
-        name_lookup=_read_fund_name_lookup(root, market),
+    orders = enrich_rows(
+        market,
+        _flatten_pending_orders(
+            paths.data_dir,
+            name_lookup=_read_fund_name_lookup(root, market),
+        ),
     )
-    positions_all = _limited_csv_rows(
-        paths.data_dir / "positions.csv",
-        source="positions",
-        required_columns=["account_id", "code", "shares"],
-        text_columns=[
-            "account_id",
-            "code",
-            "name",
-            "industry",
-            "last_buy_date",
-            "hold_since",
-            "reason",
-            "updated_at",
-        ],
-        numeric_columns=[
-            "shares",
-            "available_shares",
-            "avg_cost",
-            "last_price",
-            "market_value",
-            "unrealized_pnl",
-            "score",
-        ],
-        limit=0,
-        sort_by=["account_id", "code"],
+    positions_all = enrich_rows(
+        market,
+        _limited_csv_rows(
+            paths.data_dir / "positions.csv",
+            source="positions",
+            required_columns=["account_id", "code", "shares"],
+            text_columns=[
+                "account_id",
+                "code",
+                "name",
+                "industry",
+                "last_buy_date",
+                "hold_since",
+                "reason",
+                "updated_at",
+            ],
+            numeric_columns=[
+                "shares",
+                "available_shares",
+                "avg_cost",
+                "last_price",
+                "market_value",
+                "unrealized_pnl",
+                "score",
+            ],
+            limit=0,
+            sort_by=["account_id", "code"],
+        ),
     )
-    trades_all = _limited_csv_rows(
-        paths.data_dir / "trades.csv",
-        source="trades",
-        required_columns=["trade_date", "account_id", "code", "side"],
-        text_columns=["trade_date", "account_id", "code", "name", "side", "reason"],
-        numeric_columns=[
-            "shares",
-            "price",
-            "gross_amount",
-            "commission",
-            "stamp_tax",
-            "slippage",
-            "net_amount",
-            "cash_after",
-        ],
-        limit=0,
-        sort_by=["trade_date"],
+    trades_all = enrich_rows(
+        market,
+        _limited_csv_rows(
+            paths.data_dir / "trades.csv",
+            source="trades",
+            required_columns=["trade_date", "account_id", "code", "side"],
+            text_columns=["trade_date", "account_id", "code", "name", "side", "reason"],
+            numeric_columns=[
+                "shares",
+                "price",
+                "gross_amount",
+                "commission",
+                "stamp_tax",
+                "slippage",
+                "net_amount",
+                "cash_after",
+            ],
+            limit=0,
+            sort_by=["trade_date"],
+        ),
     )
     runs_all = _limited_csv_rows(
         paths.data_dir / "runs.csv",
@@ -836,6 +846,11 @@ def build_dashboard_detail_data(
         sort_by=["started_at"],
     )
     runs_all = _collapse_run_transitions(runs_all)
+    try:
+        strategy = build_strategy_profile(paths.config_path)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise DashboardDataError("strategy_overlay") from exc
+    activity = build_activity(trades_all, orders)
     positions = positions_all[-limit:] if limit > 0 else positions_all
     trades = trades_all[-limit:] if limit > 0 else trades_all
     runs = runs_all[-limit:] if limit > 0 else runs_all
@@ -851,7 +866,9 @@ def build_dashboard_detail_data(
         "market_label": MARKET_LABELS.get(market, market),
         "currency": MARKET_CURRENCY.get(market, ""),
         "agent": agent,
+        "strategy": strategy,
         "nav": _read_nav_detail(paths.data_dir, market),
+        "activity": {"summary": {"total": len(activity)}, "rows": activity[:limit]},
         "orders": {
             "summary": {
                 "total": len(orders),

@@ -28,6 +28,23 @@ UNIVERSES = {
     "hk_exposure": HK_EXPOSURE,
 }
 
+ETF_METADATA = {
+    "513100.SH": {"exposure_group": "美国市场", "theme": "纳斯达克100"},
+    "159941.SZ": {"exposure_group": "美国市场", "theme": "纳斯达克100"},
+    "513500.SH": {"exposure_group": "美国市场", "theme": "标普500"},
+    "159655.SZ": {"exposure_group": "美国市场", "theme": "标普500"},
+    "513300.SH": {"exposure_group": "美国市场", "theme": "纳斯达克100"},
+    "159632.SZ": {"exposure_group": "美国市场", "theme": "纳斯达克100"},
+    "513850.SH": {"exposure_group": "美国市场", "theme": "美国大盘"},
+    "513130.SH": {"exposure_group": "香港市场", "theme": "恒生科技"},
+    "159920.SZ": {"exposure_group": "香港市场", "theme": "恒生综合"},
+    "513180.SH": {"exposure_group": "香港市场", "theme": "恒生科技"},
+    "513330.SH": {"exposure_group": "香港市场", "theme": "恒生互联网"},
+    "513060.SH": {"exposure_group": "香港市场", "theme": "恒生医疗"},
+    "159726.SZ": {"exposure_group": "香港市场", "theme": "港股红利"},
+    "513690.SH": {"exposure_group": "香港市场", "theme": "港股红利"},
+}
+
 
 def resolve_universe(scope: str) -> list[str]:
     """Return ETF ts_codes for a configured account scope."""
@@ -43,3 +60,13 @@ def classify_scope(code: str) -> str:
         if code in codes:
             return scope
     return "cn_qdii_etf"
+
+
+def metadata_for_code(code: str) -> dict[str, str]:
+    """Return stable display metadata for a configured cross-border ETF."""
+    return dict(
+        ETF_METADATA.get(
+            str(code).upper(),
+            {"exposure_group": "全球市场", "theme": "跨境ETF"},
+        )
+    )

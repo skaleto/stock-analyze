@@ -106,7 +106,7 @@ git commit -m "refactor: archive direct overseas markets"
 - Modify: `tests/test_dashboard_app_api.py`
 - Create: `tests/test_dashboard_finance.py`
 
-- [ ] **Step 1: Write failing finance metadata tests**
+- [x] **Step 1: Write failing finance metadata tests**
 
 Cover exact row outcomes:
 
@@ -126,7 +126,7 @@ self.assertEqual(profile["factors"][0]["label"], "近20日动量")
 
 Add an aggregator test proving positions, trades, and orders all contain Chinese display metadata and `activity.rows` contains both completed and planned events.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```bash
 python3 -m unittest tests.test_dashboard_finance tests.test_dashboard_app_api
@@ -134,7 +134,7 @@ python3 -m unittest tests.test_dashboard_finance tests.test_dashboard_app_api
 
 Expected: `dashboard_finance` and new payload keys do not exist.
 
-- [ ] **Step 3: Implement structured ETF metadata**
+- [x] **Step 3: Implement structured ETF metadata**
 
 Add an immutable map in `universe.py` for each configured ETF:
 
@@ -159,7 +159,7 @@ ETF_METADATA = {
 
 For A-share rows, use `industry` as both group and theme, falling back to `未分类`.
 
-- [ ] **Step 4: Implement strategy and timeline builders**
+- [x] **Step 4: Implement strategy and timeline builders**
 
 `dashboard_finance.py` exposes:
 
@@ -172,7 +172,7 @@ def build_strategy_profile(config_path: Path) -> dict[str, Any]: ...
 
 Map factor identifiers to Chinese labels and one-sentence explanations. Sort strategy factors by descending weight and activity by date descending, with planned events after completed events on the same day.
 
-- [ ] **Step 5: Wire the detail aggregator and verify GREEN**
+- [x] **Step 5: Wire the detail aggregator and verify GREEN**
 
 Enrich rows before totals and expose:
 
@@ -189,7 +189,7 @@ Run:
 python3 -m unittest tests.test_dashboard_finance tests.test_dashboard_app_api
 ```
 
-- [ ] **Step 6: Commit finance metadata**
+- [x] **Step 6: Commit finance metadata**
 
 ```bash
 git add stock_analyze/dashboard_finance.py stock_analyze/dashboard_aggregator.py \
