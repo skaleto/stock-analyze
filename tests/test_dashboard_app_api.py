@@ -309,6 +309,30 @@ class DashboardAppApiTests(unittest.TestCase):
         self.assertEqual(payload["trades"]["summary"]["total"], 3)
         self.assertEqual(len(payload["trades"]["rows"]), 2)
 
+    def test_runs_collapse_running_and_success_rows_by_run_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            runs_path = root / "data" / "cn_qdii_etf" / "codex" / "runs.csv"
+            runs = pd.read_csv(runs_path, dtype=str, keep_default_na=False)
+            success = runs.iloc[0].to_dict()
+            running = {
+                **success,
+                "finished_at": "",
+                "duration_ms": "",
+                "status": "running",
+            }
+            pd.DataFrame([running, success]).to_csv(runs_path, index=False)
+
+            payload = build_dashboard_detail_data(
+                repo_root=root,
+                market="cn_qdii_etf",
+                agent="codex",
+            )
+
+        self.assertEqual(payload["runs"]["summary"]["total"], 1)
+        self.assertEqual(payload["runs"]["rows"][0]["status"], "success")
+
 
 if __name__ == "__main__":
     unittest.main()

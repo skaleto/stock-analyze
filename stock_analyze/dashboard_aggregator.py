@@ -569,6 +569,24 @@ def _limited_csv_rows(
     return _json_safe(df.to_dict(orient="records"))
 
 
+def _collapse_run_transitions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep one logical run per run_id, preferring its terminal transition."""
+    selected: dict[str, tuple[tuple[int, str, int], dict[str, Any]]] = {}
+    order: list[str] = []
+    for index, row in enumerate(rows):
+        run_id = str(row.get("run_id") or "").strip()
+        key = run_id or f"__missing_run_id_{index}"
+        status = str(row.get("status") or "").strip().lower()
+        finished_at = str(row.get("finished_at") or "")
+        is_terminal = int(bool(finished_at) or status not in {"", "running"})
+        rank = (is_terminal, finished_at, index)
+        if key not in selected:
+            order.append(key)
+        if key not in selected or rank >= selected[key][0]:
+            selected[key] = (rank, row)
+    return [selected[key][1] for key in order]
+
+
 def _read_fund_name_lookup(root: Path, market: str) -> dict[str, str]:
     path = root / "data" / market / "shared" / "cache" / "fund_basic_E.csv"
     if not path.exists() or path.stat().st_size == 0:
@@ -817,6 +835,7 @@ def build_dashboard_detail_data(
         limit=0,
         sort_by=["started_at"],
     )
+    runs_all = _collapse_run_transitions(runs_all)
     positions = positions_all[-limit:] if limit > 0 else positions_all
     trades = trades_all[-limit:] if limit > 0 else trades_all
     runs = runs_all[-limit:] if limit > 0 else runs_all
