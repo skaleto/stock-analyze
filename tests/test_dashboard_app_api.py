@@ -201,6 +201,22 @@ class DashboardAppApiTests(unittest.TestCase):
         self.assertEqual(caught.exception.source, "positions")
         self.assertNotIn(str(root), str(caught.exception))
 
+    def test_existing_positions_csv_with_missing_required_columns_is_a_data_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            positions = root / "data" / "cn_qdii_etf" / "codex" / "positions.csv"
+            pd.DataFrame([{"unexpected": "value"}]).to_csv(positions, index=False)
+
+            with self.assertRaises(DashboardDataError) as caught:
+                build_dashboard_detail_data(
+                    repo_root=root,
+                    market="cn_qdii_etf",
+                    agent="codex",
+                )
+
+        self.assertEqual(caught.exception.source, "positions")
+
     def test_existing_malformed_pending_json_is_an_explicit_data_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -270,6 +286,28 @@ class DashboardAppApiTests(unittest.TestCase):
             ["159920.SZ", "513100.SH"],
         )
         self.assertIsNone(payload["nav"]["latest"]["benchmark_code"])
+
+    def test_summary_total_counts_all_rows_before_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            trades_path = root / "data" / "cn_qdii_etf" / "codex" / "trades.csv"
+            trades = pd.read_csv(trades_path, dtype={"code": str})
+            trades = pd.concat(
+                [trades, trades.assign(code="159941.SZ"), trades.assign(code="159920.SZ")],
+                ignore_index=True,
+            )
+            trades.to_csv(trades_path, index=False)
+
+            payload = build_dashboard_detail_data(
+                repo_root=root,
+                market="cn_qdii_etf",
+                agent="codex",
+                limit=2,
+            )
+
+        self.assertEqual(payload["trades"]["summary"]["total"], 3)
+        self.assertEqual(len(payload["trades"]["rows"]), 2)
 
 
 if __name__ == "__main__":

@@ -256,6 +256,7 @@ function DataTable({
 }
 
 function DetailDrawer({ row, title, onClose }: { row: OrderRow | null; title: string; onClose: () => void }) {
+  const drawerRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -263,6 +264,26 @@ function DetailDrawer({ row, title, onClose }: { row: OrderRow | null; title: st
     closeButtonRef.current?.focus();
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
+      if (event.key === "Tab") {
+        const focusable = Array.from(
+          drawerRef.current?.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), a[href], input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          ) ?? []
+        );
+        if (focusable.length === 0) {
+          event.preventDefault();
+          return;
+        }
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
@@ -270,7 +291,7 @@ function DetailDrawer({ row, title, onClose }: { row: OrderRow | null; title: st
 
   if (!row) return null;
   return (
-    <aside className="drawer drawer-open" role="dialog" aria-modal="true" aria-label={`${title}明细`}>
+    <aside ref={drawerRef} className="drawer drawer-open" role="dialog" aria-modal="true" aria-label={`${title}明细`}>
       <div className="drawer-head">
         <div>
           <p>明细</p>
@@ -324,7 +345,8 @@ export default function App() {
   const [selectedAgent, setSelectedAgent] = useState(preferredAgent);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [selectedRow, setSelectedRow] = useState<OrderRow | null>(null);
   const [selectedRowTitle, setSelectedRowTitle] = useState("明细");
@@ -348,6 +370,7 @@ export default function App() {
     const payload = await fetchSummary(controller.signal);
     if (requestId !== summaryRequestIdRef.current) return;
     setSummary(payload);
+    setSummaryError(null);
     const current = selectionRef.current;
     const currentMarket = payload.markets.find((market) => market.market === current.market);
     const currentAgent = currentMarket?.agents.find((agent) => agent.agent === current.agent);
@@ -371,11 +394,11 @@ export default function App() {
       const payload = await fetchDetail(market, agent, controller.signal);
       if (requestId !== detailRequestIdRef.current) return;
       setDetail(payload);
-      setError(null);
+      setDetailError(null);
     } catch (err) {
       if (requestId !== detailRequestIdRef.current) return;
       if (err instanceof Error && err.name === "AbortError") return;
-      setError(err instanceof Error ? err.message : String(err));
+      setDetailError(err instanceof Error ? err.message : String(err));
     } finally {
       if (requestId === detailRequestIdRef.current) setDetailLoading(false);
     }
@@ -383,10 +406,10 @@ export default function App() {
 
   useEffect(() => {
     setLoading(true);
-    setError(null);
+    setSummaryError(null);
     loadSummary()
       .catch((err: Error) => {
-        if (err.name !== "AbortError") setError(err.message);
+        if (err.name !== "AbortError") setSummaryError(err.message);
       })
       .finally(() => setLoading(false));
   }, [loadSummary]);
@@ -399,7 +422,7 @@ export default function App() {
     if (!autoRefresh) return undefined;
     const timer = window.setInterval(() => {
       loadSummary().catch((err: Error) => {
-        if (err.name !== "AbortError") setError(err.message);
+        if (err.name !== "AbortError") setSummaryError(err.message);
       });
       void loadDetail(selectedMarket, selectedAgent);
     }, 30000);
@@ -416,10 +439,12 @@ export default function App() {
   const markets = summary?.markets ?? [];
   const agentOptions = selectedMarketSummary?.agents ?? [];
   const activeDetail = detail?.market === selectedMarket && detail?.agent === selectedAgent ? detail : null;
+  const error = detailError ?? summaryError;
 
   const refresh = async () => {
     setLoading(true);
-    setError(null);
+    setSummaryError(null);
+    setDetailError(null);
     try {
       await Promise.all([
         loadSummary(),
@@ -427,7 +452,7 @@ export default function App() {
       ]);
     } catch (err) {
       if (!(err instanceof Error) || err.name !== "AbortError") {
-        setError(err instanceof Error ? err.message : String(err));
+        setSummaryError(err instanceof Error ? err.message : String(err));
       }
     } finally {
       setLoading(false);
@@ -439,7 +464,7 @@ export default function App() {
     detailRequestIdRef.current += 1;
     setDetail(null);
     setSelectedRow(null);
-    setError(null);
+    setDetailError(null);
     setSelectedMarket(market);
     setSelectedAgent(agent);
   };

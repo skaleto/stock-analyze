@@ -196,8 +196,13 @@ describe("Dashboard app", () => {
     await user.keyboard("{Enter}");
 
     expect(screen.getByRole("dialog", { name: "订单明细" })).toBeVisible();
+    const closeButton = screen.getByRole("button", { name: "关闭明细" });
+    expect(closeButton).toHaveFocus();
+    await user.tab();
+    expect(closeButton).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "订单明细" })).not.toBeInTheDocument();
+    expect(row).toHaveFocus();
   });
 
   it("ignores an older detail response after the market changes", async () => {
@@ -246,5 +251,39 @@ describe("Dashboard app", () => {
 
     expect(await screen.findByText("Dashboard data source is unreadable: positions")).toBeInTheDocument();
     expect(screen.queryByText("纳指ETF")).not.toBeInTheDocument();
+  });
+
+  it("keeps a summary error when a concurrent detail refresh succeeds", async () => {
+    const refreshedDetail = deferred<Response>();
+    let summaryCalls = 0;
+    let detailCalls = 0;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("summary")) {
+        summaryCalls += 1;
+        if (summaryCalls === 1) return Promise.resolve(jsonResponse(summaryPayload));
+        return Promise.resolve(jsonResponse({
+          error: "dashboard_api_failed",
+          message: "Summary refresh failed"
+        }, 500));
+      }
+      detailCalls += 1;
+      if (detailCalls === 1) return Promise.resolve(jsonResponse(detailPayload));
+      return refreshedDetail.promise;
+    }));
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(await screen.findByText("纳指ETF")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "刷新 dashboard" }));
+    expect(await screen.findByText("Summary refresh failed")).toBeInTheDocument();
+
+    await act(async () => {
+      refreshedDetail.resolve(jsonResponse(detailPayload));
+      await refreshedDetail.promise;
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Summary refresh failed")).toBeInTheDocument();
   });
 });

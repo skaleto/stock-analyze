@@ -24,6 +24,7 @@ from ...utils import write_json
 
 
 MAX_NAV_AGE_DAYS = 7
+MAX_PRICE_AGE_DAYS = 7
 
 
 @dataclass
@@ -232,6 +233,15 @@ class CNQDIETFProvider:
         amounts = pd.to_numeric(hist.get("amount"), errors="coerce")
         nav, nav_date = self._latest_nav(ts_code, str(latest["trade_date"]))
         close = _safe_float(latest.get("close"))
+        price_is_stale = self._price_is_stale(str(latest["trade_date"]), as_of_key)
+        warning = ""
+        if price_is_stale:
+            warning = "stale fund_daily history"
+            self.record_health(
+                "fund_daily",
+                "stale",
+                f"{ts_code} trade_date={_iso(latest.get('trade_date'))} as_of={_iso(as_of_key)}",
+            )
         nav_is_fresh = self._nav_is_fresh(nav_date, str(latest["trade_date"]))
         discount = (
             close / nav - 1.0
@@ -264,7 +274,8 @@ class CNQDIETFProvider:
             list_date=list_date,
             listing_age_days=self._listing_age_days(list_date, str(latest["trade_date"])),
             industry=classify_scope(ts_code),
-            paused=False,
+            paused=price_is_stale,
+            warning=warning,
         )
 
     def _paused_snapshot(
@@ -516,6 +527,15 @@ class CNQDIETFProvider:
         except ValueError:
             return False
         return 0 <= (trade_day - nav_day).days <= MAX_NAV_AGE_DAYS
+
+    @staticmethod
+    def _price_is_stale(trade_date: str, as_of_key: str) -> bool:
+        try:
+            trade_day = datetime.strptime(_yyyymmdd(trade_date), "%Y%m%d").date()
+            as_of_day = datetime.strptime(_yyyymmdd(as_of_key), "%Y%m%d").date()
+        except ValueError:
+            return True
+        return (as_of_day - trade_day).days > MAX_PRICE_AGE_DAYS
 
     def _latest_nav(self, ts_code: str, trade_date: str) -> tuple[float | None, str | None]:
         nav_df = self._fund_nav(ts_code, trade_date)

@@ -19,11 +19,15 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
-from math import ceil
+from math import ceil, isnan
+from pathlib import Path
 from typing import Any, Protocol
+
+from ..utils import read_json, write_json
 
 
 logger = logging.getLogger(__name__)
+SETTLEMENT_TRANSACTION_FILE = ".settlement_transaction.json"
 
 
 class MechanicsProtocol(Protocol):
@@ -112,6 +116,7 @@ class SettlementSimulatorBase:
         available for same-day buys).
         """
         as_of = as_of or date.today()
+        self._recover_settlement_transaction(store)
         state = store.load_state()
         pending = store.read_pending()
         trades: list[dict[str, Any]] = []
@@ -136,13 +141,72 @@ class SettlementSimulatorBase:
             else:
                 remaining_pending.append({**raw, "unfilled_reason": unfilled_reason or "not filled"})
 
-        store.save_state(state)
-        store.write_pending(remaining_pending)
-        if hasattr(store, "append_trades"):
-            store.append_trades(trades)
-        if hasattr(store, "write_positions"):
-            store.write_positions(state)
+        transaction_path = self._settlement_transaction_path(store)
+        if transaction_path is not None:
+            existing_trades = self._json_records(store.read_trades().to_dict(orient="records"))
+            transaction = {
+                "state": state,
+                "pending": remaining_pending,
+                "trades": [*existing_trades, *trades],
+            }
+            write_json(transaction_path, transaction)
+            self._commit_settlement_transaction(store, transaction, transaction_path)
+        else:
+            store.save_state(state)
+            store.write_pending(remaining_pending)
+            if hasattr(store, "append_trades"):
+                store.append_trades(trades)
+            if hasattr(store, "write_positions"):
+                store.write_positions(state)
         return trades
+
+    @staticmethod
+    def _settlement_transaction_path(store: Any) -> Path | None:
+        data_dir = getattr(store, "data_dir", None)
+        if data_dir is None or not hasattr(store, "write_trades"):
+            return None
+        return Path(data_dir) / SETTLEMENT_TRANSACTION_FILE
+
+    def _recover_settlement_transaction(self, store: Any) -> None:
+        path = self._settlement_transaction_path(store)
+        if path is None or not path.exists():
+            return
+        transaction = read_json(path, None)
+        if not isinstance(transaction, dict):
+            raise RuntimeError("invalid settlement transaction journal")
+        self._commit_settlement_transaction(store, transaction, path)
+
+    @staticmethod
+    def _commit_settlement_transaction(
+        store: Any,
+        transaction: dict[str, Any],
+        path: Path,
+    ) -> None:
+        state = transaction.get("state")
+        pending = transaction.get("pending")
+        trades = transaction.get("trades")
+        if not isinstance(state, dict) or not isinstance(pending, list) or not isinstance(trades, list):
+            raise RuntimeError("invalid settlement transaction payload")
+        store.save_state(state)
+        store.write_pending(pending)
+        store.write_trades(trades)
+        store.write_positions(state)
+        path.unlink(missing_ok=True)
+
+    @classmethod
+    def _json_records(cls, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {key: cls._json_scalar(value) for key, value in row.items()}
+            for row in rows
+        ]
+
+    @staticmethod
+    def _json_scalar(value: Any) -> Any:
+        if hasattr(value, "item"):
+            value = value.item()
+        if isinstance(value, float) and isnan(value):
+            return None
+        return value
 
     def _coerce_order(self, raw: dict[str, Any]):
         return self.order_cls(
@@ -527,8 +591,20 @@ class SettlementSimulatorBase:
                         "reason": r.get("reason", "top_n"),
                     })
 
-        store.write_pending(new_orders)
-        return new_orders
+        existing_pending = store.read_pending()
+        existing_keys = {
+            (str(order.get("account_id", "")), str(order.get("code", "")))
+            for order in existing_pending
+            if isinstance(order, dict)
+        }
+        accepted_orders = [
+            order
+            for order in new_orders
+            if (str(order.get("account_id", "")), str(order.get("code", "")))
+            not in existing_keys
+        ]
+        store.write_pending([*existing_pending, *accepted_orders])
+        return accepted_orders
 
 
 __all__ = ["MechanicsProtocol", "SettlementSimulatorBase"]

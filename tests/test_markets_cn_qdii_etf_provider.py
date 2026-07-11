@@ -75,6 +75,13 @@ class BoundedTushareClient(FakeTushareClient):
         return frame.loc[frame["trade_date"] <= "20260710"].copy()
 
 
+class StaleDailyTushareClient(FakeTushareClient):
+    def fund_daily(self, **kwargs):
+        self.daily_calls.append(kwargs)
+        frame = _daily_frame()
+        return frame.loc[frame["trade_date"] <= "20260630"].copy()
+
+
 class AdjustedTushareClient(FakeTushareClient):
     def fund_daily(self, **kwargs):
         self.daily_calls.append(kwargs)
@@ -197,6 +204,15 @@ class ProviderSnapshotTests(unittest.TestCase):
 
         self.assertEqual(snap.nav_date, "2026-06-01")
         self.assertIsNone(snap.discount_premium)
+
+    def test_stale_daily_history_is_marked_paused(self):
+        provider = CNQDIETFProvider(pro_client=StaleDailyTushareClient(), cache_dir=None)
+
+        snap = provider.price_snapshot("513100.SH", as_of="2026-07-10")
+
+        self.assertTrue(snap.paused)
+        self.assertIn("stale", snap.warning)
+        self.assertEqual(snap.trade_date, "2026-06-30")
 
     def test_persist_health_writes_fetch_outcomes(self):
         with TemporaryDirectory() as tmp:

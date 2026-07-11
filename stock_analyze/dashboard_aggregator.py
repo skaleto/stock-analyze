@@ -539,6 +539,7 @@ def _limited_csv_rows(
     path: Path,
     *,
     source: str,
+    required_columns: list[str],
     text_columns: list[str],
     numeric_columns: list[str],
     limit: int,
@@ -554,6 +555,8 @@ def _limited_csv_rows(
         )
     except Exception as exc:  # noqa: BLE001
         raise DashboardDataError(source) from exc
+    if any(column not in df.columns for column in required_columns):
+        raise DashboardDataError(source)
     if df.empty:
         return []
     df = _coerce_numeric_columns(df, numeric_columns)
@@ -751,9 +754,10 @@ def build_dashboard_detail_data(
         paths.data_dir,
         name_lookup=_read_fund_name_lookup(root, market),
     )
-    positions = _limited_csv_rows(
+    positions_all = _limited_csv_rows(
         paths.data_dir / "positions.csv",
         source="positions",
+        required_columns=["account_id", "code", "shares"],
         text_columns=[
             "account_id",
             "code",
@@ -773,12 +777,13 @@ def build_dashboard_detail_data(
             "unrealized_pnl",
             "score",
         ],
-        limit=limit,
+        limit=0,
         sort_by=["account_id", "code"],
     )
-    trades = _limited_csv_rows(
+    trades_all = _limited_csv_rows(
         paths.data_dir / "trades.csv",
         source="trades",
+        required_columns=["trade_date", "account_id", "code", "side"],
         text_columns=["trade_date", "account_id", "code", "name", "side", "reason"],
         numeric_columns=[
             "shares",
@@ -790,12 +795,13 @@ def build_dashboard_detail_data(
             "net_amount",
             "cash_after",
         ],
-        limit=limit,
+        limit=0,
         sort_by=["trade_date"],
     )
-    runs = _limited_csv_rows(
+    runs_all = _limited_csv_rows(
         paths.data_dir / "runs.csv",
         source="runs",
+        required_columns=["run_id", "command", "started_at", "status"],
         text_columns=[
             "run_id",
             "command",
@@ -808,14 +814,17 @@ def build_dashboard_detail_data(
             "code_version",
         ],
         numeric_columns=["duration_ms"],
-        limit=limit,
+        limit=0,
         sort_by=["started_at"],
     )
+    positions = positions_all[-limit:] if limit > 0 else positions_all
+    trades = trades_all[-limit:] if limit > 0 else trades_all
+    runs = runs_all[-limit:] if limit > 0 else runs_all
     report_path = paths.reports_dir / "weekly_report.md"
     report_markdown = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
     position_value = sum(
         safe_float(row.get("market_value")) or 0.0
-        for row in positions
+        for row in positions_all
     )
     payload = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -834,14 +843,14 @@ def build_dashboard_detail_data(
         },
         "positions": {
             "summary": {
-                "total": len(positions),
+                "total": len(positions_all),
                 "market_value": position_value,
                 "market_value_display": _format_market_money(position_value, market),
             },
             "rows": positions,
         },
-        "trades": {"summary": {"total": len(trades)}, "rows": trades},
-        "runs": {"summary": {"total": len(runs)}, "rows": list(reversed(runs))},
+        "trades": {"summary": {"total": len(trades_all)}, "rows": trades},
+        "runs": {"summary": {"total": len(runs_all)}, "rows": list(reversed(runs))},
         "weekly_report": {
             "exists": report_path.exists(),
             "href": _weekly_report_href(market, agent, paths.reports_dir),
