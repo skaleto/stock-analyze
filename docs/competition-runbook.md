@@ -70,10 +70,11 @@ python3 -m stock_analyze apply-strategy-release \
 发布会依次执行：
 
 1. 校验四份候选 overlay 的 schema 与基线锁。
-2. 对 A 股候选策略执行历史验证门禁。
+2. 对两套 A 股候选策略执行完整预检；全部通过前不写任何活动配置。
 3. 校验每个市场的双策略差异度。
-4. 原子写入活动配置、历史备份、演化日志、diff 和审计 CSV。
-5. 任一步失败则不切换活动策略。
+4. 把旧策略遗留待单归档到 `pending_order_archive/<release_id>.json` 后清空活动队列。
+5. 写入活动配置、历史备份、演化日志、diff 和审计 CSV。
+6. 门禁失败则不切换任何活动策略；中断后重跑可恢复待单归档步骤。
 
 同一 manifest 再次执行应返回 unchanged，便于安全重试。
 

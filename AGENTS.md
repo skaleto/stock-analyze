@@ -85,8 +85,10 @@ python3 -m stock_analyze apply-strategy-release \
 ```
 
 The release flow validates schema and locked fields, runs the A-share historical
-gate, checks pair differentiation, writes config history, and appends the audit
-records. If any step fails, active overlays must remain unchanged.
+gates as a complete preflight, checks pair differentiation, writes config
+history, archives pre-release pending orders under
+`pending_order_archive/<release_id>.json`, and appends the audit records. If a
+gate fails, no active overlay may be changed.
 
 For ECS publishing, use two phases:
 
