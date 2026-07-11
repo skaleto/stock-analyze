@@ -1,0 +1,23 @@
+frontend/dashboard/src/CompetitionPanel.test.tsx
+  s_db9afa53cf7b72::t_3a4f8a113034a2 176-212
+frontend/dashboard/src/CompetitionPanel.tsx
+  s_db9afa53cf7b72::t_49c27c11c263db 5,8,18-34,180,185
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "1c2946dc65c745dc05ce3be03ee74cc2c160313a",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
