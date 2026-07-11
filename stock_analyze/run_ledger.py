@@ -139,7 +139,7 @@ class RunLedger:
         run_id = generate_run_id(command)
         started_at = now_iso()
         digest = self.snapshot_config(config) if config else ""
-        version = code_version(self.data_dir.parent if self.data_dir.name == "data" else None)
+        version = code_version()
         context: dict[str, Any] = {
             "run_id": run_id,
             "command": command,
