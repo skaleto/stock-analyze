@@ -1,0 +1,21 @@
+docs/superpowers/specs/2026-07-11-dual-strategy-takeover-design.md
+  s_db9afa53cf7b72::t_724d77ef58e3e8 1-164
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "71dbd6bd1f1abcbe89193f4947a138d573ab8d37",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
