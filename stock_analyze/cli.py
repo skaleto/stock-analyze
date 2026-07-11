@@ -117,6 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
         "validate-strategy-pair",
         help="Validate that the two strategy slots remain materially different.",
     )
+    release = sub.add_parser(
+        "apply-strategy-release",
+        help="Apply one audited multi-market strategy release manifest.",
+    )
+    release.add_argument("--manifest", type=Path, required=True)
+    release.add_argument("--dry-run", action="store_true")
     rollback = sub.add_parser("agent-rollback", help="Rollback an agent overlay to a historical config hash")
     rollback.add_argument("--agent", required=True)
     rollback.add_argument("--to", required=True, help="Config hash saved under configs/agents/_history/")
@@ -397,6 +403,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "validate-strategy-pair":
         ensure_dirs(args.logs_dir)
         return _command_validate_strategy_pair(args)
+    if args.command == "apply-strategy-release":
+        ensure_dirs(args.logs_dir)
+        return _command_apply_strategy_release(args)
     if args.command == "agent-rollback":
         ensure_dirs(args.logs_dir)
         return _command_agent_rollback(args)
@@ -681,6 +690,23 @@ def _command_validate_strategy_pair(args: argparse.Namespace) -> int:
         f"OK: market={market} factor_distance={result['factor_distance']:.4f} "
         f"floor={result['factor_distance_floor']:.4f}"
     )
+    return 0
+
+
+def _command_apply_strategy_release(args: argparse.Namespace) -> int:
+    from .strategy_registry import StrategyPairInvalid
+    from .strategy_release import StrategyReleaseInvalid, apply_strategy_release
+
+    try:
+        result = apply_strategy_release(
+            args.manifest,
+            repo_root=Path.cwd(),
+            dry_run=bool(args.dry_run),
+        )
+    except (StrategyReleaseInvalid, StrategyPairInvalid, OverlayGuardError) as exc:
+        print(f"错误：策略 release 失败 — {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 

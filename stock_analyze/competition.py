@@ -259,6 +259,8 @@ def validate_overlay(
     overlay: dict[str, Any],
     repo_root: str | Path | None = None,
     baseline: dict[str, Any] | None = None,
+    *,
+    market: str = _DEFAULT_MARKET,
 ) -> dict[str, Any]:
     """Validate an in-memory overlay and return the merged config.
 
@@ -270,7 +272,7 @@ def validate_overlay(
 
     root = Path(repo_root) if repo_root else Path.cwd()
     if baseline is None:
-        baseline = load_baseline(root)
+        baseline = load_baseline(root, market)
 
     _validate_overlay_top_level(overlay, agent_id)
     _validate_locked_paths(baseline, overlay)

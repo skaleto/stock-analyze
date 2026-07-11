@@ -91,7 +91,7 @@ git commit -m "feat: define dual strategy season"
 - Modify: `configs/agents/claude_cn_qdii_etf.yaml`
 - Modify: `configs/agents/codex_cn_qdii_etf.yaml`
 
-- [ ] **Step 1: Write failing multi-market evolution tests**
+- [x] **Step 1: Write failing multi-market evolution tests**
 
 Assert `market="cn_qdii_etf"` writes the overlay to
 `configs/agents/<agent>_cn_qdii_etf.yaml`, writes audit files under
@@ -99,19 +99,19 @@ Assert `market="cn_qdii_etf"` writes the overlay to
 backtest gate, and hashes against the QDII baseline. Keep the existing A-share
 gate behavior unchanged.
 
-- [ ] **Step 2: Write failing idempotent release tests**
+- [x] **Step 2: Write failing idempotent release tests**
 
 Seed old overlays and a four-entry manifest. Assert the first apply evolves all
 four slots, the second apply returns four `unchanged` statuses without duplicate
 CSV rows, and a pair-guard failure performs no overlay writes.
 
-- [ ] **Step 3: Run focused tests and verify RED**
+- [x] **Step 3: Run focused tests and verify RED**
 
 ```bash
 python3 -m unittest tests.test_evolution_writer tests.test_evolution_writer_backtest_gate tests.test_evolution_writer_multi_market tests.test_strategy_release
 ```
 
-- [ ] **Step 4: Implement market-aware evolution and release application**
+- [x] **Step 4: Implement market-aware evolution and release application**
 
 Extend `competition.validate_overlay(..., market=...)`. In evolution writer use
 `resolve_market_paths`, market-specific guard/baseline/hash paths, A-share-only
@@ -135,13 +135,13 @@ python3 -m stock_analyze apply-strategy-release \
   --manifest configs/strategy_versions/2026-07-takeover/manifest.json
 ```
 
-- [ ] **Step 5: Add the four approved overlays and release reasoning**
+- [x] **Step 5: Add the four approved overlays and release reasoning**
 
 Use the exact weights and controls from the design document. The manifest uses
 event key `2026-07-takeover`, reviewer `codex-dual-strategy`, and records the
 one-shot A-share gate metrics plus QDII 2026-07-10 selection-overlap evidence.
 
-- [ ] **Step 6: Run guard and release tests**
+- [x] **Step 6: Run guard and release tests**
 
 ```bash
 python3 -m unittest tests.test_evolution_writer tests.test_evolution_writer_backtest_gate tests.test_evolution_writer_multi_market tests.test_strategy_release

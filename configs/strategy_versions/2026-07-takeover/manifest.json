@@ -1,0 +1,31 @@
+{
+  "release_id": "2026-07-takeover",
+  "month": "2026-07-takeover",
+  "reviewer": "codex-dual-strategy",
+  "entries": [
+    {
+      "market": "a_share",
+      "agent_id": "claude",
+      "overlay": "claude_a_share.json",
+      "reasoning": "# 稳健防守 A股 v1\n\n以估值、质量、股息和低波为主要收益来源，降低行业集中度并延长持有周期。移除依赖外部模型人工维护的情绪因子。验证窗口一次性结果：累计 +21.99%，Sharpe 1.78，最大回撤 -6.41%。未针对验证结果二次调参。"
+    },
+    {
+      "market": "a_share",
+      "agent_id": "codex",
+      "overlay": "codex_a_share.json",
+      "reasoning": "# 趋势进攻 A股 v1\n\n以20/60日动量、净利润增速和ROE为主要收益来源，缩短持有周期并允许更高行业主动度。移除人工情绪因子。验证窗口一次性结果：累计 +29.27%，Sharpe 2.14，最大回撤 -7.10%。未针对验证结果二次调参。"
+    },
+    {
+      "market": "cn_qdii_etf",
+      "agent_id": "claude",
+      "overlay": "claude_cn_qdii_etf.json",
+      "reasoning": "# 稳健防守 跨境ETF v1\n\n以低波、低折溢价和流动性为主，保留少量中期动量，使用较高持仓缓冲降低换手。2026-07-10真实缓存横截面试算完成；与趋势进攻的美国敞口持仓Jaccard为0.4286，香港敞口为0.6667。"
+    },
+    {
+      "market": "cn_qdii_etf",
+      "agent_id": "codex",
+      "overlay": "codex_cn_qdii_etf.json",
+      "reasoning": "# 趋势进攻 跨境ETF v1\n\n以20/60日动量为主，保留流动性约束，仅用少量低波和折溢价抑制极端风险；零持仓缓冲和45天上限用于形成主动换仓风格。2026-07-10真实缓存横截面试算完成。"
+    }
+  ]
+}
