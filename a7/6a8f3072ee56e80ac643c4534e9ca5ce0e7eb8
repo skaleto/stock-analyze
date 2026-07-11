@@ -1,0 +1,23 @@
+stock_analyze/strategy_release.py
+  s_db9afa53cf7b72::t_9ede12aa6e58d6 57-81,97-98,103-105
+tests/test_strategy_release.py
+  s_db9afa53cf7b72::t_1ff556a7159993 178-179,181-184,219-257
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "a76a8f3072ee56e80ac643c4534e9ca5ce0e7eb8",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
