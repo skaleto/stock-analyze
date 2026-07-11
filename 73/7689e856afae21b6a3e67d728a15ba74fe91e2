@@ -1,0 +1,23 @@
+stock_analyze/markets/cn_qdii_etf/data_provider.py
+  s_db9afa53cf7b72::t_89a84d1a357ab0 120,376,378-389,392,394,399,411-412,419-424
+tests/test_markets_cn_qdii_etf_provider.py
+  s_db9afa53cf7b72::t_d6bb04c42c6a9a 269-291
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "737689e856afae21b6a3e67d728a15ba74fe91e2",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
