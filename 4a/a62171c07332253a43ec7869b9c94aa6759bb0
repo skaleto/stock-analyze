@@ -1,0 +1,21 @@
+configs/agents/codex_a_share.yaml
+  s_db9afa53cf7b72::t_cce66e817cc9cb 3-4,7,11,15,19,23,27,31,35,39,47,59-60,72-73,79-80,82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "4aa62171c07332253a43ec7869b9c94aa6759bb0",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
