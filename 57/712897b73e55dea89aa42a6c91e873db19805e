@@ -1,0 +1,51 @@
+configs/agents/claude_a_share.yaml
+  s_db9afa53cf7b72::t_aed7b7fcc0f362 3-4,6-11,15-16,18,21-23,32-34
+configs/agents/claude_cn_qdii_etf.yaml
+  s_db9afa53cf7b72::t_fb621adfd0ca52 3-4,6-9,19-20,25
+configs/agents/codex_a_share.yaml
+  s_db9afa53cf7b72::t_82cd4d83a9ddb9 3-4,6-12,22-24,30,32-35
+configs/agents/codex_cn_qdii_etf.yaml
+  s_db9afa53cf7b72::t_c470d752a894fd 3-4,6-8,10,20-21
+configs/strategy_versions/2026-07-takeover/claude_a_share.json
+  s_db9afa53cf7b72::t_5ea9e537014be4 1-36
+configs/strategy_versions/2026-07-takeover/claude_cn_qdii_etf.json
+  s_db9afa53cf7b72::t_8a7702165595a6 1-28
+configs/strategy_versions/2026-07-takeover/codex_a_share.json
+  s_db9afa53cf7b72::t_4d3327b668b610 1-37
+configs/strategy_versions/2026-07-takeover/codex_cn_qdii_etf.json
+  s_db9afa53cf7b72::t_77bb5571ec616e 1-29
+configs/strategy_versions/2026-07-takeover/manifest.json
+  s_db9afa53cf7b72::t_dc880dbb837318 1-31
+docs/superpowers/plans/2026-07-11-dual-strategy-takeover.md
+  s_db9afa53cf7b72::t_1d3d1e3b1a72cf 94,102,108,114,138,144
+stock_analyze/cli.py
+  s_db9afa53cf7b72::t_582cf2c8c90080 120-125,406-408,696-712
+stock_analyze/competition.py
+  s_db9afa53cf7b72::t_48e5ce2e52c6cb 262-263,275
+stock_analyze/evolution_writer.py
+  s_db9afa53cf7b72::t_1e382f8b313f43 49,121,125-130,138-163,167-168,205,218,244,258,313,326,351,361-366
+stock_analyze/strategy_release.py
+  s_db9afa53cf7b72::t_bb3f486b953be2 1-135
+tests/test_evolution_writer_multi_market.py
+  s_db9afa53cf7b72::t_0c598baf35b2ce 1-123
+tests/test_strategy_release.py
+  s_db9afa53cf7b72::t_585b76ed065189 1-140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "57712897b73e55dea89aa42a6c91e873db19805e",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
