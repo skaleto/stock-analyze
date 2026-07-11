@@ -1,0 +1,33 @@
+docs/superpowers/plans/2026-07-11-domestic-investment-terminal-redesign.md
+  s_db9afa53cf7b72::t_a3fedd5818f398 420,434
+frontend/dashboard/src/App.tsx
+  s_db9afa53cf7b72::t_ccc8de7d7b4d73 297-301,303-306,368
+frontend/dashboard/src/PortfolioViews.tsx
+  s_db9afa53cf7b72::t_eb345e4050dc62 3,139
+frontend/dashboard/src/finance.test.ts
+  s_db9afa53cf7b72::t_db20bb5c630b5e 2,24-30
+frontend/dashboard/src/finance.ts
+  s_db9afa53cf7b72::t_45da68f4a3bc25 102,123-139
+scripts/deploy-app-to-ecs.sh
+  s_db9afa53cf7b72::t_38594db99428e8 66-67,72-82
+tests/test_deploy_app_script.py
+  s_db9afa53cf7b72::t_e130ede8ae0a8c 36-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "376f2b69d62985787d1f869743b47415b9b259a3",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
