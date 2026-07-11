@@ -1,0 +1,35 @@
+docs/superpowers/plans/2026-07-11-domestic-investment-terminal-redesign.md
+  s_db9afa53cf7b72::t_ab195d1c65d079 211,222,231,242,256,260,268
+stock_analyze/cli.py
+  s_db9afa53cf7b72::t_21230eb89a0a51 1029,1045-1051,1058-1062,1097,1104-1116
+stock_analyze/dashboard_aggregator.py
+  s_db9afa53cf7b72::t_3ff068e55c9858 34-43,680-686,714,718,721,730-733,774-776,780-833,977-1067,1611,1613,1750,1752,2038-2039
+stock_analyze/dashboard_finance.py
+  s_db9afa53cf7b72::t_309408e55dc169 6,10-11,93-104,225-385
+tests/test_cli_dashboard_routes.py
+  s_db9afa53cf7b72::t_b336ba363b4bd8 91
+tests/test_dashboard_app_api.py
+  s_db9afa53cf7b72::t_8453340954f06d 296-468
+tests/test_dashboard_ia_refactor.py
+  s_db9afa53cf7b72::t_00a210b162aa0c 173-174
+tests/test_dashboard_multi_market.py
+  s_db9afa53cf7b72::t_fba6fef589587c 16,91,99,103,105-107,117,122-125,135,140-143,158,160,187,190,192-195,199
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "4ca0c998741d842e49b955e3acf5b25bf46f5f34",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
