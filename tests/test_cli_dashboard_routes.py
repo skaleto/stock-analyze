@@ -88,6 +88,7 @@ class DashboardRoutesTableTests(unittest.TestCase):
     def test_dashboard_summary_api_route(self) -> None:
         self.assertTrue(_is_dashboard_api_path("/api/dashboard/summary.json"))
         self.assertTrue(_is_dashboard_api_path("/api/dashboard.json"))
+        self.assertTrue(_is_dashboard_api_path("/api/dashboard/instrument.json"))
         self.assertFalse(_is_dashboard_api_path("/pro.html"))
 
 

@@ -31,7 +31,16 @@ from ._dashboard_assets import BASE_CSS, NAV_CSS, render_nav_html
 from .beginner_dashboard import write_beginner_views
 from . import competition
 from .competition import resolve_agent_paths, resolve_market_paths
-from .dashboard_finance import build_activity, build_strategy_profile, enrich_rows
+from .dashboard_finance import (
+    InstrumentDataError,
+    build_activity,
+    build_history_metrics,
+    build_strategy_profile,
+    enrich_rows,
+    instrument_metadata,
+    read_instrument_history,
+    read_latest_factor_values,
+)
 from .utils import (
     dashboard_fragment_path,
     ensure_dirs,
@@ -668,7 +677,13 @@ def _normalise_order_row(order: dict[str, Any], *, name_lookup: dict[str, str]) 
 
 def _read_nav_detail(data_dir: Path, market: str) -> dict[str, Any]:
     path = data_dir / "daily_nav.csv"
-    empty = {"latest": None, "series": [], "accounts": [], "benchmark_codes": []}
+    empty = {
+        "latest": None,
+        "series": [],
+        "accounts": [],
+        "benchmark_codes": [],
+        "benchmark_label": "基准",
+    }
     if not path.exists() or path.stat().st_size == 0:
         return empty
     try:
@@ -696,12 +711,14 @@ def _read_nav_detail(data_dir: Path, market: str) -> dict[str, Any]:
         .sum(numeric_only=True)
         .sort_values("date")
     )
+    benchmark_by_date, benchmark_codes_all = _composite_benchmark_series(df)
     series: list[dict[str, Any]] = []
     for row in grouped.to_dict(orient="records"):
         total_value = safe_float(row.get("total_value"))
+        date_key = str(row.get("date"))
         series.append(
             {
-                "date": str(row.get("date")),
+                "date": date_key,
                 "cash": safe_float(row.get("cash")),
                 "market_value": safe_float(row.get("market_value")),
                 "total_value": total_value,
@@ -709,6 +726,10 @@ def _read_nav_detail(data_dir: Path, market: str) -> dict[str, Any]:
                 "return": (total_value / baseline - 1.0) if total_value is not None and baseline else None,
                 "return_display": format_pct(
                     (total_value / baseline - 1.0) if total_value is not None and baseline else None
+                ),
+                **benchmark_by_date.get(
+                    date_key,
+                    {"benchmark_return": None, "benchmark_coverage": 0.0},
                 ),
             }
         )
@@ -750,7 +771,64 @@ def _read_nav_detail(data_dir: Path, market: str) -> dict[str, Any]:
         "series": _json_safe(series[-260:]),
         "accounts": accounts,
         "benchmark_codes": benchmark_codes,
+        "benchmark_label": "组合基准" if len(benchmark_codes_all) > 1 else (
+            benchmark_codes_all[0] if benchmark_codes_all else "基准"
+        ),
     }
+
+
+def _composite_benchmark_series(
+    frame: pd.DataFrame,
+) -> tuple[dict[str, dict[str, float | None]], list[str]]:
+    required = {"date", "account_id", "total_value", "benchmark_code", "benchmark_close"}
+    if not required.issubset(frame.columns):
+        return {}, []
+    benchmark = frame[list(required)].copy()
+    benchmark["benchmark_close"] = pd.to_numeric(
+        benchmark["benchmark_close"], errors="coerce"
+    )
+    benchmark["total_value"] = pd.to_numeric(benchmark["total_value"], errors="coerce")
+    benchmark = benchmark[
+        benchmark["benchmark_code"].astype(str).str.len().gt(0)
+        & benchmark["benchmark_close"].notna()
+        & benchmark["benchmark_close"].gt(0)
+    ].sort_values(["account_id", "date"])
+    if benchmark.empty:
+        return {}, []
+    bases: dict[str, tuple[float, float]] = {}
+    for account_id, rows in benchmark.groupby("account_id", sort=False):
+        first = rows.iloc[0]
+        close = safe_float(first.get("benchmark_close"))
+        weight = safe_float(first.get("total_value"))
+        if close and weight and weight > 0:
+            bases[str(account_id)] = (close, weight)
+    total_weight = sum(weight for _, weight in bases.values())
+    if not bases or total_weight <= 0:
+        return {}, []
+    output: dict[str, dict[str, float | None]] = {}
+    for date_value, rows in benchmark.groupby("date", sort=True):
+        weighted_return = 0.0
+        available_weight = 0.0
+        for row in rows.to_dict(orient="records"):
+            base = bases.get(str(row.get("account_id") or ""))
+            close = safe_float(row.get("benchmark_close"))
+            if base is None or close is None:
+                continue
+            base_close, weight = base
+            weighted_return += (close / base_close - 1.0) * weight
+            available_weight += weight
+        output[str(date_value)] = {
+            "benchmark_return": weighted_return / available_weight if available_weight else None,
+            "benchmark_coverage": available_weight / total_weight if total_weight else 0.0,
+        }
+    codes = sorted(
+        {
+            str(value)
+            for value in benchmark["benchmark_code"].tolist()
+            if str(value)
+        }
+    )
+    return output, codes
 
 
 def build_dashboard_detail_data(
@@ -894,6 +972,97 @@ def build_dashboard_detail_data(
         },
     }
     return _json_safe(payload)
+
+
+def build_dashboard_instrument_data(
+    *,
+    repo_root: str | Path | None = None,
+    market: str,
+    agent: str,
+    code: str,
+) -> dict[str, Any]:
+    """Return cached OHLCV and explanatory metrics for one security."""
+
+    if market not in competition.MARKETS:
+        raise competition.UnknownMarket(market)
+    root = Path(repo_root) if repo_root else Path.cwd()
+    if agent not in competition.list_agents_for_market(market, root):
+        raise competition.UnknownAgent(f"unknown_agent:{agent}; market={market}")
+    paths = _resolve_dashboard_paths(market, agent, root)
+    normalized, candles, warning = read_instrument_history(root, market, code)
+    name = _instrument_name(root, market, normalized)
+    factor_values = (
+        read_latest_factor_values(root, agent, normalized)
+        if market == "a_share"
+        else {}
+    )
+    metrics = build_history_metrics(candles, factor_values)
+    related = _limited_csv_rows(
+        paths.data_dir / "trades.csv",
+        source="trades",
+        required_columns=["trade_date", "account_id", "code", "side"],
+        text_columns=["trade_date", "account_id", "code", "name", "side", "reason"],
+        numeric_columns=[
+            "shares",
+            "price",
+            "gross_amount",
+            "commission",
+            "stamp_tax",
+            "slippage",
+            "net_amount",
+            "cash_after",
+        ],
+        limit=0,
+        sort_by=["trade_date"],
+    )
+    digits = normalized.split(".", 1)[0]
+    related = enrich_rows(
+        market,
+        [row for row in related if str(row.get("code") or "").split(".", 1)[0].zfill(6) == digits],
+    )
+    latest = None
+    if candles:
+        latest = dict(candles[-1])
+        previous_close = safe_float(candles[-2].get("close")) if len(candles) > 1 else None
+        close = safe_float(latest.get("close"))
+        latest["change_pct"] = (
+            close / previous_close - 1.0
+            if close is not None and previous_close not in {None, 0}
+            else None
+        )
+    return _json_safe(
+        {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "market": market,
+            "agent": agent,
+            "instrument": instrument_metadata(market, normalized, name),
+            "latest": latest,
+            "candles": candles,
+            "metrics": metrics,
+            "related_trades": list(reversed(related[-50:])),
+            "warning": warning,
+        }
+    )
+
+
+def _instrument_name(root: Path, market: str, code: str) -> str:
+    if market == "cn_qdii_etf":
+        return _read_fund_name_lookup(root, market).get(code, code)
+    cache = root / "data" / "shared" / "cache"
+    candidates = sorted(cache.glob("spot_*.csv"))
+    if not candidates:
+        return code
+    try:
+        frame = pd.read_csv(candidates[-1], dtype=str, keep_default_na=False)
+    except Exception as exc:  # noqa: BLE001
+        raise InstrumentDataError("instrument_name") from exc
+    code_column = next((item for item in ("code", "代码", "ts_code") if item in frame.columns), None)
+    name_column = next((item for item in ("name", "名称", "股票简称") if item in frame.columns), None)
+    if code_column is None or name_column is None:
+        return code
+    digits = code.split(".", 1)[0]
+    rows = frame[frame[code_column].astype(str).str.split(".").str[0].str.zfill(6) == digits]
+    return str(rows.iloc[0][name_column]) if not rows.empty else code
 
 
 def _monthly_status_data(root: Path, market: str) -> dict[str, Any]:
@@ -1439,9 +1608,9 @@ def _render_all_market_observer(
     )
     return (
         '<section id="all-market-observer" class="all-market-observer" data-source="/api/dashboard/summary.json">'
-        '<h2>三市场总览</h2>'
+        '<h2>投资账户总览</h2>'
         f'<section class="grid market-overview-grid">{"".join(market_cards)}</section>'
-        '<h2>三市场具体决策</h2>'
+        '<h2>投资账户具体决策</h2>'
         f'<div class="panel">{decisions}</div>'
         '<h2>日/周/月任务运行情况</h2>'
         f'<div class="panel">{tasks}</div>'
@@ -1578,9 +1747,9 @@ def _render_tab_sections(
 
     compare_section = (
         '<section id="tab-compare" class="tab-section">\n'
-        '<h1 class="tab-title">三市场观察台</h1>\n'
+        '<h1 class="tab-title">投资账户观察台</h1>\n'
         f'{all_market_html}\n'
-        '<h2>三市场情绪反馈</h2>\n'
+        '<h2>投资账户情绪反馈</h2>\n'
         f'{sentiment_status_html}\n'
         '<h2>A股双 Agent 对比</h2>\n'
         f'<section class="grid summary-grid">{cards_html}</section>\n'
@@ -1866,8 +2035,8 @@ _DASHBOARD_DYNAMIC_JS = r"""
       const updatedDisplay = (payload && payload.generated_at) ? String(payload.generated_at).replace('T', ' ') : new Date().toLocaleTimeString();
       return (
         '<div class="live-badge">🟢 实时 · 更新于 ' + escapeText(updatedDisplay) + ' · 每 30 秒自动刷新</div>' +
-        '<h2>三市场总览</h2><section class="grid market-overview-grid">' + marketCards.join('') + '</section>' +
-        '<h2>三市场具体决策</h2><div class="panel"><table class="comparison market-decisions"><thead>' +
+        '<h2>投资账户总览</h2><section class="grid market-overview-grid">' + marketCards.join('') + '</section>' +
+        '<h2>投资账户具体决策</h2><div class="panel"><table class="comparison market-decisions"><thead>' +
         '<tr><th>市场</th><th>Agent</th><th>决策入口</th><th>最新决策</th><th>周报</th></tr></thead><tbody>' +
         decisionRows.join('') + '</tbody></table></div>' +
         '<h2>日/周/月任务运行情况</h2><div class="panel"><table class="comparison market-task-matrix"><thead>' +
