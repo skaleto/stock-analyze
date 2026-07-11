@@ -1,0 +1,21 @@
+tests/test_tri_market_sentiment_closed_loop.py
+  s_db9afa53cf7b72::t_ba0a110c686ca5 80,87,93,97,105,111,126,131,223-224,227,243-245
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "ef03edf2a7dd70f83a2d653a2b955f47f3503463",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
