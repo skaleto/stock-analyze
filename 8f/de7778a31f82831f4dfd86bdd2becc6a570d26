@@ -1,0 +1,27 @@
+AGENTS.md
+  s_db9afa53cf7b72::t_12071ffc4c27dd 88-91
+docs/competition-runbook.md
+  s_db9afa53cf7b72::t_9c6111db7037c0 73,75-77
+stock_analyze/evolution_writer.py
+  s_db9afa53cf7b72::t_c50849d5cafb01 76-78,89,111-113,148-149,151-174
+tests/test_strategy_release.py
+  s_db9afa53cf7b72::t_630532d08f5dda 11,13,139-213
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "8fde7778a31f82831f4dfd86bdd2becc6a570d26",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
