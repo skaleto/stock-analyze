@@ -1,0 +1,43 @@
+frontend/dashboard/src/App.test.tsx
+  s_db9afa53cf7b72::t_3aaa68ecac2aae 199-202,205,255-288
+frontend/dashboard/src/App.tsx
+  s_db9afa53cf7b72::t_58f9d11bfb5bde 259,267-286,294,348-349,373,397,401,409,412,425,442,446-447,455,467
+frontend/dashboard/src/styles.css
+  s_db9afa53cf7b72::t_6a8ab0a968ec5c 269-273
+stock_analyze/dashboard_aggregator.py
+  s_db9afa53cf7b72::t_521cc2c6c219e6 542,558-559,757,760,780,783,786,798,801,804,817,820-822,827,846,852-853
+stock_analyze/markets/_settlement_simulator.py
+  s_db9afa53cf7b72::t_8f6999481cee28 22-23,26-27,30,119,144-160,163-210,594-607
+stock_analyze/markets/cn_qdii_etf/data_provider.py
+  s_db9afa53cf7b72::t_554459668b30c7 27,236-244,277-278,531-539
+stock_analyze/markets/cn_qdii_etf/strategy.py
+  s_db9afa53cf7b72::t_0c1b463f74722b 77-78
+stock_analyze/store.py
+  s_db9afa53cf7b72::t_2292606eb7ab3d 46-62,127-133,135
+tests/test_dashboard_app_api.py
+  s_db9afa53cf7b72::t_d778901410a08b 204-219,290-311
+tests/test_markets_cn_qdii_etf_provider.py
+  s_db9afa53cf7b72::t_6dafebaf2e83ca 78-84,208-216
+tests/test_markets_cn_qdii_etf_simulator.py
+  s_db9afa53cf7b72::t_35d4080b2e7163 69-80,189-220,241-268
+tests/test_markets_cn_qdii_etf_strategy.py
+  s_db9afa53cf7b72::t_a2ba577e999824 97-126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "efdce172b19f87502ffa7a12a29fc4221655cbe4",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
