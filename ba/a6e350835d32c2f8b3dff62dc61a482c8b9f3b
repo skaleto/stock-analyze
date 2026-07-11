@@ -1,0 +1,33 @@
+docs/superpowers/plans/2026-07-11-domestic-investment-terminal-redesign.md
+  s_db9afa53cf7b72::t_c118b1710c2e84 292,301,313,320,335,341,347,358,372,383,390,406,412
+docs/superpowers/specs/2026-07-11-domestic-investment-terminal-redesign.md
+  s_db9afa53cf7b72::t_0b51c0d0122cbd 65-68
+frontend/dashboard/src/App.test.tsx
+  s_db9afa53cf7b72::t_0effea7f45ef73 6-10,57-58,61-62,64-80,120-131,170-175,205-207,215,220-225,234-236,241-242,248,254-255,271,278,299,303,327
+frontend/dashboard/src/App.tsx
+  s_db9afa53cf7b72::t_7bbef27c6f3236 6,13,16-27,44-45,48-49,61-62,74,76,79-82,86-87,90-94,96,98,102,106-117,119-139,141,149-155,206,212,214-216,225,229,234,236,238,257-259,268,283,286,290-291,293-300,307,310-312,315,320,322-325,327-328,332,335-336,338-339,346,350-351,355,358-362,365-370,373,375-382,385
+frontend/dashboard/src/InstrumentDrawer.tsx
+  s_db9afa53cf7b72::t_c807be12a707cf 75
+frontend/dashboard/src/PortfolioViews.tsx
+  s_db9afa53cf7b72::t_115aa7d65e69c3 164
+frontend/dashboard/src/styles.css
+  s_db9afa53cf7b72::t_521daa2f56c021 3-21,26-27,30-31,34-39,43,53-56,62-63,67-68,71,73-74,76-78,80-81,84-88,90-92,95-97,101,104-107,109,112-113,116,121-122,125,129-130,132,134-137,142-143,148-151,157-158,162-163,166,168,173,176,179-182,184-192,194,199-202,205,207-209,211,214-215,219,222,225,227-229,231-233,235-236,239,241-243,245,247-249,251,255-264,266-269,272-273,275,277-292,294-302,305,307-308,311-316,318,320,322,325,327-329,332-348,350,352-353,356-362,364,366-367,369-375,377-384,386-404,406,408-410,412-414,418-434,436-461,463-464,466,470-471,473-474,476-478,480-482,486-487,489-530,534-536,538,542-592
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "baa6e350835d32c2f8b3dff62dc61a482c8b9f3b",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
