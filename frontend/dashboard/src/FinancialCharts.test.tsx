@@ -58,6 +58,22 @@ describe("financial charts", () => {
     expect(chartMocks.subscribeCrosshairMove).toHaveBeenCalledTimes(1);
   });
 
+  it("initializes the readout when nav points arrive after the first render", () => {
+    const { rerender } = render(
+      <PerformanceChart points={[]} benchmarkLabel="组合基准" />
+    );
+
+    rerender(
+      <PerformanceChart
+        points={[{ date: "2026-07-10", return: 0, benchmark_return: null }]}
+        benchmarkLabel="组合基准"
+      />
+    );
+
+    expect(screen.getByText("2026-07-10")).toBeInTheDocument();
+    expect(screen.getByText("0.00%")).toBeInTheDocument();
+  });
+
   it("renders candlesticks and volume and releases the chart", () => {
     const { unmount } = render(
       <CandlestickChart
