@@ -16,6 +16,9 @@ class CheckEcsTimersScriptTests(unittest.TestCase):
 
         self.assertIn("stock-analyze-codex-cn-qdii-etf-daily.timer", script)
         self.assertIn("stock-analyze-codex-cn-qdii-etf-weekly.timer", script)
+        self.assertIn("stock-analyze-claude-cn-qdii-etf-daily.timer", script)
+        self.assertIn("stock-analyze-claude-cn-qdii-etf-weekly.timer", script)
+        self.assertIn('data/cn_qdii_etf/${agent}/runs.csv', script)
         self.assertIn("latest_failed_epoch", script)
         self.assertIn("latest_finished_epoch", script)
         self.assertIn("latest_failed_epoch > latest_finished_epoch", script)

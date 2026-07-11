@@ -32,9 +32,24 @@ rsync -az --relative \
   ./archive/direct-overseas/ \
   ./tests/ \
   ./frontend/dashboard/ \
+  ./configs/competition_a_share.yaml \
   ./configs/competition_cn_qdii_etf.yaml \
-  ./configs/agents/codex_cn_qdii_etf.yaml \
+  ./configs/strategy_competition.json \
+  ./configs/strategy_versions/ \
   "$remote_no_slash/"
+
+# Strategy release is deliberately two-phase: deploy code/versioned candidates,
+# run the remote gate, then sync the active overlays after a successful release.
+if [[ "${SA_SKIP_AGENT_CONFIG_SYNC:-0}" != "1" ]]; then
+  rsync -az --relative \
+    ./configs/agents/claude_a_share.yaml \
+    ./configs/agents/codex_a_share.yaml \
+    ./configs/agents/claude_cn_qdii_etf.yaml \
+    ./configs/agents/codex_cn_qdii_etf.yaml \
+    "$remote_no_slash/"
+else
+  echo "Skipping active strategy config sync; versioned candidates were deployed."
+fi
 
 rsync -az --delete "$REPO_ROOT/reports/app/" "$remote_no_slash/reports/app/"
 
@@ -46,6 +61,10 @@ deploy_version="$2"
 unit_dir="$app_dir/deploy/systemd"
 
 for unit in \
+  stock-analyze-claude-cn-qdii-etf-daily.service \
+  stock-analyze-claude-cn-qdii-etf-daily.timer \
+  stock-analyze-claude-cn-qdii-etf-weekly.service \
+  stock-analyze-claude-cn-qdii-etf-weekly.timer \
   stock-analyze-codex-cn-qdii-etf-daily.service \
   stock-analyze-codex-cn-qdii-etf-daily.timer \
   stock-analyze-codex-cn-qdii-etf-weekly.service \
@@ -65,7 +84,11 @@ python -m unittest \
   tests.test_dashboard_app_api \
   tests.test_cli_dashboard_routes \
   tests.test_dashboard_finance \
+  tests.test_dashboard_multi_market \
   tests.test_archived_markets \
+  tests.test_strategy_registry \
+  tests.test_strategy_release \
+  tests.test_strategy_comparison \
   tests.test_qdii_systemd_units \
   tests.test_deploy_app_script
 
@@ -83,6 +106,8 @@ for archived_timer in \
 done
 install -d -m 0755 /var/lib/systemd/timers
 for timer in \
+  stock-analyze-claude-cn-qdii-etf-daily.timer \
+  stock-analyze-claude-cn-qdii-etf-weekly.timer \
   stock-analyze-codex-cn-qdii-etf-daily.timer \
   stock-analyze-codex-cn-qdii-etf-weekly.timer; do
   stamp="/var/lib/systemd/timers/stamp-$timer"
@@ -90,10 +115,14 @@ for timer in \
     touch "$stamp"
   fi
 done
+systemctl enable --now stock-analyze-claude-cn-qdii-etf-daily.timer
+systemctl enable --now stock-analyze-claude-cn-qdii-etf-weekly.timer
 systemctl enable --now stock-analyze-codex-cn-qdii-etf-daily.timer
 systemctl enable --now stock-analyze-codex-cn-qdii-etf-weekly.timer
 systemctl restart stock-analyze-dashboard.service
 systemctl is-active --quiet stock-analyze-dashboard.service
+systemctl is-active --quiet stock-analyze-claude-cn-qdii-etf-daily.timer
+systemctl is-active --quiet stock-analyze-claude-cn-qdii-etf-weekly.timer
 systemctl is-active --quiet stock-analyze-codex-cn-qdii-etf-daily.timer
 systemctl is-active --quiet stock-analyze-codex-cn-qdii-etf-weekly.timer
 REMOTE

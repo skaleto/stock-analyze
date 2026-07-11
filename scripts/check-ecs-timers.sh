@@ -41,6 +41,8 @@ expected=(
   stock-analyze-market-data.timer
   stock-analyze-weekly-trigger.timer
   stock-analyze-monthly-review.timer
+  stock-analyze-claude-cn-qdii-etf-daily.timer
+  stock-analyze-claude-cn-qdii-etf-weekly.timer
   stock-analyze-codex-cn-qdii-etf-daily.timer
   stock-analyze-codex-cn-qdii-etf-weekly.timer
 )
@@ -154,14 +156,16 @@ for agent in claude codex; do
   done
 done
 
-for cadence in daily weekly; do
-  unit="stock-analyze-codex-cn-qdii-etf-${cadence}.service"
-  runs_csv="${app_dir}/data/cn_qdii_etf/codex/runs.csv"
-  case "$cadence" in
-    daily)  cmd="run-daily" ;;
-    weekly) cmd="run-weekly" ;;
-  esac
-  check_service_ledger "$unit" "$runs_csv" "$cmd" "codex cn_qdii_etf ${cadence}"
+for agent in claude codex; do
+  for cadence in daily weekly; do
+    unit="stock-analyze-${agent}-cn-qdii-etf-${cadence}.service"
+    runs_csv="${app_dir}/data/cn_qdii_etf/${agent}/runs.csv"
+    case "$cadence" in
+      daily)  cmd="run-daily" ;;
+      weekly) cmd="run-weekly" ;;
+    esac
+    check_service_ledger "$unit" "$runs_csv" "$cmd" "${agent} cn_qdii_etf ${cadence}"
+  done
 done
 
 if (( drift > 0 )); then
