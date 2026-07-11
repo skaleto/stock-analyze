@@ -175,8 +175,13 @@ class StrategyReleaseTests(unittest.TestCase):
                 archive = json.loads(archive_path.read_text(encoding="utf-8"))
                 self.assertEqual(archive["pending"], seeded[(market, agent_id)])
                 self.assertEqual(archive["order_count"], 1)
+                self.assertEqual(archive["queue_state"], "cleared")
+                self.assertTrue(archive["queue_cleared_at"])
 
-            fresh = [{"code": "513100.SH", "side": "buy"}]
+            # A deterministic strategy may generate byte-for-byte identical
+            # orders after the release. Completed migration state, not payload
+            # equality, decides whether a retry may clear the queue.
+            fresh = seeded[("cn_qdii_etf", "codex")]
             fresh_path = (
                 self.root / "data" / "cn_qdii_etf" / "codex" / "pending_orders.json"
             )
@@ -210,6 +215,45 @@ class StrategyReleaseTests(unittest.TestCase):
             {path: path.read_text(encoding="utf-8") for path in before},
         )
         self.assertFalse((self.root / "data").exists())
+
+    def test_retry_finishes_an_interrupted_pending_archive(self) -> None:
+        data_dir = self.root / "data" / "cn_qdii_etf" / "codex"
+        archive_dir = data_dir / "pending_order_archive"
+        archive_dir.mkdir(parents=True)
+        pending = [{"code": "513500.SH", "side": "buy"}]
+        (data_dir / "pending_orders.json").write_text(
+            json.dumps(pending), encoding="utf-8"
+        )
+        archive_path = archive_dir / "release.json"
+        archive_path.write_text(
+            json.dumps({
+                "release_id": "release",
+                "archived_at": "2026-07-11T20:00:00",
+                "market": "cn_qdii_etf",
+                "agent_id": "codex",
+                "from_strategy_id": "old-codex-cn_qdii_etf",
+                "to_strategy_id": "new-codex-cn_qdii_etf",
+                "order_count": 1,
+                "queue_state": "archiving",
+                "queue_cleared_at": None,
+                "pending": pending,
+            }),
+            encoding="utf-8",
+        )
+
+        metrics = BacktestMetrics(0.1, 0.08, 1.0, -0.05, 0.7)
+        with patch(
+            "stock_analyze.markets.a_share.backtest.gate.validate_overlay_via_backtest",
+            return_value=metrics,
+        ):
+            apply_strategy_release(self.manifest, self.root)
+
+        self.assertEqual(
+            json.loads((data_dir / "pending_orders.json").read_text()), []
+        )
+        archive = json.loads(archive_path.read_text(encoding="utf-8"))
+        self.assertEqual(archive["queue_state"], "cleared")
+        self.assertTrue(archive["queue_cleared_at"])
 
 
 if __name__ == "__main__":
