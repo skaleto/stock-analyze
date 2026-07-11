@@ -243,8 +243,10 @@ class ActiveMarketSentimentDashboardTests(unittest.TestCase):
             self.assertIn("跨境ETF", html)
             self.assertNotIn("<td>港股</td>", html)
             self.assertNotIn("<td>美股</td>", html)
-            self.assertIn("claude", html)
-            self.assertIn("codex", html)
+            self.assertIn("稳健防守", html)
+            self.assertIn("趋势进攻", html)
+            self.assertNotIn("claude", html.lower())
+            self.assertNotIn("codex", html.lower())
 
 
 if __name__ == "__main__":
