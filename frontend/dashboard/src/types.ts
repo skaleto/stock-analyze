@@ -7,8 +7,80 @@ export type TaskStatus = {
   error_summary?: string | null;
 };
 
+export type StrategyMetrics = {
+  season_return: number | null;
+  benchmark_return: number | null;
+  excess_return: number | null;
+  annualized_volatility: number | null;
+  sharpe: number | null;
+  max_drawdown: number | null;
+  cash_ratio: number | null;
+  turnover: number | null;
+  trading_cost: number | null;
+  cost_bps: number | null;
+  position_count: number;
+  pending_order_count: number;
+  trade_count: number;
+};
+
+export type StrategyAllocation = {
+  label: string;
+  value: number;
+  weight: number | null;
+};
+
+export type StrategyComparisonSide = {
+  agent: string;
+  label: string;
+  description: string;
+  color: string;
+  strategy_id?: string | null;
+  strategy_name?: string | null;
+  holdings_source: "positions" | "planned_orders" | string;
+  allocations: StrategyAllocation[];
+  metrics: StrategyMetrics;
+};
+
+export type StrategyComparisonPoint = {
+  date: string;
+  claude: number | null;
+  codex: number | null;
+  benchmark: number | null;
+};
+
+export type StrategyComparisonFactor = {
+  key: string;
+  label: string;
+  explanation: string;
+  claude: { weight: number; direction: string | null };
+  codex: { weight: number; direction: string | null };
+};
+
+export type StrategyComparison = {
+  market: string;
+  season: {
+    id: string;
+    name: string;
+    effective_date: string;
+    anchor_date: string | null;
+  };
+  strategies: {
+    claude: StrategyComparisonSide;
+    codex: StrategyComparisonSide;
+  };
+  pair: {
+    position_overlap: number | null;
+    return_correlation: number | null;
+    factor_distance: number | null;
+    factor_distance_floor: number | null;
+  };
+  nav_series: StrategyComparisonPoint[];
+  factor_rows: StrategyComparisonFactor[];
+};
+
 export type SummaryAgent = {
   agent: AgentId;
+  strategy?: StrategyComparisonSide;
   nav: {
     latest: number | null;
     latest_display: string;
@@ -32,6 +104,7 @@ export type MarketSummary = {
   label: string;
   currency: string;
   agents: SummaryAgent[];
+  comparison?: StrategyComparison | null;
   monthly: { status?: string; href?: string | null; label?: string | null };
 };
 

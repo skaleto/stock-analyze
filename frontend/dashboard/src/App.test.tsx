@@ -5,8 +5,67 @@ import App from "./App";
 
 vi.mock("./FinancialCharts", () => ({
   PerformanceChart: ({ benchmarkLabel }: { benchmarkLabel: string }) => <div>净值图 · {benchmarkLabel}</div>,
+  StrategyComparisonChart: () => <div>双策略赛季净值图</div>,
   CandlestickChart: () => <div>K线图</div>,
 }));
+
+const comparisonPayload = {
+  market: "cn_qdii_etf",
+  season: {
+    id: "dual_strategy_2026_s1",
+    name: "双策略对抗 · 赛季1",
+    effective_date: "2026-07-11",
+    anchor_date: "2026-07-10",
+  },
+  strategies: {
+    claude: {
+      agent: "claude",
+      label: "稳健防守",
+      description: "价值质量、低波与低换手",
+      color: "#d6a84b",
+      strategy_id: "defensive_global_etf_v1",
+      strategy_name: "稳健防守 · 低波均衡",
+      holdings_source: "planned_orders",
+      allocations: [{ label: "美国市场", value: 0.5, weight: 0.5 }],
+      metrics: {
+        season_return: 0.01, benchmark_return: 0.005, excess_return: 0.005,
+        annualized_volatility: null, sharpe: null, max_drawdown: 0,
+        cash_ratio: 1, turnover: 0, trading_cost: 0, cost_bps: null,
+        position_count: 5, pending_order_count: 5, trade_count: 0,
+      },
+    },
+    codex: {
+      agent: "codex",
+      label: "趋势进攻",
+      description: "动量成长与主动换仓",
+      color: "#22d3ee",
+      strategy_id: "trend_global_etf_v1",
+      strategy_name: "趋势进攻 · 全球动量",
+      holdings_source: "planned_orders",
+      allocations: [{ label: "美国市场", value: 0.7, weight: 0.7 }],
+      metrics: {
+        season_return: 0.02, benchmark_return: 0.005, excess_return: 0.015,
+        annualized_volatility: null, sharpe: null, max_drawdown: 0,
+        cash_ratio: 1, turnover: 0, trading_cost: 0, cost_bps: null,
+        position_count: 10, pending_order_count: 10, trade_count: 0,
+      },
+    },
+  },
+  pair: {
+    position_overlap: 0.43,
+    return_correlation: null,
+    factor_distance: 0.65,
+    factor_distance_floor: 0.45,
+  },
+  nav_series: [{ date: "2026-07-10", claude: 0, codex: 0, benchmark: 0 }],
+  factor_rows: [{
+    key: "momentum_20",
+    label: "近20日动量",
+    explanation: "观察近期趋势。",
+    claude: { weight: 0.1, direction: "high" },
+    codex: { weight: 0.4, direction: "high" },
+  }],
+};
 
 const summaryPayload = {
   generated_at: "2026-07-10T01:00:00",
@@ -18,6 +77,7 @@ const summaryPayload = {
       agents: [
         {
           agent: "codex",
+          strategy: comparisonPayload.strategies.codex,
           nav: {
             latest: 1000000,
             latest_display: "¥1.00M",
@@ -34,8 +94,29 @@ const summaryPayload = {
             daily: { status: "missing" },
             weekly: { status: "success" }
           }
-        }
+        },
+        {
+          agent: "claude",
+          strategy: comparisonPayload.strategies.claude,
+          nav: {
+            latest: 1000000,
+            latest_display: "¥1.00M",
+            date: "2026-07-10",
+            return: 0,
+            return_display: "0.00%"
+          },
+          decision: {
+            href: "/pro/cn_qdii_etf/claude.html",
+            pending_orders: { total: 1, buy: 1, sell: 0 },
+            weekly_report_href: "/cn_qdii_etf/claude/weekly_report.md"
+          },
+          tasks: {
+            daily: { status: "missing" },
+            weekly: { status: "success" }
+          }
+        },
       ],
+      comparison: comparisonPayload,
       monthly: { status: "not_configured" }
     }
   ],
@@ -66,9 +147,9 @@ const detailPayload = {
   },
   strategy: {
     agent: "codex",
-    agent_label: "Codex 策略",
+    agent_label: "趋势进攻",
     strategy_id: "codex-etf",
-    name: "Codex 跨境ETF策略",
+    name: "趋势进攻 · 全球动量",
     factors: [
       { key: "momentum_20", label: "近20日涨跌", explanation: "观察近期趋势。", weight: 0.6, direction: "high", direction_label: "偏好高值" }
     ]
@@ -217,9 +298,15 @@ describe("Dashboard app", () => {
 
     const ordersPanel = screen.getByRole("region", { name: "目标订单" });
     expect(within(ordersPanel).getByText("纳指ETF")).toBeInTheDocument();
-    expect(screen.getByText("Codex 跨境ETF策略")).toBeInTheDocument();
+    expect(screen.getAllByText("趋势进攻 · 全球动量").length).toBeGreaterThan(0);
     expect(screen.getAllByText("纳斯达克100基准").length).toBeGreaterThan(0);
     expect(screen.queryByText("周报摘录")).not.toBeInTheDocument();
+
+    const arena = screen.getByRole("region", { name: "双策略竞技场" });
+    const accountOverview = screen.getByRole("region", { name: "账户总览" });
+    expect(arena.compareDocumentPosition(accountOverview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText("双策略对抗 · 赛季1")).toBeInTheDocument();
+    expect(screen.queryByText(/Claude|Codex/i)).not.toBeInTheDocument();
 
     const portfolio = screen.getByRole("region", { name: "持仓组合" });
     expect(portfolio.compareDocumentPosition(ordersPanel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -276,7 +363,7 @@ describe("Dashboard app", () => {
       await Promise.resolve();
     });
     expect(screen.queryAllByText("纳指ETF")).toHaveLength(0);
-    expect(screen.getByRole("heading", { name: "codex 策略工作台" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "趋势进攻 策略工作台" })).toBeInTheDocument();
     expect(screen.getAllByText("A股").length).toBeGreaterThan(0);
   });
 

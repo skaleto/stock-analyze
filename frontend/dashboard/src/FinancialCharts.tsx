@@ -9,7 +9,7 @@ import {
   type IChartApi,
   type Time,
 } from "lightweight-charts";
-import type { Candle, NavPoint } from "./types";
+import type { Candle, NavPoint, StrategyComparisonPoint } from "./types";
 import { formatMoney, formatPercent } from "./finance";
 
 const chartLayout = {
@@ -124,6 +124,105 @@ export function PerformanceChart({
         <span>超额 <b className={(excess ?? 0) >= 0 ? "positive" : "negative"}>{formatPercent(excess)}</b></span>
       </div>
       <div ref={containerRef} className="chart-canvas" aria-label="组合净值与基准对比图" />
+    </div>
+  );
+}
+
+export function StrategyComparisonChart({
+  points,
+  strategies,
+}: {
+  points: StrategyComparisonPoint[];
+  strategies: {
+    claude: { label: string; color: string };
+    codex: { label: string; color: string };
+  };
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [hovered, setHovered] = useState<StrategyComparisonPoint | null>(points[points.length - 1] ?? null);
+
+  useEffect(() => {
+    setHovered(points[points.length - 1] ?? null);
+  }, [points]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || points.length === 0) return undefined;
+    const chart = createChart(container, {
+      width: Math.max(container.clientWidth, 320),
+      height: 286,
+      layout: chartLayout,
+      grid: {
+        vertLines: { color: "#182230" },
+        horzLines: { color: "#182230" },
+      },
+      rightPriceScale: { borderColor: "#2a3748", scaleMargins: { top: 0.12, bottom: 0.12 } },
+      timeScale: { borderColor: "#2a3748", rightOffset: 2 },
+      crosshair: { mode: CrosshairMode.Normal },
+      localization: { priceFormatter: (price: number) => `${price.toFixed(2)}%` },
+    });
+    const defensive = chart.addSeries(LineSeries, {
+      color: strategies.claude.color,
+      lineWidth: 2,
+      title: strategies.claude.label,
+      priceLineVisible: false,
+      lastValueVisible: true,
+    });
+    const trend = chart.addSeries(LineSeries, {
+      color: strategies.codex.color,
+      lineWidth: 2,
+      title: strategies.codex.label,
+      priceLineVisible: false,
+      lastValueVisible: true,
+    });
+    const benchmark = chart.addSeries(LineSeries, {
+      color: "#91a0b2",
+      lineWidth: 1,
+      lineStyle: 2,
+      title: "赛季基准",
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+    defensive.setData(points
+      .filter((point) => typeof point.claude === "number")
+      .map((point) => ({ time: point.date as Time, value: (point.claude ?? 0) * 100 })));
+    trend.setData(points
+      .filter((point) => typeof point.codex === "number")
+      .map((point) => ({ time: point.date as Time, value: (point.codex ?? 0) * 100 })));
+    benchmark.setData(points
+      .filter((point) => typeof point.benchmark === "number")
+      .map((point) => ({ time: point.date as Time, value: (point.benchmark ?? 0) * 100 })));
+    const pointByDate = new Map(points.map((point) => [point.date, point]));
+    chart.subscribeCrosshairMove((parameter) => {
+      const date = typeof parameter.time === "string" ? parameter.time : null;
+      setHovered((date && pointByDate.get(date)) || points[points.length - 1] || null);
+    });
+    chart.timeScale().fitContent();
+    const stopObserving = observeChart(container, chart);
+    return () => {
+      stopObserving();
+      chart.remove();
+    };
+  }, [points, strategies.claude.color, strategies.claude.label, strategies.codex.color, strategies.codex.label]);
+
+  if (points.length === 0) {
+    return <div className="chart-empty">赛季净值将在首次估值后出现</div>;
+  }
+
+  return (
+    <div className="financial-chart strategy-comparison-chart">
+      <div className="chart-legend strategy-chart-legend" aria-label="双策略图例">
+        <span><i style={{ background: strategies.claude.color }} />{strategies.claude.label}</span>
+        <span><i style={{ background: strategies.codex.color }} />{strategies.codex.label}</span>
+        <span><i className="legend-benchmark" />赛季基准</span>
+      </div>
+      <div className="chart-readout strategy-readout" aria-live="polite">
+        <span>{hovered?.date ?? "-"}</span>
+        <span>{strategies.claude.label} <b>{formatPercent(hovered?.claude)}</b></span>
+        <span>{strategies.codex.label} <b>{formatPercent(hovered?.codex)}</b></span>
+        <span>基准 <b>{formatPercent(hovered?.benchmark)}</b></span>
+      </div>
+      <div ref={containerRef} className="chart-canvas strategy-chart-canvas" aria-label="双策略赛季净值对比图" />
     </div>
   );
 }

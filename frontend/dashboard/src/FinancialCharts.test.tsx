@@ -28,7 +28,7 @@ vi.mock("lightweight-charts", () => ({
   CrosshairMode: { Normal: 0 },
 }));
 
-import { CandlestickChart, PerformanceChart } from "./FinancialCharts";
+import { CandlestickChart, PerformanceChart, StrategyComparisonChart } from "./FinancialCharts";
 
 
 describe("financial charts", () => {
@@ -87,5 +87,27 @@ describe("financial charts", () => {
     expect(chartMocks.setData).toHaveBeenCalled();
     unmount();
     expect(chartMocks.remove).toHaveBeenCalled();
+  });
+
+  it("renders two strategy series and a benchmark with crosshair readout", () => {
+    render(
+      <StrategyComparisonChart
+        points={[
+          { date: "2026-07-10", claude: 0, codex: 0, benchmark: 0 },
+          { date: "2026-07-14", claude: 0.02, codex: 0.04, benchmark: 0.01 },
+        ]}
+        strategies={{
+          claude: { label: "稳健防守", color: "#d6a84b" },
+          codex: { label: "趋势进攻", color: "#22d3ee" },
+        }}
+      />
+    );
+
+    expect(chartMocks.addSeries).toHaveBeenCalledTimes(3);
+    expect(screen.getAllByText("稳健防守").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("趋势进攻").length).toBeGreaterThan(0);
+    expect(screen.getByText("赛季基准")).toBeInTheDocument();
+    expect(screen.getByText("2026-07-14")).toBeInTheDocument();
+    expect(chartMocks.subscribeCrosshairMove).toHaveBeenCalledTimes(1);
   });
 });

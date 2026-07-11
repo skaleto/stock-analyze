@@ -208,7 +208,7 @@ Lark daily summaries. Keep internal IDs only in routes, files and debug fields.
 Only remind about sentiment when the active overlay has a positive-weight
 sentiment factor.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 ```bash
 python3 -m unittest tests.test_strategy_comparison tests.test_dashboard_multi_market tests.test_dashboard_finance tests.test_notifier tests.test_beginner_dashboard
@@ -228,33 +228,33 @@ git commit -m "feat: expose multidimensional strategy comparison"
 - Modify: `frontend/dashboard/src/App.test.tsx`
 - Modify: `frontend/dashboard/src/styles.css`
 
-- [ ] **Step 1: Write failing comparison-panel tests**
+- [x] **Step 1: Write failing comparison-panel tests**
 
 Require strategy labels, season date, dual NAV legend, metric rows, factor bars,
 allocation rows, holding source, and null-state text. App tests must assert the
 arena appears before the selected account metric strip and no visible
 `Claude`/`Codex` model labels remain.
 
-- [ ] **Step 2: Run frontend tests and verify RED**
+- [x] **Step 2: Run frontend tests and verify RED**
 
 ```bash
 npm --prefix frontend/dashboard test -- --run
 ```
 
-- [ ] **Step 3: Implement typed comparison UI**
+- [x] **Step 3: Implement typed comparison UI**
 
 Add `StrategyComparisonChart` with two strategy series plus benchmark and a
 crosshair readout. Render a full-width `CompetitionPanel` with a compact metric
 matrix, factor dual bars, divergence indicators and allocation rows. Do not use
 a radar chart or nested cards.
 
-- [ ] **Step 4: Extend the existing dark terminal styling**
+- [x] **Step 4: Extend the existing dark terminal styling**
 
 Use amber for 稳健防守, cyan for 趋势进攻, green/red only for returns, stable
 chart heights, visible keyboard focus, 8px-or-less radii, and a one-column
 mobile layout at 720px. Preserve page width at 390px without overflow.
 
-- [ ] **Step 5: Build, audit and commit**
+- [x] **Step 5: Build, audit and commit**
 
 ```bash
 ./scripts/build-dashboard-app.sh
