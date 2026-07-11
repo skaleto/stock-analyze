@@ -1,51 +1,33 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
-  ArrowDownUp,
   BarChart3,
   CheckCircle2,
-  ChevronDown,
+  CircleDollarSign,
   Clock3,
-  ExternalLink,
-  FileText,
   Gauge,
   Layers3,
   RefreshCcw,
   Search,
   ShieldAlert,
-  SlidersHorizontal,
-  X,
+  WalletCards,
 } from "lucide-react";
-import {
-  createColumnHelper,
-  flexRender,
-  getCoreRowModel,
-  getFilteredRowModel,
-  getSortedRowModel,
-  useReactTable,
-  type SortingState,
-} from "@tanstack/react-table";
 import { fetchDetail, fetchSummary } from "./api";
-import type { DashboardDetail, DashboardSummary, MarketSummary, OrderRow, SummaryAgent } from "./types";
+import { PerformanceChart } from "./FinancialCharts";
+import InstrumentDrawer from "./InstrumentDrawer";
+import { PortfolioSection, RuntimeHistory, StrategyBrief, TradeTimeline } from "./PortfolioViews";
+import { accountLabel, formatFieldValue, formatMoney, formatPercent, sideLabel } from "./finance";
+import type {
+  DashboardDetail,
+  DashboardSummary,
+  MarketSummary,
+  OrderRow,
+  StrategyProfile,
+  SummaryAgent,
+} from "./types";
 
 const preferredMarket = "cn_qdii_etf";
 const preferredAgent = "codex";
-
-function formatNumber(value: unknown, digits = 2): string {
-  if (value === null || value === undefined || value === "") return "-";
-  const number = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(number)) return String(value);
-  if (Math.abs(number) >= 1000000) return `${(number / 1000000).toFixed(2)}M`;
-  if (Math.abs(number) >= 1000) return `${(number / 1000).toFixed(1)}K`;
-  return number.toLocaleString("zh-CN", { maximumFractionDigits: digits });
-}
-
-function formatPercent(value: unknown): string {
-  if (value === null || value === undefined || value === "") return "-";
-  const number = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(number)) return String(value);
-  return `${(number * 100).toFixed(2)}%`;
-}
 
 function chooseDefault(summary: DashboardSummary): { market: string; agent: string } {
   const preferred = summary.markets
@@ -59,12 +41,12 @@ function chooseDefault(summary: DashboardSummary): { market: string; agent: stri
   };
 }
 
-function agentFromSummary(summary: DashboardSummary | null, marketId: string, agentId: string): SummaryAgent | null {
-  return summary?.markets.find((market) => market.market === marketId)?.agents.find((agent) => agent.agent === agentId) ?? null;
+function agentFromSummary(summary: DashboardSummary | null, market: string, agent: string): SummaryAgent | null {
+  return summary?.markets.find((item) => item.market === market)?.agents.find((item) => item.agent === agent) ?? null;
 }
 
-function marketFromSummary(summary: DashboardSummary | null, marketId: string): MarketSummary | null {
-  return summary?.markets.find((market) => market.market === marketId) ?? null;
+function marketFromSummary(summary: DashboardSummary | null, market: string): MarketSummary | null {
+  return summary?.markets.find((item) => item.market === market) ?? null;
 }
 
 function statusTone(status?: string): "ok" | "warn" | "muted" {
@@ -76,12 +58,8 @@ function statusTone(status?: string): "ok" | "warn" | "muted" {
 function StatusBadge({ status }: { status?: string }) {
   const tone = statusTone(status);
   const Icon = tone === "ok" ? CheckCircle2 : tone === "warn" ? ShieldAlert : Clock3;
-  return (
-    <span className={`status status-${tone}`}>
-      <Icon size={14} aria-hidden="true" />
-      {status || "missing"}
-    </span>
-  );
+  const label = status === "success" ? "正常" : status === "failed" ? "失败" : status === "running" ? "运行中" : "待运行";
+  return <span className={`status status-${tone}`}><Icon size={14} aria-hidden="true" />{label}</span>;
 }
 
 function MetricTile({
@@ -93,161 +71,74 @@ function MetricTile({
 }: {
   label: string;
   value: string;
-  helper?: string;
+  helper: string;
   icon: typeof Activity;
-  tone?: "neutral" | "positive" | "warning";
+  tone?: "neutral" | "positive" | "negative";
 }) {
   return (
-    <section className={`metric-tile metric-${tone}`}>
-      <div className="metric-icon">
-        <Icon size={18} aria-hidden="true" />
-      </div>
-      <div>
-        <p>{label}</p>
-        <strong>{value}</strong>
-        {helper ? <span>{helper}</span> : null}
-      </div>
-    </section>
+    <article className={`metric-tile metric-${tone}`}>
+      <span className="metric-icon"><Icon size={18} aria-hidden="true" /></span>
+      <div><p>{label}</p><strong>{value}</strong><small>{helper}</small></div>
+    </article>
   );
 }
 
-function Sparkline({ points }: { points: { date: string; total_value?: number | null }[] }) {
-  const values = points.map((point) => point.total_value).filter((value): value is number => typeof value === "number");
-  if (values.length < 2) {
-    return (
-      <div className="sparkline-empty">
-        <BarChart3 size={28} aria-hidden="true" />
-        <span>净值序列不足</span>
-      </div>
-    );
-  }
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min || 1;
-  const width = 760;
-  const height = 180;
-  const coords = values.map((value, index) => {
-    const x = (index / (values.length - 1)) * width;
-    const y = height - ((value - min) / span) * (height - 28) - 14;
-    return [x, y] as const;
-  });
-  const path = coords.map(([x, y], index) => `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`).join(" ");
-  const area = `${path} L ${width} ${height} L 0 ${height} Z`;
-  return (
-    <div className="chart-wrap">
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="净值曲线">
-        <path className="chart-area" d={area} />
-        <path className="chart-line" d={path} />
-        {coords.map(([x, y], index) => (
-          <circle key={`${x}-${index}`} className="chart-dot" cx={x} cy={y} r={index === coords.length - 1 ? 4 : 2.4} />
-        ))}
-      </svg>
-      <div className="chart-axis">
-        <span>{points[0]?.date}</span>
-        <span>{points[points.length - 1]?.date}</span>
-      </div>
-    </div>
-  );
+function Skeleton() {
+  return <div className="skeleton-grid" aria-label="加载中">{Array.from({ length: 8 }, (_, index) => <div key={index} />)}</div>;
 }
 
-const columnHelper = createColumnHelper<OrderRow>();
+function matchesSearch(row: OrderRow, search: string): boolean {
+  const normalized = search.trim().toLowerCase();
+  if (!normalized) return true;
+  return Object.values(row).some((value) => String(value ?? "").toLowerCase().includes(normalized));
+}
 
-function DataTable({
-  title,
+function TargetOrders({
   rows,
-  columns,
-  empty,
+  currency,
   onSelect,
-  search,
-  detailTitle,
 }: {
-  title: string;
   rows: OrderRow[];
-  columns: { key: string; label: string; numeric?: boolean; percent?: boolean }[];
-  empty: string;
+  currency: string;
   onSelect: (row: OrderRow, title: string, trigger: HTMLElement) => void;
-  search?: string;
-  detailTitle?: string;
 }) {
-  const [sorting, setSorting] = useState<SortingState>([]);
-  const tableColumns = useMemo(
-    () =>
-      columns.map((column) =>
-        columnHelper.accessor((row) => row[column.key], {
-          id: column.key,
-          header: column.label,
-          cell: (info) => {
-            const value = info.getValue();
-            if (column.percent) return formatPercent(value);
-            if (column.numeric) return formatNumber(value);
-            return value === null || value === undefined || value === "" ? "-" : String(value);
-          },
-        })
-      ),
-    [columns]
-  );
-  const table = useReactTable({
-    data: rows,
-    columns: tableColumns,
-    state: {
-      sorting,
-      globalFilter: search ?? "",
-    },
-    onSortingChange: setSorting,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-  });
-
   return (
-    <section className="table-panel" aria-label={title} role="region">
-      <div className="panel-title">
-        <h2>{title}</h2>
-        <span>{table.getRowModel().rows.length} rows</span>
-      </div>
-      <div className="table-scroll">
-        <table>
-          <thead>
-            {table.getHeaderGroups().map((headerGroup) => (
-              <tr key={headerGroup.id}>
-                {headerGroup.headers.map((header) => (
-                  <th key={header.id}>
-                    <button type="button" onClick={header.column.getToggleSortingHandler()} aria-label={`排序 ${String(header.column.columnDef.header)}`}>
-                      {flexRender(header.column.columnDef.header, header.getContext())}
-                      <ArrowDownUp size={13} aria-hidden="true" />
-                    </button>
-                  </th>
-                ))}
+    <section className="target-orders terminal-section" role="region" aria-label="目标订单">
+      <header className="section-heading">
+        <div>
+          <span className="section-kicker"><Layers3 size={14} aria-hidden="true" />NEXT ORDERS</span>
+          <h2>目标订单</h2>
+          <p>策略输出的下一交易日计划，尚未成交，不等于当前持仓</p>
+        </div>
+        <div className="section-stat"><span>待执行</span><strong>{rows.length}</strong></div>
+      </header>
+      <div className="orders-table-wrap">
+        <table className="orders-table">
+          <thead><tr><th>计划执行日</th><th>证券</th><th>底层市场</th><th>方向</th><th>份额</th><th>目标金额</th><th>综合评分</th><th>账户</th></tr></thead>
+          <tbody>
+            {rows.length === 0 ? <tr><td className="empty-cell" colSpan={8}>当前没有待执行订单</td></tr> : rows.map((row) => (
+              <tr
+                key={`${row.account_id || "account"}-${row.code}-${row.side}`}
+                tabIndex={0}
+                aria-haspopup="dialog"
+                onClick={(event) => onSelect(row, "订单", event.currentTarget)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelect(row, "订单", event.currentTarget);
+                  }
+                }}
+              >
+                <td>{row.execute_after || row.trade_date || "-"}</td>
+                <td><b>{row.name || row.code}</b><small>{row.code}</small></td>
+                <td>{row.exposure_group || row.industry || "未分类"}<small>{row.theme || "-"}</small></td>
+                <td><span className={`side-badge side-${row.side}`}>{row.side_label || sideLabel(String(row.side || ""))}</span></td>
+                <td>{formatFieldValue("shares", row.shares)}</td>
+                <td>{formatMoney(row.target_value, currency)}</td>
+                <td>{formatFieldValue("score", row.score)}</td>
+                <td>{row.account_label || accountLabel(String(row.account_id || ""))}</td>
               </tr>
             ))}
-          </thead>
-          <tbody>
-            {table.getRowModel().rows.length === 0 ? (
-              <tr>
-                <td className="empty-cell" colSpan={columns.length}>
-                  {empty}
-                </td>
-              </tr>
-            ) : (
-              table.getRowModel().rows.map((row) => (
-                <tr
-                  key={row.id}
-                  onClick={(event) => onSelect(row.original, detailTitle ?? title, event.currentTarget)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      onSelect(row.original, detailTitle ?? title, event.currentTarget);
-                    }
-                  }}
-                  tabIndex={0}
-                  aria-haspopup="dialog"
-                >
-                  {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
-                  ))}
-                </tr>
-              ))
-            )}
           </tbody>
         </table>
       </div>
@@ -255,88 +146,13 @@ function DataTable({
   );
 }
 
-function DetailDrawer({ row, title, onClose }: { row: OrderRow | null; title: string; onClose: () => void }) {
-  const drawerRef = useRef<HTMLElement>(null);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (!row) return undefined;
-    closeButtonRef.current?.focus();
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-      if (event.key === "Tab") {
-        const focusable = Array.from(
-          drawerRef.current?.querySelectorAll<HTMLElement>(
-            'button:not([disabled]), a[href], input:not([disabled]), [tabindex]:not([tabindex="-1"])'
-          ) ?? []
-        );
-        if (focusable.length === 0) {
-          event.preventDefault();
-          return;
-        }
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first.focus();
-        }
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [row, onClose]);
-
-  if (!row) return null;
-  return (
-    <aside ref={drawerRef} className="drawer drawer-open" role="dialog" aria-modal="true" aria-label={`${title}明细`}>
-      <div className="drawer-head">
-        <div>
-          <p>明细</p>
-          <strong>{row.code || row.run_id || row.name || "未选择"}</strong>
-        </div>
-        <button ref={closeButtonRef} className="icon-button" type="button" onClick={onClose} aria-label="关闭明细">
-          <X size={18} aria-hidden="true" />
-        </button>
-      </div>
-      <dl>
-        {Object.entries(row).map(([key, value]) => (
-          <div key={key}>
-            <dt>{key}</dt>
-            <dd>{value === null || value === undefined || value === "" ? "-" : String(value)}</dd>
-          </div>
-        ))}
-      </dl>
-    </aside>
-  );
-}
-
-function MarkdownPreview({ markdown }: { markdown: string }) {
-  const lines = markdown.split("\n").filter(Boolean).slice(0, 16);
-  if (lines.length === 0) return <p className="muted-copy">暂无周报。</p>;
-  return (
-    <div className="markdown-preview">
-      {lines.map((line, index) => {
-        if (line.startsWith("#")) {
-          return <strong key={`${line}-${index}`}>{line.replace(/^#+\s*/, "")}</strong>;
-        }
-        return <p key={`${line}-${index}`}>{line}</p>;
-      })}
-    </div>
-  );
-}
-
-function Skeleton() {
-  return (
-    <div className="skeleton-grid" aria-label="加载中">
-      {Array.from({ length: 7 }).map((_, index) => (
-        <div key={index} />
-      ))}
-    </div>
-  );
-}
+const emptyStrategy = (agent: string): StrategyProfile => ({
+  agent,
+  agent_label: `${agent} 策略`,
+  strategy_id: null,
+  name: `${agent} 策略`,
+  factors: [],
+});
 
 export default function App() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
@@ -387,18 +203,17 @@ export default function App() {
     detailAbortRef.current = controller;
     const requestId = ++detailRequestIdRef.current;
     setDetailLoading(true);
-    setDetail((current) => (
-      current?.market === market && current?.agent === agent ? current : null
-    ));
+    setDetail((current) => current?.market === market && current?.agent === agent ? current : null);
     try {
       const payload = await fetchDetail(market, agent, controller.signal);
       if (requestId !== detailRequestIdRef.current) return;
       setDetail(payload);
       setDetailError(null);
-    } catch (err) {
+    } catch (reason) {
       if (requestId !== detailRequestIdRef.current) return;
-      if (err instanceof Error && err.name === "AbortError") return;
-      setDetailError(err instanceof Error ? err.message : String(err));
+      if (reason instanceof Error && reason.name === "AbortError") return;
+      setDetail(null);
+      setDetailError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       if (requestId === detailRequestIdRef.current) setDetailLoading(false);
     }
@@ -406,28 +221,21 @@ export default function App() {
 
   useEffect(() => {
     setLoading(true);
-    setSummaryError(null);
     loadSummary()
-      .catch((err: Error) => {
-        if (err.name !== "AbortError") setSummaryError(err.message);
-      })
+      .catch((reason: Error) => { if (reason.name !== "AbortError") setSummaryError(reason.message); })
       .finally(() => setLoading(false));
   }, [loadSummary]);
 
-  useEffect(() => {
-    void loadDetail(selectedMarket, selectedAgent);
-  }, [loadDetail, selectedMarket, selectedAgent]);
+  useEffect(() => { void loadDetail(selectedMarket, selectedAgent); }, [loadDetail, selectedMarket, selectedAgent]);
 
   useEffect(() => {
     if (!autoRefresh) return undefined;
     const timer = window.setInterval(() => {
-      loadSummary().catch((err: Error) => {
-        if (err.name !== "AbortError") setSummaryError(err.message);
-      });
+      loadSummary().catch((reason: Error) => { if (reason.name !== "AbortError") setSummaryError(reason.message); });
       void loadDetail(selectedMarket, selectedAgent);
-    }, 30000);
+    }, 60_000);
     return () => window.clearInterval(timer);
-  }, [autoRefresh, loadDetail, loadSummary, selectedMarket, selectedAgent]);
+  }, [autoRefresh, loadDetail, loadSummary, selectedAgent, selectedMarket]);
 
   useEffect(() => () => {
     summaryAbortRef.current?.abort();
@@ -446,14 +254,9 @@ export default function App() {
     setSummaryError(null);
     setDetailError(null);
     try {
-      await Promise.all([
-        loadSummary(),
-        loadDetail(selectedMarket, selectedAgent),
-      ]);
-    } catch (err) {
-      if (!(err instanceof Error) || err.name !== "AbortError") {
-        setSummaryError(err instanceof Error ? err.message : String(err));
-      }
+      await Promise.all([loadSummary(), loadDetail(selectedMarket, selectedAgent)]);
+    } catch (reason) {
+      if (!(reason instanceof Error) || reason.name !== "AbortError") setSummaryError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setLoading(false);
     }
@@ -462,6 +265,7 @@ export default function App() {
   const changeSelection = (market: string, agent: string) => {
     detailAbortRef.current?.abort();
     detailRequestIdRef.current += 1;
+    selectionRef.current = { market, agent };
     setDetail(null);
     setSelectedRow(null);
     setDetailError(null);
@@ -476,254 +280,109 @@ export default function App() {
   };
 
   const closeDrawer = useCallback(() => {
+    const trigger = drawerTriggerRef.current;
     setSelectedRow(null);
-    drawerTriggerRef.current?.focus();
     drawerTriggerRef.current = null;
+    window.requestAnimationFrame(() => trigger?.focus());
   }, []);
 
-  const orders = activeDetail?.orders.rows ?? [];
   const positions = activeDetail?.positions.rows ?? [];
-  const trades = activeDetail?.trades.rows ?? [];
+  const rawOrders = activeDetail?.orders.rows ?? [];
+  const events = activeDetail?.activity?.rows ?? [];
   const runs = activeDetail?.runs.rows ?? [];
+  const orders = useMemo(() => rawOrders.filter((row) => matchesSearch(row, search)), [rawOrders, search]);
+  const filteredPositions = useMemo(() => positions.filter((row) => matchesSearch(row, search)), [positions, search]);
+  const filteredEvents = useMemo(() => events.filter((row) => matchesSearch(row, search)), [events, search]);
+  const latest = activeDetail?.nav.latest;
+  const strategy = activeDetail?.strategy ?? emptyStrategy(selectedAgent);
+  const benchmarkReturn = latest?.benchmark_return;
+  const benchmarkLabel = activeDetail?.nav.benchmark_label || latest?.benchmark_code || "市场基准";
+  const holdingCount = positions.length || rawOrders.filter((row) => row.side !== "sell").length;
 
   return (
     <main className="app-shell">
       <aside className="left-rail">
         <div className="brand-lockup">
           <span><Gauge size={18} aria-hidden="true" /></span>
-          <div>
-            <strong>Stock Analyze</strong>
-            <p>QDII ETF Workbench</p>
-          </div>
+          <div><strong>Stock Analyze</strong><p>国内投资模拟终端</p></div>
         </div>
 
-        <div className="control-group">
-          <label>市场</label>
+        <nav className="control-group" aria-label="投资市场">
+          <label>市场账户</label>
+          <p>查看这个市场发生了什么</p>
           <div className="segmented">
             {markets.map((market) => (
-              <button
-                key={market.market}
-                type="button"
-                className={market.market === selectedMarket ? "active" : ""}
-                onClick={() => changeSelection(
-                  market.market,
-                  market.agents[0]?.agent ?? preferredAgent,
-                )}
-              >
+              <button key={market.market} type="button" className={market.market === selectedMarket ? "active" : ""} onClick={() => changeSelection(market.market, market.agents[0]?.agent ?? preferredAgent)}>
                 {market.label}
               </button>
             ))}
           </div>
-        </div>
+        </nav>
 
-        <div className="control-group">
-          <label>Agent</label>
-          <div className="segmented">
+        <nav className="control-group" aria-label="策略版本">
+          <label>策略版本</label>
+          <p>决定系统如何选证券和调仓</p>
+          <div className="segmented agent-segmented">
             {agentOptions.map((agent) => (
-              <button
-                key={agent.agent}
-                type="button"
-                className={agent.agent === selectedAgent ? "active" : ""}
-                onClick={() => changeSelection(selectedMarket, agent.agent)}
-              >
-                {agent.agent}
+              <button key={agent.agent} type="button" className={agent.agent === selectedAgent ? "active" : ""} onClick={() => changeSelection(selectedMarket, agent.agent)}>
+                {agent.agent === "codex" ? "Codex" : agent.agent === "claude" ? "Claude" : agent.agent}
               </button>
             ))}
           </div>
-        </div>
+        </nav>
 
         <div className="status-stack">
-          <div>
-            <span>日任务</span>
-            <StatusBadge status={selectedAgentSummary?.tasks.daily.status} />
-          </div>
-          <div>
-            <span>周任务</span>
-            <StatusBadge status={selectedAgentSummary?.tasks.weekly.status} />
-          </div>
+          <div><span>每日估值</span><StatusBadge status={selectedAgentSummary?.tasks.daily.status} /></div>
+          <div><span>周度调仓</span><StatusBadge status={selectedAgentSummary?.tasks.weekly.status} /></div>
         </div>
-
-        <button className="ghost-button" type="button" onClick={() => setAutoRefresh((value) => !value)}>
-          <Activity size={16} aria-hidden="true" />
-          {autoRefresh ? "自动刷新开" : "自动刷新关"}
+        <button className="ghost-button" type="button" onClick={() => setAutoRefresh((current) => !current)} aria-pressed={autoRefresh}>
+          <Activity size={16} aria-hidden="true" />{autoRefresh ? "自动刷新已开启" : "自动刷新已关闭"}
         </button>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p>{selectedMarketSummary?.label ?? activeDetail?.market_label ?? selectedMarket}</p>
+            <p>{selectedMarketSummary?.label ?? activeDetail?.market_label ?? selectedMarket} · 纸面交易</p>
             <h1>{selectedAgent} 策略工作台</h1>
           </div>
           <div className="topbar-actions">
-            <div className="search-box">
-              <Search size={16} aria-hidden="true" />
-              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索代码、账户、原因" aria-label="搜索表格" />
-            </div>
-            <button className="icon-text-button" type="button" onClick={refresh} aria-label="刷新 dashboard">
-              <RefreshCcw size={16} aria-hidden="true" />
-              刷新
-            </button>
+            <label className="search-box"><Search size={16} aria-hidden="true" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索证券、市场或账户" aria-label="搜索证券" /></label>
+            <button className="icon-text-button" type="button" onClick={refresh} aria-label="刷新 dashboard"><RefreshCcw className={detailLoading ? "spin" : ""} size={16} aria-hidden="true" />刷新</button>
           </div>
         </header>
 
-        {error ? (
-          <div className="error-banner">
-            <ShieldAlert size={18} aria-hidden="true" />
-            {error}
-          </div>
-        ) : null}
-
+        {error ? <div className="error-banner"><ShieldAlert size={18} aria-hidden="true" />{error}</div> : null}
         {loading && !summary ? <Skeleton /> : null}
 
-        <section className="metric-strip">
-          <MetricTile
-            label="净值"
-            value={activeDetail?.nav.latest?.total_value_display ?? selectedAgentSummary?.nav.latest_display ?? "-"}
-            helper={activeDetail?.nav.latest?.date ?? selectedAgentSummary?.nav.date ?? "无日期"}
-            icon={BarChart3}
-          />
-          <MetricTile
-            label="累计收益"
-            value={activeDetail?.nav.latest?.return_display ?? selectedAgentSummary?.nav.return_display ?? "-"}
-            helper={activeDetail?.nav.latest?.benchmark_codes?.length
-              ? `基准 ${activeDetail.nav.latest.benchmark_codes.join(" / ")}`
-              : activeDetail?.nav.latest?.benchmark_code
-                ? `基准 ${activeDetail.nav.latest.benchmark_code}`
-                : "等待基准"}
-            icon={Gauge}
-            tone={(activeDetail?.nav.latest?.return ?? selectedAgentSummary?.nav.return ?? 0) >= 0 ? "positive" : "warning"}
-          />
-          <MetricTile
-            label="目标订单"
-            value={String(activeDetail?.orders.summary.total ?? selectedAgentSummary?.decision.pending_orders.total ?? 0)}
-            helper={`买 ${activeDetail?.orders.summary.buy ?? 0} / 卖 ${activeDetail?.orders.summary.sell ?? 0}`}
-            icon={Layers3}
-          />
-          <MetricTile
-            label="最近运行"
-            value={runs[0]?.command ? String(runs[0].command) : selectedAgentSummary?.tasks.weekly.status ?? "-"}
-            helper={runs[0]?.started_at ? String(runs[0].started_at).slice(0, 19).replace("T", " ") : "等待 run ledger"}
-            icon={Clock3}
-          />
+        <section className="metric-strip" aria-label="账户总览">
+          <MetricTile label="账户净值" value={latest?.total_value_display ?? selectedAgentSummary?.nav.latest_display ?? "-"} helper={`估值日 ${latest?.date ?? selectedAgentSummary?.nav.date ?? "-"}`} icon={WalletCards} />
+          <MetricTile label="累计收益" value={latest?.return_display ?? selectedAgentSummary?.nav.return_display ?? "-"} helper="已扣模拟交易成本" icon={BarChart3} tone={(latest?.return ?? selectedAgentSummary?.nav.return ?? 0) >= 0 ? "positive" : "negative"} />
+          <MetricTile label="市场基准" value={formatPercent(benchmarkReturn)} helper={benchmarkLabel} icon={Gauge} tone={(benchmarkReturn ?? 0) >= 0 ? "positive" : "negative"} />
+          <MetricTile label={positions.length ? "持仓证券" : "计划证券"} value={String(holdingCount)} helper={positions.length ? `${activeDetail?.positions.summary.market_value_display || "-"} 已配置` : `${rawOrders.length} 笔等待成交`} icon={CircleDollarSign} />
         </section>
 
-        <section className="chart-section">
-          <div className="panel-title">
-            <h2>净值轨迹</h2>
-            <span>{detailLoading ? "更新中" : `更新 ${activeDetail?.generated_at ?? summary?.generated_at ?? "-"}`}</span>
-          </div>
-          <Sparkline points={activeDetail?.nav.series ?? []} />
+        <section className="performance-section terminal-section" role="region" aria-label="净值与基准">
+          <header className="section-heading">
+            <div><span className="section-kicker"><BarChart3 size={14} aria-hidden="true" />PERFORMANCE</span><h2>净值与市场基准</h2><p>鼠标移动可查看每个交易日的组合收益、基准收益和超额收益</p></div>
+            <div className="section-stat"><span>数据更新时间</span><strong>{String(activeDetail?.generated_at ?? summary?.generated_at ?? "-").replace("T", " ")}</strong></div>
+          </header>
+          <PerformanceChart points={activeDetail?.nav.series ?? []} benchmarkLabel={benchmarkLabel} />
         </section>
 
-        <section className="two-column">
-          <DataTable
-            title="目标订单"
-            rows={orders}
-            search={search}
-            empty="当前没有 pending order。"
-            onSelect={openDrawer}
-            detailTitle="订单"
-            columns={[
-              { key: "code", label: "代码" },
-              { key: "name", label: "名称" },
-              { key: "side", label: "方向" },
-              { key: "shares", label: "股数", numeric: true },
-              { key: "target_value", label: "目标金额", numeric: true },
-              { key: "score", label: "分数", numeric: true },
-              { key: "execute_after", label: "执行日" },
-            ]}
-          />
-          <section className="report-panel">
-            <div className="panel-title">
-              <h2>周报摘录</h2>
-              {activeDetail?.weekly_report.href ? (
-                <a href={activeDetail.weekly_report.href} target="_blank" rel="noreferrer">
-                  <ExternalLink size={14} aria-hidden="true" />
-                  打开
-                </a>
-              ) : null}
-            </div>
-            <MarkdownPreview markdown={activeDetail?.weekly_report.markdown ?? ""} />
-          </section>
-        </section>
+        <PortfolioSection positions={filteredPositions} planned={orders} currency={activeDetail?.currency ?? selectedMarketSummary?.currency ?? "¥"} onSelect={openDrawer} />
 
-        <section className="tab-band">
-          <details open>
-            <summary>
-              <SlidersHorizontal size={16} aria-hidden="true" />
-              持仓
-              <ChevronDown size={16} aria-hidden="true" />
-            </summary>
-            <DataTable
-              title="持仓明细"
-              rows={positions}
-              search={search}
-              empty="暂无持仓。周一订单执行后这里会出现仓位。"
-              onSelect={openDrawer}
-              detailTitle="持仓"
-              columns={[
-                { key: "code", label: "代码" },
-                { key: "name", label: "名称" },
-                { key: "industry", label: "暴露" },
-                { key: "shares", label: "股数", numeric: true },
-                { key: "last_price", label: "价格", numeric: true },
-                { key: "market_value", label: "市值", numeric: true },
-                { key: "unrealized_pnl", label: "浮盈亏", numeric: true },
-              ]}
-            />
-          </details>
-          <details>
-            <summary>
-              <FileText size={16} aria-hidden="true" />
-              成交
-              <ChevronDown size={16} aria-hidden="true" />
-            </summary>
-            <DataTable
-              title="成交记录"
-              rows={trades}
-              search={search}
-              empty="暂无成交。"
-              onSelect={openDrawer}
-              detailTitle="成交"
-              columns={[
-                { key: "trade_date", label: "日期" },
-                { key: "code", label: "代码" },
-                { key: "side", label: "方向" },
-                { key: "shares", label: "股数", numeric: true },
-                { key: "price", label: "价格", numeric: true },
-                { key: "net_amount", label: "净额", numeric: true },
-                { key: "reason", label: "原因" },
-              ]}
-            />
-          </details>
-          <details>
-            <summary>
-              <Clock3 size={16} aria-hidden="true" />
-              Run Ledger
-              <ChevronDown size={16} aria-hidden="true" />
-            </summary>
-            <DataTable
-              title="运行记录"
-              rows={runs}
-              search={search}
-              empty="暂无运行记录。"
-              onSelect={openDrawer}
-              detailTitle="运行"
-              columns={[
-                { key: "command", label: "命令" },
-                { key: "status", label: "状态" },
-                { key: "as_of", label: "日期" },
-                { key: "duration_ms", label: "耗时 ms", numeric: true },
-                { key: "started_at", label: "开始" },
-                { key: "run_id", label: "run_id" },
-              ]}
-            />
-          </details>
-        </section>
+        <div className="analysis-grid">
+          <TradeTimeline events={filteredEvents} onSelect={openDrawer} />
+          <StrategyBrief strategy={strategy} reportHref={activeDetail?.weekly_report.href} />
+        </div>
+
+        <RuntimeHistory rows={runs} onSelect={openDrawer} />
+
+        <TargetOrders rows={orders} currency={activeDetail?.currency ?? selectedMarketSummary?.currency ?? "¥"} onSelect={openDrawer} />
       </section>
 
-      <DetailDrawer row={selectedRow} title={selectedRowTitle} onClose={closeDrawer} />
+      {selectedRow ? <InstrumentDrawer row={selectedRow} title={selectedRowTitle} market={selectedMarket} agent={selectedAgent} onClose={closeDrawer} /> : null}
     </main>
   );
 }
