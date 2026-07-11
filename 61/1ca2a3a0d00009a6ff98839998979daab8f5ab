@@ -1,0 +1,23 @@
+scripts/deploy-app-to-ecs.sh
+  s_db9afa53cf7b72::t_4cca6d4f8bc616 32
+tests/test_deploy_app_script.py
+  s_db9afa53cf7b72::t_b43df57801ac4e 38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "611ca2a3a0d00009a6ff98839998979daab8f5ab",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
