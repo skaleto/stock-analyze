@@ -1,0 +1,23 @@
+tests/test_dashboard_app_api.py
+  s_db9afa53cf7b72::t_fa8ca74e17d733 178-179,181,183-185
+tests/test_dashboard_finance.py
+  s_db9afa53cf7b72::t_51626a6ddc6791 1-114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "67c8e181dec7dcb0b2a0024655b97828d9f6db80",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
