@@ -1,0 +1,23 @@
+tests/test_reporting_sentiment_panel.py
+  s_db9afa53cf7b72::t_6cc3d6870f21e3 103,107-110
+tests/test_tri_market_sentiment_closed_loop.py
+  s_db9afa53cf7b72::t_5515fea845189c 246-249
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "a84adc925cb445f6ca0c5904b4d7fd05d429b4ba",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
