@@ -109,6 +109,19 @@ class DashboardFinanceTests(unittest.TestCase):
         self.assertEqual(profile["factors"][0]["label"], "近20日动量")
         self.assertIn("20个交易日", profile["factors"][0]["explanation"])
 
+    def test_profitability_ratios_are_exposed_as_percentages(self) -> None:
+        from stock_analyze.dashboard_finance import build_history_metrics
+
+        metrics = build_history_metrics(
+            [{"date": "2026-07-10", "close": 10.0, "amount": 100_000.0}],
+            {"roe": 0.1532, "pe": 12.4, "pb": 1.8},
+        )
+        formats = {metric["key"]: metric["format"] for metric in metrics}
+
+        self.assertEqual(formats["roe"], "percent")
+        self.assertEqual(formats["pe"], "number")
+        self.assertEqual(formats["pb"], "number")
+
 
 if __name__ == "__main__":
     unittest.main()

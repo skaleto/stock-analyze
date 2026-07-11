@@ -349,7 +349,7 @@ def build_history_metrics(
                 "key": key,
                 **meta,
                 "value": float(value),
-                "format": "money" if key == "avg_amount_20" else "percent" if key not in {"pe", "pb", "roe"} else "number",
+                "format": "money" if key == "avg_amount_20" else "number" if key in {"pe", "pb"} else "percent",
             }
         )
     return metrics
