@@ -8,16 +8,30 @@
 
 set -u
 
-REPO="/Users/yaoyibin/Documents/stock/stock-analyze"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${SA_REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 cd "$REPO" 2>/dev/null || { echo "📊 repo missing"; exit 0; }
 
+first_existing_file() {
+  for file in "$@"; do
+    [ -f "$file" ] && { printf '%s\n' "$file"; return; }
+  done
+}
+
+file_mtime() {
+  local file=$1
+  stat -c '%Y' "$file" 2>/dev/null || stat -f '%m' "$file" 2>/dev/null || echo 0
+}
+
 # Latest signal date (from any agent's daily_nav, they share dates)
-SIG=$(tail -1 data/claude/daily_nav.csv 2>/dev/null | cut -d',' -f1)
+SIG_FILE="$(first_existing_file data/a_share/claude/daily_nav.csv data/claude/daily_nav.csv)"
+SIG=$(tail -1 "$SIG_FILE" 2>/dev/null | cut -d',' -f1)
 
 # Sum per-agent total_value (column 5) on the latest date
 sum_latest_nav() {
   local agent=$1
-  local file="data/$agent/daily_nav.csv"
+  local file="data/a_share/$agent/daily_nav.csv"
+  [ -f "$file" ] || file="data/$agent/daily_nav.csv"
   [ -f "$file" ] || { echo "?"; return; }
   # Get latest date, sum total_value for that date across all accounts
   local date=$(tail -1 "$file" | cut -d',' -f1)
@@ -30,7 +44,8 @@ CO_NAV=$(sum_latest_nav codex)
 # Count pending orders (JSON list of batches, each with "orders" array)
 count_pending() {
   local agent=$1
-  local file="data/$agent/pending_orders.json"
+  local file="data/a_share/$agent/pending_orders.json"
+  [ -f "$file" ] || file="data/$agent/pending_orders.json"
   [ -f "$file" ] || { echo "?"; return; }
   python3 -c "
 import json,sys
@@ -46,7 +61,8 @@ CL_PEND=$(count_pending claude)
 CO_PEND=$(count_pending codex)
 
 # Health: is ECS market-data.timer expected soon? Just show last sync hint
-SYNC_MTIME=$(stat -f '%m' data/claude/daily_nav.csv 2>/dev/null || echo 0)
+SYNC_FILE="$(first_existing_file data/a_share/claude/daily_nav.csv data/claude/daily_nav.csv)"
+SYNC_MTIME=$(file_mtime "$SYNC_FILE")
 NOW=$(date +%s)
 AGE_HOURS=$(( (NOW - SYNC_MTIME) / 3600 ))
 

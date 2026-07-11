@@ -22,7 +22,7 @@ import json
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Iterator, List, Optional, Tuple
 
 import pandas as pd
 
@@ -69,6 +69,29 @@ class _ExecutionQuote:
     limit_down: bool = False
     source: str = "backtest"
     reason: str = ""
+
+
+_POSITION_KEY_SEP = "::"
+
+
+def _position_key(account_id: str, ts_code: str) -> str:
+    return f"{account_id}{_POSITION_KEY_SEP}{ts_code}"
+
+
+def _position_code(key: Any, pos: dict) -> str:
+    code = pos.get("ts_code")
+    if code:
+        return str(code)
+    key_s = str(key)
+    if _POSITION_KEY_SEP in key_s:
+        return key_s.split(_POSITION_KEY_SEP, 1)[1]
+    return key_s
+
+
+def _account_positions(state: dict, account_id: str) -> Iterator[Tuple[str, dict]]:
+    for key, pos in state.get("positions", {}).items():
+        if pos.get("account_id") == account_id:
+            yield _position_code(key, pos), pos
 
 
 # ---------------------------------------------------------------------------
@@ -318,8 +341,7 @@ def _build_pending_batch(signals: List[dict], overlay: dict, as_of: date,
         # Current positions (qty per ts_code) for this account
         current_qty = {
             code: pos["qty"]
-            for code, pos in state.get("positions", {}).items()
-            if pos.get("account_id") == acc_id
+            for code, pos in _account_positions(state, acc_id)
         }
         acc_signals = [s for s in signals if s["account_id"] == acc_id]
         if not acc_signals:
@@ -428,13 +450,27 @@ def _execute_pending(pending: List[dict], trade_day: date,
                     unfilled.append(order)
                     continue
                 state["cash_by_account"][acc_id] = cash - net
+                key = _position_key(acc_id, order["ts_code"])
                 pos = state["positions"].setdefault(
-                    order["ts_code"],
-                    {"qty": 0, "account_id": acc_id, "avg_cost": price},
+                    key,
+                    {
+                        "ts_code": order["ts_code"],
+                        "qty": 0,
+                        "account_id": acc_id,
+                        "avg_cost": price,
+                    },
                 )
                 pos["qty"] = pos.get("qty", 0) + qty
             else:  # SELL
-                pos = state["positions"].get(order["ts_code"], {})
+                key = _position_key(acc_id, order["ts_code"])
+                pos = state["positions"].get(key)
+                if pos is None:
+                    legacy_pos = state["positions"].get(order["ts_code"])
+                    if legacy_pos and legacy_pos.get("account_id") == acc_id:
+                        key = order["ts_code"]
+                        pos = legacy_pos
+                    else:
+                        pos = {}
                 cur_qty = pos.get("qty", 0)
                 if cur_qty < qty:
                     qty = cur_qty
@@ -446,7 +482,7 @@ def _execute_pending(pending: List[dict], trade_day: date,
                     state["cash_by_account"].get(acc_id, 0.0) + net
                 )
                 if pos["qty"] <= 0:
-                    state["positions"].pop(order["ts_code"], None)
+                    state["positions"].pop(key, None)
 
             trades.append({
                 "date": trade_day.isoformat(),
@@ -477,9 +513,7 @@ def _update_nav(trade_day: date, state: dict, overlay: dict,
         acc_id = account["id"]
         cash = float(state["cash_by_account"].get(acc_id, 0.0))
         positions_value = 0.0
-        for code, pos in state.get("positions", {}).items():
-            if pos.get("account_id") != acc_id:
-                continue
+        for code, pos in _account_positions(state, acc_id):
             snap = provider.price_snapshot(code, as_of=trade_day.isoformat())
             close = snap.close if snap.close is not None else pos.get("avg_cost", 0.0)
             positions_value += pos.get("qty", 0) * (close or 0.0)

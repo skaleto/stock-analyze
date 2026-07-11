@@ -18,7 +18,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 mkdir -p .claude
-cat > .claude/settings.local.json <<'JSON'
+STATUSLINE_CMD="bash $(printf '%q' "$(pwd)/scripts/statusline.sh")"
+cat > .claude/settings.local.json <<JSON
 {
   "permissions": {
     "allow": [
@@ -38,7 +39,7 @@ cat > .claude/settings.local.json <<'JSON'
   },
   "statusLine": {
     "type": "command",
-    "command": "/Users/yaoyibin/Documents/stock/stock-analyze/scripts/statusline.sh"
+    "command": "$STATUSLINE_CMD"
   }
 }
 JSON

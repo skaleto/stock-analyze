@@ -267,5 +267,88 @@ class TradeDayOrderingTests(unittest.TestCase):
                                "descending trade_cal must still produce trades")
 
 
+class CrossAccountPositionBookTests(unittest.TestCase):
+    def test_execute_pending_keeps_same_stock_separate_across_accounts(self):
+        """Two account books can hold the same stock without cross-account merge."""
+
+        class Provider:
+            def execution_quote(self, code, execute_after, side, as_of=None):
+                return engine._ExecutionQuote(
+                    code=code,
+                    price=10.0,
+                    trade_date=as_of or execute_after,
+                    source="test",
+                )
+
+            def price_snapshot(self, code, as_of=None, spot_row=None):
+                return engine._PriceSnapshot(
+                    code=code,
+                    close=10.0,
+                    trade_date=as_of,
+                    source="test",
+                )
+
+        overlay = {
+            "trading": {
+                "commission_rate": 0.0,
+                "stamp_tax_rate": 0.0,
+                "slippage_rate": 0.0,
+                "min_commission": 0.0,
+            },
+        }
+        state = {
+            "cash_by_account": {"hs300": 5_000.0, "zz500": 5_000.0},
+            "positions": {},
+        }
+        pending = [
+            {
+                "run_id": "r1",
+                "account_id": "hs300",
+                "signal_date": "2023-06-30",
+                "execute_after": "2023-07-03",
+                "orders": [
+                    {"ts_code": "000001.SZ", "side": "BUY",
+                     "quantity": 100, "account_id": "hs300"}
+                ],
+            },
+            {
+                "run_id": "r1",
+                "account_id": "zz500",
+                "signal_date": "2023-06-30",
+                "execute_after": "2023-07-03",
+                "orders": [
+                    {"ts_code": "000001.SZ", "side": "BUY",
+                     "quantity": 100, "account_id": "zz500"}
+                ],
+            },
+        ]
+
+        trades = engine._execute_pending(
+            pending,
+            date(2023, 7, 3),
+            Provider(),
+            state,
+            overlay,
+        )
+
+        self.assertEqual(len(trades), 2)
+        by_account = {
+            pos["account_id"]: pos
+            for pos in state["positions"].values()
+        }
+        self.assertEqual(by_account["hs300"]["qty"], 100)
+        self.assertEqual(by_account["zz500"]["qty"], 100)
+
+        nav = engine._update_nav(
+            date(2023, 7, 3),
+            state,
+            {"accounts": [{"id": "hs300"}, {"id": "zz500"}]},
+            Provider(),
+        )
+        nav_by_account = {row["account_id"]: row for row in nav}
+        self.assertEqual(nav_by_account["hs300"]["positions_value"], 1_000.0)
+        self.assertEqual(nav_by_account["zz500"]["positions_value"], 1_000.0)
+
+
 if __name__ == "__main__":
     unittest.main()

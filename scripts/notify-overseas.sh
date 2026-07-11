@@ -5,7 +5,10 @@
 # 缺凭据 / 发送失败都静默退出 0(通知是状态通道,不该拖垮主流程)。
 set -uo pipefail
 
-REPO="/Users/yaoyibin/Documents/stock/stock-analyze"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${SA_REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+PY="${SA_PYTHON:-$REPO/.venv/bin/python3}"
+[ -x "$PY" ] || PY="$(command -v python3)"
 ENV_FILE="$HOME/.stock-analyze.env"
 PROXY="http://127.0.0.1:7897"
 
@@ -19,7 +22,7 @@ export http_proxy="${http_proxy:-$PROXY}"
 export https_proxy="${https_proxy:-$PROXY}"
 
 cd "$REPO" 2>/dev/null || exit 0
-"$REPO/.venv/bin/python3" - "$msg" <<'PY' 2>/dev/null
+"$PY" - "$msg" <<'PY' 2>/dev/null
 import sys
 try:
     from stock_analyze.notifier import LarkCredentials, send_lark_dm

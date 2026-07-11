@@ -7,7 +7,7 @@ from typing import Any
 
 import pandas as pd
 
-from .data_provider import DataProvider
+from .data_provider import CacheMiss, DataProvider
 from ...store import PortfolioStore
 from ...utils import now_iso
 
@@ -135,7 +135,10 @@ def _spearman_corr(a: pd.Series, b: pd.Series) -> float | None:
 
 
 def _forward_return_for_code(code: str, provider: DataProvider, signal_date: str, horizon: int) -> float | None:
-    history = provider.price_history(code, as_of=None, days=260)
+    try:
+        history = provider.price_history(code, as_of=None, days=260)
+    except CacheMiss:
+        return None
     if history.empty:
         return None
     history = history.copy()

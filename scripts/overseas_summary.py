@@ -14,11 +14,12 @@ results_tsv 每行(制表符分隔,run-overseas.sh 写):
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
 
-REPO = Path("/Users/yaoyibin/Documents/stock/stock-analyze")
+REPO = Path(os.environ.get("SA_REPO_ROOT", Path(__file__).resolve().parents[1])).resolve()
 sys.path.insert(0, str(REPO))  # 路径式调用时把仓库根加进 sys.path
 
 try:

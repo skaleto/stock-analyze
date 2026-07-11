@@ -12,9 +12,11 @@
 # 由 launchd 定时调用;锁屏照跑,睡眠靠 pmset 唤醒 + launchd 补跑(见 plist)。
 set -uo pipefail
 
-REPO="/Users/yaoyibin/Documents/stock/stock-analyze"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${SA_REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 PROXY="http://127.0.0.1:7897"
-PY="$REPO/.venv/bin/python3"
+PY="${SA_PYTHON:-$REPO/.venv/bin/python3}"
+[ -x "$PY" ] || PY="$(command -v python3)"
 NOTIFY="$REPO/scripts/notify-overseas.sh"
 SUMMARY="$REPO/scripts/overseas_summary.py"
 LOG="$REPO/logs/overseas.log"

@@ -174,6 +174,78 @@ def _fetch_one_candidate(
     return counts
 
 
+def _normalize_operational_code(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    code = raw.split(".")[0]
+    if not code.isdigit():
+        return None
+    return code.zfill(6)
+
+
+def _collect_operational_codes(repo_root: Path, agent_ids: Iterable[str]) -> set[str]:
+    """Return codes that current positions or pending orders still need.
+
+    Candidate preselection can drop a stock that is already held or has a
+    pending order. The daily simulator still needs fresh history for execution
+    quotes and NAV marking, so prepare-market-data must warm those codes too.
+    """
+
+    data_dirs: list[Path] = []
+    seen_agents = set(agent_ids)
+    market_root = repo_root / "data" / "a_share"
+    if market_root.exists():
+        seen_agents.update(path.name for path in market_root.iterdir() if path.is_dir())
+    legacy_root = repo_root / "data"
+    for agent_id in sorted(seen_agents):
+        data_dirs.append(market_root / agent_id)
+        data_dirs.append(legacy_root / agent_id)
+
+    codes: set[str] = set()
+    for data_dir in data_dirs:
+        pending_path = data_dir / "pending_orders.json"
+        if pending_path.exists():
+            try:
+                batches = json.loads(pending_path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                batches = []
+            if isinstance(batches, list):
+                for batch in batches:
+                    if not isinstance(batch, dict):
+                        continue
+                    for order in batch.get("orders") or []:
+                        if not isinstance(order, dict):
+                            continue
+                        code = _normalize_operational_code(order.get("code"))
+                        if code:
+                            codes.add(code)
+
+        state_path = data_dir / "state.json"
+        if state_path.exists():
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                state = {}
+            accounts = state.get("accounts") if isinstance(state, dict) else {}
+            if isinstance(accounts, dict):
+                for account in accounts.values():
+                    if not isinstance(account, dict):
+                        continue
+                    positions = account.get("positions") or {}
+                    if not isinstance(positions, dict):
+                        continue
+                    for raw_code, position in positions.items():
+                        code = _normalize_operational_code(raw_code)
+                        if code:
+                            codes.add(code)
+                        if isinstance(position, dict):
+                            code = _normalize_operational_code(position.get("code"))
+                            if code:
+                                codes.add(code)
+    return codes
+
+
 def _build_universe(provider: DataProvider, scopes: list[str], errors: list[dict[str, Any]]) -> pd.DataFrame:
     """Pull spot + constituents for each scope and return the merged universe."""
 
@@ -258,7 +330,8 @@ def prepare_market_data(
                 path.unlink(missing_ok=True)
 
     scopes, benchmarks = _resolve_scopes_and_benchmarks(repo_root, scopes)
-    agents = [competition.load(agent_id, repo_root=repo_root) for agent_id in competition.list_agents(repo_root)]
+    agent_ids = competition.list_agents(repo_root)
+    agents = [competition.load(agent_id, repo_root=repo_root) for agent_id in agent_ids]
     filters = _merged_filters(agents)
 
     started_at = _now_iso()
@@ -295,13 +368,16 @@ def prepare_market_data(
     # 4. preselect candidates (use merged filters so neither agent runs short)
     candidates = preselect_universe(universe, filters)
     candidate_codes: list[str] = candidates["code"].dropna().astype(str).tolist() if not candidates.empty else []
+    operational_codes = _collect_operational_codes(repo_root, agent_ids)
+    fetch_codes = list(dict.fromkeys(candidate_codes + sorted(operational_codes - set(candidate_codes))))
     counters["candidates_fetched"] = len(candidate_codes)
+    counters["operational_codes"] = len(operational_codes)
 
     # 5. per-candidate detail fetch (concurrent across stocks, sequential within)
     per_code_counts = {"basic": 0, "history": 0, "valuation": 0, "financial": 0, "dividend": 0}
-    if candidate_codes:
+    if fetch_codes:
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_fetch_one_candidate, provider, code, errors, warnings): code for code in candidate_codes}
+            futures = {pool.submit(_fetch_one_candidate, provider, code, errors, warnings): code for code in fetch_codes}
             for future in as_completed(futures):
                 code = futures[future]
                 try:
