@@ -22,6 +22,14 @@ class CLIMarketFlagTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(["--market", "moon", "init"])
 
+    def test_parser_accepts_strategy_pair_validation(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["--market", "cn_qdii_etf", "validate-strategy-pair"]
+        )
+        self.assertEqual(args.market, "cn_qdii_etf")
+        self.assertEqual(args.command, "validate-strategy-pair")
+
 
 if __name__ == "__main__":
     unittest.main()

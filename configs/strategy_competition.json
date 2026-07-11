@@ -1,0 +1,18 @@
+{
+  "season_id": "dual_strategy_2026_s1",
+  "name": "双策略对抗 · 赛季1",
+  "effective_date": "2026-07-11",
+  "factor_distance_floor": 0.45,
+  "slots": {
+    "claude": {
+      "label": "稳健防守",
+      "description": "价值质量、低波与低换手",
+      "color": "#d6a84b"
+    },
+    "codex": {
+      "label": "趋势进攻",
+      "description": "动量成长与主动换仓",
+      "color": "#22d3ee"
+    }
+  }
+}

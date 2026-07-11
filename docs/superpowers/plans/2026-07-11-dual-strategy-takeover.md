@@ -19,14 +19,14 @@
 - Modify: `stock_analyze/cli.py`
 - Modify: `tests/test_cli_market_flag.py`
 
-- [ ] **Step 1: Write failing registry and pair-guard tests**
+- [x] **Step 1: Write failing registry and pair-guard tests**
 
 Test that the registry exposes `稳健防守` / `趋势进攻`, effective date
 `2026-07-11`, and factor-distance floor `0.45`. Test normalized factor total
 variation distance, unequal strategy IDs, exact 1.0 weight sums, and a CLI
 `validate-strategy-pair --market <market>` success/failure exit code.
 
-- [ ] **Step 2: Run the focused tests and verify RED**
+- [x] **Step 2: Run the focused tests and verify RED**
 
 ```bash
 python3 -m unittest tests.test_strategy_registry tests.test_cli_market_flag
@@ -34,7 +34,7 @@ python3 -m unittest tests.test_strategy_registry tests.test_cli_market_flag
 
 Expected: failures for missing `strategy_registry` and CLI command.
 
-- [ ] **Step 3: Implement registry loading and pair validation**
+- [x] **Step 3: Implement registry loading and pair validation**
 
 The config must contain:
 
@@ -54,7 +54,7 @@ The config must contain:
 `validate_strategy_pair` must reject missing slots, equal IDs/names, weight sums
 outside `1 ± 1e-6`, and factor distance below the registry floor.
 
-- [ ] **Step 4: Run focused tests and both current-market CLI guards**
+- [x] **Step 4: Run focused tests and prove the old pairs are rejected**
 
 ```bash
 python3 -m unittest tests.test_strategy_registry tests.test_cli_market_flag
@@ -62,7 +62,10 @@ python3 -m stock_analyze --market a_share validate-strategy-pair
 python3 -m stock_analyze --market cn_qdii_etf validate-strategy-pair
 ```
 
-- [ ] **Step 5: Commit**
+The old pairs must exit 1: A-share has a 1.03 defensive-slot weight sum and
+QDII has only 0.05 factor distance. Task 2 replaces them and requires GREEN.
+
+- [x] **Step 5: Commit**
 
 ```bash
 git add configs/strategy_competition.json stock_analyze/strategy_registry.py stock_analyze/cli.py tests/test_strategy_registry.py tests/test_cli_market_flag.py
