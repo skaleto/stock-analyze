@@ -294,9 +294,16 @@ export default function App() {
   const filteredPositions = useMemo(() => positions.filter((row) => matchesSearch(row, search)), [positions, search]);
   const filteredEvents = useMemo(() => events.filter((row) => matchesSearch(row, search)), [events, search]);
   const latest = activeDetail?.nav.latest;
-  const strategy = activeDetail?.strategy ?? emptyStrategy(selectedAgent);
+  const strategySource = activeDetail?.strategy ?? emptyStrategy(selectedAgent);
+  const strategy = {
+    ...strategySource,
+    name: `${strategySource.agent === "codex" ? "Codex" : strategySource.agent === "claude" ? "Claude" : strategySource.agent} ${selectedMarket === "cn_qdii_etf" ? "跨境ETF" : "A股"}策略`,
+  };
   const benchmarkReturn = latest?.benchmark_return;
-  const benchmarkLabel = activeDetail?.nav.benchmark_label || latest?.benchmark_code || "市场基准";
+  const rawBenchmarkLabel = activeDetail?.nav.benchmark_label || latest?.benchmark_code;
+  const benchmarkLabel = rawBenchmarkLabel && rawBenchmarkLabel !== "基准"
+    ? rawBenchmarkLabel
+    : selectedMarket === "cn_qdii_etf" ? "跨境ETF组合基准" : "A股账户基准";
   const holdingCount = positions.length || rawOrders.filter((row) => row.side !== "sell").length;
 
   return (
@@ -358,7 +365,7 @@ export default function App() {
         <section className="metric-strip" aria-label="账户总览">
           <MetricTile label="账户净值" value={latest?.total_value_display ?? selectedAgentSummary?.nav.latest_display ?? "-"} helper={`估值日 ${latest?.date ?? selectedAgentSummary?.nav.date ?? "-"}`} icon={WalletCards} />
           <MetricTile label="累计收益" value={latest?.return_display ?? selectedAgentSummary?.nav.return_display ?? "-"} helper="已扣模拟交易成本" icon={BarChart3} tone={(latest?.return ?? selectedAgentSummary?.nav.return ?? 0) >= 0 ? "positive" : "negative"} />
-          <MetricTile label="市场基准" value={formatPercent(benchmarkReturn)} helper={benchmarkLabel} icon={Gauge} tone={(benchmarkReturn ?? 0) >= 0 ? "positive" : "negative"} />
+          <MetricTile label="市场基准" value={formatPercent(benchmarkReturn)} helper={benchmarkReturn == null ? `${benchmarkLabel}等待首次行情` : benchmarkLabel} icon={Gauge} tone={(benchmarkReturn ?? 0) >= 0 ? "positive" : "negative"} />
           <MetricTile label={positions.length ? "持仓证券" : "计划证券"} value={String(holdingCount)} helper={positions.length ? `${activeDetail?.positions.summary.market_value_display || "-"} 已配置` : `${rawOrders.length} 笔等待成交`} icon={CircleDollarSign} />
         </section>
 
