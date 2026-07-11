@@ -1,0 +1,45 @@
+.gitignore
+  s_db9afa53cf7b72::t_55bd8a99fe546a 6,14-15
+frontend/dashboard/index.html
+  s_db9afa53cf7b72::t_2e09d50c85a9f9 1-12
+frontend/dashboard/package-lock.json
+  s_db9afa53cf7b72::t_238c4efe0938cb 1-3254
+frontend/dashboard/package.json
+  s_db9afa53cf7b72::t_5714cd646b88dd 1-30
+frontend/dashboard/src/App.test.tsx
+  s_db9afa53cf7b72::t_065f3bba165809 1-245
+frontend/dashboard/src/App.tsx
+  s_db9afa53cf7b72::t_e57c8c8e94aef3 1-704
+frontend/dashboard/src/api.ts
+  s_db9afa53cf7b72::t_27124dae6f28a1 1-22
+frontend/dashboard/src/main.tsx
+  s_db9afa53cf7b72::t_8f39582925fff9 1-10
+frontend/dashboard/src/styles.css
+  s_db9afa53cf7b72::t_b4a3b6e77fec1b 1-809
+frontend/dashboard/src/types.ts
+  s_db9afa53cf7b72::t_439a26db42f18a 1-105
+frontend/dashboard/tsconfig.json
+  s_db9afa53cf7b72::t_7e128c238bffeb 1-21
+frontend/dashboard/vite.config.ts
+  s_db9afa53cf7b72::t_bae195e2a11e79 1-16
+frontend/dashboard/vitest.setup.ts
+  s_db9afa53cf7b72::t_7610398874fab4 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "04118db89576a8ea7e6e9b98cfc29e4c14df37ac",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
