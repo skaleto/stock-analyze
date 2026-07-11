@@ -1,4 +1,4 @@
-import type { DashboardDetail, DashboardSummary } from "./types";
+import type { DashboardDetail, DashboardSummary, InstrumentDetail } from "./types";
 
 async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, { cache: "no-store", signal });
@@ -28,4 +28,14 @@ export function fetchDetail(
 ): Promise<DashboardDetail> {
   const params = new URLSearchParams({ market, agent });
   return fetchJson<DashboardDetail>(`/api/dashboard/detail.json?${params.toString()}`, signal);
+}
+
+export function fetchInstrument(
+  market: string,
+  agent: string,
+  code: string,
+  signal?: AbortSignal
+): Promise<InstrumentDetail> {
+  const params = new URLSearchParams({ market, agent, code });
+  return fetchJson<InstrumentDetail>(`/api/dashboard/instrument.json?${params.toString()}`, signal);
 }
