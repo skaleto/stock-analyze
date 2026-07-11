@@ -1,0 +1,23 @@
+frontend/dashboard/src/FinancialCharts.test.tsx
+  s_db9afa53cf7b72::t_fe417769b79d82 61-76
+frontend/dashboard/src/FinancialCharts.tsx
+  s_db9afa53cf7b72::t_bde62db7269091 44-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "b460dd4eeaee02df0855cb9ed8eb9be1769d0619",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
