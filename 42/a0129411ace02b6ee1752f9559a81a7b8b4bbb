@@ -1,0 +1,31 @@
+configs/strategy_competition.json
+  s_db9afa53cf7b72::t_7f82231acefd35 1-18
+docs/superpowers/plans/2026-07-11-dual-strategy-takeover.md
+  s_db9afa53cf7b72::t_f127c7612f91ea 22,29,37,57,65-68
+stock_analyze/cli.py
+  s_db9afa53cf7b72::t_b58a496bac08a4 116-119,397-399,671-686
+stock_analyze/strategy_registry.py
+  s_db9afa53cf7b72::t_8db0d2821c0882 1-173
+tests/test_cli_market_flag.py
+  s_db9afa53cf7b72::t_dd4ee2815ebba2 25-32
+tests/test_strategy_registry.py
+  s_db9afa53cf7b72::t_07548d5a8bfef1 1-130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "42a0129411ace02b6ee1752f9559a81a7b8b4bbb",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
