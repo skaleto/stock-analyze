@@ -1,0 +1,27 @@
+stock_analyze/cli.py
+  s_db9afa53cf7b72::t_61b1dddd8d552e 11,985,996-997,1027-1055,1072,1079,1082-1087,1089-1092,1096,1098,1101
+stock_analyze/dashboard_aggregator.py
+  s_db9afa53cf7b72::t_b41ea4d5ddb945 81-88,531-853
+tests/test_cli_dashboard_routes.py
+  s_db9afa53cf7b72::t_57d24dd10c9bc2 10-11,31-34,143-181
+tests/test_dashboard_app_api.py
+  s_db9afa53cf7b72::t_fc08b0d4bb1780 1-276
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "de7a1705ae69cdf04d9cf3772689cd0377fd6dfe",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
