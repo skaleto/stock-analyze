@@ -1,0 +1,27 @@
+frontend/dashboard/package-lock.json
+  s_db9afa53cf7b72::t_a4d1f52a2c36a0 12,2120-2125,2416-2424
+frontend/dashboard/package.json
+  s_db9afa53cf7b72::t_4dc90ffcebb23a 14
+frontend/dashboard/src/PortfolioViews.test.tsx
+  s_db9afa53cf7b72::t_ddca1c51e2c2c3 1-82
+frontend/dashboard/src/finance.test.ts
+  s_db9afa53cf7b72::t_354158d8b34835 1-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "ebefd731e22a70c3f1d2da7aa1cd628f2aec998d",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
