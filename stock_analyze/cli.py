@@ -113,6 +113,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run overlay_guard checks on configs/agents/<agent>.yaml (schema + lock fields only).",
     )
     validate.add_argument("--agent", required=True, help="Agent overlay to validate (claude|codex).")
+    sub.add_parser(
+        "validate-strategy-pair",
+        help="Validate that the two strategy slots remain materially different.",
+    )
     rollback = sub.add_parser("agent-rollback", help="Rollback an agent overlay to a historical config hash")
     rollback.add_argument("--agent", required=True)
     rollback.add_argument("--to", required=True, help="Config hash saved under configs/agents/_history/")
@@ -390,6 +394,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "validate-overlay":
         ensure_dirs(args.logs_dir)
         return _command_validate_overlay(args)
+    if args.command == "validate-strategy-pair":
+        ensure_dirs(args.logs_dir)
+        return _command_validate_strategy_pair(args)
     if args.command == "agent-rollback":
         ensure_dirs(args.logs_dir)
         return _command_agent_rollback(args)
@@ -657,6 +664,22 @@ def _command_validate_overlay(args: argparse.Namespace) -> int:
         return 1
     print(
         f"OK: market={market} agent={agent_id} overlay 通过守卫检查 ({paths.config_path})"
+    )
+    return 0
+
+
+def _command_validate_strategy_pair(args: argparse.Namespace) -> int:
+    from .strategy_registry import StrategyPairInvalid, validate_market_strategy_pair
+
+    market = getattr(args, "market", None) or "a_share"
+    try:
+        result = validate_market_strategy_pair(market, repo_root=Path.cwd())
+    except StrategyPairInvalid as exc:
+        print(f"错误：双策略差异守卫失败 — {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"OK: market={market} factor_distance={result['factor_distance']:.4f} "
+        f"floor={result['factor_distance_floor']:.4f}"
     )
     return 0
 
