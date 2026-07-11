@@ -41,13 +41,24 @@ def generate_run_id(command: str) -> str:
 
 
 def code_version(repo_root: str | Path | None = None) -> str:
-    """Return the short HEAD SHA when inside a git working copy, else 'no_git'.
+    """Return the deployed version marker or short HEAD SHA.
 
-    Avoids spawning ``git`` by reading the porcelain files directly, so it
-    works inside containers and worktrees without git installed.
+    ECS deployments are rsynced snapshots without a trustworthy ``.git``
+    directory, so ``DEPLOY_VERSION`` takes precedence. Local checkouts fall
+    back to reading Git porcelain files directly without spawning ``git``.
     """
 
     root = Path(repo_root) if repo_root else Path.cwd()
+    for candidate in [root, *root.parents]:
+        marker = candidate / "DEPLOY_VERSION"
+        if not marker.is_file():
+            continue
+        try:
+            version = marker.read_text(encoding="utf-8").splitlines()[0].strip()
+        except (OSError, IndexError):
+            continue
+        if version:
+            return version
     git_path = _find_git_path(root)
     if git_path is None:
         return "no_git"

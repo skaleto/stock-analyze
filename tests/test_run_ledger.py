@@ -64,6 +64,16 @@ class RunLedgerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(code_version(tmp), "no_git")
 
+    def test_code_version_prefers_deploy_marker_over_git_head(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            git_dir = root / ".git"
+            git_dir.mkdir()
+            (git_dir / "HEAD").write_text("0123456789abcdef\n", encoding="utf-8")
+            (root / "DEPLOY_VERSION").write_text("deployed-commit-123\n", encoding="utf-8")
+
+            self.assertEqual(code_version(root), "deployed-commit-123")
+
 
 if __name__ == "__main__":
     unittest.main()

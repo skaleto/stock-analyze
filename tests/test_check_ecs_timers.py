@@ -11,6 +11,15 @@ class CheckEcsTimersScriptTests(unittest.TestCase):
         self.assertIn('runs_csv="${app_dir}/data/a_share/${agent}/runs.csv"', script)
         self.assertNotIn('runs_csv="${app_dir}/data/${agent}/runs.csv"', script)
 
+    def test_qdii_timers_are_expected_and_recent_failures_are_checked(self) -> None:
+        script = Path("scripts/check-ecs-timers.sh").read_text(encoding="utf-8")
+
+        self.assertIn("stock-analyze-codex-cn-qdii-etf-daily.timer", script)
+        self.assertIn("stock-analyze-codex-cn-qdii-etf-weekly.timer", script)
+        self.assertIn("latest_failed_epoch", script)
+        self.assertIn("latest_finished_epoch", script)
+        self.assertIn("latest_failed_epoch > latest_finished_epoch", script)
+
 
 if __name__ == "__main__":
     unittest.main()
