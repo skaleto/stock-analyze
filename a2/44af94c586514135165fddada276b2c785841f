@@ -1,0 +1,23 @@
+stock_analyze/run_ledger.py
+  s_db9afa53cf7b72::t_e17dfcad1d2b15 142
+tests/test_run_ledger.py
+  s_db9afa53cf7b72::t_df775fd28e5b8c 7,78-93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "a244af94c586514135165fddada276b2c785841f",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
