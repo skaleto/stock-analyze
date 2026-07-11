@@ -54,10 +54,31 @@ def _archive_pending_orders(
             raise StrategyReleaseInvalid(
                 f"strategy_release_pending_archive_invalid:{market}:{agent_id}"
             )
-        # Recover a crash between writing the archive and clearing the queue.
-        # Orders generated after a completed release differ and remain active.
-        if current and current == archived_pending:
-            write_json(pending_path, [])
+        queue_state = archive.get("queue_state")
+        if queue_state is None:
+            # Archives written by the first takeover release predate the
+            # explicit transaction marker. Treat them as completed so a
+            # deterministic fresh order set is never cleared on retry.
+            archive["queue_state"] = "cleared"
+            archive["queue_cleared_at"] = archive.get("archived_at")
+            write_json(archive_path, archive)
+        elif queue_state == "archiving":
+            # Recover a crash between writing the archive and clearing the
+            # queue. A different non-empty queue may contain newly generated
+            # orders, so stop instead of guessing.
+            if current == archived_pending:
+                write_json(pending_path, [])
+            elif current:
+                raise StrategyReleaseInvalid(
+                    f"strategy_release_pending_recovery_conflict:{market}:{agent_id}"
+                )
+            archive["queue_state"] = "cleared"
+            archive["queue_cleared_at"] = now_iso()
+            write_json(archive_path, archive)
+        elif queue_state != "cleared":
+            raise StrategyReleaseInvalid(
+                f"strategy_release_pending_archive_state:{market}:{agent_id}:{queue_state}"
+            )
         return {
             "pending_orders_archived": int(
                 archive.get("order_count") or _pending_order_count(archived_pending)
@@ -73,10 +94,15 @@ def _archive_pending_orders(
         "from_strategy_id": from_strategy_id,
         "to_strategy_id": to_strategy_id,
         "order_count": _pending_order_count(current),
+        "queue_state": "archiving",
+        "queue_cleared_at": None,
         "pending": current,
     }
     write_json(archive_path, archive)
     write_json(pending_path, [])
+    archive["queue_state"] = "cleared"
+    archive["queue_cleared_at"] = now_iso()
+    write_json(archive_path, archive)
     return {
         "pending_orders_archived": archive["order_count"],
         "pending_archive_path": str(archive_path),
