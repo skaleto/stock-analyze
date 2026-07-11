@@ -110,4 +110,18 @@ describe("financial charts", () => {
     expect(screen.getByText("2026-07-14")).toBeInTheDocument();
     expect(chartMocks.subscribeCrosshairMove).toHaveBeenCalledTimes(1);
   });
+
+  it("explains why a new season does not have a visible trajectory yet", () => {
+    render(
+      <StrategyComparisonChart
+        points={[{ date: "2026-07-11", claude: 0, codex: 0, benchmark: 0 }]}
+        strategies={{
+          claude: { label: "稳健防守", color: "#d6a84b" },
+          codex: { label: "趋势进攻", color: "#22d3ee" },
+        }}
+      />
+    );
+
+    expect(screen.getByText("当前 1 个估值点，至少 2 个估值点后形成曲线")).toBeInTheDocument();
+  });
 });

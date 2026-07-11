@@ -173,4 +173,41 @@ describe("CompetitionPanel", () => {
 
     expect(screen.getAllByText("数据积累中").length).toBeGreaterThanOrEqual(3);
   });
+
+  it("shows only the top five allocations and combines the remainder", () => {
+    const crowded: StrategyComparison = {
+      ...comparison,
+      strategies: {
+        ...comparison.strategies,
+        claude: {
+          ...comparison.strategies.claude,
+          allocations: [
+            { label: "板块一", value: 30, weight: 0.30 },
+            { label: "板块二", value: 22, weight: 0.22 },
+            { label: "板块三", value: 16, weight: 0.16 },
+            { label: "板块四", value: 12, weight: 0.12 },
+            { label: "板块五", value: 9, weight: 0.09 },
+            { label: "板块六", value: 7, weight: 0.07 },
+            { label: "板块七", value: 4, weight: 0.04 },
+          ],
+        },
+      },
+    };
+
+    render(
+      <CompetitionPanel
+        comparison={crowded}
+        activeAgent="claude"
+        currency="¥"
+        onSelectAgent={() => undefined}
+      />
+    );
+
+    expect(screen.getByText("板块五")).toBeInTheDocument();
+    expect(screen.queryByText("板块六")).not.toBeInTheDocument();
+    expect(screen.queryByText("板块七")).not.toBeInTheDocument();
+    const remainder = screen.getByText("其他 2 项").closest("span");
+    expect(remainder).not.toBeNull();
+    expect(within(remainder as HTMLElement).getByText("11.00%")).toBeInTheDocument();
+  });
 });

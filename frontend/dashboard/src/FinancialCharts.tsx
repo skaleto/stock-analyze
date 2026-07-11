@@ -222,6 +222,9 @@ export function StrategyComparisonChart({
         <span>{strategies.codex.label} <b>{formatPercent(hovered?.codex)}</b></span>
         <span>基准 <b>{formatPercent(hovered?.benchmark)}</b></span>
       </div>
+      {points.length < 2 ? (
+        <div className="chart-sparse-note">当前 1 个估值点，至少 2 个估值点后形成曲线</div>
+      ) : null}
       <div ref={containerRef} className="chart-canvas strategy-chart-canvas" aria-label="双策略赛季净值对比图" />
     </div>
   );
