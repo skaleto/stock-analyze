@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+"$SCRIPT_DIR/build-dashboard-app.sh"
+
+if [[ -z "${SA_ECS_REMOTE:-}" ]]; then
+  echo "error: SA_ECS_REMOTE must be user@host:/absolute/app/path" >&2
+  exit 2
+fi
+
+remote_no_slash="${SA_ECS_REMOTE%/}"
+if [[ "$remote_no_slash" != *:* ]]; then
+  echo "error: SA_ECS_REMOTE must include host:path" >&2
+  exit 2
+fi
+REMOTE_HOST="${SA_ECS_SSH_HOST:-${remote_no_slash%%:*}}"
+REMOTE_PATH="${SA_ECS_REMOTE_PATH:-${remote_no_slash#*:}}"
+DEPLOY_VERSION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+
+cd "$REPO_ROOT"
+rsync -az --relative \
+  --exclude '__pycache__/' \
+  --exclude '*.pyc' \
+  --exclude 'node_modules/' \
+  ./stock_analyze/ \
+  ./scripts/ \
+  ./deploy/ \
+  ./tests/ \
+  ./frontend/dashboard/ \
+  ./configs/competition_cn_qdii_etf.yaml \
+  ./configs/agents/codex_cn_qdii_etf.yaml \
+  "$remote_no_slash/"
+
+rsync -az --delete "$REPO_ROOT/reports/app/" "$remote_no_slash/reports/app/"
+
+ssh ${SA_ECS_SSH_OPTS:-} "$REMOTE_HOST" bash -s -- "$REMOTE_PATH" "$DEPLOY_VERSION" <<'REMOTE'
+set -euo pipefail
+
+app_dir="$1"
+deploy_version="$2"
+unit_dir="$app_dir/deploy/systemd"
+
+for unit in \
+  stock-analyze-codex-cn-qdii-etf-daily.service \
+  stock-analyze-codex-cn-qdii-etf-daily.timer \
+  stock-analyze-codex-cn-qdii-etf-weekly.service \
+  stock-analyze-codex-cn-qdii-etf-weekly.timer; do
+  install -m 0644 "$unit_dir/$unit" "/etc/systemd/system/$unit"
+done
+
+printf '%s\n' "$deploy_version" >"$app_dir/DEPLOY_VERSION"
+
+cd "$app_dir"
+export PATH="/opt/stock-analyze/venv/bin:$PATH"
+python -m unittest \
+  tests.test_run_ledger \
+  tests.test_markets_cn_qdii_etf_provider \
+  tests.test_markets_cn_qdii_etf_strategy \
+  tests.test_markets_cn_qdii_etf_simulator \
+  tests.test_dashboard_app_api \
+  tests.test_cli_dashboard_routes \
+  tests.test_qdii_systemd_units \
+  tests.test_deploy_app_script
+
+systemctl daemon-reload
+install -d -m 0755 /var/lib/systemd/timers
+for timer in \
+  stock-analyze-codex-cn-qdii-etf-daily.timer \
+  stock-analyze-codex-cn-qdii-etf-weekly.timer; do
+  stamp="/var/lib/systemd/timers/stamp-$timer"
+  if [[ ! -e "$stamp" ]]; then
+    touch "$stamp"
+  fi
+done
+systemctl enable --now stock-analyze-codex-cn-qdii-etf-daily.timer
+systemctl enable --now stock-analyze-codex-cn-qdii-etf-weekly.timer
+systemctl restart stock-analyze-dashboard.service
+systemctl is-active --quiet stock-analyze-dashboard.service
+systemctl is-active --quiet stock-analyze-codex-cn-qdii-etf-daily.timer
+systemctl is-active --quiet stock-analyze-codex-cn-qdii-etf-weekly.timer
+REMOTE
+
+echo "Deployed $DEPLOY_VERSION to $REMOTE_HOST:$REMOTE_PATH"

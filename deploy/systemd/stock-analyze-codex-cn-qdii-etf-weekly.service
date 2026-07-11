@@ -1,0 +1,15 @@
+[Unit]
+Description=Stock Analyze weekly simulation run (Codex mainland QDII ETF)
+After=network-online.target
+Wants=network-online.target
+OnFailure=stock-analyze-pipeline-failure@%n.service
+OnSuccess=stock-analyze-aggregate-dashboard.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+EnvironmentFile=-/etc/stock-analyze/secrets.env
+ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --market cn_qdii_etf --agent codex run-weekly
+StandardOutput=append:/opt/stock-analyze/logs/codex-cn-qdii-etf-weekly.log
+StandardError=append:/opt/stock-analyze/logs/codex-cn-qdii-etf-weekly.err
