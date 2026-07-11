@@ -154,9 +154,9 @@ export function StrategyBrief({ strategy, reportHref }: { strategy: StrategyProf
     <section className="strategy-section terminal-section" role="region" aria-label="策略说明">
       <header className="section-heading">
         <div>
-          <span className="section-kicker"><Activity size={14} aria-hidden="true" />AGENT VIEW</span>
+          <span className="section-kicker"><Activity size={14} aria-hidden="true" />STRATEGY LOGIC</span>
           <h2>{strategy.name}</h2>
-          <p>Agent 决定如何选证券；市场页只描述账户和市场发生了什么</p>
+          <p>这里解释当前策略如何选证券和调仓；市场账户用于区分资金与持仓范围</p>
         </div>
         {reportHref ? <a className="text-link" href={reportHref} target="_blank" rel="noreferrer">查看完整周报</a> : null}
       </header>

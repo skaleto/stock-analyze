@@ -13,6 +13,7 @@ import {
   WalletCards,
 } from "lucide-react";
 import { fetchDetail, fetchSummary } from "./api";
+import CompetitionPanel from "./CompetitionPanel";
 import { PerformanceChart } from "./FinancialCharts";
 import InstrumentDrawer from "./InstrumentDrawer";
 import { PortfolioSection, RuntimeHistory, StrategyBrief, TradeTimeline } from "./PortfolioViews";
@@ -148,9 +149,9 @@ function TargetOrders({
 
 const emptyStrategy = (agent: string): StrategyProfile => ({
   agent,
-  agent_label: `${agent} 策略`,
+  agent_label: "策略版本",
   strategy_id: null,
-  name: `${agent} 策略`,
+  name: "策略版本",
   factors: [],
 });
 
@@ -294,11 +295,10 @@ export default function App() {
   const filteredPositions = useMemo(() => positions.filter((row) => matchesSearch(row, search)), [positions, search]);
   const filteredEvents = useMemo(() => events.filter((row) => matchesSearch(row, search)), [events, search]);
   const latest = activeDetail?.nav.latest;
-  const strategySource = activeDetail?.strategy ?? emptyStrategy(selectedAgent);
-  const strategy = {
-    ...strategySource,
-    name: `${strategySource.agent === "codex" ? "Codex" : strategySource.agent === "claude" ? "Claude" : strategySource.agent} ${selectedMarket === "cn_qdii_etf" ? "跨境ETF" : "A股"}策略`,
-  };
+  const strategy = activeDetail?.strategy ?? emptyStrategy(selectedAgent);
+  const selectedStrategyLabel = selectedAgentSummary?.strategy?.label
+    ?? activeDetail?.strategy.agent_label
+    ?? strategy.name;
   const benchmarkReturn = latest?.benchmark_return;
   const rawBenchmarkLabel = activeDetail?.nav.benchmark_label || latest?.benchmark_code;
   const benchmarkLabel = rawBenchmarkLabel && rawBenchmarkLabel !== "基准"
@@ -332,7 +332,7 @@ export default function App() {
           <div className="segmented agent-segmented">
             {agentOptions.map((agent) => (
               <button key={agent.agent} type="button" className={agent.agent === selectedAgent ? "active" : ""} onClick={() => changeSelection(selectedMarket, agent.agent)}>
-                {agent.agent === "codex" ? "Codex" : agent.agent === "claude" ? "Claude" : agent.agent}
+                {agent.strategy?.label ?? agent.agent}
               </button>
             ))}
           </div>
@@ -351,7 +351,7 @@ export default function App() {
         <header className="topbar">
           <div>
             <p>{selectedMarketSummary?.label ?? activeDetail?.market_label ?? selectedMarket} · 纸面交易</p>
-            <h1>{selectedAgent} 策略工作台</h1>
+            <h1>{selectedStrategyLabel} 策略工作台</h1>
           </div>
           <div className="topbar-actions">
             <label className="search-box"><Search size={16} aria-hidden="true" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索证券、市场或账户" aria-label="搜索证券" /></label>
@@ -362,7 +362,14 @@ export default function App() {
         {error ? <div className="error-banner"><ShieldAlert size={18} aria-hidden="true" />{error}</div> : null}
         {loading && !summary ? <Skeleton /> : null}
 
-        <section className="metric-strip" aria-label="账户总览">
+        <CompetitionPanel
+          comparison={selectedMarketSummary?.comparison}
+          activeAgent={selectedAgent}
+          currency={activeDetail?.currency ?? selectedMarketSummary?.currency ?? "¥"}
+          onSelectAgent={(agent) => changeSelection(selectedMarket, agent)}
+        />
+
+        <section className="metric-strip" role="region" aria-label="账户总览">
           <MetricTile label="账户净值" value={latest?.total_value_display ?? selectedAgentSummary?.nav.latest_display ?? "-"} helper={`估值日 ${latest?.date ?? selectedAgentSummary?.nav.date ?? "-"}`} icon={WalletCards} />
           <MetricTile label="累计收益" value={latest?.return_display ?? selectedAgentSummary?.nav.return_display ?? "-"} helper="已扣模拟交易成本" icon={BarChart3} tone={(latest?.return ?? selectedAgentSummary?.nav.return ?? 0) >= 0 ? "positive" : "negative"} />
           <MetricTile label="市场基准" value={formatPercent(benchmarkReturn)} helper={benchmarkReturn == null ? `${benchmarkLabel}等待首次行情` : benchmarkLabel} icon={Gauge} tone={(benchmarkReturn ?? 0) >= 0 ? "positive" : "negative"} />
