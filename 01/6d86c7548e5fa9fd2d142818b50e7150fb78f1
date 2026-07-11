@@ -1,0 +1,39 @@
+stock_analyze/_dashboard_assets/__init__.py
+  s_db9afa53cf7b72::t_6281f7b3794328 23,196,224-225
+stock_analyze/beginner_dashboard.py
+  s_db9afa53cf7b72::t_d85197f5d258a8 37,48,92,112,118,170,180-186,200-206,372,399,417,428,454,499,566-567,618,630-634,648,672,918,949,960-965
+stock_analyze/notifier.py
+  s_db9afa53cf7b72::t_648d508c7dc624 54,72-96,283,286,291,294,306,320,323,328,332,341,355,367,370,382,435-437,443,453,463
+stock_analyze/strategy_comparison.py
+  s_db9afa53cf7b72::t_f3c1966fe937e9 1-371
+tests/test_beginner_dashboard.py
+  s_db9afa53cf7b72::t_4a5e0d5ba6224b 45-59,446-447,665
+tests/test_dashboard_app_api.py
+  s_db9afa53cf7b72::t_395df4ea12b08a 183
+tests/test_dashboard_finance.py
+  s_db9afa53cf7b72::t_b5100b46515497 88-105,121,123
+tests/test_dashboard_multi_market.py
+  s_db9afa53cf7b72::t_548f5c3c8e005d 16-38,46-58,181-185
+tests/test_notifier.py
+  s_db9afa53cf7b72::t_42596d86b6c49d 28-59,65-73,162-163,178-179,189-197,250-251,284
+tests/test_strategy_comparison.py
+  s_db9afa53cf7b72::t_c2167147fc03f7 1-196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "016d86c7548e5fa9fd2d142818b50e7150fb78f1",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
