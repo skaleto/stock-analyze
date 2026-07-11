@@ -1,0 +1,25 @@
+tests/test_check_ecs_timers.py
+  s_db9afa53cf7b72::t_fdd055acacdcf1 14-22
+tests/test_qdii_systemd_units.py
+  s_db9afa53cf7b72::t_8b75b387e1438f 1-40
+tests/test_run_ledger.py
+  s_db9afa53cf7b72::t_a1d3cfc059e0aa 67-76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "f74562dc2db9e401ca1d9bc9a3bf3faa5476c1c1",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
