@@ -293,6 +293,179 @@ class DashboardAppApiTests(unittest.TestCase):
         )
         self.assertIsNone(payload["nav"]["latest"]["benchmark_code"])
 
+    def test_nav_series_contains_weighted_normalized_composite_benchmark(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            nav_path = root / "data" / "cn_qdii_etf" / "codex" / "daily_nav.csv"
+            pd.DataFrame(
+                [
+                    {
+                        "date": "2026-07-09",
+                        "account_id": "us_exposure",
+                        "cash": 600_000,
+                        "market_value": 0,
+                        "total_value": 600_000,
+                        "benchmark_code": "513100.SH",
+                        "benchmark_close": 1.0,
+                        "benchmark_date": "2026-07-09",
+                    },
+                    {
+                        "date": "2026-07-09",
+                        "account_id": "hk_exposure",
+                        "cash": 400_000,
+                        "market_value": 0,
+                        "total_value": 400_000,
+                        "benchmark_code": "159920.SZ",
+                        "benchmark_close": 2.0,
+                        "benchmark_date": "2026-07-09",
+                    },
+                    {
+                        "date": "2026-07-10",
+                        "account_id": "us_exposure",
+                        "cash": 600_000,
+                        "market_value": 0,
+                        "total_value": 600_000,
+                        "benchmark_code": "513100.SH",
+                        "benchmark_close": 1.1,
+                        "benchmark_date": "2026-07-10",
+                    },
+                    {
+                        "date": "2026-07-10",
+                        "account_id": "hk_exposure",
+                        "cash": 400_000,
+                        "market_value": 0,
+                        "total_value": 400_000,
+                        "benchmark_code": "159920.SZ",
+                        "benchmark_close": 2.1,
+                        "benchmark_date": "2026-07-10",
+                    },
+                ]
+            ).to_csv(nav_path, index=False)
+
+            payload = build_dashboard_detail_data(
+                repo_root=root,
+                market="cn_qdii_etf",
+                agent="codex",
+            )
+
+        self.assertEqual(payload["nav"]["benchmark_label"], "组合基准")
+        self.assertEqual(payload["nav"]["series"][0]["benchmark_return"], 0.0)
+        self.assertAlmostEqual(
+            payload["nav"]["series"][1]["benchmark_return"],
+            0.08,
+        )
+        self.assertEqual(payload["nav"]["series"][1]["benchmark_coverage"], 1.0)
+
+    def test_instrument_payload_reads_qdii_ohlcv_and_related_trades(self) -> None:
+        from stock_analyze.dashboard_aggregator import build_dashboard_instrument_data
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            cache = root / "data" / "cn_qdii_etf" / "shared" / "cache"
+            pd.DataFrame(
+                [
+                    {
+                        "ts_code": "513100.SH",
+                        "trade_date": "20260710",
+                        "open": 2.18,
+                        "high": 2.20,
+                        "low": 2.17,
+                        "close": 2.19,
+                        "vol": 1200,
+                        "amount": 2600,
+                    },
+                    {
+                        "ts_code": "513100.SH",
+                        "trade_date": "20260709",
+                        "open": 2.10,
+                        "high": 2.16,
+                        "low": 2.09,
+                        "close": 2.15,
+                        "vol": 1000,
+                        "amount": 2200,
+                    },
+                ]
+            ).to_csv(cache / "fund_daily_513100_SH_20260710.csv", index=False)
+
+            payload = build_dashboard_instrument_data(
+                repo_root=root,
+                market="cn_qdii_etf",
+                agent="codex",
+                code="513100.SH",
+            )
+
+        self.assertEqual(payload["instrument"]["name"], "纳指ETF")
+        self.assertEqual(payload["instrument"]["theme"], "纳斯达克100")
+        self.assertEqual(
+            [item["date"] for item in payload["candles"]],
+            ["2026-07-09", "2026-07-10"],
+        )
+        self.assertAlmostEqual(payload["latest"]["change_pct"], 2.19 / 2.15 - 1.0)
+        self.assertEqual(payload["related_trades"][0]["side_label"], "买入")
+        self.assertIn("avg_amount_20", {item["key"] for item in payload["metrics"]})
+
+    def test_instrument_payload_normalizes_a_share_chinese_cache_columns(self) -> None:
+        from stock_analyze.dashboard_aggregator import build_dashboard_instrument_data
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "configs" / "agents").mkdir(parents=True)
+            (root / "configs" / "agents" / "codex_a_share.yaml").write_text(
+                "{}",
+                encoding="utf-8",
+            )
+            cache = root / "data" / "shared" / "cache"
+            cache.mkdir(parents=True)
+            pd.DataFrame(
+                [
+                    {"日期": "2026-07-09", "开盘": 10, "最高": 11, "最低": 9.8, "收盘": 10.5, "成交额": 1000},
+                    {"日期": "2026-07-10", "开盘": 10.5, "最高": 10.8, "最低": 10.2, "收盘": 10.6, "成交额": 1200},
+                ]
+            ).to_csv(cache / "history_000001_20260710_260.csv", index=False)
+
+            payload = build_dashboard_instrument_data(
+                repo_root=root,
+                market="a_share",
+                agent="codex",
+                code="000001.SZ",
+            )
+
+        self.assertEqual(len(payload["candles"]), 2)
+        self.assertEqual(payload["latest"]["close"], 10.6)
+
+    def test_missing_instrument_history_returns_readable_empty_state(self) -> None:
+        from stock_analyze.dashboard_aggregator import build_dashboard_instrument_data
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            payload = build_dashboard_instrument_data(
+                repo_root=root,
+                market="cn_qdii_etf",
+                agent="codex",
+                code="513100.SH",
+            )
+
+        self.assertEqual(payload["candles"], [])
+        self.assertEqual(payload["warning"], "暂无可用的历史行情缓存")
+
+    def test_invalid_instrument_code_is_rejected(self) -> None:
+        from stock_analyze.dashboard_aggregator import build_dashboard_instrument_data
+        from stock_analyze.dashboard_finance import InvalidInstrumentCode
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            with self.assertRaises(InvalidInstrumentCode):
+                build_dashboard_instrument_data(
+                    repo_root=root,
+                    market="cn_qdii_etf",
+                    agent="codex",
+                    code="../../etc/passwd",
+                )
+
     def test_summary_total_counts_all_rows_before_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

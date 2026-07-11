@@ -1026,6 +1026,7 @@ def _is_dashboard_api_path(path: str) -> bool:
         "/api/dashboard/summary.json",
         "/api/dashboard.json",
         "/api/dashboard/detail.json",
+        "/api/dashboard/instrument.json",
     }
 
 
@@ -1041,11 +1042,23 @@ def _dashboard_api_error_response(exc: Exception) -> tuple[int, dict[str, str]]:
             "message": "Unknown agent for the selected market",
         }
     from .dashboard_aggregator import DashboardDataError
+    from .dashboard_finance import InstrumentDataError, InvalidInstrumentCode
+
+    if isinstance(exc, InvalidInstrumentCode):
+        return 400, {
+            "error": "invalid_instrument_code",
+            "message": "Invalid instrument code",
+        }
 
     if isinstance(exc, DashboardDataError):
         return 500, {
             "error": "dashboard_data_invalid",
             "message": f"Dashboard data source is unreadable: {exc.source}",
+        }
+    if isinstance(exc, InstrumentDataError):
+        return 500, {
+            "error": "instrument_data_invalid",
+            "message": f"Instrument data source is unreadable: {exc.source}",
         }
     return 500, {
         "error": "dashboard_api_failed",
@@ -1081,13 +1094,26 @@ class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
                 from .dashboard_aggregator import build_dashboard_summary_data
 
                 payload = build_dashboard_summary_data(repo_root=repo_root, markets=list(competition.MARKETS))
-            else:
+            elif path == "/api/dashboard/detail.json":
                 from .dashboard_aggregator import build_dashboard_detail_data
 
                 params = parse_qs(query, keep_blank_values=False)
                 market = (params.get("market") or ["a_share"])[0]
                 agent = (params.get("agent") or ["codex"])[0]
                 payload = build_dashboard_detail_data(repo_root=repo_root, market=market, agent=agent)
+            else:
+                from .dashboard_aggregator import build_dashboard_instrument_data
+
+                params = parse_qs(query, keep_blank_values=False)
+                market = (params.get("market") or ["a_share"])[0]
+                agent = (params.get("agent") or ["codex"])[0]
+                code = (params.get("code") or [""])[0]
+                payload = build_dashboard_instrument_data(
+                    repo_root=repo_root,
+                    market=market,
+                    agent=agent,
+                    code=code,
+                )
             raw = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
             self.send_response(200)
         except Exception as exc:  # noqa: BLE001

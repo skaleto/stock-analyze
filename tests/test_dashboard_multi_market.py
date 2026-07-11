@@ -13,7 +13,7 @@ from stock_analyze import competition
 
 def _seed_market_repo(root: Path) -> None:
     (root / "configs" / "agents").mkdir(parents=True, exist_ok=True)
-    for market in ("a_share", "hk", "us"):
+    for market in ("a_share", "cn_qdii_etf"):
         (root / "configs" / f"competition_{market}.yaml").write_text(
             json.dumps({"competition_id": f"{market}_test", "initial_cash": 1000000}),
             encoding="utf-8",
@@ -88,7 +88,7 @@ class MultiMarketDashboardTests(unittest.TestCase):
             self.assertIn(market, MARKET_LABELS)
             self.assertIn(market, MARKET_INITIAL_CASH)
 
-    def test_competition_dashboard_surfaces_three_markets_and_task_cadences(self) -> None:
+    def test_competition_dashboard_surfaces_active_accounts_and_task_cadences(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _seed_market_repo(root)
@@ -96,14 +96,15 @@ class MultiMarketDashboardTests(unittest.TestCase):
             out_path = generate_competition_dashboard(
                 agents=["claude", "codex"],
                 repo_root=root,
-                markets=["a_share", "hk", "us"],
+                markets=["a_share", "cn_qdii_etf"],
             )
             html = out_path.read_text(encoding="utf-8")
 
-            self.assertIn("三市场总览", html)
+            self.assertIn("投资账户总览", html)
             self.assertIn("A股", html)
-            self.assertIn("港股", html)
-            self.assertIn("美股", html)
+            self.assertIn("跨境ETF", html)
+            self.assertNotIn("/pro/hk/", html)
+            self.assertNotIn("/pro/us/", html)
             self.assertIn("日任务", html)
             self.assertIn("周任务", html)
             self.assertIn("月任务", html)
@@ -113,13 +114,15 @@ class MultiMarketDashboardTests(unittest.TestCase):
             self.assertIn('id="all-market-observer"', html)
             self.assertIn("/api/dashboard/summary.json", html)
             self.assertIn("/pro/a_share/claude.html", html)
-            self.assertIn("/pro/hk/codex.html", html)
-            self.assertIn("/pro/us/claude.html", html)
+            self.assertIn("/pro/cn_qdii_etf/codex.html", html)
             self.assertIn("目标订单", html)
             data_path = root / "reports" / "competition" / "dashboard-data.json"
             self.assertTrue(data_path.exists())
             payload = json.loads(data_path.read_text(encoding="utf-8"))
-            self.assertEqual([item["market"] for item in payload["markets"]], ["a_share", "hk", "us"])
+            self.assertEqual(
+                [item["market"] for item in payload["markets"]],
+                ["a_share", "cn_qdii_etf"],
+            )
             json.dumps(payload, allow_nan=False)
 
     def test_dashboard_summary_data_exposes_dynamic_payload(self) -> None:
@@ -129,12 +132,15 @@ class MultiMarketDashboardTests(unittest.TestCase):
 
             payload = build_dashboard_summary_data(
                 repo_root=root,
-                markets=["a_share", "hk", "us"],
+                markets=["a_share", "cn_qdii_etf"],
                 agents=["claude", "codex"],
             )
 
             self.assertIn("generated_at", payload)
-            self.assertEqual([item["market"] for item in payload["markets"]], ["a_share", "hk", "us"])
+            self.assertEqual(
+                [item["market"] for item in payload["markets"]],
+                ["a_share", "cn_qdii_etf"],
+            )
             a_share = payload["markets"][0]
             self.assertEqual(a_share["agents"][0]["decision"]["pending_orders"]["total"], 2)
             self.assertEqual(
@@ -149,9 +155,9 @@ class MultiMarketDashboardTests(unittest.TestCase):
             root = Path(tmp)
             _seed_market_repo(root)
             agent = "gemini"
-            market = "hk"
+            market = "cn_qdii_etf"
             (root / "configs" / "agents" / f"{agent}_{market}.yaml").write_text(
-                json.dumps({"agent_id": agent, "strategy_id": "gemini_hk_v1", "factors": {}}),
+                json.dumps({"agent_id": agent, "strategy_id": "gemini_qdii_v1", "factors": {}}),
                 encoding="utf-8",
             )
             data_dir = root / "data" / market / agent
@@ -178,16 +184,19 @@ class MultiMarketDashboardTests(unittest.TestCase):
                 ]
             ).to_csv(data_dir / "runs.csv", index=False)
             (data_dir / "pending_orders.json").write_text(
-                json.dumps([{"side": "buy", "code": "0005.HK"}]),
+                json.dumps([{"side": "buy", "code": "513100.SH"}]),
                 encoding="utf-8",
             )
-            (reports_dir / "dashboard.html").write_text("gemini hk dashboard", encoding="utf-8")
+            (reports_dir / "dashboard.html").write_text("gemini qdii dashboard", encoding="utf-8")
 
-            out_path = generate_competition_dashboard(repo_root=root, markets=["a_share", "hk", "us"])
+            out_path = generate_competition_dashboard(
+                repo_root=root,
+                markets=["a_share", "cn_qdii_etf"],
+            )
             html = out_path.read_text(encoding="utf-8")
 
             self.assertIn("gemini", html)
-            self.assertIn("/pro/hk/gemini.html", html)
+            self.assertIn("/pro/cn_qdii_etf/gemini.html", html)
 
 
 if __name__ == "__main__":

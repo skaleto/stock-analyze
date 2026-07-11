@@ -208,7 +208,7 @@ git commit -m "feat: add portfolio finance metadata"
 - Modify: `tests/test_dashboard_app_api.py`
 - Modify: `tests/test_cli_dashboard_routes.py`
 
-- [ ] **Step 1: Write failing benchmark and instrument tests**
+- [x] **Step 1: Write failing benchmark and instrument tests**
 
 Seed two NAV accounts with different benchmark scales and assert:
 
@@ -219,7 +219,7 @@ self.assertEqual(payload["nav"]["benchmark_label"], "组合基准")
 
 Seed QDII and A-share cache files and assert `build_dashboard_instrument_data` returns sorted ISO-date candles, latest daily change, derived metrics, and related trades. Cover invalid code, unknown agent, missing cache, and malformed cache.
 
-- [ ] **Step 2: Run backend tests and verify RED**
+- [x] **Step 2: Run backend tests and verify RED**
 
 ```bash
 python3 -m unittest \
@@ -228,7 +228,7 @@ python3 -m unittest \
   tests.test_cli_dashboard_routes
 ```
 
-- [ ] **Step 3: Calculate the normalized benchmark**
+- [x] **Step 3: Calculate the normalized benchmark**
 
 For each account, take the first non-null benchmark close as base and the first account `total_value` as its fixed portfolio weight. For each date:
 
@@ -239,7 +239,7 @@ benchmark_return = sum(account_return * account_weight) / sum(account_weight)
 
 Do not forward-fill across a missing account/date. Calculate from available accounts and expose `benchmark_coverage` so the UI can state partial coverage.
 
-- [ ] **Step 4: Implement cache-backed instrument data**
+- [x] **Step 4: Implement cache-backed instrument data**
 
 Expose:
 
@@ -253,11 +253,11 @@ Validate `code` with `^[0-9]{6}(?:\.(?:SH|SZ))?$`. Use the newest filename by pa
 
 Read the latest own-agent factor run for A-share and pivot `factor -> raw` for the selected code. Never read opponent private factor runs.
 
-- [ ] **Step 5: Add the HTTP route**
+- [x] **Step 5: Add the HTTP route**
 
 Register `/api/dashboard/instrument.json`, parse `market`, `agent`, and `code`, and return the same sanitized 400/404/500 contracts as the detail API. Add `DashboardInstrumentDataError(source)` for malformed cache while missing history remains HTTP 200 with `candles=[]` and a warning.
 
-- [ ] **Step 6: Run backend tests and verify GREEN**
+- [x] **Step 6: Run backend tests and verify GREEN**
 
 Run the command from Step 2 and:
 
@@ -265,7 +265,7 @@ Run the command from Step 2 and:
 python3 -m unittest tests.test_dashboard_multi_market tests.test_run_ledger
 ```
 
-- [ ] **Step 7: Commit the instrument API**
+- [x] **Step 7: Commit the instrument API**
 
 ```bash
 git add stock_analyze/dashboard_finance.py stock_analyze/dashboard_aggregator.py \

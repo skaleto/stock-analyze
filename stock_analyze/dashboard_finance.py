@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
+
+import pandas as pd
 
 
 ACCOUNT_LABELS = {
@@ -85,6 +88,18 @@ FACTOR_METADATA: dict[str, dict[str, str]] = {
         "explanation": "Claude 对不同行业最近一周信息的结构化情绪评分。",
     },
 }
+
+
+class InvalidInstrumentCode(ValueError):
+    """A dashboard instrument code does not match a domestic security code."""
+
+
+class InstrumentDataError(RuntimeError):
+    """An existing cached instrument artifact is malformed."""
+
+    def __init__(self, source: str) -> None:
+        self.source = source
+        super().__init__(f"instrument data source is unreadable: {source}")
 
 
 def factor_metadata(key: str) -> dict[str, str]:
@@ -207,3 +222,164 @@ def build_strategy_profile(config_path: Path) -> dict[str, Any]:
         "name": payload.get("name") or agent_label,
         "factors": factors,
     }
+
+
+_INSTRUMENT_CODE = re.compile(r"^[0-9]{6}(?:\.(?:SH|SZ))?$")
+
+
+def normalize_instrument_code(market: str, code: str) -> str:
+    raw = str(code or "").strip().upper()
+    if not _INSTRUMENT_CODE.fullmatch(raw):
+        raise InvalidInstrumentCode(raw)
+    if "." in raw:
+        return raw
+    digits = raw[:6]
+    if market == "cn_qdii_etf":
+        exchange = "SH" if digits.startswith(("51", "58")) else "SZ"
+    else:
+        exchange = "SH" if digits.startswith(("5", "6", "9")) else "SZ"
+    return f"{digits}.{exchange}"
+
+
+def _latest_cache_file(paths: list[Path], date_pattern: re.Pattern[str]) -> Path | None:
+    dated: list[tuple[str, str, Path]] = []
+    for path in paths:
+        match = date_pattern.search(path.name)
+        if match:
+            dated.append((match.group("date"), path.name, path))
+    return max(dated, default=("", "", None))[-1]
+
+
+def read_instrument_history(
+    repo_root: Path,
+    market: str,
+    code: str,
+) -> tuple[str, list[dict[str, Any]], str | None]:
+    normalized = normalize_instrument_code(market, code)
+    digits, exchange = normalized.split(".", 1)
+    if market == "cn_qdii_etf":
+        cache = repo_root / "data" / market / "shared" / "cache"
+        candidates = list(cache.glob(f"fund_daily_{digits}_{exchange}_*.csv"))
+        path = _latest_cache_file(
+            candidates,
+            re.compile(r"_(?P<date>[0-9]{8})\.csv$"),
+        )
+        rename = {
+            "trade_date": "date",
+            "open": "open",
+            "high": "high",
+            "low": "low",
+            "close": "close",
+            "vol": "volume",
+            "amount": "amount",
+        }
+        date_column = "trade_date"
+    else:
+        cache = repo_root / "data" / "shared" / "cache"
+        candidates = list(cache.glob(f"history_{digits}_*_*.csv"))
+        path = _latest_cache_file(
+            candidates,
+            re.compile(rf"history_{digits}_(?P<date>[0-9]{{8}})_[0-9]+\.csv$"),
+        )
+        rename = {
+            "日期": "date",
+            "开盘": "open",
+            "最高": "high",
+            "最低": "low",
+            "收盘": "close",
+            "成交量": "volume",
+            "成交额": "amount",
+        }
+        date_column = "日期"
+    if path is None:
+        return normalized, [], "暂无可用的历史行情缓存"
+    try:
+        frame = pd.read_csv(path, dtype={date_column: str}, keep_default_na=False)
+    except Exception as exc:  # noqa: BLE001
+        raise InstrumentDataError("instrument_history") from exc
+    required = {date_column, *[key for key in rename if key not in {"成交量", "成交额", "vol", "amount"}]}
+    if frame.empty or not required.issubset(frame.columns):
+        raise InstrumentDataError("instrument_history")
+    frame = frame.rename(columns=rename)
+    if "volume" not in frame.columns:
+        frame["volume"] = None
+    if "amount" not in frame.columns:
+        frame["amount"] = None
+    for column in ("open", "high", "low", "close", "volume", "amount"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    date_text = frame["date"].astype(str).str.replace("-", "", regex=False).str[:8]
+    frame["date"] = (
+        date_text.str[:4] + "-" + date_text.str[4:6] + "-" + date_text.str[6:8]
+    )
+    frame = (
+        frame.dropna(subset=["open", "high", "low", "close"])
+        .drop_duplicates(subset=["date"], keep="last")
+        .sort_values("date")
+        .tail(260)
+    )
+    records = frame[["date", "open", "high", "low", "close", "volume", "amount"]].to_dict(
+        orient="records"
+    )
+    return normalized, records, None
+
+
+def build_history_metrics(
+    candles: list[dict[str, Any]],
+    factor_values: dict[str, float] | None = None,
+) -> list[dict[str, Any]]:
+    if not candles:
+        return []
+    frame = pd.DataFrame(candles)
+    closes = pd.to_numeric(frame["close"], errors="coerce")
+    amounts = pd.to_numeric(frame.get("amount"), errors="coerce")
+    values: dict[str, float | None] = {
+        "momentum_20": (closes.iloc[-1] / closes.iloc[-21] - 1.0) if len(closes) >= 21 and closes.iloc[-21] else None,
+        "momentum_60": (closes.iloc[-1] / closes.iloc[-61] - 1.0) if len(closes) >= 61 and closes.iloc[-61] else None,
+        "low_volatility_60": closes.pct_change().tail(60).std() if len(closes) >= 3 else None,
+        "avg_amount_20": amounts.tail(20).mean() if amounts is not None and not amounts.dropna().empty else None,
+    }
+    values.update(factor_values or {})
+    metrics: list[dict[str, Any]] = []
+    for key, value in values.items():
+        if value is None or pd.isna(value):
+            continue
+        meta = factor_metadata(key)
+        metrics.append(
+            {
+                "key": key,
+                **meta,
+                "value": float(value),
+                "format": "money" if key == "avg_amount_20" else "percent" if key not in {"pe", "pb", "roe"} else "number",
+            }
+        )
+    return metrics
+
+
+def read_latest_factor_values(
+    repo_root: Path,
+    agent: str,
+    code: str,
+) -> dict[str, float]:
+    factor_dir = repo_root / "data" / "a_share" / agent / "factor_runs"
+    candidates = sorted(factor_dir.glob("*.csv"))
+    if not candidates:
+        return {}
+    try:
+        frame = pd.read_csv(
+            candidates[-1],
+            dtype={"code": str, "factor": str},
+            keep_default_na=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise InstrumentDataError("factor_snapshot") from exc
+    if not {"code", "factor", "raw"}.issubset(frame.columns):
+        raise InstrumentDataError("factor_snapshot")
+    digits = normalize_instrument_code("a_share", code).split(".", 1)[0]
+    selected = frame[frame["code"].astype(str).str.zfill(6) == digits]
+    values: dict[str, float] = {}
+    for row in selected[["factor", "raw"]].to_dict(orient="records"):
+        try:
+            values[str(row["factor"])] = float(row["raw"])
+        except (TypeError, ValueError):
+            continue
+    return values
