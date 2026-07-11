@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from stock_analyze.config import config_hash
 from stock_analyze.run_ledger import RunLedger, code_version, read_runs
@@ -73,6 +74,22 @@ class RunLedgerTests(unittest.TestCase):
             (root / "DEPLOY_VERSION").write_text("deployed-commit-123\n", encoding="utf-8")
 
             self.assertEqual(code_version(root), "deployed-commit-123")
+
+    def test_custom_data_dir_uses_the_running_repo_deploy_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "app"
+            repo.mkdir()
+            (repo / "DEPLOY_VERSION").write_text("deployed-custom-data\n", encoding="utf-8")
+            ledger = RunLedger(root / "trial" / "data")
+
+            with patch("stock_analyze.run_ledger.Path.cwd", return_value=repo):
+                with ledger.run("run-daily", as_of="2026-07-10", config=SAMPLE_CONFIG):
+                    pass
+
+            runs = read_runs(root / "trial" / "data")
+
+        self.assertEqual(runs[0]["code_version"], "deployed-custom-data")
 
 
 if __name__ == "__main__":
