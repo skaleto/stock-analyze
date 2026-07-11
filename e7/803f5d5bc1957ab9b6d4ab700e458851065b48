@@ -1,0 +1,21 @@
+docs/superpowers/specs/2026-07-11-domestic-investment-terminal-redesign.md
+  s_db9afa53cf7b72::t_29c51169e7a621 1-224
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "e7803f5d5bc1957ab9b6d4ab700e458851065b48",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
