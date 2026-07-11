@@ -2,9 +2,10 @@ import type { CSSProperties } from "react";
 import { ArrowUpRight, GitCompareArrows, ShieldCheck, Split } from "lucide-react";
 import { StrategyComparisonChart } from "./FinancialCharts";
 import { formatMoney, formatPercent } from "./finance";
-import type { StrategyComparison, StrategyComparisonSide } from "./types";
+import type { StrategyAllocation, StrategyComparison, StrategyComparisonSide } from "./types";
 
 const strategyOrder = ["claude", "codex"] as const;
+const ALLOCATION_VISIBLE_LIMIT = 5;
 
 function formatRatio(value: number | null, digits = 2): string {
   return value == null ? "数据积累中" : value.toFixed(digits);
@@ -12,6 +13,23 @@ function formatRatio(value: number | null, digits = 2): string {
 
 function sourceLabel(source: string): string {
   return source === "positions" ? "来自当前持仓" : "来自目标订单";
+}
+
+function visibleAllocations(allocations: StrategyAllocation[]): StrategyAllocation[] {
+  if (allocations.length <= ALLOCATION_VISIBLE_LIMIT) return allocations;
+  const top = allocations.slice(0, ALLOCATION_VISIBLE_LIMIT);
+  const remainder = allocations.slice(ALLOCATION_VISIBLE_LIMIT);
+  const hasWeight = remainder.some((allocation) => allocation.weight != null);
+  return [
+    ...top,
+    {
+      label: `其他 ${remainder.length} 项`,
+      value: remainder.reduce((sum, allocation) => sum + allocation.value, 0),
+      weight: hasWeight
+        ? remainder.reduce((sum, allocation) => sum + (allocation.weight ?? 0), 0)
+        : null,
+    },
+  ];
 }
 
 function MetricValue({ value, format, currency }: { value: number | null; format: "percent" | "number" | "money"; currency: string; }) {
@@ -159,11 +177,12 @@ export default function CompetitionPanel({
           <div className="allocation-columns">
             {strategyOrder.map((agent) => {
               const side = comparison.strategies[agent];
+              const allocations = visibleAllocations(side.allocations);
               return (
                 <div key={agent}>
                   <div className="allocation-column-head"><b>{side.label}</b><span>{sourceLabel(side.holdings_source)}</span></div>
                   <div className="allocation-list">
-                    {side.allocations.length === 0 ? <p className="comparison-pending">暂无配置</p> : side.allocations.map((allocation) => (
+                    {allocations.length === 0 ? <p className="comparison-pending">暂无配置</p> : allocations.map((allocation) => (
                       <div key={allocation.label}>
                         <span><b>{allocation.label}</b><small>{formatPercent(allocation.weight)}</small></span>
                         <i><em style={{ width: `${Math.min((allocation.weight ?? 0) * 100, 100)}%`, background: side.color }} /></i>

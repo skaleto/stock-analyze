@@ -311,6 +311,14 @@ a:hover { text-decoration: underline; }
 .competition-chart-block { padding: 10px 15px 5px; border-bottom: 1px solid var(--line); }
 .strategy-chart-legend { min-height: 30px; padding-top: 4px; }
 .strategy-readout { min-height: 32px; }
+.chart-sparse-note {
+  margin: 0 0 7px;
+  padding: 6px 9px;
+  border-left: 2px solid var(--faint);
+  background: rgba(255,255,255,0.025);
+  color: var(--muted);
+  font-size: 11px;
+}
 .strategy-chart-canvas { height: 286px; }
 .comparison-matrix { border-bottom: 1px solid var(--line); }
 .comparison-metric-row { min-height: 44px; border-bottom: 1px solid var(--line); }
