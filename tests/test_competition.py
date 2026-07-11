@@ -133,13 +133,16 @@ class CompetitionLoaderTests(unittest.TestCase):
             (root / "configs" / "agents").mkdir(parents=True, exist_ok=True)
             (root / "configs" / "agents" / "claude_a_share.yaml").write_text("{}", encoding="utf-8")
             (root / "configs" / "agents" / "codex_a_share.yaml").write_text("{}", encoding="utf-8")
-            (root / "configs" / "agents" / "claude_hk.yaml").write_text("{}", encoding="utf-8")
-            (root / "configs" / "agents" / "codex_hk.yaml").write_text("{}", encoding="utf-8")
-            (root / "configs" / "agents" / "claude_us.yaml").write_text("{}", encoding="utf-8")
+            (root / "configs" / "agents" / "claude_cn_qdii_etf.yaml").write_text("{}", encoding="utf-8")
+            (root / "configs" / "agents" / "codex_cn_qdii_etf.yaml").write_text("{}", encoding="utf-8")
 
             self.assertEqual(list_agents_for_market("a_share", root), ["claude", "codex"])
-            self.assertEqual(list_agents_for_market("hk", root), ["claude", "codex"])
-            self.assertEqual(list_agents_for_market("us", root), ["claude"])
+            self.assertEqual(
+                list_agents_for_market("cn_qdii_etf", root),
+                ["claude", "codex"],
+            )
+            with self.assertRaises(competition.UnknownMarket):
+                list_agents_for_market("hk", root)
 
     def test_resolve_agent_paths_returns_expected_layout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

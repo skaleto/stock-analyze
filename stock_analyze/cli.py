@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--market",
         choices=competition.MARKETS,
         default="a_share",
-        help="Market (a_share | hk | us | cn_qdii_etf). Default: a_share (back-compat).",
+        help="Account range (a_share | cn_qdii_etf). Default: a_share.",
     )
     parser.add_argument("--as-of", help="Override run date in YYYY-MM-DD format")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -320,8 +320,8 @@ def _resolve_runtime(args: argparse.Namespace) -> tuple[dict | None, str, str, P
     Market is taken from ``--market`` (default ``a_share``). For the default
     a_share market this is byte-identical to the historical single-market
     behaviour (competition.load + resolve_agent_paths + data/shared/cache).
-    For hk/us the config, data/reports dirs, and a per-market shared cache are
-    resolved via ``resolve_market_paths``.
+    For the cross-border ETF account, config, data/reports dirs, and a
+    per-market shared cache are resolved via ``resolve_market_paths``.
 
     For competition agent mode, config is loaded via competition.load. For
     legacy single-agent mode, config falls back to configs/strategy_v1.yaml.
@@ -1000,10 +1000,8 @@ DASHBOARD_ROUTES: dict[str, str] = {
     "/pro/codex.html": "/a_share/codex/dashboard.html",
     "/pro/a_share/claude.html": "/a_share/claude/dashboard.html",
     "/pro/a_share/codex.html": "/a_share/codex/dashboard.html",
-    "/pro/hk/claude.html": "/hk/claude/dashboard.html",
-    "/pro/hk/codex.html": "/hk/codex/dashboard.html",
-    "/pro/us/claude.html": "/us/claude/dashboard.html",
-    "/pro/us/codex.html": "/us/codex/dashboard.html",
+    "/pro/cn_qdii_etf/claude.html": "/cn_qdii_etf/claude/dashboard.html",
+    "/pro/cn_qdii_etf/codex.html": "/cn_qdii_etf/codex/dashboard.html",
 }
 
 

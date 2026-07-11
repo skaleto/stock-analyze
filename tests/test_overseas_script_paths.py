@@ -1,4 +1,4 @@
-"""Regression tests for local HK/US runner script portability."""
+"""Regression tests for the archived direct-overseas runner."""
 from __future__ import annotations
 
 import unittest
@@ -23,12 +23,13 @@ class LocalScriptPathTests(unittest.TestCase):
                 text = script.read_text(encoding="utf-8")
                 self.assertNotIn(OLD_CHECKOUT, text)
 
-    def test_run_overseas_derives_repo_from_script_location(self):
+    def test_run_overseas_is_a_tombstone(self):
         text = (REPO_ROOT / "scripts" / "run-overseas.sh").read_text(
             encoding="utf-8"
         )
-        self.assertIn("SCRIPT_DIR=", text)
-        self.assertIn("REPO=", text)
+        self.assertIn("Direct HK/US simulation is archived", text)
+        self.assertIn("exit 2", text)
+        self.assertNotIn("ipinfo.io", text)
 
     def test_statusline_uses_portable_stat(self):
         text = (REPO_ROOT / "scripts" / "statusline.sh").read_text(

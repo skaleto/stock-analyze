@@ -38,12 +38,8 @@ class DashboardRoutesTableTests(unittest.TestCase):
             "/a_share/claude/dashboard.html",
         )
         self.assertEqual(
-            DASHBOARD_ROUTES["/pro/hk/codex.html"],
-            "/hk/codex/dashboard.html",
-        )
-        self.assertEqual(
-            DASHBOARD_ROUTES["/pro/us/claude.html"],
-            "/us/claude/dashboard.html",
+            DASHBOARD_ROUTES["/pro/cn_qdii_etf/codex.html"],
+            "/cn_qdii_etf/codex/dashboard.html",
         )
 
     def test_per_agent_simple_routes(self) -> None:
@@ -80,13 +76,13 @@ class DashboardRoutesTableTests(unittest.TestCase):
     def test_dynamic_market_agent_route(self) -> None:
         with TemporaryDirectory() as tmp:
             reports = Path(tmp)
-            target = reports / "hk" / "gemini" / "dashboard.html"
+            target = reports / "cn_qdii_etf" / "gemini" / "dashboard.html"
             target.parent.mkdir(parents=True)
             target.write_text("ok", encoding="utf-8")
 
             self.assertEqual(
-                _resolve_dashboard_route("/pro/hk/gemini.html", reports),
-                "/hk/gemini/dashboard.html",
+                _resolve_dashboard_route("/pro/cn_qdii_etf/gemini.html", reports),
+                "/cn_qdii_etf/gemini/dashboard.html",
             )
 
     def test_dashboard_summary_api_route(self) -> None:
@@ -115,8 +111,8 @@ class HandlerRewriteTests(unittest.TestCase):
 
     def test_market_agent_pro_alias_rewrites(self) -> None:
         self.assertEqual(
-            self._rewrite("/pro/hk/claude.html"),
-            "/hk/claude/dashboard.html",
+            self._rewrite("/pro/cn_qdii_etf/codex.html"),
+            "/cn_qdii_etf/codex/dashboard.html",
         )
 
     def test_query_string_preserved(self) -> None:

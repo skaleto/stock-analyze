@@ -28,9 +28,10 @@ class HKBootstrapTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             universe.resolve_universe("zzz")
 
-    def test_hk_in_competition_markets(self):
+    def test_hk_is_archived_from_competition_markets(self):
         from stock_analyze import competition
-        self.assertIn("hk", competition.MARKETS)
+        self.assertNotIn("hk", competition.MARKETS)
+        self.assertIn("hk", competition.ARCHIVED_MARKETS)
 
     def test_hk_factor_whitelist_includes_6_factors(self):
         from stock_analyze.overlay_guard import AVAILABLE_FACTORS_BY_MARKET
