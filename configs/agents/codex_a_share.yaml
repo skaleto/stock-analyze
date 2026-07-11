@@ -1,42 +1,42 @@
 {
   "agent_id": "codex",
-  "strategy_id": "codex_quality_momentum_lowvol_v2",
-  "name": "Codex · Quality + Momentum + LowVol",
+  "strategy_id": "codex_quality_value_lowvol_v3",
+  "name": "Codex · Quality + Value + LowVol",
   "factors": {
     "pe": {
-      "weight": 0.09,
+      "weight": 0.12,
       "direction": "low"
     },
     "pb": {
-      "weight": 0.08,
+      "weight": 0.11,
       "direction": "low"
     },
     "roe": {
-      "weight": 0.23,
+      "weight": 0.25,
       "direction": "high"
     },
     "gross_margin": {
-      "weight": 0.09,
+      "weight": 0.06,
       "direction": "high"
     },
     "debt_ratio": {
-      "weight": 0.09,
+      "weight": 0.04,
       "direction": "low"
     },
     "momentum_20": {
-      "weight": 0.04,
+      "weight": 0.01,
       "direction": "high"
     },
     "momentum_60": {
-      "weight": 0.12,
+      "weight": 0.11,
       "direction": "high"
     },
     "low_volatility_60": {
-      "weight": 0.14,
+      "weight": 0.2,
       "direction": "low"
     },
     "dividend_yield": {
-      "weight": 0.05,
+      "weight": 0.06,
       "direction": "high"
     },
     "codex_market_sentiment_1w": {
@@ -44,7 +44,7 @@
       "direction": "high"
     },
     "codex_sector_sentiment": {
-      "weight": 0.05,
+      "weight": 0.02,
       "direction": "high"
     }
   },
@@ -56,8 +56,8 @@
     "min_factor_coverage": 0.55
   },
   "portfolio_controls": {
-    "max_industry_weight": 0.25,
-    "hold_buffer_pct": 0.7,
+    "max_industry_weight": 0.2,
+    "hold_buffer_pct": 0.9,
     "max_holding_days": 120,
     "industry_unclassified_label": "未分类"
   },
@@ -69,17 +69,17 @@
     "min_avg_amount_20": 80000000,
     "min_market_cap_yi": 50,
     "require_fields": [
+      "pe",
+      "pb",
       "roe",
-      "gross_margin",
-      "debt_ratio",
       "low_volatility_60",
-      "momentum_20",
       "momentum_60"
     ],
     "fallback_require_fields": [
+      "pe",
+      "pb",
       "roe",
-      "low_volatility_60",
-      "momentum_60"
+      "low_volatility_60"
     ]
   }
 }
