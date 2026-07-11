@@ -266,6 +266,29 @@ class ProviderSnapshotTests(unittest.TestCase):
         self.assertIsNone(quote.trade_date)
         self.assertIsNone(quote.price)
 
+    def test_incomplete_online_cache_is_refreshed_for_execution(self):
+        with TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            stale = _daily_frame().loc[_daily_frame()["trade_date"] <= "20260709"]
+            stale.to_csv(cache / "fund_daily_513100_SH_20260710.csv", index=False)
+            client = FakeTushareClient()
+            provider = CNQDIETFProvider(
+                pro_client=client,
+                cache_dir=cache,
+                offline=False,
+            )
+
+            quote = provider.execution_quote(
+                "513100.SH",
+                execute_after="2026-07-10",
+                side="buy",
+                as_of="2026-07-10",
+            )
+
+        self.assertFalse(quote.paused)
+        self.assertEqual(quote.trade_date, "2026-07-10")
+        self.assertEqual(len(client.daily_calls), 1)
+
     def test_offline_cache_miss_raises_structured_cache_miss(self):
         with TemporaryDirectory() as tmp:
             provider = CNQDIETFProvider(

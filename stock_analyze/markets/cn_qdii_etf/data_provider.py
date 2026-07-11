@@ -117,6 +117,7 @@ class CNQDIETFProvider:
         self._pro_client = pro_client
         self._token = token
         self._daily_cache: dict[str, pd.DataFrame] = {}
+        self._daily_refresh_attempted: set[str] = set()
         self._nav_cache: dict[str, pd.DataFrame] = {}
         self._basic_cache: pd.DataFrame | None = None
         self._health: list[dict[str, Any]] = []
@@ -372,22 +373,30 @@ class CNQDIETFProvider:
 
     def _fund_daily(self, ts_code: str, as_of_key: str) -> pd.DataFrame:
         cache_name = self._cache_name("fund_daily", ts_code, as_of_key)
+        fallback: pd.DataFrame | None = None
         if cache_name in self._daily_cache:
+            fallback = self._daily_cache[cache_name]
+            cache_status = "memory_cache"
+        else:
+            fallback = self._read_cache(cache_name)
+            cache_status = "cache_hit"
+            if fallback is not None:
+                self._daily_cache[cache_name] = fallback
+        if fallback is not None:
+            complete = self._daily_has_target(fallback, as_of_key)
+            if self.offline or complete or cache_name in self._daily_refresh_attempted:
+                self.record_health("fund_daily", cache_status, cache_name, rows=len(fallback))
+                return fallback
             self.record_health(
                 "fund_daily",
-                "memory_cache",
+                "refresh_incomplete_cache",
                 cache_name,
-                rows=len(self._daily_cache[cache_name]),
+                rows=len(fallback),
             )
-            return self._daily_cache[cache_name]
-        cached = self._read_cache(cache_name)
-        if cached is not None:
-            self._daily_cache[cache_name] = cached
-            self.record_health("fund_daily", "cache_hit", cache_name, rows=len(cached))
-            return cached
         if self.offline:
             self.record_health("fund_daily", "cache_miss", cache_name)
             raise CacheMiss(method="fund_daily", cache_name=cache_name)
+        self._daily_refresh_attempted.add(cache_name)
         end = datetime.strptime(as_of_key, "%Y%m%d").date()
         start = (end - timedelta(days=260)).strftime("%Y%m%d")
         try:
@@ -399,11 +408,19 @@ class CNQDIETFProvider:
             )
         except Exception as exc:
             self.record_health("fund_daily", "failed", str(exc))
+            if fallback is not None:
+                return fallback
             raise
         df = self._normalize_daily(df)
         self.record_health("fund_daily", "ok", rows=len(df))
         self._daily_cache[cache_name] = self._write_cache(cache_name, df)
         return self._daily_cache[cache_name]
+
+    @staticmethod
+    def _daily_has_target(df: pd.DataFrame, as_of_key: str) -> bool:
+        if df.empty or "trade_date" not in df.columns:
+            return False
+        return bool((df["trade_date"].astype(str) == as_of_key).any())
 
     def _fund_nav(self, ts_code: str, as_of_key: str) -> pd.DataFrame:
         cache_name = self._cache_name("fund_nav", ts_code, as_of_key)
