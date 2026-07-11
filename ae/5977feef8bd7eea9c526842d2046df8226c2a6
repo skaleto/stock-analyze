@@ -1,0 +1,25 @@
+docs/data-source-enrichment-strategy.md
+  s_db9afa53cf7b72::t_8cf63a1bc83e57 1-138
+stock_analyze/dashboard_finance.py
+  s_db9afa53cf7b72::t_f828e71c53910d 352
+tests/test_dashboard_finance.py
+  s_db9afa53cf7b72::t_f6f336b7e44f40 112-124
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "ae5977feef8bd7eea9c526842d2046df8226c2a6",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
