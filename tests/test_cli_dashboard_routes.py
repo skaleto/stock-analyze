@@ -7,6 +7,8 @@ behaviour directly.
 
 from __future__ import annotations
 
+import io
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -25,6 +27,10 @@ class DashboardRoutesTableTests(unittest.TestCase):
 
     def test_pro_alias_points_at_existing_dashboard(self) -> None:
         self.assertEqual(DASHBOARD_ROUTES["/pro.html"], "/competition/dashboard.html")
+
+    def test_react_app_alias_points_at_built_entry(self) -> None:
+        self.assertEqual(DASHBOARD_ROUTES["/app.html"], "/app/index.html")
+        self.assertEqual(DASHBOARD_ROUTES["/app/"], "/app/index.html")
 
     def test_market_agent_pro_routes(self) -> None:
         self.assertEqual(
@@ -133,6 +139,45 @@ class HandlerRewriteTests(unittest.TestCase):
         import http.server
 
         self.assertTrue(issubclass(_DashboardRequestHandler, http.server.SimpleHTTPRequestHandler))
+
+    def _serve_api(self, root: Path, query: str) -> tuple[int, dict]:
+        reports = root / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        handler = object.__new__(_DashboardRequestHandler)
+        handler.directory = str(reports)
+        handler.wfile = io.BytesIO()
+        statuses: list[int] = []
+        handler.send_response = statuses.append
+        handler.send_header = lambda *_args: None
+        handler.end_headers = lambda: None
+
+        handler._serve_dashboard_api("/api/dashboard/detail.json", query)
+
+        return statuses[-1], json.loads(handler.wfile.getvalue().decode("utf-8"))
+
+    def test_detail_api_returns_400_for_unknown_market(self) -> None:
+        with TemporaryDirectory() as tmp:
+            status, payload = self._serve_api(
+                Path(tmp),
+                "market=not-a-market&agent=codex",
+            )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"], "unknown_market")
+        self.assertNotIn(tmp, payload["message"])
+
+    def test_detail_api_returns_404_for_unknown_agent(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "configs" / "agents").mkdir(parents=True)
+            status, payload = self._serve_api(
+                root,
+                "market=cn_qdii_etf&agent=missing",
+            )
+
+        self.assertEqual(status, 404)
+        self.assertEqual(payload["error"], "unknown_agent")
+        self.assertNotIn(tmp, payload["message"])
 
 
 if __name__ == "__main__":

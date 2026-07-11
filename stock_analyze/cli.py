@@ -8,6 +8,7 @@ import sys
 from datetime import date
 from functools import partial
 from pathlib import Path
+from urllib.parse import parse_qs
 
 from . import competition
 from .agent_briefing import (
@@ -981,6 +982,7 @@ def _auto_write_weekly_briefing(agent_id: str | None, as_of: str | None) -> str 
 # - ``GET /simple/claude.html``     → reports/competition/simple/claude.html
 # - ``GET /simple/codex.html``      → reports/competition/simple/codex.html
 # - ``GET /pro.html``               → reports/competition/dashboard.html (alias)
+# - ``GET /app.html``               → reports/app/index.html (React app)
 # - ``GET /pro/<market>/<agent>.html`` → reports/<market>/<agent>/dashboard.html
 # - ``GET /pro/claude.html``        → reports/a_share/claude/dashboard.html (compat alias)
 # - ``GET /pro/codex.html``         → reports/a_share/codex/dashboard.html  (compat alias)
@@ -991,6 +993,8 @@ DASHBOARD_ROUTES: dict[str, str] = {
     "/simple.html": "/competition/simple.html",
     "/simple/claude.html": "/competition/simple/claude.html",
     "/simple/codex.html": "/competition/simple/codex.html",
+    "/app.html": "/app/index.html",
+    "/app/": "/app/index.html",
     "/pro.html": "/competition/dashboard.html",
     "/pro/claude.html": "/a_share/claude/dashboard.html",
     "/pro/codex.html": "/a_share/codex/dashboard.html",
@@ -1020,7 +1024,35 @@ def _resolve_dashboard_route(path: str, directory: Path) -> str | None:
 
 
 def _is_dashboard_api_path(path: str) -> bool:
-    return path in {"/api/dashboard/summary.json", "/api/dashboard.json"}
+    return path in {
+        "/api/dashboard/summary.json",
+        "/api/dashboard.json",
+        "/api/dashboard/detail.json",
+    }
+
+
+def _dashboard_api_error_response(exc: Exception) -> tuple[int, dict[str, str]]:
+    if isinstance(exc, competition.UnknownMarket):
+        return 400, {
+            "error": "unknown_market",
+            "message": f"Unknown market: {exc.market}",
+        }
+    if isinstance(exc, competition.UnknownAgent):
+        return 404, {
+            "error": "unknown_agent",
+            "message": "Unknown agent for the selected market",
+        }
+    from .dashboard_aggregator import DashboardDataError
+
+    if isinstance(exc, DashboardDataError):
+        return 500, {
+            "error": "dashboard_data_invalid",
+            "message": f"Dashboard data source is unreadable: {exc.source}",
+        }
+    return 500, {
+        "error": "dashboard_api_failed",
+        "message": "Dashboard request failed",
+    }
 
 
 class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -1037,27 +1069,36 @@ class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
         # rewriting so deep links keep their parameters.
         path, _, suffix = self.path.partition("?")
         if _is_dashboard_api_path(path):
-            self._serve_dashboard_summary()
+            self._serve_dashboard_api(path, suffix)
             return
         target = _resolve_dashboard_route(path, Path(self.directory))
         if target is not None:
             self.path = target + (("?" + suffix) if suffix else "")
         super().do_GET()
 
-    def _serve_dashboard_summary(self) -> None:
+    def _serve_dashboard_api(self, path: str, query: str) -> None:
         repo_root = Path(self.directory).resolve().parent
         try:
-            from .dashboard_aggregator import build_dashboard_summary_data
+            if path in {"/api/dashboard/summary.json", "/api/dashboard.json"}:
+                from .dashboard_aggregator import build_dashboard_summary_data
 
-            payload = build_dashboard_summary_data(repo_root=repo_root, markets=list(competition.MARKETS))
+                payload = build_dashboard_summary_data(repo_root=repo_root, markets=list(competition.MARKETS))
+            else:
+                from .dashboard_aggregator import build_dashboard_detail_data
+
+                params = parse_qs(query, keep_blank_values=False)
+                market = (params.get("market") or ["a_share"])[0]
+                agent = (params.get("agent") or ["codex"])[0]
+                payload = build_dashboard_detail_data(repo_root=repo_root, market=market, agent=agent)
             raw = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
             self.send_response(200)
         except Exception as exc:  # noqa: BLE001
+            status, error_payload = _dashboard_api_error_response(exc)
             raw = json.dumps(
-                {"error": "dashboard_summary_failed", "message": str(exc)},
+                error_payload,
                 ensure_ascii=False,
             ).encode("utf-8")
-            self.send_response(500)
+            self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(raw)))
