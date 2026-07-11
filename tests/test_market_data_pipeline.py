@@ -26,6 +26,7 @@ class FakeProvider(AkshareProvider):
     def __init__(self, cache_dir: Path | None, *, as_of: str = "2026-05-22", failures: set[str] | None = None) -> None:
         super().__init__(cache_dir=cache_dir, offline=False, as_of=as_of)
         self._failures = failures or set()
+        self.history_calls: list[str] = []
         self._mock_spot = pd.DataFrame(
             [
                 {"code": "600519", "name": "贵州茅台", "latest_price": 1620.0, "pe": 32.5, "pb": 8.1, "market_cap_yi": 20000},
@@ -53,6 +54,7 @@ class FakeProvider(AkshareProvider):
         return {"code": code, "name": "T", "industry": "酿酒", "listing_date": "2001-01-01"}
 
     def price_history(self, code: str, as_of: str | None = None, days: int = 180) -> pd.DataFrame:
+        self.history_calls.append(code)
         return pd.DataFrame([{"日期": "2026-05-22", "收盘": 100.0, "开盘": 99.0, "最高": 101.0, "最低": 98.5, "成交额": 1e8}])
 
     def valuation_metrics(self, code: str) -> dict:
@@ -309,6 +311,39 @@ class PrepareMarketDataTests(unittest.TestCase):
                     f"--force should have deleted stale cache {path.name}",
                 )
             self.assertTrue(untouched.exists(), "per-stock caches must not be deleted")
+
+    def test_prewarms_operational_codes_outside_candidate_universe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._scaffold(root)
+            data_dir = root / "data" / "a_share" / "codex"
+            data_dir.mkdir(parents=True)
+            (data_dir / "pending_orders.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "account_id": "hs300",
+                            "execute_after": "2026-05-22",
+                            "orders": [{"code": "603195", "side": "buy", "status": "pending"}],
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (data_dir / "state.json").write_text(
+                json.dumps({"accounts": {"hs300": {"positions": {"688001": {"shares": 100}}}}}),
+                encoding="utf-8",
+            )
+            cache_dir = root / "data" / "shared" / "cache"
+            cache_dir.mkdir(parents=True)
+            fake = FakeProvider(cache_dir=cache_dir)
+            self._patch_provider(fake)
+
+            snapshot = prepare_market_data(as_of="2026-05-22", repo_root=root, max_workers=1)
+
+        self.assertEqual(snapshot["status"], "success")
+        self.assertIn("603195", fake.history_calls)
+        self.assertIn("688001", fake.history_calls)
 
 
 class PointInTimeFinancialTests(unittest.TestCase):

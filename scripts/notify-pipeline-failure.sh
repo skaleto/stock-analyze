@@ -17,6 +17,9 @@
 # Env vars consumed:
 #   SA_LARK_WEBHOOK   Optional Lark group/bot webhook URL. Skip notification
 #                     if unset or empty.
+#   SA_LARK_APP_ID / SA_LARK_APP_SECRET / SA_LARK_USER_OPEN_ID
+#                     Optional fallback custom-app DM credentials, used when
+#                     SA_LARK_WEBHOOK is absent.
 #   SA_LOG_DIR        Override log file location. Default
 #                     /opt/stock-analyze/logs.
 #
@@ -57,6 +60,31 @@ EOF
     -X POST \
     -d "$payload" \
     "$SA_LARK_WEBHOOK" >/dev/null 2>&1 || true
+elif [[ -n "${SA_LARK_APP_ID:-}" && -n "${SA_LARK_APP_SECRET:-}" && -n "${SA_LARK_USER_OPEN_ID:-}" ]]; then
+  VENV_PY="${SA_VENV_PYTHON:-/opt/stock-analyze/venv/bin/python}"
+  REPO_ROOT="${SA_REPO_ROOT:-/opt/stock-analyze/app}"
+  (
+    cd "$REPO_ROOT" 2>/dev/null || exit 0
+    "$VENV_PY" - "$UNIT" "$TS" "$LOG_FILE" <<'PY'
+import sys
+
+from stock_analyze.notifier import LarkCredentials, send_lark_dm
+
+unit, ts, log_file = sys.argv[1:4]
+creds = LarkCredentials.from_env()
+if creds is None:
+    raise SystemExit(0)
+
+message = (
+    "Stock-Analyze 流水线失败\n"
+    f"时间: {ts}\n"
+    f"单元: {unit}\n"
+    f"详细日志: {log_file}\n"
+    "请操作员检查并处置。"
+)
+send_lark_dm(message, creds)
+PY
+  ) >/dev/null 2>&1 || true
 fi
 
 exit 0
