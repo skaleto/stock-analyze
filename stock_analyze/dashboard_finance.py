@@ -9,6 +9,8 @@ from typing import Any
 
 import pandas as pd
 
+from .strategy_registry import StrategyRegistryInvalid, strategy_display_name
+
 
 ACCOUNT_LABELS = {
     "hs300": "沪深300账户",
@@ -72,20 +74,20 @@ FACTOR_METADATA: dict[str, dict[str, str]] = {
         "explanation": "ETF市场价格相对基金净值的偏离，正值为溢价、负值为折价。",
     },
     "codex_market_sentiment_1w": {
-        "label": "Codex 市场情绪",
-        "explanation": "Codex 对最近一周市场信息的结构化情绪评分。",
+        "label": "趋势进攻市场情绪",
+        "explanation": "趋势进攻策略槽对最近一周市场信息的结构化情绪评分。",
     },
     "claude_market_sentiment_1w": {
-        "label": "Claude 市场情绪",
-        "explanation": "Claude 对最近一周市场信息的结构化情绪评分。",
+        "label": "稳健防守市场情绪",
+        "explanation": "稳健防守策略槽对最近一周市场信息的结构化情绪评分。",
     },
     "codex_sector_sentiment": {
-        "label": "Codex 行业情绪",
-        "explanation": "Codex 对不同行业最近一周信息的结构化情绪评分。",
+        "label": "趋势进攻行业情绪",
+        "explanation": "趋势进攻策略槽对不同行业最近一周信息的结构化情绪评分。",
     },
     "claude_sector_sentiment": {
-        "label": "Claude 行业情绪",
-        "explanation": "Claude 对不同行业最近一周信息的结构化情绪评分。",
+        "label": "稳健防守行业情绪",
+        "explanation": "稳健防守策略槽对不同行业最近一周信息的结构化情绪评分。",
     },
 }
 
@@ -192,14 +194,21 @@ def build_activity(
     )
 
 
-def build_strategy_profile(config_path: Path) -> dict[str, Any]:
+def build_strategy_profile(
+    config_path: Path,
+    *,
+    repo_root: str | Path | None = None,
+) -> dict[str, Any]:
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     agent_id = str(payload.get("agent_id") or "")
     base_agent = agent_id.split("_", 1)[0].lower()
-    agent_label = {
-        "codex": "Codex 策略",
-        "claude": "Claude 策略",
-    }.get(base_agent, f"{agent_id or '未知'} 策略")
+    try:
+        agent_label = strategy_display_name(base_agent, repo_root)
+    except StrategyRegistryInvalid:
+        agent_label = {
+            "claude": "稳健防守",
+            "codex": "趋势进攻",
+        }.get(base_agent, payload.get("name") or f"{agent_id or '未知'} 策略")
     factors: list[dict[str, Any]] = []
     for key, raw in (payload.get("factors") or {}).items():
         config = raw if isinstance(raw, dict) else {"weight": raw}

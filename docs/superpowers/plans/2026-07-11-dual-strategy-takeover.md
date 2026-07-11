@@ -153,7 +153,7 @@ python3 -m stock_analyze --market a_share validate-strategy-pair
 python3 -m stock_analyze --market cn_qdii_etf validate-strategy-pair
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add stock_analyze/competition.py stock_analyze/evolution_writer.py stock_analyze/strategy_release.py stock_analyze/cli.py tests/test_evolution_writer_multi_market.py tests/test_strategy_release.py configs/strategy_versions configs/agents
@@ -174,7 +174,7 @@ git commit -m "feat: release defensive and trend strategies"
 - Modify: `stock_analyze/beginner_dashboard.py`
 - Modify: `tests/test_beginner_dashboard.py`
 
-- [ ] **Step 1: Write failing pure comparison tests**
+- [x] **Step 1: Write failing pure comparison tests**
 
 Seed two detail payloads with NAV, positions, orders, trades and factors. Assert:
 
@@ -189,19 +189,19 @@ nav_series, factor_rows, allocations
 Use the last NAV on or before `2026-07-11` as the normalization anchor. Assert
 empty positions fall back to pending buys and report `holdings_source=planned_orders`.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```bash
 python3 -m unittest tests.test_strategy_comparison tests.test_dashboard_multi_market tests.test_dashboard_finance tests.test_notifier tests.test_beginner_dashboard
 ```
 
-- [ ] **Step 3: Implement pure metrics and summary integration**
+- [x] **Step 3: Implement pure metrics and summary integration**
 
 `build_dashboard_summary_data` should build each agent's detail once, add its
 strategy metadata to the summary agent row, and attach one `comparison` object
 to each market. Preserve `null` for metrics that need two or more observations.
 
-- [ ] **Step 4: Replace product-facing model labels**
+- [x] **Step 4: Replace product-facing model labels**
 
 Use registry labels in dynamic dashboard data, old static/simple dashboards and
 Lark daily summaries. Keep internal IDs only in routes, files and debug fields.

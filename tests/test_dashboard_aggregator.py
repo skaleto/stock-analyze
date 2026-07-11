@@ -73,7 +73,7 @@ def _seed_agent_for_dashboard(
             [{"date": d, "account_id": "hs300", "total_value": v} for d, v in nav_rows]
         ).to_csv(data_dir / "daily_nav.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame(
-        [{"account_id": "hs300", "code": code} for code in positions]
+        [{"account_id": "hs300", "code": code, "shares": 100} for code in positions]
     ).to_csv(data_dir / "positions.csv", index=False, encoding="utf-8-sig")
 
 
@@ -126,7 +126,7 @@ class DashboardAggregatorTests(unittest.TestCase):
             )
             out_path = generate_competition_dashboard(agents=["claude", "codex"], repo_root=tmp_path)
             html = out_path.read_text(encoding="utf-8")
-            self.assertIn("尚未生成 Codex 仪表盘", html)
+            self.assertIn("尚未生成 趋势进攻 仪表盘", html)
             self.assertIn("claude content", html)
 
     def test_leaderboard_strip_uses_csv(self) -> None:
@@ -192,7 +192,7 @@ class ObservationPairingTests(unittest.TestCase):
             out_path = generate_competition_dashboard(agents=["claude", "codex"], repo_root=tmp_path)
             html = out_path.read_text(encoding="utf-8")
             self.assertIn("only claude wrote", html)
-            self.assertIn("Codex 本周无笔记", html)
+            self.assertIn("趋势进攻 本周无笔记", html)
 
     def test_no_notes_shows_placeholder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

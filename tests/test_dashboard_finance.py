@@ -85,7 +85,24 @@ class DashboardFinanceTests(unittest.TestCase):
         from stock_analyze.dashboard_finance import build_strategy_profile
 
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "codex_cn_qdii_etf.yaml"
+            root = Path(tmp)
+            (root / "configs").mkdir()
+            (root / "configs" / "strategy_competition.json").write_text(
+                json.dumps(
+                    {
+                        "season_id": "s1",
+                        "name": "双策略对抗",
+                        "effective_date": "2026-07-11",
+                        "factor_distance_floor": 0.45,
+                        "slots": {
+                            "claude": {"label": "稳健防守", "description": "", "color": "#d6a84b"},
+                            "codex": {"label": "趋势进攻", "description": "", "color": "#22d3ee"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            path = root / "codex_cn_qdii_etf.yaml"
             path.write_text(
                 json.dumps(
                     {
@@ -101,9 +118,9 @@ class DashboardFinanceTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            profile = build_strategy_profile(path)
+            profile = build_strategy_profile(path, repo_root=root)
 
-        self.assertEqual(profile["agent_label"], "Codex 策略")
+        self.assertEqual(profile["agent_label"], "趋势进攻")
         self.assertEqual(profile["strategy_id"], "codex-etf")
         self.assertEqual(profile["factors"][0]["key"], "momentum_20")
         self.assertEqual(profile["factors"][0]["label"], "近20日动量")
