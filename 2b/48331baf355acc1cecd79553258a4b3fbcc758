@@ -1,0 +1,25 @@
+stock_analyze/markets/cn_qdii_etf/strategy.py
+  s_db9afa53cf7b72::t_3a5ca067f8b0dd 38,46-65,73
+tests/test_markets_cn_qdii_etf_simulator.py
+  s_db9afa53cf7b72::t_e3e31eefb8831e 6,16,197-315,334-335
+tests/test_markets_cn_qdii_etf_strategy.py
+  s_db9afa53cf7b72::t_d27932090e2288 68-96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "2b48331baf355acc1cecd79553258a4b3fbcc758",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
