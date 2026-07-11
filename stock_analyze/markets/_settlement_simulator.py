@@ -105,7 +105,7 @@ class SettlementSimulatorBase:
     # --- execute due orders ------------------------------------------
 
     def execute_due_orders(self, store: Any, provider: Any, *, as_of: date | None = None) -> list[dict[str, Any]]:
-        """Execute all pending orders with trade_date == as_of.
+        """Execute all pending orders with trade_date on or before ``as_of``.
 
         Drains the settlement queue first (so freshly-settled cash is
         available for same-day buys).
@@ -121,19 +121,26 @@ class SettlementSimulatorBase:
 
         for raw in pending:
             order = self._coerce_order(raw)
-            if order.trade_date != as_of.isoformat():
+            if date.fromisoformat(order.trade_date) > as_of:
                 remaining_pending.append(raw)
                 continue
             account_state = state["accounts"].get(order.account_id)
             if account_state is None:
                 logger.warning("order references unknown account %s", order.account_id)
+                remaining_pending.append({**raw, "unfilled_reason": "unknown account"})
                 continue
-            trade = self._execute_order(order, account_state, provider, as_of)
+            trade, unfilled_reason = self._execute_order(order, account_state, provider, as_of)
             if trade is not None:
                 trades.append(trade)
+            else:
+                remaining_pending.append({**raw, "unfilled_reason": unfilled_reason or "not filled"})
 
         store.save_state(state)
         store.write_pending(remaining_pending)
+        if hasattr(store, "append_trades"):
+            store.append_trades(trades)
+        if hasattr(store, "write_positions"):
+            store.write_positions(state)
         return trades
 
     def _coerce_order(self, raw: dict[str, Any]):
@@ -148,12 +155,21 @@ class SettlementSimulatorBase:
             reason=raw.get("reason", ""),
         )
 
-    def _execute_order(self, order, account_state: dict[str, Any], provider: Any, as_of: date) -> dict[str, Any] | None:
+    def _execute_order(
+        self,
+        order,
+        account_state: dict[str, Any],
+        provider: Any,
+        as_of: date,
+    ) -> tuple[dict[str, Any] | None, str | None]:
         quote = provider.execution_quote(
-            order.code, execute_after=as_of.isoformat(), side=self._quote_side(order.side)
+            order.code,
+            execute_after=as_of.isoformat(),
+            side=self._quote_side(order.side),
+            as_of=as_of.isoformat(),
         )
         if quote.paused or quote.price is None or quote.price <= 0:
-            return None
+            return None, quote.reason or "no quote"
 
         px = float(quote.price)
         settle_date = self._next_business_day(as_of, self.mechanics.SETTLEMENT_DAYS).isoformat()
@@ -172,7 +188,7 @@ class SettlementSimulatorBase:
             total_debit = cost + stamp + commission
             if total_debit > cash:
                 logger.info("insufficient cash for buy %s shares=%d", order.code, order.shares)
-                return None
+                return None, "insufficient cash"
             account_state["cash"] = cash - total_debit
             existing = positions.get(order.code, {"shares": 0, "avg_cost": 0.0})
             new_shares = int(existing.get("shares", 0)) + order.shares
@@ -185,13 +201,24 @@ class SettlementSimulatorBase:
                 "hold_since": existing.get("hold_since", as_of.isoformat()),
                 "short_collateral": float(existing.get("short_collateral", 0.0)),
             }
-            return self._trade_record(order, px, cost, stamp, commission, settle_date, "buy")
+            return self._trade_record(
+                order,
+                px,
+                cost,
+                stamp,
+                commission,
+                settle_date,
+                "buy",
+                as_of,
+                net_amount=-total_debit,
+                cash_after=float(account_state["cash"]),
+            ), None
 
         if order.side == "sell":
             existing = positions.get(order.code)
             if not existing or int(existing.get("shares", 0)) < order.shares:
                 logger.info("insufficient shares for sell %s shares=%d", order.code, order.shares)
-                return None
+                return None, "insufficient shares"
             gross = order.shares * px
             stamp = gross * stamp_rate
             commission = gross * commission_rate
@@ -205,7 +232,18 @@ class SettlementSimulatorBase:
                 del positions[order.code]
             else:
                 positions[order.code] = {**existing, "shares": new_shares}
-            return self._trade_record(order, px, gross, stamp, commission, settle_date, "sell")
+            return self._trade_record(
+                order,
+                px,
+                gross,
+                stamp,
+                commission,
+                settle_date,
+                "sell",
+                as_of,
+                net_amount=net,
+                cash_after=float(account_state.get("cash", 0.0)),
+            ), None
 
         if order.side == "short":
             # Model A (OpenSpec change fix-short-sale-nav-accounting): route
@@ -220,13 +258,13 @@ class SettlementSimulatorBase:
             prior_shares = int(existing.get("shares", 0))
             # Shorting on top of an existing long is not supported in v1.
             if prior_shares > 0:
-                return None
+                return None, "existing long position"
             gross = order.shares * px
             stamp = gross * stamp_rate
             commission = gross * commission_rate
             fees = stamp + commission
             if fees > cash:
-                return None
+                return None, "insufficient cash"
             account_state["cash"] = cash - fees
             account_state["cash_collateral"] = collateral + gross
             new_shares = prior_shares - order.shares  # more negative
@@ -239,15 +277,26 @@ class SettlementSimulatorBase:
                 "hold_since": existing.get("hold_since", as_of.isoformat()),
                 "short_collateral": float(existing.get("short_collateral", 0.0)) + gross,
             }
-            return self._trade_record(order, px, gross, stamp, commission, settle_date, "short")
+            return self._trade_record(
+                order,
+                px,
+                gross,
+                stamp,
+                commission,
+                settle_date,
+                "short",
+                as_of,
+                net_amount=-fees,
+                cash_after=float(account_state["cash"]),
+            ), None
 
         if order.side == "cover":
             existing = positions.get(order.code)
             if not existing or int(existing.get("shares", 0)) >= 0:
-                return None
+                return None, "no short position"
             prior_shares = int(existing["shares"])  # negative
             if order.shares > -prior_shares:
-                return None  # can't cover more than open short
+                return None, "cover exceeds short position"
             gross = order.shares * px  # buyback cost
             stamp = gross * stamp_rate
             commission = gross * commission_rate
@@ -270,27 +319,55 @@ class SettlementSimulatorBase:
                     "shares": new_shares,
                     "short_collateral": per_pos_coll - coll_released,
                 }
-            return self._trade_record(order, px, gross, stamp, commission, settle_date, "cover")
+            return self._trade_record(
+                order,
+                px,
+                gross,
+                stamp,
+                commission,
+                settle_date,
+                "cover",
+                as_of,
+                net_amount=cash_back,
+                cash_after=float(account_state["cash"]),
+            ), None
 
-        return None
+        return None, "unsupported side"
 
     @staticmethod
     def _quote_side(side: str) -> str:
         """Map order side to provider quote-side ('buy' or 'sell')."""
         return "buy" if side in ("buy", "cover") else "sell"
 
-    def _trade_record(self, order, price, gross, stamp, commission, settle_date, side_label) -> dict[str, Any]:
+    def _trade_record(
+        self,
+        order,
+        price,
+        gross,
+        stamp,
+        commission,
+        settle_date,
+        side_label,
+        execution_date: date,
+        *,
+        net_amount: float,
+        cash_after: float,
+    ) -> dict[str, Any]:
         return {
-            "trade_date": order.trade_date,
+            "trade_date": execution_date.isoformat(),
             "settle_date": settle_date,
             "account_id": order.account_id,
             "code": order.code,
+            "name": "",
             "side": side_label,
             "shares": order.shares,
             "price": price,
             "gross_amount": gross,
             "commission": commission,
             "stamp_tax": stamp,
+            "slippage": 0.0,
+            "net_amount": net_amount,
+            "cash_after": cash_after,
             "score": order.score,
             "reason": order.reason,
         }
@@ -318,9 +395,14 @@ class SettlementSimulatorBase:
                 quote = provider.price_snapshot(code, as_of=as_of.isoformat())
                 px = quote.close or float(pos.get("avg_cost", 0.0))
                 if shares > 0:
-                    positions_value += shares * px
+                    market_value = shares * px
                 else:
-                    positions_value -= abs(shares) * px
+                    market_value = -abs(shares) * px
+                positions_value += market_value
+                avg_cost = float(pos.get("avg_cost", 0.0))
+                pos["last_price"] = px
+                pos["market_value"] = market_value
+                pos["unrealized_pnl"] = (px - avg_cost) * shares
             total = cash + coll + positions_value
             rows.append({
                 "date": as_of.isoformat(),
@@ -338,6 +420,9 @@ class SettlementSimulatorBase:
                 "source": f"{self.market_id}-daily",
             })
         store.append_nav(rows)
+        store.save_state(state)
+        if hasattr(store, "write_positions"):
+            store.write_positions(state)
         return rows
 
     # --- generate rebalance orders -----------------------------------
