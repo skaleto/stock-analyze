@@ -45,6 +45,7 @@ expected=(
   stock-analyze-claude-cn-qdii-etf-weekly.timer
   stock-analyze-codex-cn-qdii-etf-daily.timer
   stock-analyze-codex-cn-qdii-etf-weekly.timer
+  stock-analyze-qdii-research.timer
   stock-analyze-daily-summary.timer
   stock-analyze-weekly-summary.timer
   stock-analyze-monthly-summary.timer

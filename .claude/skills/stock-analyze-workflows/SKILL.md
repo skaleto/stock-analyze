@@ -32,6 +32,7 @@ Canonical paths are `data/<market>/<agent>/`,
 | Daily summary | Mon-Fri 19:30 | Send one consolidated Lark task card |
 | Weekly | Sat 10:00 | Run both A-share weekly workers from Friday cache |
 | Weekly | Sat 10:15 | Run both mainland QDII ETF weekly workers |
+| Weekly research | Sat 10:30 | Refresh QDII events and global/commodity/bond shadow research |
 | Weekly summary | Sat 10:45 | Send one weekly status and Codex-review reminder |
 | Monthly review | Day 1 09:00 | Build the previous-month A-share review |
 | Monthly summary | Day 1 09:30 | Send one strategy-evolution reminder |
@@ -116,6 +117,22 @@ must disclose the current-catalog survivorship bias and write only research
 artifacts. A recommendation never automatically modifies `top_n`, active
 overlays, pending orders, cash, or the competition baseline. Verify those
 hashes before and after the production run.
+
+### QDII P2 Events And Shadow Research
+
+When the operator asks to finish or refresh P2, run:
+
+```bash
+python3 -m stock_analyze refresh-qdii-events
+python3 -m stock_analyze qdii-shadow-research --refresh-data
+```
+
+The event store is source-dated and may block new QDII buys while a hard event
+is active. Shadow outputs remain under `data/cn_qdii_etf/research/` and must not
+mutate live state, positions, pending orders, or baseline config. Per-index
+sentiment uses `record-theme-sentiment`; missing or stale evidence stays
+unavailable. Verify all four interactive research tabs in `/app.html` and the
+`stock-analyze-qdii-research.timer` after deployment.
 
 ## Notifications
 

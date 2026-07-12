@@ -27,6 +27,7 @@ class DeployAppScriptTests(unittest.TestCase):
             "systemctl enable --now stock-analyze-claude-cn-qdii-etf-weekly.timer",
             "systemctl enable --now stock-analyze-codex-cn-qdii-etf-daily.timer",
             "systemctl enable --now stock-analyze-codex-cn-qdii-etf-weekly.timer",
+            "systemctl enable --now stock-analyze-qdii-research.timer",
             "systemctl enable --now stock-analyze-daily-summary.timer",
             "systemctl enable --now stock-analyze-weekly-summary.timer",
             "systemctl enable --now stock-analyze-monthly-summary.timer",
@@ -46,6 +47,12 @@ class DeployAppScriptTests(unittest.TestCase):
         self.assertIn("tests.test_qdii_research_panel", script)
         self.assertIn("tests.test_qdii_capacity_study", script)
         self.assertIn("tests.test_cli_qdii_capacity_study", script)
+        self.assertIn("tests.test_qdii_fund_events", script)
+        self.assertIn("tests.test_cli_qdii_events", script)
+        self.assertIn("tests.test_qdii_research_catalog", script)
+        self.assertIn("tests.test_qdii_shadow_research", script)
+        self.assertIn("tests.test_cli_qdii_shadow_research", script)
+        self.assertIn("tests.test_qdii_theme_sentiment", script)
         self.assertIn("tests.test_workflow_notifications", script)
         self.assertIn("tests.test_workflow_summary_systemd", script)
         self.assertIn("tests.test_operator_workflow_docs", script)

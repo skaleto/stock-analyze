@@ -160,6 +160,26 @@ class WorkflowSummaryTests(unittest.TestCase):
             self.assertIn("待执行订单 10", text)
             self.assertIn("运行 2026-07-10 周度复盘", text)
 
+    def test_weekly_summary_only_adds_material_qdii_research_alerts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_registry(root)
+            events = root / "data" / "cn_qdii_etf" / "shared" / "fund_events.csv"
+            events.parent.mkdir(parents=True)
+            events.write_text(
+                "event_id,report_id,code,name,category,title,published_at,observed_at,effective_at,expires_at,event_type,severity,hard_block,clears_temporary_blocks,source_url,raw_content_hash,parser_version\n"
+                "AN1,AN1,513100.SH,纳指ETF,1,暂停申购,2026-07-10T00:00:00,2026-07-10T08:00:00,2026-07-10T00:00:00,2026-08-09T00:00:00,suspension,hard,True,False,https://example.test/a,hash,v1\n",
+                encoding="utf-8",
+            )
+
+            text = build_workflow_summary(
+                "weekly", root, today_d=date(2026, 7, 11), target="2026-07-10"
+            )
+
+        self.assertIn("研究异常", text)
+        self.assertIn("1 只基金存在公告硬阻断", text)
+        self.assertIn("影子研究尚未生成", text)
+
     def test_daily_strategy_total_is_not_computed_from_one_market_only(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
