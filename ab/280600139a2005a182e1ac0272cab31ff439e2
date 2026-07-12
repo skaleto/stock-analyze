@@ -1,0 +1,25 @@
+docs/superpowers/plans/2026-07-12-daily-decision-current-season.md
+  s_db9afa53cf7b72::t_a905d4e67567e1 19-22,30-33,48-51,58-61,63-71
+stock_analyze/cli.py
+  s_db9afa53cf7b72::t_fde0b440527c13 478-486,649,679
+tests/test_cli_daily_decision.py
+  s_db9afa53cf7b72::t_fe4005f9b7602e 53-71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "ab280600139a2005a182e1ac0272cab31ff439e2",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
