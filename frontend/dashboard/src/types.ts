@@ -67,6 +67,7 @@ export type FundEventRow = {
 };
 
 export type ShadowMetric = {
+  strategy_variant?: string;
   asset_class?: string;
   scope?: string;
   factor_model?: string;

@@ -16,29 +16,51 @@ from .theme_sentiment import attach_point_in_time_sentiment
 
 
 FACTOR_MODELS: dict[str, dict[str, dict[str, Any]]] = {
-    "global_equity_v1": {
+    "global_equity_defensive_v1": {
+        "momentum_20": {"weight": 0.12, "direction": "high"},
+        "momentum_60": {"weight": 0.13, "direction": "high"},
+        "low_volatility_60": {"weight": 0.30, "direction": "low"},
+        "avg_amount_20": {"weight": 0.20, "direction": "high"},
+        "discount_premium": {"weight": 0.15, "direction": "low"},
+        "defensive_theme_risk": {"weight": 0.10, "direction": "high"},
+    },
+    "global_equity_trend_v1": {
+        "momentum_20": {"weight": 0.35, "direction": "high"},
+        "momentum_60": {"weight": 0.30, "direction": "high"},
+        "low_volatility_60": {"weight": 0.10, "direction": "low"},
+        "avg_amount_20": {"weight": 0.10, "direction": "high"},
+        "discount_premium": {"weight": 0.05, "direction": "low"},
+        "trend_theme_sentiment": {"weight": 0.10, "direction": "high"},
+    },
+    "commodity_defensive_v1": {
+        "momentum_60": {"weight": 0.15, "direction": "high"},
+        "low_volatility_60": {"weight": 0.35, "direction": "low"},
+        "avg_amount_20": {"weight": 0.20, "direction": "high"},
+        "premium_persistence_20": {"weight": 0.20, "direction": "low"},
+        "defensive_theme_risk": {"weight": 0.10, "direction": "high"},
+    },
+    "commodity_trend_v1": {
         "momentum_20": {"weight": 0.30, "direction": "high"},
         "momentum_60": {"weight": 0.30, "direction": "high"},
-        "low_volatility_60": {"weight": 0.20, "direction": "low"},
-        "avg_amount_20": {"weight": 0.15, "direction": "high"},
-        "discount_premium": {"weight": 0.05, "direction": "low"},
-        "theme_sentiment_score": {"weight": 0.08, "direction": "high"},
+        "low_volatility_60": {"weight": 0.15, "direction": "low"},
+        "avg_amount_20": {"weight": 0.10, "direction": "high"},
+        "premium_persistence_20": {"weight": 0.05, "direction": "low"},
+        "trend_theme_sentiment": {"weight": 0.10, "direction": "high"},
     },
-    "commodity_v1": {
-        "momentum_20": {"weight": 0.25, "direction": "high"},
-        "momentum_60": {"weight": 0.25, "direction": "high"},
-        "low_volatility_60": {"weight": 0.20, "direction": "low"},
-        "avg_amount_20": {"weight": 0.15, "direction": "high"},
-        "premium_persistence_20": {"weight": 0.15, "direction": "low"},
-        "theme_sentiment_score": {"weight": 0.08, "direction": "high"},
+    "bond_defensive_v1": {
+        "nav_momentum_20": {"weight": 0.10, "direction": "high"},
+        "low_volatility_60": {"weight": 0.40, "direction": "low"},
+        "avg_amount_20": {"weight": 0.20, "direction": "high"},
+        "premium_persistence_20": {"weight": 0.20, "direction": "low"},
+        "defensive_theme_risk": {"weight": 0.10, "direction": "high"},
     },
-    "bond_v1": {
-        "momentum_60": {"weight": 0.20, "direction": "high"},
-        "nav_momentum_20": {"weight": 0.20, "direction": "high"},
-        "low_volatility_60": {"weight": 0.30, "direction": "low"},
-        "avg_amount_20": {"weight": 0.15, "direction": "high"},
-        "premium_persistence_20": {"weight": 0.15, "direction": "low"},
-        "theme_sentiment_score": {"weight": 0.05, "direction": "high"},
+    "bond_trend_v1": {
+        "momentum_60": {"weight": 0.30, "direction": "high"},
+        "nav_momentum_20": {"weight": 0.25, "direction": "high"},
+        "low_volatility_60": {"weight": 0.20, "direction": "low"},
+        "avg_amount_20": {"weight": 0.10, "direction": "high"},
+        "premium_persistence_20": {"weight": 0.10, "direction": "low"},
+        "trend_theme_sentiment": {"weight": 0.05, "direction": "high"},
     },
 }
 
@@ -54,7 +76,8 @@ class ShadowResearchResult:
     summary: dict[str, Any]
 
 
-def _overlay(model: str) -> dict[str, Any]:
+def _overlay(model: str, variant: str) -> dict[str, Any]:
+    defensive = variant == "defensive_shadow"
     return {
         "agent_id": "research",
         "strategy_id": model,
@@ -70,8 +93,8 @@ def _overlay(model: str) -> dict[str, Any]:
         "filters": {
             "max_fetch_candidates": 30,
             "min_listing_days": 60,
-            "min_avg_amount_20_yuan": 500_000,
-            "max_abs_premium": 0.12,
+            "min_avg_amount_20_yuan": 1_000_000 if defensive else 500_000,
+            "max_abs_premium": 0.08 if defensive else 0.12,
             "min_fund_size_yuan": 0,
             "max_management_fee_pct": 2.0,
         },
@@ -101,44 +124,60 @@ def run_shadow_research(
     trades: list[pd.DataFrame] = []
     nav: list[pd.DataFrame] = []
     skipped: list[dict[str, str]] = []
-    research_frame = attach_point_in_time_sentiment(
+    records = theme_sentiment_records if theme_sentiment_records is not None else pd.DataFrame()
+    trend_frame = attach_point_in_time_sentiment(
         panel.frame,
-        theme_sentiment_records if theme_sentiment_records is not None else pd.DataFrame(),
+        records,
         agent=sentiment_agent,
-    )
+    ).rename(columns={"theme_sentiment_score": "trend_theme_sentiment"})
+    defensive_frame = attach_point_in_time_sentiment(
+        panel.frame,
+        records,
+        agent=sentiment_agent,
+    ).rename(columns={"theme_sentiment_score": "defensive_theme_risk"})
+    defensive_frame["defensive_theme_risk"] = pd.to_numeric(
+        defensive_frame["defensive_theme_risk"], errors="coerce"
+    ).clip(upper=0.0)
+    variants = {
+        "defensive_shadow": defensive_frame,
+        "trend_shadow": trend_frame,
+    }
     for scope, rows in catalog.groupby("research_scope", sort=True):
         asset_class = str(rows.iloc[0]["asset_class"])
-        model = {"global_equity": "global_equity_v1", "commodity": "commodity_v1", "bond": "bond_v1"}[asset_class]
-        scope_panel = research_frame.loc[research_frame["scope"].astype(str).eq(str(scope))].copy()
-        if scope_panel.empty:
-            skipped.append({"scope": str(scope), "reason": "history_unavailable"})
-            continue
         ranked_catalog = rows.sort_values(["list_date", "code"], na_position="last")
         benchmark = str(ranked_catalog.iloc[0]["code"])
         top_n = min(3, max(int(rows["code"].nunique()), 1))
-        try:
-            result = run_capacity_study(
-                ResearchPanelResult(scope_panel, panel.metadata),
-                overlays={model: _overlay(model)},
-                baseline=_baseline(str(scope), benchmark, top_n),
-                top_ns=[top_n],
-                start=start,
-                end=end,
-                min_signal_weeks=min_signal_weeks,
+        for variant, variant_frame in variants.items():
+            suffix = "defensive_v1" if variant == "defensive_shadow" else "trend_v1"
+            model = f"{asset_class}_{suffix}"
+            scope_panel = variant_frame.loc[variant_frame["scope"].astype(str).eq(str(scope))].copy()
+            if scope_panel.empty:
+                skipped.append({"scope": str(scope), "strategy_variant": variant, "reason": "history_unavailable"})
+                continue
+            try:
+                result = run_capacity_study(
+                    ResearchPanelResult(scope_panel, panel.metadata),
+                    overlays={variant: _overlay(model, variant)},
+                    baseline=_baseline(str(scope), benchmark, top_n),
+                    top_ns=[top_n],
+                    start=start,
+                    end=end,
+                    min_signal_weeks=min_signal_weeks,
+                )
+            except CapacityStudyError as exc:
+                skipped.append({"scope": str(scope), "strategy_variant": variant, "reason": str(exc)})
+                continue
+            metrics = result.metrics.assign(
+                asset_class=asset_class,
+                factor_model=model,
+                strategy_variant=variant,
+                mode="research_only",
+                promotion_status=str(rows.iloc[0].get("promotion_status") or "research_only"),
             )
-        except CapacityStudyError as exc:
-            skipped.append({"scope": str(scope), "reason": str(exc)})
-            continue
-        metrics = result.metrics.assign(
-            asset_class=asset_class,
-            factor_model=model,
-            mode="research_only",
-            promotion_status=str(rows.iloc[0].get("promotion_status") or "research_only"),
-        )
-        metric_frames.append(metrics)
-        selections.append(result.selections.assign(asset_class=asset_class, factor_model=model))
-        trades.append(result.trades.assign(asset_class=asset_class, factor_model=model))
-        nav.append(result.nav.assign(asset_class=asset_class, factor_model=model))
+            metric_frames.append(metrics)
+            selections.append(result.selections.assign(asset_class=asset_class, factor_model=model, strategy_variant=variant))
+            trades.append(result.trades.assign(asset_class=asset_class, factor_model=model, strategy_variant=variant))
+            nav.append(result.nav.assign(asset_class=asset_class, factor_model=model, strategy_variant=variant))
     metrics_frame = pd.concat(metric_frames, ignore_index=True) if metric_frames else pd.DataFrame()
     payload = {
         "universe_hash": panel.metadata.get("universe_hash"),
@@ -155,7 +194,7 @@ def run_shadow_research(
         "start": start,
         "end": end,
         "factor_models": {key: list(spec) for key, spec in FACTOR_MODELS.items()},
-        "sentiment_agent": sentiment_agent,
+        "sentiment_agents": {"defensive_shadow": sentiment_agent, "trend_shadow": sentiment_agent},
         "sentiment_mode": "point_in_time_index_level_research_only",
         "limitations": {
             "survivorship_bias": bool(panel.metadata.get("survivorship_bias", True)),
@@ -183,12 +222,12 @@ def _report(result: ShadowResearchResult) -> str:
         "",
         "> 研究模式：不会创建真实或模拟竞赛订单，不修改活动账户、持仓或策略基线。",
         "",
-        "| 资产 | 研究范围 | 模型 | 数量 | 累计收益 | Sharpe | 最大回撤 | 状态 |",
-        "|---|---|---|---:|---:|---:|---:|---|",
+        "| 策略 | 资产 | 研究范围 | 模型 | 数量 | 累计收益 | Sharpe | 最大回撤 | 状态 |",
+        "|---|---|---|---|---:|---:|---:|---:|---|",
     ]
     for row in result.metrics.to_dict(orient="records"):
         lines.append(
-            f"| {row['asset_class']} | {row['scope']} | {row['factor_model']} | {int(row['top_n'])} | "
+            f"| {row['strategy_variant']} | {row['asset_class']} | {row['scope']} | {row['factor_model']} | {int(row['top_n'])} | "
             f"{float(row['cumulative_return']):+.2%} | {float(row['sharpe_ratio']):.2f} | "
             f"{float(row['max_drawdown']):+.2%} | {row['promotion_status']} |"
         )
