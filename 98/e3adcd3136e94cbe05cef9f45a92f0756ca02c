@@ -1,0 +1,31 @@
+stock_analyze/cli.py
+  s_db9afa53cf7b72::t_6df19e4ee82d74 214-228,487-489,1002-1024
+stock_analyze/markets/cn_qdii_etf/data_provider.py
+  s_db9afa53cf7b72::t_eaba489c632eac 26,414,445-451,568-585
+stock_analyze/markets/cn_qdii_etf/fund_events.py
+  s_db9afa53cf7b72::t_cc038671229104 1-258
+stock_analyze/markets/cn_qdii_etf/strategy.py
+  s_db9afa53cf7b72::t_d6842a75474a43 56-57,141-145,161-167,184-186
+tests/test_cli_qdii_events.py
+  s_db9afa53cf7b72::t_6d99ccfcc4d31d 1-51
+tests/test_qdii_fund_events.py
+  s_db9afa53cf7b72::t_f0a7f1801ff9de 1-161
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "98e3adcd3136e94cbe05cef9f45a92f0756ca02c",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
