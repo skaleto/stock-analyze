@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const chartMocks = vi.hoisted(() => {
@@ -8,16 +8,17 @@ const chartMocks = vi.hoisted(() => {
   const remove = vi.fn();
   const subscribeCrosshairMove = vi.fn();
   const fitContent = vi.fn();
+  const setVisibleRange = vi.fn();
   const detachMarkers = vi.fn();
   const createSeriesMarkers = vi.fn((_series: unknown, _markers: unknown[]) => ({ detach: detachMarkers }));
   const createChart = vi.fn(() => ({
     addSeries,
     remove,
     subscribeCrosshairMove,
-    timeScale: () => ({ fitContent }),
+    timeScale: () => ({ fitContent, setVisibleRange }),
     applyOptions: vi.fn(),
   }));
-  return { setData, addSeries, remove, subscribeCrosshairMove, fitContent, createChart, createSeriesMarkers, detachMarkers };
+  return { setData, addSeries, remove, subscribeCrosshairMove, fitContent, setVisibleRange, createChart, createSeriesMarkers, detachMarkers };
 });
 
 vi.mock("lightweight-charts", () => ({
@@ -90,6 +91,27 @@ describe("financial charts", () => {
     expect(chartMocks.setData).toHaveBeenCalled();
     unmount();
     expect(chartMocks.remove).toHaveBeenCalled();
+  });
+
+  it("shows the latest month by default and allows the full history", () => {
+    render(
+      <CandlestickChart
+        candles={[
+          { date: "2026-05-29", open: 2.0, high: 2.1, low: 1.9, close: 2.05 },
+          { date: "2026-06-15", open: 2.1, high: 2.2, low: 2.0, close: 2.15 },
+          { date: "2026-07-13", open: 2.2, high: 2.3, low: 2.1, close: 2.25 },
+        ]}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "1月" })).toHaveClass("active");
+    expect(chartMocks.setVisibleRange).toHaveBeenLastCalledWith({
+      from: "2026-06-15",
+      to: "2026-07-13",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "全部" }));
+    expect(chartMocks.fitContent).toHaveBeenLastCalledWith();
   });
 
   it("marks all instrument trades covered by the visible candle history", () => {

@@ -249,6 +249,18 @@ type TradeMarkerDetail = {
   fees: number;
 };
 
+type CandleRange = 30 | 90 | 365 | 0;
+
+function candleVisibleRange(candles: Candle[], range: CandleRange): { from: Time; to: Time } | null {
+  if (range === 0 || candles.length === 0) return null;
+  const last = candles[candles.length - 1];
+  const threshold = new Date(`${last.date}T00:00:00Z`);
+  threshold.setUTCDate(threshold.getUTCDate() - range);
+  const thresholdDate = threshold.toISOString().slice(0, 10);
+  const first = candles.find((candle) => candle.date >= thresholdDate) ?? candles[0];
+  return { from: first.date as Time, to: last.date as Time };
+}
+
 function visibleCandleTrades(candles: Candle[], trades: OrderRow[]): OrderRow[] {
   const candleDates = new Set(candles.map((candle) => candle.date));
   return trades.filter((trade) => {
@@ -331,6 +343,7 @@ export function CandlestickChart({
   strategyLabel?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [range, setRange] = useState<CandleRange>(30);
   const [hovered, setHovered] = useState<Candle | null>(candles[candles.length - 1] ?? null);
   const [hoveredTrade, setHoveredTrade] = useState<TradeMarkerDetail | null>(null);
   const visibleTrades = useMemo(
@@ -341,6 +354,7 @@ export function CandlestickChart({
     () => buildTradeMarkerBundle(visibleTrades, strategyLabel),
     [strategyLabel, visibleTrades],
   );
+  const visibleRange = useMemo(() => candleVisibleRange(candles, range), [candles, range]);
   const buyCount = visibleTrades.filter((trade) => BUY_SIDES.has(String(trade.side ?? "").toLowerCase())).length;
   const sellCount = visibleTrades.length - buyCount;
 
@@ -395,29 +409,44 @@ export function CandlestickChart({
       const objectId = parameter.hoveredInfo?.objectId ?? parameter.hoveredObjectId;
       setHoveredTrade(typeof objectId === "string" ? markerBundle.details.get(objectId) ?? null : null);
     });
-    chart.timeScale().fitContent();
+    if (visibleRange) chart.timeScale().setVisibleRange(visibleRange);
+    else chart.timeScale().fitContent();
     const stopObserving = observeChart(container, chart);
     return () => {
       stopObserving();
       markerPlugin?.detach();
       chart.remove();
     };
-  }, [candles, markerBundle]);
+  }, [candles, markerBundle, visibleRange]);
 
   if (candles.length === 0) return <div className="chart-empty">暂无历史行情缓存</div>;
   const change = hovered ? hovered.close - hovered.open : 0;
   return (
     <div className="financial-chart candle-chart">
-      <div className="trade-marker-summary" aria-label="当前策略成交标记">
-        <strong>历史成交 · {strategyLabel}</strong>
-        {visibleTrades.length ? (
-          <>
-            <span className="trade-marker-buy">买入 {buyCount}</span>
-            <span className="trade-marker-sell">卖出 {sellCount}</span>
-          </>
-        ) : (
-          <span>暂无成交，执行后自动标注</span>
-        )}
+      <div className="chart-toolbar candle-toolbar">
+        <div className="trade-marker-summary" aria-label="当前策略成交标记">
+          <strong>历史成交 · {strategyLabel}</strong>
+          {visibleTrades.length ? (
+            <>
+              <span className="trade-marker-buy">买入 {buyCount}</span>
+              <span className="trade-marker-sell">卖出 {sellCount}</span>
+            </>
+          ) : (
+            <span>暂无成交，执行后自动标注</span>
+          )}
+        </div>
+        <div className="range-control" aria-label="K线时间范围">
+          {([
+            { value: 30, label: "1月" },
+            { value: 90, label: "3月" },
+            { value: 365, label: "1年" },
+            { value: 0, label: "全部" },
+          ] as const).map((item) => (
+            <button key={item.value} type="button" className={range === item.value ? "active" : ""} onClick={() => setRange(item.value)}>
+              {item.label}
+            </button>
+          ))}
+        </div>
       </div>
       <div className="ohlc-readout" aria-live="polite">
         <span>{hovered?.date}</span>
