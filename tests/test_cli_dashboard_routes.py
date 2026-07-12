@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import socketserver
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -19,9 +20,15 @@ from stock_analyze.cli import (
     _is_dashboard_api_path,
     _resolve_dashboard_route,
 )
+from stock_analyze import cli
 
 
 class DashboardRoutesTableTests(unittest.TestCase):
+    def test_dashboard_server_handles_connections_concurrently(self) -> None:
+        server_class = getattr(cli, "_DashboardHTTPServer", socketserver.TCPServer)
+
+        self.assertTrue(issubclass(server_class, socketserver.ThreadingMixIn))
+
     def test_root_maps_to_simple(self) -> None:
         self.assertEqual(DASHBOARD_ROUTES["/"], "/competition/simple.html")
 
