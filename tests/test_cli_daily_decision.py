@@ -50,6 +50,25 @@ class _Market:
 
 
 class DailyDecisionCycleTests(unittest.TestCase):
+    def test_counts_a_share_batches_and_flat_qdii_orders(self) -> None:
+        count_orders = getattr(cli, "_count_generated_orders", None)
+        self.assertTrue(callable(count_orders))
+
+        self.assertEqual(
+            count_orders([
+                {"account_id": "hs300", "orders": [{"code": "000001"}]},
+                {"account_id": "zz500", "orders": [{"code": "000002"}, {"code": "000003"}]},
+            ]),
+            3,
+        )
+        self.assertEqual(
+            count_orders([
+                {"code": "513100.SH", "side": "buy"},
+                {"code": "159941.SZ", "side": "sell"},
+            ]),
+            2,
+        )
+
     def test_executes_values_and_replaces_targets_in_order(self) -> None:
         cycle = getattr(cli, "_run_daily_decision_cycle", None)
         self.assertTrue(callable(cycle))

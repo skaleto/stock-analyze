@@ -475,6 +475,15 @@ def _resolve_runtime(args: argparse.Namespace) -> tuple[dict | None, str, str, P
     return cfg, data_dir, reports_dir, cache_dir, market
 
 
+def _count_generated_orders(rows: list[dict]) -> int:
+    return sum(
+        len(row["orders"])
+        if isinstance(row.get("orders"), list)
+        else 1
+        for row in rows
+    )
+
+
 def _run_daily_decision_cycle(
     config: dict,
     store: PortfolioStore,
@@ -637,7 +646,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Initialized {data_dir}")
             elif args.command == "rebalance":
                 batches = market_module.generate_rebalance_orders(config, store, provider, as_of=args.as_of, run_id=run_id)
-                print(f"Generated {sum(len(batch.get('orders', [])) for batch in batches)} pending orders")
+                print(f"Generated {_count_generated_orders(batches)} pending orders")
             elif args.command == "execute":
                 trades = market_module.execute_due_orders(config, store, provider, as_of=args.as_of)
                 print(f"Executed {len(trades)} trades")
@@ -667,7 +676,7 @@ def main(argv: list[str] | None = None) -> int:
                 provider.persist_health()
                 page_path = generate_dashboard(config, store, reports_dir)
                 generate_dashboard(config, store, reports_dir, mode="fragment")
-                order_count = sum(len(batch.get("orders", [])) for batch in batches)
+                order_count = _count_generated_orders(batches)
                 print(
                     f"Daily decision complete: trades={len(trades)}, "
                     f"orders={order_count}, nav_rows={len(rows)}, dashboard={page_path}"
