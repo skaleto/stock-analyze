@@ -29,7 +29,10 @@ def _fake_result() -> CapacityStudyResult:
 
 class QDIICapacityStudyCLITests(unittest.TestCase):
     def test_command_passes_explicit_window_and_top_ns(self) -> None:
-        fake_panel = ResearchPanelResult(pd.DataFrame(), {"universe_hash": "x"})
+        fake_panel = ResearchPanelResult(
+            pd.DataFrame(),
+            {"universe_hash": "x", "start": "2023-07-12", "end": "2026-07-10"},
+        )
         with tempfile.TemporaryDirectory() as tmp, patch(
             "stock_analyze.markets.cn_qdii_etf.research_panel.build_research_panel",
             return_value=fake_panel,
@@ -70,7 +73,10 @@ class QDIICapacityStudyCLITests(unittest.TestCase):
             self.assertEqual(write.call_args.kwargs["end_date"], "2026-07-10")
 
     def test_command_defaults_to_three_year_window_from_catalog_as_of(self) -> None:
-        fake_panel = ResearchPanelResult(pd.DataFrame(), {"universe_hash": "x"})
+        fake_panel = ResearchPanelResult(
+            pd.DataFrame(),
+            {"universe_hash": "x", "start": "2023-07-12", "end": "2026-07-10"},
+        )
         with tempfile.TemporaryDirectory() as tmp:
             universe = Path(tmp) / "universe.json"
             universe.write_text(json.dumps({"as_of": "2026-07-12"}), encoding="utf-8")
@@ -80,10 +86,10 @@ class QDIICapacityStudyCLITests(unittest.TestCase):
             ) as build, patch(
                 "stock_analyze.markets.cn_qdii_etf.capacity_study.run_capacity_study",
                 return_value=_fake_result(),
-            ), patch(
+            ) as run, patch(
                 "stock_analyze.markets.cn_qdii_etf.capacity_study.write_capacity_artifacts",
                 return_value={"report": Path(tmp) / "report.md"},
-            ):
+            ) as write:
                 code = cli.main(
                     [
                         "qdii-capacity-study",
@@ -99,6 +105,8 @@ class QDIICapacityStudyCLITests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(build.call_args.kwargs["start"], "2023-07-12")
             self.assertEqual(build.call_args.kwargs["end"], "2026-07-12")
+            self.assertEqual(run.call_args.kwargs["end"], "2026-07-10")
+            self.assertEqual(write.call_args.kwargs["end_date"], "2026-07-10")
 
     def test_command_returns_nonzero_for_research_error(self) -> None:
         with patch(
