@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import EtfResearchPanel from "./EtfResearchPanel";
 
@@ -67,5 +67,36 @@ describe("ETF research panel", () => {
     expect(within(panel).getByText("折溢价未测量 3")).toBeInTheDocument();
     expect(within(panel).getByText("基金规模未测量 1")).toBeInTheDocument();
     expect(within(panel).getByText("部分覆盖")).toBeInTheDocument();
+  });
+
+  it("switches between shadow, event and theme research views", () => {
+    render(
+      <EtfResearchPanel
+        selection={{ schema_version: 1, scopes: {} }}
+        research={{
+          capacity: { run_id: "capacity-run", recommendations: [{ strategy: "codex", scope: "us_exposure", recommended_top_n: 5 }], metrics: [] },
+          shadow: {
+            run_id: "shadow-run",
+            mode: "research_only",
+            metrics: [{ asset_class: "global_equity", scope: "japan_exposure", factor_model: "global_equity_v1", cumulative_return: 0.12, sharpe_ratio: 0.8, max_drawdown: -0.1, promotion_status: "shadow_ready" }],
+            catalog: [{ code: "159866.SZ", name: "日经ETF", asset_class: "global_equity", research_scope: "japan_exposure", promotion_status: "shadow_ready" }],
+          },
+          events: { total: 1, active_hard_blocks: 1, latest_observed_at: "2026-07-10T08:00:00", source: "eastmoney_fund_announcements", rows: [{ event_id: "AN1", code: "513100.SH", title: "暂停申购公告", event_type: "suspension", severity: "hard", published_at: "2026-07-10T00:00:00", source_url: "https://example.test/a" }] },
+          theme_sentiment: [{ agent: "codex", week_end: "2026-07-10", index_key: "nikkei_225", score: 0.4, confidence: 0.8, drivers: "日元走弱", sources: "https://example.test/n", observed_at: "2026-07-10T08:00:00" }],
+        }}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "全球影子" }));
+    expect(screen.getByText("日本市场")).toBeInTheDocument();
+    expect(screen.getByText("12.00%")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "风险事件" }));
+    expect(screen.getByText("暂停申购公告")).toBeInTheDocument();
+    expect(screen.getByText("1 项硬阻断")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "主题观点" }));
+    expect(screen.getByText("nikkei_225")).toBeInTheDocument();
+    expect(screen.getByText("日元走弱")).toBeInTheDocument();
   });
 });

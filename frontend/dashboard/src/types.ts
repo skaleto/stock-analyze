@@ -42,6 +42,8 @@ export type SelectionScope = {
   data_gaps?: Record<string, number>;
   ranked?: Record<string, unknown>[];
   selected: Record<string, unknown>[];
+  recent_events?: FundEventRow[];
+  active_hard_blocks?: number;
 };
 
 export type SelectionSnapshot = {
@@ -51,6 +53,59 @@ export type SelectionSnapshot = {
   universe_source_status?: string | null;
   catalog_stats?: Record<string, Record<string, number>>;
   scopes: Record<string, SelectionScope>;
+};
+
+export type FundEventRow = {
+  event_id?: string;
+  code?: string;
+  name?: string;
+  title?: string;
+  event_type?: string;
+  severity?: string;
+  published_at?: string;
+  source_url?: string;
+};
+
+export type ShadowMetric = {
+  asset_class?: string;
+  scope?: string;
+  factor_model?: string;
+  cumulative_return?: number | null;
+  sharpe_ratio?: number | null;
+  max_drawdown?: number | null;
+  promotion_status?: string;
+};
+
+export type QDIIResearch = {
+  capacity?: {
+    run_id?: string;
+    recommendations?: { strategy?: string; scope?: string; recommended_top_n?: number | null }[];
+    metrics?: Record<string, unknown>[];
+  };
+  shadow?: {
+    run_id?: string;
+    mode?: string;
+    metrics?: ShadowMetric[];
+    catalog?: Record<string, unknown>[];
+    skipped_scopes?: { scope?: string; reason?: string }[];
+  };
+  events?: {
+    total?: number;
+    active_hard_blocks?: number;
+    latest_observed_at?: string | null;
+    source?: string;
+    rows?: FundEventRow[];
+  };
+  theme_sentiment?: {
+    agent?: string;
+    week_end?: string;
+    index_key?: string;
+    score?: number;
+    confidence?: number;
+    drivers?: string;
+    sources?: string;
+    observed_at?: string;
+  }[];
 };
 
 export type ExposureWeight = {
@@ -100,6 +155,7 @@ export type StrategyComparisonSide = {
   holdings_source: "positions" | "planned_orders" | string;
   allocations: StrategyAllocation[];
   lookthrough?: PortfolioLookthrough | Record<string, never>;
+  research?: QDIIResearch;
   metrics: StrategyMetrics;
 };
 
@@ -293,6 +349,7 @@ export type DashboardDetail = {
   strategy: StrategyProfile;
   selection?: SelectionSnapshot;
   lookthrough?: PortfolioLookthrough | Record<string, never>;
+  research?: QDIIResearch;
   nav: {
     latest: NavPoint | null;
     series: NavPoint[];

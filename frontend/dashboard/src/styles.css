@@ -480,6 +480,51 @@ a:hover { text-decoration: underline; }
 .exposure-row small { margin-top: 3px; overflow: hidden; color: var(--faint); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .exposure-row strong { flex: 0 0 auto; color: var(--accent); font-family: "SF Mono", Menlo, monospace; font-size: 10px; }
 .coverage-note { margin: 10px 0 0; color: var(--faint); font-size: 9px; line-height: 1.5; }
+.research-tabs { min-height: 42px; display: flex; align-items: stretch; gap: 0; padding: 0 16px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--panel-2); overflow-x: auto; }
+.research-tabs button { min-width: 112px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-size: 11px; }
+.research-tabs button:hover { color: var(--text); background: var(--accent-soft); }
+.research-tabs button.active { border-bottom-color: var(--accent); color: var(--accent); }
+.research-view { min-height: 240px; padding: 16px; }
+.research-summary-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); background: var(--panel-2); }
+.research-summary-strip > div { min-width: 0; padding: 11px 12px; border-right: 1px solid var(--line); }
+.research-summary-strip > div:last-child { border-right: 0; }
+.research-summary-strip span, .research-summary-strip strong { display: block; }
+.research-summary-strip span { color: var(--faint); font-size: 9px; }
+.research-summary-strip strong { margin-top: 5px; overflow: hidden; color: var(--text); font-family: "SF Mono", Menlo, monospace; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.research-table-wrap { margin-top: 14px; overflow-x: auto; }
+.research-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+.research-table th { padding: 8px 10px; border-bottom: 1px solid var(--line-strong); color: var(--faint); font-size: 9px; font-weight: 600; text-align: right; }
+.research-table th:first-child, .research-table td:first-child { text-align: left; }
+.research-table td { padding: 10px; border-bottom: 1px solid var(--line); text-align: right; }
+.research-table td b, .research-table td small { display: block; }
+.research-table td small { margin-top: 3px; color: var(--faint); font-size: 8px; }
+.research-state { display: inline-flex; padding-left: 6px; border-left: 2px solid var(--warning); color: var(--warning); }
+.state-shadow_ready { border-color: var(--negative); color: var(--negative); }
+.state-insufficient_breadth { border-color: var(--positive); color: var(--positive); }
+.capacity-line { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); color: var(--muted); font-size: 10px; }
+.capacity-line b { color: var(--text); }
+.event-status-line { min-height: 38px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; padding: 8px 10px; border: 1px solid var(--line); background: var(--panel-2); color: var(--faint); font-size: 10px; }
+.event-status-line > span:first-child { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; }
+.event-alert { color: var(--positive); }
+.event-clear { color: var(--negative); }
+.event-timeline { margin-top: 8px; }
+.event-timeline article { min-height: 54px; display: grid; grid-template-columns: 8px minmax(0, 1fr) 24px; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); }
+.event-timeline article > div { min-width: 0; }
+.event-timeline header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.event-timeline header b { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.event-timeline header span, .event-timeline p { color: var(--faint); font-size: 9px; }
+.event-timeline p { margin: 4px 0 0; }
+.event-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+.event-hard { background: var(--positive); box-shadow: 0 0 0 3px var(--positive-soft); }
+.event-warning { background: var(--warning); box-shadow: 0 0 0 3px var(--warning-soft); }
+.theme-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1px; background: var(--line); }
+.theme-grid article { min-width: 0; padding: 13px; background: var(--panel); }
+.theme-grid header, .theme-grid footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.theme-grid header b { overflow: hidden; font-family: "SF Mono", Menlo, monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.theme-grid header span { font-family: "SF Mono", Menlo, monospace; font-size: 14px; }
+.theme-grid p { min-height: 34px; margin: 10px 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.theme-grid footer { color: var(--faint); font-size: 8px; }
+.theme-grid footer a { display: inline-flex; align-items: center; gap: 3px; }
 
 .financial-chart { min-width: 0; }
 .trade-marker-summary {
@@ -798,6 +843,9 @@ a:hover { text-decoration: underline; }
   .factor-comparison { border-right: 0; border-bottom: 1px solid var(--line); }
   .etf-research-grid { grid-template-columns: 1fr; }
   .selection-funnels { border-right: 0; border-bottom: 1px solid var(--line); }
+  .research-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .research-summary-strip > div:nth-child(2) { border-right: 0; }
+  .research-summary-strip > div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
 }
 
 @media (max-width: 560px) {
@@ -858,6 +906,10 @@ a:hover { text-decoration: underline; }
   .universe-version span { justify-content: flex-start; }
   .selection-funnels, .lookthrough-panel { padding: 12px 10px; }
   .funnel-stages, .exposure-columns { grid-template-columns: 1fr; }
+  .research-tabs { padding: 0 8px; }
+  .research-tabs button { min-width: 104px; }
+  .research-view { padding: 10px; }
+  .event-timeline header { align-items: flex-start; flex-direction: column; gap: 3px; }
   .underlying-title { flex-wrap: wrap; }
   .underlying-title span { width: 100%; margin-left: 22px; }
   .underlying-title a { margin-left: auto; }
