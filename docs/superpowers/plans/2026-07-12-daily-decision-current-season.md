@@ -59,13 +59,16 @@
 - [x] Hash active overlays, positions, trades, and NAV files before deployment.
 - [x] Deploy with `SA_SKIP_AGENT_CONFIG_SYNC=1` and pass the remote gate.
 - [x] Run one controlled daily decision against the latest shared cache for both agents and both active markets.
-- [ ] Verify run-ledger rows, next-session targets, unchanged historical state, timers, dashboard labels, and page availability.
+- [x] Verify run-ledger rows, next-session targets, unchanged historical state, timers, dashboard labels, and page availability.
 
 ### Acceptance record
 
 - Local Python suite: 726 tests passed.
 - Local frontend suite: 25 tests passed; production audit reported zero vulnerabilities.
-- Remote deploy gate: 178 tests passed before the final order-count compatibility fix.
+- Final remote deploy gate: 179 tests passed.
 - Isolated real-cache smoke for `2026-07-10`: all four strategy accounts completed successfully and created targets for `2026-07-13`.
 - A-share targets: claude 131 orders, codex 172 orders across two configured accounts each.
 - Cross-border ETF targets: claude 10 orders, codex 10 orders; the CLI now counts its flat order structure correctly.
+- Active overlays, positions, trades, NAV, state, and pending-order hashes were unchanged by deployment and smoke testing.
+- Eleven production timers passed the health check; service journals and run ledgers were consistent.
+- The dashboard shell and live summary API both returned HTTP 200 through the operator tunnel.
