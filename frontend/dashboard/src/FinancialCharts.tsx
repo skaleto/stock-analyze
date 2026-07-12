@@ -234,12 +234,20 @@ export function StrategyComparisonChart({
 
 const BUY_SIDES = new Set(["buy", "cover"]);
 const SELL_SIDES = new Set(["sell", "short"]);
+const BUY_MARKER_COLOR = "#38bdf8";
+const SELL_MARKER_COLOR = "#f59e0b";
 
-function markerStrategyName(label: string): string {
-  if (label.includes("稳健") || label.includes("防守")) return "稳健";
-  if (label.includes("趋势") || label.includes("进攻")) return "趋势";
-  return label.split(/[·\s]/)[0]?.slice(0, 4) || "策略";
-}
+type TradeMarkerDetail = {
+  id: string;
+  time: string;
+  kind: "buy" | "sell";
+  strategyLabel: string;
+  count: number;
+  shares: number;
+  averagePrice: number | null;
+  grossAmount: number;
+  fees: number;
+};
 
 function visibleCandleTrades(candles: Candle[], trades: OrderRow[]): OrderRow[] {
   const candleDates = new Set(candles.map((candle) => candle.date));
@@ -254,26 +262,63 @@ function visibleCandleTrades(candles: Candle[], trades: OrderRow[]): OrderRow[] 
   });
 }
 
-function buildTradeMarkers(trades: OrderRow[], strategyLabel: string): SeriesMarker<Time>[] {
-  const grouped = new Map<string, { time: string; kind: "buy" | "sell"; count: number }>();
+function tradeNumber(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function buildTradeMarkerBundle(trades: OrderRow[], strategyLabel: string): {
+  markers: SeriesMarker<Time>[];
+  details: Map<string, TradeMarkerDetail>;
+} {
+  const grouped = new Map<string, { time: string; kind: "buy" | "sell"; rows: OrderRow[] }>();
   for (const trade of trades) {
     const time = String(trade.trade_date ?? trade.date ?? "").slice(0, 10);
     const side = String(trade.side ?? "").toLowerCase();
     const kind = BUY_SIDES.has(side) ? "buy" : "sell";
     const key = `${time}:${kind}`;
     const existing = grouped.get(key);
-    grouped.set(key, { time, kind, count: (existing?.count ?? 0) + 1 });
+    grouped.set(key, { time, kind, rows: [...(existing?.rows ?? []), trade] });
   }
-  const strategyName = markerStrategyName(strategyLabel);
-  return Array.from(grouped.values())
+  const details = new Map<string, TradeMarkerDetail>();
+  const markers = Array.from(grouped.values())
     .sort((left, right) => left.time.localeCompare(right.time) || left.kind.localeCompare(right.kind))
-    .map(({ time, kind, count }) => ({
-      time: time as Time,
-      position: kind === "buy" ? "belowBar" : "aboveBar",
-      color: kind === "buy" ? "#ef4444" : "#22c55e",
-      shape: kind === "buy" ? "arrowUp" : "arrowDown",
-      text: `${strategyName}${kind === "buy" ? "买" : "卖"}${count > 1 ? `×${count}` : ""}`,
-    }));
+    .map(({ time, kind, rows }) => {
+      const id = `trade:${time}:${kind}`;
+      const shares = rows.reduce((total, row) => total + Math.abs(tradeNumber(row.shares)), 0);
+      const weightedPrice = rows.reduce(
+        (total, row) => total + Math.abs(tradeNumber(row.shares)) * tradeNumber(row.price),
+        0,
+      );
+      const grossAmount = rows.reduce((total, row) => total + Math.abs(tradeNumber(row.gross_amount)), 0);
+      const fees = rows.reduce(
+        (total, row) => total
+          + Math.abs(tradeNumber(row.commission))
+          + Math.abs(tradeNumber(row.stamp_tax))
+          + Math.abs(tradeNumber(row.slippage)),
+        0,
+      );
+      details.set(id, {
+        id,
+        time,
+        kind,
+        strategyLabel,
+        count: rows.length,
+        shares,
+        averagePrice: shares > 0 ? weightedPrice / shares : null,
+        grossAmount,
+        fees,
+      });
+      return {
+        id,
+        time: time as Time,
+        position: (kind === "buy" ? "belowBar" : "aboveBar") as "belowBar" | "aboveBar",
+        color: kind === "buy" ? BUY_MARKER_COLOR : SELL_MARKER_COLOR,
+        shape: "circle" as const,
+        size: 1.5,
+      };
+    });
+  return { markers, details };
 }
 
 export function CandlestickChart({
@@ -287,12 +332,13 @@ export function CandlestickChart({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState<Candle | null>(candles[candles.length - 1] ?? null);
+  const [hoveredTrade, setHoveredTrade] = useState<TradeMarkerDetail | null>(null);
   const visibleTrades = useMemo(
     () => visibleCandleTrades(candles, trades),
     [candles, trades],
   );
-  const tradeMarkers = useMemo(
-    () => buildTradeMarkers(visibleTrades, strategyLabel),
+  const markerBundle = useMemo(
+    () => buildTradeMarkerBundle(visibleTrades, strategyLabel),
     [strategyLabel, visibleTrades],
   );
   const buyCount = visibleTrades.filter((trade) => BUY_SIDES.has(String(trade.side ?? "").toLowerCase())).length;
@@ -341,11 +387,13 @@ export function CandlestickChart({
       value: candle.volume ?? 0,
       color: candle.close >= candle.open ? "rgba(239,68,68,0.46)" : "rgba(34,197,94,0.46)",
     })));
-    const markerPlugin = tradeMarkers.length ? createSeriesMarkers(priceSeries, tradeMarkers) : null;
+    const markerPlugin = markerBundle.markers.length ? createSeriesMarkers(priceSeries, markerBundle.markers) : null;
     const candleByDate = new Map(candles.map((candle) => [candle.date, candle]));
     chart.subscribeCrosshairMove((parameter) => {
       const date = typeof parameter.time === "string" ? parameter.time : null;
       setHovered((date && candleByDate.get(date)) || candles[candles.length - 1] || null);
+      const objectId = parameter.hoveredInfo?.objectId ?? parameter.hoveredObjectId;
+      setHoveredTrade(typeof objectId === "string" ? markerBundle.details.get(objectId) ?? null : null);
     });
     chart.timeScale().fitContent();
     const stopObserving = observeChart(container, chart);
@@ -354,7 +402,7 @@ export function CandlestickChart({
       markerPlugin?.detach();
       chart.remove();
     };
-  }, [candles, tradeMarkers]);
+  }, [candles, markerBundle]);
 
   if (candles.length === 0) return <div className="chart-empty">暂无历史行情缓存</div>;
   const change = hovered ? hovered.close - hovered.open : 0;
@@ -379,6 +427,22 @@ export function CandlestickChart({
         <span>收 <b className={change >= 0 ? "positive" : "negative"}>{hovered?.close.toFixed(3)}</b></span>
         <span>成交额 <b>{formatMoney(hovered?.amount)}</b></span>
       </div>
+      {hoveredTrade ? (
+        <div className={`trade-marker-tooltip trade-marker-tooltip-${hoveredTrade.kind}`} role="status" aria-label="成交标记详情">
+          <header>
+            <i aria-hidden="true" />
+            <strong>{hoveredTrade.strategyLabel} · {hoveredTrade.kind === "buy" ? "买入" : "卖出"}</strong>
+            <time>{hoveredTrade.time}</time>
+          </header>
+          <div>
+            <span>{hoveredTrade.count} 笔</span>
+            <span>成交价 {hoveredTrade.averagePrice?.toFixed(3) ?? "-"}</span>
+            <span>份额 {hoveredTrade.shares.toLocaleString("zh-CN")}</span>
+            <span>金额 {formatMoney(hoveredTrade.grossAmount)}</span>
+            <span>费用 {formatMoney(hoveredTrade.fees)}</span>
+          </div>
+        </div>
+      ) : null}
       <div ref={containerRef} className="chart-canvas candle-canvas" aria-label="日K线和成交量图" />
     </div>
   );
