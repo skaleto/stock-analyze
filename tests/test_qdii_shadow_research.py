@@ -36,6 +36,13 @@ def _shadow_panel() -> tuple[ResearchPanelResult, pd.DataFrame]:
 class QDIIShadowResearchTests(unittest.TestCase):
     def test_runs_asset_specific_shadow_models_without_live_accounts(self) -> None:
         panel, catalog = _shadow_panel()
+        sentiment = pd.DataFrame(
+            [{
+                "agent": "codex", "week_end": "2024-01-05", "index_key": "index_a",
+                "score": 0.5, "confidence": 0.8,
+                "observed_at": "2024-01-05T08:00:00", "expires_at": "2024-01-19T08:00:00",
+            }]
+        )
 
         result = run_shadow_research(
             panel,
@@ -43,6 +50,8 @@ class QDIIShadowResearchTests(unittest.TestCase):
             start="2024-01-02",
             end="2024-07-29",
             min_signal_weeks=4,
+            theme_sentiment_records=sentiment,
+            sentiment_agent="codex",
         )
 
         self.assertEqual(set(result.metrics["asset_class"]), {"global_equity", "commodity"})
@@ -51,6 +60,8 @@ class QDIIShadowResearchTests(unittest.TestCase):
         self.assertGreater(len(result.nav), 0)
         self.assertGreater(len(result.trades), 0)
         self.assertIn("premium_persistence_20", result.summary["factor_models"]["commodity_v1"])
+        self.assertEqual(result.summary["sentiment_agent"], "codex")
+        self.assertIn("theme_sentiment_score", result.summary["factor_models"]["global_equity_v1"])
 
     def test_writes_only_research_artifacts(self) -> None:
         panel, catalog = _shadow_panel()
