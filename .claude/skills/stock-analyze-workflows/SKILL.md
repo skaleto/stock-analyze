@@ -102,6 +102,21 @@ When the operator says `运行 <YYYY-MM> 月度策略演化`:
 7. Deploy in two phases per `AGENTS.md`, then verify all four ECS accounts,
    dashboard APIs, timers, and the deployed version.
 
+### QDII Capacity Research
+
+When the operator asks to continue P2 or evaluate QDII portfolio breadth, run:
+
+```bash
+python3 -m stock_analyze qdii-capacity-study \
+  --top-n 4 5 6 8 10
+```
+
+This is a network-free research command over the shared three-year cache. It
+must disclose the current-catalog survivorship bias and write only research
+artifacts. A recommendation never automatically modifies `top_n`, active
+overlays, pending orders, cash, or the competition baseline. Verify those
+hashes before and after the production run.
+
 ## Notifications
 
 Consolidated cards use:

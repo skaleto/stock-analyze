@@ -40,6 +40,19 @@ class OperatorWorkflowDocsTests(unittest.TestCase):
         self.assertIn("09:30", docs)
         self.assertNotIn("ExecStartPost=notify-daily-summary.sh", docs)
 
+    def test_qdii_capacity_study_is_documented_as_research_only(self) -> None:
+        runbook = Path("docs/competition-runbook.md").read_text(encoding="utf-8")
+        skill = Path(".claude/skills/stock-analyze-workflows/SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        combined = runbook + skill
+
+        self.assertIn("qdii-capacity-study", combined)
+        self.assertIn("4 5 6 8 10", combined)
+        self.assertIn("幸存者偏差", combined)
+        self.assertIn("不自动修改", combined)
+        self.assertIn("top_n", combined)
+
 
 if __name__ == "__main__":
     unittest.main()
