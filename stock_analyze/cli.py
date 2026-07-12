@@ -276,10 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
     sanity.add_argument("--repo-root", type=Path, default=None,
                           help="Override repo root (defaults to SA_REPO_ROOT or __file__ anchor).")
 
-    # Daily summary push to the operator's Lark DM. Triggered nightly via
-    # systemd ExecStartPost on stock-analyze-aggregate-dashboard.service.
-    # Reads SA_LARK_APP_ID / SA_LARK_APP_SECRET / SA_LARK_USER_OPEN_ID;
-    # falls back to stdout preview if any is missing.
+    # Compatibility alias for the consolidated daily workflow summary.
     notify = sub.add_parser(
         "notify-daily-summary",
         help="Build daily ECS summary + send DM to operator via Lark Open API.",
@@ -289,6 +286,31 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Override repo root (default: cwd; ECS will use /opt/stock-analyze/app).",
+    )
+
+    workflow_notify = sub.add_parser(
+        "notify-workflow-summary",
+        help="Send one idempotent daily, weekly, or monthly workflow summary.",
+    )
+    workflow_notify.add_argument(
+        "--cadence",
+        required=True,
+        choices=["daily", "weekly", "monthly"],
+    )
+    workflow_notify.add_argument(
+        "--target",
+        help="YYYY-MM-DD for daily/weekly or YYYY-MM for monthly.",
+    )
+    workflow_notify.add_argument("--repo-root", type=Path, default=None)
+    workflow_notify.add_argument(
+        "--force",
+        action="store_true",
+        help="Send again even if this cadence/target was already delivered.",
+    )
+    workflow_notify.add_argument(
+        "--preview",
+        action="store_true",
+        help="Print the summary without sending or marking it delivered.",
     )
 
     return parser
@@ -433,6 +455,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "notify-daily-summary":
         ensure_dirs(args.logs_dir)
         return _command_notify_daily_summary(args)
+    if args.command == "notify-workflow-summary":
+        ensure_dirs(args.logs_dir)
+        return _command_notify_workflow_summary(args)
 
     try:
         config, data_dir, reports_dir, cache_dir, market = _resolve_runtime(args)
@@ -995,14 +1020,22 @@ def _command_sanity_check(args: argparse.Namespace) -> int:
 
 
 def _command_notify_daily_summary(args: argparse.Namespace) -> int:
-    """Send the daily summary DM via Lark Open API.
+    """Compatibility alias for ``notify-workflow-summary --cadence daily``."""
+    from .workflow_notifications import cli_send_workflow_summary
 
-    Delegated to ``stock_analyze.notifier.cli_send_daily_summary`` so the
-    CLI layer stays thin and the heavy logic stays testable in isolation.
-    """
-    from .notifier import cli_send_daily_summary
+    return cli_send_workflow_summary("daily", repo_root=args.repo_root)
 
-    return cli_send_daily_summary(repo_root=args.repo_root)
+
+def _command_notify_workflow_summary(args: argparse.Namespace) -> int:
+    from .workflow_notifications import cli_send_workflow_summary
+
+    return cli_send_workflow_summary(
+        args.cadence,
+        repo_root=args.repo_root,
+        target=args.target,
+        force=args.force,
+        preview=args.preview,
+    )
 
 
 def _auto_write_weekly_briefing(agent_id: str | None, as_of: str | None) -> str | None:

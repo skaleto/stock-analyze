@@ -23,6 +23,13 @@ class CheckEcsTimersScriptTests(unittest.TestCase):
         self.assertIn("latest_finished_epoch", script)
         self.assertIn("latest_failed_epoch > latest_finished_epoch", script)
 
+    def test_consolidated_notification_timers_are_expected(self) -> None:
+        script = Path("scripts/check-ecs-timers.sh").read_text(encoding="utf-8")
+
+        self.assertIn("stock-analyze-daily-summary.timer", script)
+        self.assertIn("stock-analyze-weekly-summary.timer", script)
+        self.assertIn("stock-analyze-monthly-summary.timer", script)
+
 
 if __name__ == "__main__":
     unittest.main()

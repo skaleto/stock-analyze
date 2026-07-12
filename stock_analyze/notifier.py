@@ -1,20 +1,11 @@
-"""Operator notification layer.
+"""Lark transport and legacy notification formatting helpers.
 
-Pushes a daily summary of ECS automation + per-agent NAV/positions/sanity
-state + pending operator actions to the operator's Lark DM via the Lark
-Open API. Designed to run via systemd ``ExecStartPost=`` on
-``stock-analyze-aggregate-dashboard.service`` so it fires once per day
-right after the daily simulation pipeline closes out.
+Production status cards are assembled by :mod:`stock_analyze.workflow_notifications`
+and sent from fixed daily, weekly, and monthly systemd timers. Immediate
+pipeline failures continue through ``stock-analyze-pipeline-failure@.service``.
 
-This sits *next to* (not in place of) the existing PIPELINE_FAILURES.log
-+ ``SA_LARK_WEBHOOK`` failure-only path:
-
-  - Failure path (already in place): systemd OnFailure= → group webhook
-  - Success/status path (this module): aggregate-dashboard.ExecStartPost=
-    → user open_id DM
-
-The two channels are independent. Failure of one does not affect the
-other.
+The legacy daily formatter remains available for compatibility and tests, but
+it is no longer attached to every aggregate-dashboard refresh.
 
 Required environment variables (typically loaded from
 ``/etc/stock-analyze/secrets.env``):

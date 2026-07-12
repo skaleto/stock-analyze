@@ -115,6 +115,16 @@ QDII 两套策略都有独立定时器：
 - `stock-analyze-{claude,codex}-cn-qdii-etf-daily.timer`：周一至周五 18:50。
 - `stock-analyze-{claude,codex}-cn-qdii-etf-weekly.timer`：周六 10:15。
 
+飞书只在固定汇总窗口发送整体消息：
+
+- `stock-analyze-daily-summary.timer`：周一至周五 19:30，当日四条流水线总览。
+- `stock-analyze-weekly-summary.timer`：周六 10:45，周任务状态和 Codex 复盘提醒。
+- `stock-analyze-monthly-summary.timer`：每月 1 日 09:30，月报状态和策略演化提醒。
+
+单个 agent service 的 `OnSuccess` 只刷新 Dashboard，不再发送消息。失败仍通过
+`stock-analyze-pipeline-failure@.service` 立即告警。摘要发送使用 cadence/target
+幂等账本，重启服务不会重复推送同一条。
+
 检查定时器、最近失败和服务/账本一致性：
 
 ```bash
@@ -125,6 +135,17 @@ SA_ECS_SSH_OPTS='-i <key>' \
 
 巡检必须同时覆盖四个 `(market, strategy)` 账户。只看到 parent trigger 成功不代表
 子服务成功，应结合 `journalctl`、每个账户的 `runs.csv` 和错误日志判断。
+
+周度和月度的 LLM 判断不会在 ECS 无人值守运行。飞书卡片会给出完整触发语：
+
+```text
+运行 YYYY-MM-DD 周度复盘
+运行 YYYY-MM 月度策略演化
+```
+
+周度复盘只做归因与异常检查，不改策略；月度演化通过版本 manifest、门禁和两阶段
+部署更新四份活动策略。旧 `weekly.sh` / `monthly.sh` 只保留为安全状态预检，不再
+调用 Claude CLI、录入 sentiment 或直接覆盖 YAML。
 
 ## 7. 两阶段部署
 

@@ -16,11 +16,5 @@ WorkingDirectory=/opt/stock-analyze/app
 Environment=TZ=Asia/Shanghai
 EnvironmentFile=-/etc/stock-analyze/secrets.env
 ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --logs-dir /opt/stock-analyze/logs competition-dashboard
-# After the aggregator dashboard refreshes, push the day's summary to the
-# operator's Lark DM (build_daily_summary → Lark Open API). The leading `-`
-# makes failure non-fatal: a Lark outage or missing credentials shouldn't
-# trip the unit's OnFailure= cascade (the dashboard already succeeded).
-# Failures still surface in journalctl + the script's own stderr.
-ExecStartPost=-/opt/stock-analyze/app/scripts/notify-daily-summary.sh
 StandardOutput=append:/opt/stock-analyze/logs/aggregate-dashboard.log
 StandardError=append:/opt/stock-analyze/logs/aggregate-dashboard.err

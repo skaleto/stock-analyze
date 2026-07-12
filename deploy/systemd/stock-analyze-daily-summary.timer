@@ -1,0 +1,11 @@
+[Unit]
+Description=Send one consolidated workflow summary after weekday pipelines
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 19:30:00 Asia/Shanghai
+Persistent=false
+AccuracySec=1min
+Unit=stock-analyze-daily-summary.service
+
+[Install]
+WantedBy=timers.target
