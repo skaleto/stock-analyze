@@ -360,6 +360,7 @@ def _simulate(
             int(position["shares"]) * float(closes.get(code, position["avg_cost"]))
             for code, position in positions.items()
         )
+        settlement_receivable = sum(float(item["amount"]) for item in settlement)
         nav_rows.append(
             {
                 "strategy": strategy,
@@ -368,7 +369,8 @@ def _simulate(
                 "date": trade_date.strftime("%Y-%m-%d"),
                 "cash": cash,
                 "market_value": market_value,
-                "total_value": cash + market_value,
+                "settlement_receivable": settlement_receivable,
+                "total_value": cash + market_value + settlement_receivable,
                 "benchmark_code": benchmark,
                 "benchmark_close": float(closes.get(benchmark, float("nan"))),
             }

@@ -442,7 +442,8 @@ class SettlementSimulatorBase:
     def update_nav(self, store: Any, provider: Any, *, as_of: date | None = None) -> list[dict[str, Any]]:
         """Compute and persist daily NAV for each account.
 
-        total_value = cash + cash_collateral + Σ(position_market_value),
+        total_value = cash + cash_collateral + settlement_receivable
+                      + Σ(position_market_value),
         where a short position contributes ``-|shares| × current_price``.
         """
         as_of = as_of or date.today()
@@ -452,6 +453,10 @@ class SettlementSimulatorBase:
             self._drain_settlement(account_state, as_of)
             cash = float(account_state.get("cash", 0.0))
             coll = float(account_state.get("cash_collateral", 0.0))
+            settlement_receivable = sum(
+                float(item.get("amount", 0.0))
+                for item in account_state.get("settlement_queue", [])
+            )
             positions_value = 0.0
             for code, pos in account_state.get("positions", {}).items():
                 shares = int(pos.get("shares", 0))
@@ -468,7 +473,7 @@ class SettlementSimulatorBase:
                 pos["last_price"] = px
                 pos["market_value"] = market_value
                 pos["unrealized_pnl"] = (px - avg_cost) * shares
-            total = cash + coll + positions_value
+            total = cash + coll + settlement_receivable + positions_value
             benchmark_code = account_state.get("benchmark", "")
             benchmark_close = None
             benchmark_date = as_of.isoformat()
@@ -484,6 +489,7 @@ class SettlementSimulatorBase:
                 "account_id": account_id,
                 "cash": cash,
                 "cash_collateral": coll,
+                "settlement_receivable": settlement_receivable,
                 "market_value": positions_value,
                 "positions_value": positions_value,
                 "total_value": total,

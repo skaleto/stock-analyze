@@ -473,6 +473,23 @@ class ETFSimulatorTests(unittest.TestCase):
         self.assertEqual(float(positions.iloc[-1]["market_value"]), 200.0)
         self.assertEqual(float(positions.iloc[-1]["unrealized_pnl"]), 20.0)
 
+    def test_update_nav_counts_unsettled_sell_proceeds_as_receivable(self):
+        with TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            initialize(_config(), store)
+            state = store.load_state()
+            state["accounts"]["us_exposure"]["settlement_queue"] = [
+                {"settle_date": "2026-07-10", "amount": 1_250.0}
+            ]
+            store.save_state(state)
+
+            rows = update_nav(store, FakeProvider(price=2.0), as_of=date(2026, 7, 9))
+            nav = store.read_nav()
+
+        self.assertEqual(rows[0]["settlement_receivable"], 1_250.0)
+        self.assertEqual(rows[0]["total_value"], 101_250.0)
+        self.assertEqual(float(nav.iloc[-1]["settlement_receivable"]), 1_250.0)
+
 
 if __name__ == "__main__":
     unittest.main()
