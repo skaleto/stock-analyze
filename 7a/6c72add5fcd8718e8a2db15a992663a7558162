@@ -1,0 +1,23 @@
+stock_analyze/cli.py
+  s_db9afa53cf7b72::t_55e1f1b228a071 941-944,950-951,957
+tests/test_cli_qdii_capacity_study.py
+  s_db9afa53cf7b72::t_cb28cc7c9a6f76 32-35,76-79,89,92,108-109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "7a6c72add5fcd8718e8a2db15a992663a7558162",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
