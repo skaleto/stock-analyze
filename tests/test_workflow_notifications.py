@@ -116,6 +116,7 @@ class WorkflowSummaryTests(unittest.TestCase):
                     )
                     _seed_nav(root, market, agent, 1_001_000.0)
                     _seed_trades(root, market, agent, 2)
+                    _seed_pending(root, market, agent, 1)
 
             text = build_workflow_summary(
                 "daily", root, today_d=date(2026, 7, 13), target="2026-07-13"
@@ -125,6 +126,7 @@ class WorkflowSummaryTests(unittest.TestCase):
             self.assertIn("稳健防守", text)
             self.assertIn("趋势进攻", text)
             self.assertIn("成交 8", text)
+            self.assertIn("待执行订单 4", text)
             self.assertNotIn("持仓明细", text)
             self.assertNotIn("Sanity-check", text)
 
@@ -157,7 +159,8 @@ class WorkflowSummaryTests(unittest.TestCase):
             )
 
             self.assertIn("4/4", text)
-            self.assertIn("待执行订单 10", text)
+            self.assertNotIn("待执行订单", text)
+            self.assertIn("周度复盘", text)
             self.assertIn("运行 2026-07-10 周度复盘", text)
 
     def test_weekly_summary_only_adds_material_qdii_research_alerts(self) -> None:

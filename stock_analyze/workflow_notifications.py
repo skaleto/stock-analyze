@@ -346,7 +346,7 @@ def build_workflow_summary(
     if cadence in ("daily", "weekly"):
         results = collect_task_results(cadence, repo_root, target)
         success, failed, missing = _status_counts(results)
-        title = "任务日报" if cadence == "daily" else "周任务"
+        title = "任务日报" if cadence == "daily" else "周度复盘"
         lines = [f"{title} {target}", f"整体: {success}/{len(results)} 成功"]
         if failed or missing:
             lines[-1] += f"，失败 {failed}，未完成 {missing}"
@@ -357,14 +357,13 @@ def build_workflow_summary(
                 for agent_id in AGENT_IDS
             )
             lines[-1] += f"，成交 {trades}"
-            lines.extend(["", "策略总览:", *_strategy_lines(repo_root, on_or_before=target)])
-        else:
             pending = sum(
                 _pending_count(repo_root, market, agent_id)
                 for market in competition.MARKETS
                 for agent_id in AGENT_IDS
             )
             lines[-1] += f"，待执行订单 {pending}"
+            lines.extend(["", "策略总览:", *_strategy_lines(repo_root, on_or_before=target)])
         lines.extend(["", "任务运行:", *_task_lines(results, repo_root)])
         if cadence == "weekly":
             research_alerts = _qdii_research_alerts(repo_root, today_d)

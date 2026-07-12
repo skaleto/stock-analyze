@@ -112,6 +112,7 @@ python -m unittest \
   tests.test_qdii_shadow_research \
   tests.test_cli_qdii_shadow_research \
   tests.test_qdii_theme_sentiment \
+  tests.test_cli_daily_decision \
   tests.test_workflow_notifications \
   tests.test_workflow_summary_systemd \
   tests.test_operator_workflow_docs \

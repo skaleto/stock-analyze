@@ -1,5 +1,5 @@
 [Unit]
-Description=Stock Analyze weekly simulation run (Codex mainland QDII ETF)
+Description=Stock Analyze weekly review (Trend mainland QDII ETF)
 After=network-online.target
 Wants=network-online.target
 OnFailure=stock-analyze-pipeline-failure@%n.service

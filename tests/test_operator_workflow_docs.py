@@ -31,6 +31,15 @@ class OperatorWorkflowDocsTests(unittest.TestCase):
         self.assertNotIn("run-overseas.sh", skill)
         self.assertNotIn("hk/claude", skill)
         self.assertNotIn("record-sector-sentiment", skill)
+        self.assertIn("每日收盘决策", skill)
+        self.assertIn("周任务不生成订单", skill)
+
+    def test_runbook_assigns_orders_to_daily_and_review_to_weekly(self) -> None:
+        runbook = Path("docs/competition-runbook.md").read_text(encoding="utf-8")
+
+        self.assertIn("每日收盘决策", runbook)
+        self.assertIn("run-weekly", runbook)
+        self.assertIn("不生成订单", runbook)
 
     def test_alerting_docs_describe_fixed_summary_windows(self) -> None:
         docs = Path("docs/operator-alerting-setup.md").read_text(encoding="utf-8")

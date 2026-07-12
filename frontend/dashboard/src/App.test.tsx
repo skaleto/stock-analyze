@@ -326,6 +326,8 @@ describe("Dashboard app", () => {
     expect(await screen.findByRole("button", { name: "跨境ETF" })).toBeInTheDocument();
     expect((await screen.findAllByText("513100.SH")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("run-weekly").length).toBeGreaterThan(0);
+    expect(screen.getByText("周度复盘")).toBeInTheDocument();
+    expect(screen.queryByText("周度调仓")).not.toBeInTheDocument();
 
     const ordersPanel = screen.getByRole("region", { name: "目标订单" });
     expect(within(ordersPanel).getByText("纳指ETF")).toBeInTheDocument();

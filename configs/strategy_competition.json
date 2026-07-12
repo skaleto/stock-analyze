@@ -2,6 +2,14 @@
   "season_id": "dual_strategy_2026_s1",
   "name": "双策略对抗 · 赛季1",
   "effective_date": "2026-07-11",
+  "rule_changes": [
+    {
+      "effective_date": "2026-07-13",
+      "decision_cadence": "daily_after_close",
+      "execution": "next_trading_day_open",
+      "note": "Current-season change: daily decisions replace calendar weekly rebalancing; weekly jobs are review-only."
+    }
+  ],
   "factor_distance_floor": 0.45,
   "slots": {
     "claude": {

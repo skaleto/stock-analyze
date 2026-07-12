@@ -54,6 +54,7 @@ class DeployAppScriptTests(unittest.TestCase):
         self.assertIn("tests.test_cli_qdii_shadow_research", script)
         self.assertIn("tests.test_qdii_theme_sentiment", script)
         self.assertIn("tests.test_workflow_notifications", script)
+        self.assertIn("tests.test_cli_daily_decision", script)
         self.assertIn("tests.test_workflow_summary_systemd", script)
         self.assertIn("tests.test_operator_workflow_docs", script)
         self.assertIn("tests.test_check_ecs_timers", script)

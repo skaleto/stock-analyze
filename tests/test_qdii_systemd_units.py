@@ -26,6 +26,7 @@ class QDIISystemdUnitTests(unittest.TestCase):
                 self.assertIn(
                     f"--market cn_qdii_etf --agent {agent} run-weekly", weekly
                 )
+                self.assertIn("weekly review", weekly.lower())
                 self.assertIn("OnFailure=stock-analyze-pipeline-failure@%n.service", daily)
                 self.assertIn("OnSuccess=stock-analyze-aggregate-dashboard.service", weekly)
 

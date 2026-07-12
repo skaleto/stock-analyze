@@ -340,8 +340,8 @@ export default function App() {
         </nav>
 
         <div className="status-stack">
-          <div><span>每日估值</span><StatusBadge status={selectedAgentSummary?.tasks.daily.status} /></div>
-          <div><span>周度调仓</span><StatusBadge status={selectedAgentSummary?.tasks.weekly.status} /></div>
+          <div><span>每日决策</span><StatusBadge status={selectedAgentSummary?.tasks.daily.status} /></div>
+          <div><span>周度复盘</span><StatusBadge status={selectedAgentSummary?.tasks.weekly.status} /></div>
         </div>
         <button className="ghost-button" type="button" onClick={() => setAutoRefresh((current) => !current)} aria-pressed={autoRefresh}>
           <Activity size={16} aria-hidden="true" />{autoRefresh ? "自动刷新已开启" : "自动刷新已关闭"}
