@@ -1,0 +1,21 @@
+docs/superpowers/plans/2026-07-12-cn-qdii-etf-p2-completion.md
+  s_db9afa53cf7b72::t_34f6dd15a8db6b 3,22-26,38-42,52-55,67-71,83-86,95-110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "6c3dfec0a619104ca5576d205dc378de0eb23cac",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
