@@ -1,0 +1,23 @@
+stock_analyze/markets/cn_qdii_etf/capacity_study.py
+  s_db9afa53cf7b72::t_07a14d5f56135e 1-781
+tests/test_qdii_capacity_study.py
+  s_db9afa53cf7b72::t_f36ff1c378ad31 1-204
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "1c7efb0f5507d91f3856da561fa78e7020e0c344",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
