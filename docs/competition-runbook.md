@@ -101,6 +101,24 @@ python3 -m stock_analyze --market <market> --agent <agent> run-daily
 `run-weekly` 不会伪造成交。订单只在达到执行日、通过停牌/涨跌停/流动性等规则后
 由 `run-daily` 进入 `trades.csv` 和持仓。
 
+### QDII 容量研究
+
+P2 研究使用共享缓存离线比较 `top_n=4 5 6 8 10`：
+
+```bash
+python3 -m stock_analyze qdii-capacity-study \
+  --start 2023-07-12 --end 2026-07-10 \
+  --top-n 4 5 6 8 10
+```
+
+命令按周回放信号、下一交易日开盘成交、100 股手数、佣金、滑点、现金保留和
+单标的权重上限，输出净收益、超额、回撤、换手、成本、指数集中度与有效相关簇。
+它只写 `data/cn_qdii_etf/research/` 和 `reports/competition/research/`，不自动修改
+活动策略、`top_n`、账户资金、待单或竞赛基线。
+
+当前研究使用现存基金目录回放历史，明确存在幸存者偏差；在补齐历史目录和公告
+事件链路前，报告只能作为容量证据，不能单独触发新赛季发布。
+
 ## 6. ECS 调度
 
 A 股继续使用共享行情缓存和触发器：

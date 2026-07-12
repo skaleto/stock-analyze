@@ -185,6 +185,32 @@ def build_parser() -> argparse.ArgumentParser:
              "full-pipeline-vs-MVP comparison panel to report.md.",
     )
 
+    qdii_capacity = sub.add_parser(
+        "qdii-capacity-study",
+        help="Run the offline three-year QDII top-N capacity study.",
+    )
+    qdii_capacity.add_argument("--start", type=_parse_iso_date, default=None)
+    qdii_capacity.add_argument("--end", type=_parse_iso_date, default=None)
+    qdii_capacity.add_argument(
+        "--top-n",
+        type=int,
+        nargs="+",
+        default=[4, 5, 6, 8, 10],
+        help="Portfolio sizes to compare (default: 4 5 6 8 10).",
+    )
+    qdii_capacity.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=Path("data/cn_qdii_etf/shared/cache"),
+    )
+    qdii_capacity.add_argument(
+        "--universe",
+        type=Path,
+        default=Path("data/cn_qdii_etf/shared/universe_latest.json"),
+    )
+    qdii_capacity.add_argument("--output-root", type=Path, default=Path("."))
+    qdii_capacity.add_argument("--min-signal-weeks", type=int, default=20)
+
     rec = sub.add_parser(
         "record-sentiment",
         help="Record one week of operator-curated market sentiment from LLM client.",
@@ -440,6 +466,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "backtest":
         ensure_dirs(args.logs_dir)
         return _command_backtest(args)
+    if args.command == "qdii-capacity-study":
+        ensure_dirs(args.logs_dir)
+        return _command_qdii_capacity_study(args)
     if args.command == "record-sentiment":
         ensure_dirs(args.logs_dir)
         return _command_record_sentiment(args)
@@ -871,6 +900,80 @@ def _command_backtest(args: argparse.Namespace) -> int:
     )
     print(f"  outputs: {args.output}")
     print(f"  report:  {report_path}")
+    return 0
+
+
+def _command_qdii_capacity_study(args: argparse.Namespace) -> int:
+    """Run a network-free QDII capacity study from the shared cache."""
+
+    from .markets.cn_qdii_etf import capacity_study, research_panel
+
+    try:
+        if args.end is not None:
+            end_date = args.end
+        else:
+            payload = json.loads(args.universe.read_text(encoding="utf-8"))
+            end_date = date.fromisoformat(str(payload["as_of"])[:10])
+        if args.start is not None:
+            start_date = args.start
+        else:
+            try:
+                start_date = end_date.replace(year=end_date.year - 3)
+            except ValueError:
+                start_date = end_date.replace(year=end_date.year - 3, day=28)
+        if start_date > end_date:
+            raise capacity_study.CapacityStudyError("invalid_date_range")
+
+        root = Path.cwd()
+        baseline = load_config(root / "configs" / "competition_cn_qdii_etf.yaml")
+        overlays = {
+            agent_id: load_config(
+                root / "configs" / "agents" / f"{agent_id}_cn_qdii_etf.yaml"
+            )
+            for agent_id in ("claude", "codex")
+        }
+        panel = research_panel.build_research_panel(
+            args.cache_dir,
+            args.universe,
+            start=start_date.isoformat(),
+            end=end_date.isoformat(),
+        )
+        result = capacity_study.run_capacity_study(
+            panel,
+            overlays=overlays,
+            baseline=baseline,
+            top_ns=list(args.top_n),
+            start=start_date.isoformat(),
+            end=end_date.isoformat(),
+            min_signal_weeks=max(int(args.min_signal_weeks), 1),
+        )
+        paths = capacity_study.write_capacity_artifacts(
+            result,
+            args.output_root,
+            end_date=end_date.isoformat(),
+        )
+    except (
+        OSError,
+        KeyError,
+        ValueError,
+        json.JSONDecodeError,
+        research_panel.ResearchPanelError,
+        capacity_study.CapacityStudyError,
+    ) as exc:
+        print(f"error: QDII capacity study failed: {exc}", file=sys.stderr)
+        return 2
+
+    print(
+        f"QDII capacity study complete: run_id={result.run_id} "
+        f"rows={len(result.metrics)}"
+    )
+    print(f"  report: {paths['report']}")
+    for item in result.summary.get("recommendations", []):
+        print(
+            "  research: "
+            f"{item.get('strategy')}/{item.get('scope')} "
+            f"top_n={item.get('recommended_top_n')}"
+        )
     return 0
 
 
