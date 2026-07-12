@@ -241,6 +241,30 @@ def build_parser() -> argparse.ArgumentParser:
     qdii_shadow.add_argument("--output-root", type=Path, default=Path("."))
     qdii_shadow.add_argument("--refresh-data", action="store_true")
     qdii_shadow.add_argument("--min-signal-weeks", type=int, default=12)
+    qdii_shadow.add_argument(
+        "--sentiment-file",
+        type=Path,
+        default=Path("data/cn_qdii_etf/research/theme_sentiment.csv"),
+    )
+    qdii_shadow.add_argument("--sentiment-agent", choices=["claude", "codex"], default="codex")
+
+    theme_sentiment = sub.add_parser(
+        "record-theme-sentiment",
+        help="Record source-backed per-index sentiment for QDII shadow research.",
+    )
+    theme_sentiment.add_argument("--agent", required=True, choices=["claude", "codex"])
+    theme_sentiment.add_argument("--week-end", required=True)
+    theme_sentiment.add_argument("--index-key", required=True)
+    theme_sentiment.add_argument("--score", type=float, required=True)
+    theme_sentiment.add_argument("--confidence", type=float, required=True)
+    theme_sentiment.add_argument("--drivers", required=True)
+    theme_sentiment.add_argument("--sources", required=True)
+    theme_sentiment.add_argument("--llm-model", required=True)
+    theme_sentiment.add_argument("--prompt-version", default="theme_v1")
+    theme_sentiment.add_argument(
+        "--output", type=Path, default=Path("data/cn_qdii_etf/research/theme_sentiment.csv")
+    )
+    theme_sentiment.add_argument("--force", action="store_true")
 
     rec = sub.add_parser(
         "record-sentiment",
@@ -506,6 +530,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "qdii-shadow-research":
         ensure_dirs(args.logs_dir)
         return _command_qdii_shadow_research(args)
+    if args.command == "record-theme-sentiment":
+        ensure_dirs(args.logs_dir)
+        return _command_record_theme_sentiment(args)
     if args.command == "record-sentiment":
         ensure_dirs(args.logs_dir)
         return _command_record_sentiment(args)
@@ -1042,7 +1069,7 @@ def _command_refresh_qdii_events(args: argparse.Namespace) -> int:
 
 
 def _command_qdii_shadow_research(args: argparse.Namespace) -> int:
-    from .markets.cn_qdii_etf import data_provider, research_catalog, research_panel, shadow_research
+    from .markets.cn_qdii_etf import data_provider, research_catalog, research_panel, shadow_research, theme_sentiment
 
     end_date = args.end or date.today()
     if args.start is not None:
@@ -1105,6 +1132,8 @@ def _command_qdii_shadow_research(args: argparse.Namespace) -> int:
             start=start_date.isoformat(),
             end=effective_end.isoformat(),
             min_signal_weeks=max(int(args.min_signal_weeks), 1),
+            theme_sentiment_records=theme_sentiment.load_theme_sentiment(args.sentiment_file),
+            sentiment_agent=args.sentiment_agent,
         )
         paths = shadow_research.write_shadow_artifacts(
             result,
@@ -1120,6 +1149,33 @@ def _command_qdii_shadow_research(args: argparse.Namespace) -> int:
         f"catalog={len(catalog)} metrics={len(result.metrics)}"
     )
     print(f"  report: {paths['report']}")
+    return 0
+
+
+def _command_record_theme_sentiment(args: argparse.Namespace) -> int:
+    from .markets.cn_qdii_etf import theme_sentiment
+
+    try:
+        rows = theme_sentiment.record_theme_sentiment(
+            args.output,
+            agent=args.agent,
+            week_end=args.week_end,
+            index_key=args.index_key,
+            score=args.score,
+            confidence=args.confidence,
+            drivers=args.drivers,
+            sources=args.sources,
+            llm_model=args.llm_model,
+            prompt_version=args.prompt_version,
+            force=args.force,
+        )
+    except (OSError, theme_sentiment.SentimentValidationError) as exc:
+        print(f"error: theme sentiment record failed: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"QDII theme sentiment recorded: agent={args.agent} "
+        f"index={args.index_key} rows={len(rows)}"
+    )
     return 0
 
 

@@ -12,6 +12,7 @@ import pandas as pd
 
 from .capacity_study import CapacityStudyError, run_capacity_study
 from .research_panel import ResearchPanelResult
+from .theme_sentiment import attach_point_in_time_sentiment
 
 
 FACTOR_MODELS: dict[str, dict[str, dict[str, Any]]] = {
@@ -21,6 +22,7 @@ FACTOR_MODELS: dict[str, dict[str, dict[str, Any]]] = {
         "low_volatility_60": {"weight": 0.20, "direction": "low"},
         "avg_amount_20": {"weight": 0.15, "direction": "high"},
         "discount_premium": {"weight": 0.05, "direction": "low"},
+        "theme_sentiment_score": {"weight": 0.08, "direction": "high"},
     },
     "commodity_v1": {
         "momentum_20": {"weight": 0.25, "direction": "high"},
@@ -28,6 +30,7 @@ FACTOR_MODELS: dict[str, dict[str, dict[str, Any]]] = {
         "low_volatility_60": {"weight": 0.20, "direction": "low"},
         "avg_amount_20": {"weight": 0.15, "direction": "high"},
         "premium_persistence_20": {"weight": 0.15, "direction": "low"},
+        "theme_sentiment_score": {"weight": 0.08, "direction": "high"},
     },
     "bond_v1": {
         "momentum_60": {"weight": 0.20, "direction": "high"},
@@ -35,6 +38,7 @@ FACTOR_MODELS: dict[str, dict[str, dict[str, Any]]] = {
         "low_volatility_60": {"weight": 0.30, "direction": "low"},
         "avg_amount_20": {"weight": 0.15, "direction": "high"},
         "premium_persistence_20": {"weight": 0.15, "direction": "low"},
+        "theme_sentiment_score": {"weight": 0.05, "direction": "high"},
     },
 }
 
@@ -89,16 +93,23 @@ def run_shadow_research(
     start: str,
     end: str,
     min_signal_weeks: int = 12,
+    theme_sentiment_records: pd.DataFrame | None = None,
+    sentiment_agent: str = "codex",
 ) -> ShadowResearchResult:
     metric_frames: list[pd.DataFrame] = []
     selections: list[pd.DataFrame] = []
     trades: list[pd.DataFrame] = []
     nav: list[pd.DataFrame] = []
     skipped: list[dict[str, str]] = []
+    research_frame = attach_point_in_time_sentiment(
+        panel.frame,
+        theme_sentiment_records if theme_sentiment_records is not None else pd.DataFrame(),
+        agent=sentiment_agent,
+    )
     for scope, rows in catalog.groupby("research_scope", sort=True):
         asset_class = str(rows.iloc[0]["asset_class"])
         model = {"global_equity": "global_equity_v1", "commodity": "commodity_v1", "bond": "bond_v1"}[asset_class]
-        scope_panel = panel.frame.loc[panel.frame["scope"].astype(str).eq(str(scope))].copy()
+        scope_panel = research_frame.loc[research_frame["scope"].astype(str).eq(str(scope))].copy()
         if scope_panel.empty:
             skipped.append({"scope": str(scope), "reason": "history_unavailable"})
             continue
@@ -144,6 +155,8 @@ def run_shadow_research(
         "start": start,
         "end": end,
         "factor_models": {key: list(spec) for key, spec in FACTOR_MODELS.items()},
+        "sentiment_agent": sentiment_agent,
+        "sentiment_mode": "point_in_time_index_level_research_only",
         "limitations": {
             "survivorship_bias": bool(panel.metadata.get("survivorship_bias", True)),
             "live_account_mutation": False,
