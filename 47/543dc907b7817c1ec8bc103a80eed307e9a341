@@ -1,0 +1,29 @@
+frontend/dashboard/src/EtfResearchPanel.test.tsx
+  s_db9afa53cf7b72::t_85f435c1b4fe06 81-84,94,96-97
+frontend/dashboard/src/EtfResearchPanel.tsx
+  s_db9afa53cf7b72::t_4b442a80062fcc 85,88
+frontend/dashboard/src/types.ts
+  s_db9afa53cf7b72::t_154ec236e60094 70
+stock_analyze/markets/cn_qdii_etf/shadow_research.py
+  s_db9afa53cf7b72::t_632ef189747988 19-28,30-31,33,35-40,42-63,79-80,96-97,127-128,130,132-144,150-175,177-180,197,225-226,230
+tests/test_qdii_shadow_research.py
+  s_db9afa53cf7b72::t_21cb2b02a35a22 11,59-66,70-75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "47543dc907b7817c1ec8bc103a80eed307e9a341",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
