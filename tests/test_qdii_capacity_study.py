@@ -145,6 +145,16 @@ class QDIICapacityStudyTests(unittest.TestCase):
         self.assertTrue((result.trades["shares"] % 100 == 0).all())
         self.assertGreater(result.trades["commission"].sum(), 0)
         self.assertGreater(result.trades["slippage"].sum(), 0)
+        self.assertIn("settlement_receivable", result.nav.columns)
+        self.assertTrue(
+            np.allclose(
+                result.nav["total_value"],
+                result.nav["cash"]
+                + result.nav["market_value"]
+                + result.nav["settlement_receivable"],
+            )
+        )
+        self.assertGreater(result.nav["settlement_receivable"].max(), 0)
         top_two = result.selections[result.selections["top_n"] == 2]
         diversity = top_two.groupby("signal_date")["index_key"].nunique()
         self.assertTrue((diversity == 2).all())

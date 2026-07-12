@@ -142,6 +142,7 @@ class PortfolioStore:
             "date",
             "account_id",
             "cash",
+            "settlement_receivable",
             "market_value",
             "total_value",
             "benchmark_code",
