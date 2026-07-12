@@ -1,0 +1,45 @@
+frontend/dashboard/src/App.tsx
+  s_db9afa53cf7b72::t_fea96db164e0ea 399-409
+frontend/dashboard/src/FinancialCharts.test.tsx
+  s_db9afa53cf7b72::t_9685b0aa8ee9e0 11-12,20,25,95-133
+frontend/dashboard/src/FinancialCharts.tsx
+  s_db9afa53cf7b72::t_e0db179652d6ec 9,11,14,235-294,297-306,351,361,364,370-380
+frontend/dashboard/src/InstrumentDrawer.test.tsx
+  s_db9afa53cf7b72::t_b9cac518a62d99 5-8,10,24,34-35,45-49
+frontend/dashboard/src/InstrumentDrawer.tsx
+  s_db9afa53cf7b72::t_17d526364af95a 13-14,21-22,101-106
+frontend/dashboard/src/styles.css
+  s_db9afa53cf7b72::t_ab023f3744dd0a 433-444,768
+stock_analyze/dashboard_finance.py
+  s_db9afa53cf7b72::t_232efb921fdc25 254,258-260,292,329-332
+stock_analyze/markets/a_share/data_provider/__init__.py
+  s_db9afa53cf7b72::t_c57112c96c4e9e 66-67,493-496
+stock_analyze/markets/a_share/market_data.py
+  s_db9afa53cf7b72::t_8cd6f65ea3efa2 29,150-156
+stock_analyze/markets/cn_qdii_etf/data_provider.py
+  s_db9afa53cf7b72::t_6b6b298996ab84 28-29,378-383,394,426,429-436
+tests/test_dashboard_app_api.py
+  s_db9afa53cf7b72::t_d8d2466d1ff48c 438-476
+tests/test_market_data_pipeline.py
+  s_db9afa53cf7b72::t_ef266828fc1589 30,59,97-113,222-223
+tests/test_markets_cn_qdii_etf_provider.py
+  s_db9afa53cf7b72::t_11ebcb97d07c98 292-308
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "0b6c88927e7dacdcd6f7eab6175c4ccbb377cc3c",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
