@@ -226,6 +226,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("data/cn_qdii_etf/shared/fund_events.csv"),
     )
 
+    qdii_shadow = sub.add_parser(
+        "qdii-shadow-research",
+        help="Build the research catalog and run global/commodity/bond shadow portfolios.",
+    )
+    qdii_shadow.add_argument("--start", type=_parse_iso_date, default=None)
+    qdii_shadow.add_argument("--end", type=_parse_iso_date, default=None)
+    qdii_shadow.add_argument(
+        "--cache-dir", type=Path, default=Path("data/cn_qdii_etf/shared/cache")
+    )
+    qdii_shadow.add_argument(
+        "--catalog", type=Path, default=Path("data/cn_qdii_etf/research/catalog_latest.json")
+    )
+    qdii_shadow.add_argument("--output-root", type=Path, default=Path("."))
+    qdii_shadow.add_argument("--refresh-data", action="store_true")
+    qdii_shadow.add_argument("--min-signal-weeks", type=int, default=12)
+
     rec = sub.add_parser(
         "record-sentiment",
         help="Record one week of operator-curated market sentiment from LLM client.",
@@ -487,6 +503,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "refresh-qdii-events":
         ensure_dirs(args.logs_dir)
         return _command_refresh_qdii_events(args)
+    if args.command == "qdii-shadow-research":
+        ensure_dirs(args.logs_dir)
+        return _command_qdii_shadow_research(args)
     if args.command == "record-sentiment":
         ensure_dirs(args.logs_dir)
         return _command_record_sentiment(args)
@@ -1019,6 +1038,88 @@ def _command_refresh_qdii_events(args: argparse.Namespace) -> int:
         print(f"error: QDII event refresh failed: {exc}", file=sys.stderr)
         return 2
     print(f"QDII events refreshed: codes={len(codes)} events={len(events)} output={args.output}")
+    return 0
+
+
+def _command_qdii_shadow_research(args: argparse.Namespace) -> int:
+    from .markets.cn_qdii_etf import data_provider, research_catalog, research_panel, shadow_research
+
+    end_date = args.end or date.today()
+    if args.start is not None:
+        start_date = args.start
+    else:
+        try:
+            start_date = end_date.replace(year=end_date.year - 3)
+        except ValueError:
+            start_date = end_date.replace(year=end_date.year - 3, day=28)
+    if start_date > end_date:
+        print("error: QDII shadow research failed: invalid_date_range", file=sys.stderr)
+        return 2
+    end_key = end_date.strftime("%Y%m%d")
+    try:
+        provider = data_provider.make_provider(
+            cache_dir=args.cache_dir,
+            offline=not args.refresh_data,
+            as_of=end_date.isoformat(),
+        )
+        basic = provider._fund_basic(refresh=bool(args.refresh_data), as_of_key=end_key)
+        catalog = research_catalog.build_research_catalog(basic, as_of=end_date)
+        if catalog.empty:
+            raise ValueError("empty_research_catalog")
+        available_codes: list[str] = []
+        for code in catalog["code"].astype(str):
+            try:
+                daily = provider._fund_daily(code, end_key)
+                if daily is None or daily.empty:
+                    continue
+                available_codes.append(code)
+                if args.refresh_data:
+                    for loader in (
+                        lambda: provider.fund_adj(code, as_of=end_key),
+                        lambda: provider._fund_nav(code, end_key),
+                        lambda: provider._fund_share(code, end_key),
+                    ):
+                        try:
+                            loader()
+                        except Exception as exc:  # noqa: BLE001 - optional research field
+                            provider.record_health("qdii_shadow_optional", "failed", f"{code}: {exc}")
+            except Exception as exc:  # noqa: BLE001 - catalog coverage is reported below
+                provider.record_health("qdii_shadow_daily", "failed", f"{code}: {exc}")
+        catalog = catalog.loc[catalog["code"].astype(str).isin(available_codes)].copy()
+        if catalog.empty:
+            raise ValueError("research_history_unavailable")
+        payload = research_catalog.catalog_payload(catalog, as_of=end_date.isoformat())
+        args.catalog.parent.mkdir(parents=True, exist_ok=True)
+        write_json(args.catalog, payload)
+        catalog.to_csv(args.catalog.with_suffix(".csv"), index=False)
+        panel = research_panel.build_research_panel(
+            args.cache_dir,
+            args.catalog,
+            start=start_date.isoformat(),
+            end=end_date.isoformat(),
+        )
+        effective_end = date.fromisoformat(str(panel.metadata.get("end") or end_date))
+        result = shadow_research.run_shadow_research(
+            panel,
+            catalog,
+            start=start_date.isoformat(),
+            end=effective_end.isoformat(),
+            min_signal_weeks=max(int(args.min_signal_weeks), 1),
+        )
+        paths = shadow_research.write_shadow_artifacts(
+            result,
+            args.output_root,
+            end_date=effective_end.isoformat(),
+        )
+        provider.persist_health()
+    except (OSError, ValueError, KeyError, json.JSONDecodeError, research_panel.ResearchPanelError) as exc:
+        print(f"error: QDII shadow research failed: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"QDII shadow research complete: run_id={result.run_id} "
+        f"catalog={len(catalog)} metrics={len(result.metrics)}"
+    )
+    print(f"  report: {paths['report']}")
     return 0
 
 
