@@ -1,0 +1,23 @@
+docs/superpowers/plans/2026-07-12-qdii-capacity-study-implementation.md
+  s_db9afa53cf7b72::t_3ea9c7e2b9bc86 1-66
+docs/superpowers/specs/2026-07-12-qdii-capacity-study-design.md
+  s_db9afa53cf7b72::t_03828630ac09fb 1-101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "ad90b2ae83de3831e790f55c0169d041847ad604",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
