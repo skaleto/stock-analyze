@@ -1,0 +1,23 @@
+docs/superpowers/plans/2026-07-12-daily-decision-current-season.md
+  s_db9afa53cf7b72::t_71130bedf1f001 1-62
+docs/superpowers/specs/2026-07-12-daily-decision-current-season-design.md
+  s_db9afa53cf7b72::t_25695bc94347c6 1-53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "ac9589f49862cb5fd1a82d9827e81325d510610d",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
