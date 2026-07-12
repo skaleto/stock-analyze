@@ -78,6 +78,12 @@ def _prepare_panel(raw: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
     frame["avg_amount_20"] = grouped["amount_yuan"].transform(
         lambda values: values.rolling(20, min_periods=5).mean()
     )
+    frame["premium_persistence_20"] = grouped["discount_premium"].transform(
+        lambda values: values.abs().rolling(20, min_periods=5).mean()
+    )
+    frame["nav_momentum_20"] = grouped["nav"].transform(
+        lambda values: values / values.shift(20) - 1.0
+    )
     listed = pd.to_datetime(frame.get("list_date"), errors="coerce")
     frame["listing_age_days"] = (frame["trade_date"] - listed).dt.days
     frame["paused"] = False
