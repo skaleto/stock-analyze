@@ -435,6 +435,45 @@ class DashboardAppApiTests(unittest.TestCase):
         self.assertEqual(len(payload["candles"]), 2)
         self.assertEqual(payload["latest"]["close"], 10.6)
 
+    def test_instrument_payload_keeps_three_calendar_years_and_prefers_wide_cache(self) -> None:
+        from stock_analyze.dashboard_aggregator import build_dashboard_instrument_data
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "configs" / "agents").mkdir(parents=True)
+            (root / "configs" / "agents" / "codex_a_share.yaml").write_text(
+                "{}",
+                encoding="utf-8",
+            )
+            cache = root / "data" / "shared" / "cache"
+            cache.mkdir(parents=True)
+            pd.DataFrame(
+                [{"日期": "2026-07-10", "开盘": 99, "最高": 100, "最低": 98, "收盘": 99}],
+            ).to_csv(cache / "history_000001_20260710_260.csv", index=False)
+            dates = pd.date_range("2022-01-01", "2026-07-10", freq="D")
+            pd.DataFrame(
+                {
+                    "日期": dates.strftime("%Y-%m-%d"),
+                    "开盘": 10.0,
+                    "最高": 11.0,
+                    "最低": 9.0,
+                    "收盘": 10.5,
+                    "成交额": 1_000.0,
+                }
+            ).to_csv(cache / "history_000001_20260710_1098.csv", index=False)
+
+            payload = build_dashboard_instrument_data(
+                repo_root=root,
+                market="a_share",
+                agent="codex",
+                code="000001.SZ",
+            )
+
+        self.assertGreater(len(payload["candles"]), 260)
+        self.assertEqual(payload["candles"][0]["date"], "2023-07-10")
+        self.assertEqual(payload["candles"][-1]["date"], "2026-07-10")
+        self.assertEqual(payload["latest"]["close"], 10.5)
+
     def test_missing_instrument_history_returns_readable_empty_state(self) -> None:
         from stock_analyze.dashboard_aggregator import build_dashboard_instrument_data
 

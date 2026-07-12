@@ -251,12 +251,13 @@ def normalize_instrument_code(market: str, code: str) -> str:
 
 
 def _latest_cache_file(paths: list[Path], date_pattern: re.Pattern[str]) -> Path | None:
-    dated: list[tuple[str, str, Path]] = []
+    dated: list[tuple[str, int, str, Path]] = []
     for path in paths:
         match = date_pattern.search(path.name)
         if match:
-            dated.append((match.group("date"), path.name, path))
-    return max(dated, default=("", "", None))[-1]
+            days = int(match.groupdict().get("days") or 0)
+            dated.append((match.group("date"), days, path.name, path))
+    return max(dated, default=("", 0, "", None))[-1]
 
 
 def read_instrument_history(
@@ -288,7 +289,7 @@ def read_instrument_history(
         candidates = list(cache.glob(f"history_{digits}_*_*.csv"))
         path = _latest_cache_file(
             candidates,
-            re.compile(rf"history_{digits}_(?P<date>[0-9]{{8}})_[0-9]+\.csv$"),
+            re.compile(rf"history_{digits}_(?P<date>[0-9]{{8}})_(?P<days>[0-9]+)\.csv$"),
         )
         rename = {
             "日期": "date",
@@ -324,8 +325,11 @@ def read_instrument_history(
         frame.dropna(subset=["open", "high", "low", "close"])
         .drop_duplicates(subset=["date"], keep="last")
         .sort_values("date")
-        .tail(260)
     )
+    parsed_dates = pd.to_datetime(frame["date"], errors="coerce")
+    if not parsed_dates.dropna().empty:
+        cutoff = parsed_dates.max() - pd.DateOffset(years=3)
+        frame = frame.loc[parsed_dates >= cutoff]
     records = frame[["date", "open", "high", "low", "close", "volume", "amount"]].to_dict(
         orient="records"
     )

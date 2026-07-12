@@ -2,8 +2,12 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import InstrumentDrawer from "./InstrumentDrawer";
 
+const chartMocks = vi.hoisted(() => ({
+  CandlestickChart: vi.fn((_props: unknown) => <div>K线图</div>),
+}));
+
 vi.mock("./FinancialCharts", () => ({
-  CandlestickChart: () => <div>K线图</div>,
+  CandlestickChart: chartMocks.CandlestickChart,
 }));
 
 
@@ -17,7 +21,7 @@ describe("instrument drawer", () => {
       latest: { date: "2026-07-10", open: 2.1, high: 2.2, low: 2.0, close: 2.15, change_pct: 0.01, volume: 1000, amount: 2200 },
       candles: [{ date: "2026-07-10", open: 2.1, high: 2.2, low: 2.0, close: 2.15, volume: 1000, amount: 2200 }],
       metrics: [{ key: "roe", label: "净资产收益率 ROE", explanation: "公司用股东投入的净资产创造利润的效率。", value: 0.15, format: "percent" }],
-      related_trades: [],
+      related_trades: [{ trade_date: "2026-07-14", side: "buy", shares: 100 }],
       warning: null,
     }), { status: 200 }))));
 
@@ -27,6 +31,8 @@ describe("instrument drawer", () => {
         title="持仓"
         market="cn_qdii_etf"
         agent="codex"
+        strategyLabel="趋势进攻"
+        seasonEffectiveDate="2026-07-11"
         onClose={vi.fn()}
       />
     );
@@ -36,5 +42,10 @@ describe("instrument drawer", () => {
     expect(screen.getByText("毛利率")).toBeInTheDocument();
     expect(screen.getByText("K线图")).toBeInTheDocument();
     expect(screen.queryByText("gross_margin")).not.toBeInTheDocument();
+    expect(chartMocks.CandlestickChart.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      trades: [{ trade_date: "2026-07-14", side: "buy", shares: 100 }],
+      strategyLabel: "趋势进攻",
+      seasonEffectiveDate: "2026-07-11",
+    }));
   });
 });

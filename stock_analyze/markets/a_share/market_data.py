@@ -26,7 +26,7 @@ from typing import Any, Iterable
 import pandas as pd
 
 from ... import competition
-from .data_provider import DataProvider, INDEX_CODES, make_provider
+from .data_provider import DASHBOARD_HISTORY_DAYS, DataProvider, INDEX_CODES, make_provider
 from ...run_ledger import RunLedger
 from .strategy import preselect_universe
 from ...utils import ensure_dirs, parse_date, write_text_atomic
@@ -147,11 +147,13 @@ def _fetch_one_candidate(
     counts = {"basic": 0, "history": 0, "valuation": 0, "financial": 0, "dividend": 0}
     steps: tuple[tuple[str, str, Any], ...] = (
         ("basic", "basic_info", lambda: provider.basic_info(code)),
-        # Prewarm the *largest* window any caller asks for: diagnostics
-        # uses 260, price_snapshot 220, execution_quote 45. The offline
-        # fallback in price_history() reuses a larger window for smaller
-        # requests, so prewarming 260 covers all three.
-        ("history", "price_history", lambda: provider.price_history(code, days=260)),
+        # Keep one three-year cache that serves both factor calculations and
+        # the interactive security drawer without a second network path.
+        (
+            "history",
+            "price_history",
+            lambda: provider.price_history(code, days=DASHBOARD_HISTORY_DAYS),
+        ),
         ("valuation", "valuation_metrics", lambda: provider.valuation_metrics(code)),
         ("financial", "financial_metrics", lambda: provider.financial_metrics(code)),
         ("dividend", "dividend_yield", lambda: provider.dividend_yield(code)),

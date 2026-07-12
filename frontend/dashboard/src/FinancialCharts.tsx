@@ -6,10 +6,12 @@ import {
   HistogramSeries,
   LineSeries,
   createChart,
+  createSeriesMarkers,
   type IChartApi,
+  type SeriesMarker,
   type Time,
 } from "lightweight-charts";
-import type { Candle, NavPoint, StrategyComparisonPoint } from "./types";
+import type { Candle, NavPoint, OrderRow, StrategyComparisonPoint } from "./types";
 import { formatMoney, formatPercent } from "./finance";
 
 const chartLayout = {
@@ -230,9 +232,78 @@ export function StrategyComparisonChart({
   );
 }
 
-export function CandlestickChart({ candles }: { candles: Candle[] }) {
+const BUY_SIDES = new Set(["buy", "cover"]);
+const SELL_SIDES = new Set(["sell", "short"]);
+
+function markerStrategyName(label: string): string {
+  if (label.includes("稳健") || label.includes("防守")) return "稳健";
+  if (label.includes("趋势") || label.includes("进攻")) return "趋势";
+  return label.split(/[·\s]/)[0]?.slice(0, 4) || "策略";
+}
+
+function currentSeasonTrades(
+  candles: Candle[],
+  trades: OrderRow[],
+  seasonEffectiveDate: string,
+): OrderRow[] {
+  const candleDates = new Set(candles.map((candle) => candle.date));
+  return trades.filter((trade) => {
+    const tradeDate = String(trade.trade_date ?? trade.date ?? "").slice(0, 10);
+    const side = String(trade.side ?? "").toLowerCase();
+    return Boolean(
+      tradeDate
+      && candleDates.has(tradeDate)
+      && (!seasonEffectiveDate || tradeDate >= seasonEffectiveDate)
+      && (BUY_SIDES.has(side) || SELL_SIDES.has(side))
+    );
+  });
+}
+
+function buildTradeMarkers(trades: OrderRow[], strategyLabel: string): SeriesMarker<Time>[] {
+  const grouped = new Map<string, { time: string; kind: "buy" | "sell"; count: number }>();
+  for (const trade of trades) {
+    const time = String(trade.trade_date ?? trade.date ?? "").slice(0, 10);
+    const side = String(trade.side ?? "").toLowerCase();
+    const kind = BUY_SIDES.has(side) ? "buy" : "sell";
+    const key = `${time}:${kind}`;
+    const existing = grouped.get(key);
+    grouped.set(key, { time, kind, count: (existing?.count ?? 0) + 1 });
+  }
+  const strategyName = markerStrategyName(strategyLabel);
+  return Array.from(grouped.values())
+    .sort((left, right) => left.time.localeCompare(right.time) || left.kind.localeCompare(right.kind))
+    .map(({ time, kind, count }) => ({
+      time: time as Time,
+      position: kind === "buy" ? "belowBar" : "aboveBar",
+      color: kind === "buy" ? "#ef4444" : "#22c55e",
+      shape: kind === "buy" ? "arrowUp" : "arrowDown",
+      text: `${strategyName}${kind === "buy" ? "买" : "卖"}${count > 1 ? `×${count}` : ""}`,
+    }));
+}
+
+export function CandlestickChart({
+  candles,
+  trades = [],
+  strategyLabel = "当前策略",
+  seasonEffectiveDate = "",
+}: {
+  candles: Candle[];
+  trades?: OrderRow[];
+  strategyLabel?: string;
+  seasonEffectiveDate?: string;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState<Candle | null>(candles[candles.length - 1] ?? null);
+  const visibleTrades = useMemo(
+    () => currentSeasonTrades(candles, trades, seasonEffectiveDate),
+    [candles, seasonEffectiveDate, trades],
+  );
+  const tradeMarkers = useMemo(
+    () => buildTradeMarkers(visibleTrades, strategyLabel),
+    [strategyLabel, visibleTrades],
+  );
+  const buyCount = visibleTrades.filter((trade) => BUY_SIDES.has(String(trade.side ?? "").toLowerCase())).length;
+  const sellCount = visibleTrades.length - buyCount;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -277,6 +348,7 @@ export function CandlestickChart({ candles }: { candles: Candle[] }) {
       value: candle.volume ?? 0,
       color: candle.close >= candle.open ? "rgba(239,68,68,0.46)" : "rgba(34,197,94,0.46)",
     })));
+    const markerPlugin = tradeMarkers.length ? createSeriesMarkers(priceSeries, tradeMarkers) : null;
     const candleByDate = new Map(candles.map((candle) => [candle.date, candle]));
     chart.subscribeCrosshairMove((parameter) => {
       const date = typeof parameter.time === "string" ? parameter.time : null;
@@ -286,14 +358,26 @@ export function CandlestickChart({ candles }: { candles: Candle[] }) {
     const stopObserving = observeChart(container, chart);
     return () => {
       stopObserving();
+      markerPlugin?.detach();
       chart.remove();
     };
-  }, [candles]);
+  }, [candles, tradeMarkers]);
 
   if (candles.length === 0) return <div className="chart-empty">暂无历史行情缓存</div>;
   const change = hovered ? hovered.close - hovered.open : 0;
   return (
     <div className="financial-chart candle-chart">
+      <div className="trade-marker-summary" aria-label="当前策略成交标记">
+        <strong>当前赛季 · {strategyLabel}</strong>
+        {visibleTrades.length ? (
+          <>
+            <span className="trade-marker-buy">买入 {buyCount}</span>
+            <span className="trade-marker-sell">卖出 {sellCount}</span>
+          </>
+        ) : (
+          <span>暂无成交，执行后自动标注</span>
+        )}
+      </div>
       <div className="ohlc-readout" aria-live="polite">
         <span>{hovered?.date}</span>
         <span>开 <b>{hovered?.open.toFixed(3)}</b></span>

@@ -27,6 +27,7 @@ class FakeProvider(AkshareProvider):
         super().__init__(cache_dir=cache_dir, offline=False, as_of=as_of)
         self._failures = failures or set()
         self.history_calls: list[str] = []
+        self.history_days: list[int] = []
         self._mock_spot = pd.DataFrame(
             [
                 {"code": "600519", "name": "贵州茅台", "latest_price": 1620.0, "pe": 32.5, "pb": 8.1, "market_cap_yi": 20000},
@@ -55,6 +56,7 @@ class FakeProvider(AkshareProvider):
 
     def price_history(self, code: str, as_of: str | None = None, days: int = 180) -> pd.DataFrame:
         self.history_calls.append(code)
+        self.history_days.append(days)
         return pd.DataFrame([{"日期": "2026-05-22", "收盘": 100.0, "开盘": 99.0, "最高": 101.0, "最低": 98.5, "成交额": 1e8}])
 
     def valuation_metrics(self, code: str) -> dict:
@@ -91,6 +93,23 @@ class CacheMissBehaviorTests(unittest.TestCase):
             close, trade_date = provider.benchmark_close("000300", as_of="2026-05-22")
         self.assertEqual(close, 3500.0)
         self.assertEqual(trade_date, "2026-05-22")
+
+    def test_offline_short_factor_request_reuses_three_year_history_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            pd.DataFrame(
+                [{"日期": "2026-05-22", "开盘": 10, "最高": 11, "最低": 9, "收盘": 10.5}],
+            ).to_csv(cache / "history_600519_20260522_1098.csv", index=False)
+            provider = AkshareProvider(
+                cache_dir=cache,
+                offline=True,
+                as_of="2026-05-22",
+            )
+
+            history = provider.price_history("600519", days=220)
+
+        self.assertEqual(len(history), 1)
+        self.assertEqual(float(history.iloc[0]["收盘"]), 10.5)
 
     def test_offline_does_not_emit_http_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -200,6 +219,8 @@ class PrepareMarketDataTests(unittest.TestCase):
             self.assertGreater(snapshot["candidates_fetched"], 0)
             self.assertEqual(snapshot["errors"], [])
             self.assertEqual(snapshot["rows"]["benchmark_000300"], 1)
+            self.assertTrue(fake.history_days)
+            self.assertGreaterEqual(min(fake.history_days), 3 * 365)
             snapshot_path = root / "data" / "shared" / "market_snapshot_2026-05-22.json"
             self.assertTrue(snapshot_path.exists())
 

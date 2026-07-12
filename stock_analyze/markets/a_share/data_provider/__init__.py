@@ -63,6 +63,8 @@ from .base import (
     TushareTokenMissing,
 )
 
+DASHBOARD_HISTORY_DAYS = 3 * 366
+
 
 # ---------------------------------------------------------------------------
 # Shared base class
@@ -488,14 +490,10 @@ class DataProvider(ABC):
             return normalized.copy()
 
         if self.offline:
-            # prepare-market-data prewarms history with ``days=220`` so the
-            # weekly factor pipeline can compute 60-day momentum. Other
-            # callers (notably ``execution_quote`` with ``days=45``) request
-            # a smaller window and would otherwise CacheMiss even though a
-            # superset is on disk. Try every prewarmed window larger than
-            # the request before raising — the extra rows are harmless,
-            # downstream picks the slice it needs.
-            for fallback_days in (260, 220, 180, 90, 60):
+            # prepare-market-data prewarms a three-year window for the
+            # research drawer. Factor and execution callers ask for smaller
+            # windows, so reuse any known superset before raising CacheMiss.
+            for fallback_days in (DASHBOARD_HISTORY_DAYS, 260, 220, 180, 90, 60):
                 if fallback_days <= days:
                     continue
                 fallback_name = f"history_{code}_{stamp}_{fallback_days}"
