@@ -7,8 +7,9 @@
     {"id": "hk_exposure", "scope": "hk_exposure", "top_n": 5, "cash": 500000, "benchmark": "159920.SZ"}
   ],
   "schedule": {
-    "execution": "weekly",
-    "signal_day": "friday"
+    "rebalance": "daily_after_close",
+    "execution": "next_trading_day_open",
+    "signal_day": "every_trading_day"
   },
   "trading": {
     "commission_rate": 0.0003,

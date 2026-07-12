@@ -34,8 +34,9 @@ export RSYNC_RSH='ssh -i <key>'
 - Monthly review: day 1 at 09:00.
 - One monthly evolution reminder: day 1 at 09:30.
 
-`run-weekly` generates signals and pending paper orders. `run-daily` executes due
-orders and updates trades, positions, NAV, and reports.
+`run-daily` executes due orders, updates trades, positions and NAV, then writes
+the next-session target from the latest close. `run-weekly` refreshes review
+artifacts and reports without generating orders.
 
 ## Weekly And Monthly Scripts
 

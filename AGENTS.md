@@ -107,9 +107,11 @@ python3 -m stock_analyze --market <market> --agent <agent> run-weekly
 python3 -m stock_analyze --market <market> --agent <agent> run-daily
 ```
 
-`run-weekly` generates signals and pending paper orders. `run-daily` executes due
-orders, updates NAV, and refreshes output. Weekly generation does not itself
-pretend an order was filled.
+From 2026-07-13, `run-daily` executes due orders, updates NAV, then evaluates the
+latest close and replaces the next-session target. `run-weekly` refreshes
+diagnostics, reports, dashboards, and briefings only; it does not generate or
+execute orders. This rule change stays inside S1 and does not reset cash,
+positions, ledgers, or the season NAV anchor.
 
 A-share uses the shared market-data and trigger units. QDII uses four direct
 timers:

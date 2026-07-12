@@ -1795,7 +1795,7 @@ def _render_all_market_observer(
                 '<tr>'
                 f'<td>{html.escape(label)}</td>'
                 f'<td>{html.escape(strategy_labels.get(agent, agent))}</td>'
-                '<td>周任务 <code>run-weekly</code></td>'
+                '<td>周度复盘 <code>run-weekly</code></td>'
                 f'<td>{_status_badge(_read_latest_run(paths.data_dir, "run-weekly"))}</td>'
                 '</tr>'
             )
@@ -2292,7 +2292,7 @@ _DASHBOARD_DYNAMIC_JS = r"""
           );
           taskRows.push(
             '<tr><td>' + escapeText(market.label) + '</td><td>' + escapeText(displayName) +
-            '</td><td>周任务 <code>run-weekly</code></td><td>' + statusLabel(item.tasks && item.tasks.weekly, '未运行') + '</td></tr>'
+            '</td><td>周度复盘 <code>run-weekly</code></td><td>' + statusLabel(item.tasks && item.tasks.weekly, '未运行') + '</td></tr>'
           );
         }
         const monthly = market.monthly || {};

@@ -20,9 +20,21 @@ class StrategyRegistryTests(unittest.TestCase):
 
         self.assertEqual(registry["season_id"], "dual_strategy_2026_s1")
         self.assertEqual(registry["effective_date"], "2026-07-11")
+        self.assertEqual(registry["rule_changes"][-1]["effective_date"], "2026-07-13")
+        self.assertEqual(registry["rule_changes"][-1]["decision_cadence"], "daily_after_close")
         self.assertEqual(registry["factor_distance_floor"], 0.45)
         self.assertEqual(strategy_display_name("claude"), "稳健防守")
         self.assertEqual(strategy_display_name("codex"), "趋势进攻")
+
+    def test_active_markets_use_daily_decisions_without_changing_the_season(self) -> None:
+        from stock_analyze import competition
+
+        for market in competition.MARKETS:
+            with self.subTest(market=market):
+                schedule = competition.load_baseline(market=market)["schedule"]
+                self.assertEqual(schedule["rebalance"], "daily_after_close")
+                self.assertEqual(schedule["signal_day"], "every_trading_day")
+                self.assertEqual(schedule["execution"], "next_trading_day_open")
 
     def test_factor_weight_distance_normalizes_each_overlay(self) -> None:
         defensive = {"factors": {"pe": {"weight": 2.0}}}

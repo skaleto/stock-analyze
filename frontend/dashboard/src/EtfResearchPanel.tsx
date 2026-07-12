@@ -53,7 +53,7 @@ function CandidateView({ selection, exposure }: { selection?: SelectionSnapshot;
   return <div className="etf-research-grid">
     <div className="selection-funnels">
       <div className="research-subhead"><Layers3 size={15} aria-hidden="true" /><h3>选择过程</h3></div>
-      {scopes.length === 0 ? <p className="terminal-empty">等待周度调仓生成候选漏斗</p> : scopes.map(([scope, block]) => {
+      {scopes.length === 0 ? <p className="terminal-empty">等待每日决策生成候选漏斗</p> : scopes.map(([scope, block]) => {
         const baseline = Math.max(block.stages[0]?.count ?? 0, 1);
         const dataGaps = Object.entries(block.data_gaps ?? {}).filter(([, count]) => count > 0);
         return <section className="funnel-scope" key={scope} aria-label={`${accountLabel(scope)}候选漏斗`}>

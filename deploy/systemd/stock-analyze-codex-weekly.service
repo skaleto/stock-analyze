@@ -1,5 +1,5 @@
 [Unit]
-Description=Stock Analyze weekly simulation run (Codex agent)
+Description=Stock Analyze weekly review (Trend strategy)
 After=network-online.target
 Wants=network-online.target
 OnFailure=stock-analyze-pipeline-failure@%n.service

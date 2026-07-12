@@ -27,19 +27,19 @@ Canonical paths are `data/<market>/<agent>/`,
 
 | Cadence | Time in Asia/Shanghai | Work |
 | --- | --- | --- |
-| Daily | Mon-Fri 18:30 | Fetch A-share cache, then run both A-share daily workers |
-| Daily | Mon-Fri 18:50 | Run both mainland QDII ETF daily workers |
+| Daily | Mon-Fri 18:30 | Fetch A-share cache, then execute, value, and run 每日收盘决策 for both A-share strategies |
+| Daily | Mon-Fri 18:50 | Execute, value, and run 每日收盘决策 for both mainland QDII ETF strategies |
 | Daily summary | Mon-Fri 19:30 | Send one consolidated Lark task card |
-| Weekly | Sat 10:00 | Run both A-share weekly workers from Friday cache |
-| Weekly | Sat 10:15 | Run both mainland QDII ETF weekly workers |
+| Weekly | Sat 10:00 | Run A-share diagnostics, reports, and briefings without orders |
+| Weekly | Sat 10:15 | Run mainland QDII ETF reports without orders |
 | Weekly research | Sat 10:30 | Refresh QDII events and global/commodity/bond shadow research |
 | Weekly summary | Sat 10:45 | Send one weekly status and Codex-review reminder |
 | Monthly review | Day 1 09:00 | Build the previous-month A-share review |
 | Monthly summary | Day 1 09:30 | Send one strategy-evolution reminder |
 
-`run-weekly` ranks candidates and writes pending paper orders. It does not fill
-them. `run-daily` executes due orders, persists trades and positions, updates
-NAV, and refreshes reports.
+`run-daily` executes due orders, persists trades and positions, updates NAV,
+then replaces the next-session target from the latest close. `run-weekly`
+refreshes diagnostics, reports, dashboards, and briefings. 周任务不生成订单。
 
 ## Time-Aware Checks
 
@@ -58,12 +58,12 @@ Daily artifacts:
 
 - `data/<market>/<agent>/runs.csv`
 - `daily_nav.csv`, `positions.csv`, `trades.csv`
+- `pending_orders.json` from the latest daily decision
 - refreshed dashboard API
 
 Weekly artifacts:
 
 - successful `run-weekly`
-- `pending_orders.json`
 - `reports/<market>/<agent>/weekly_report.md`
 - QDII `selection_snapshot.json`
 
