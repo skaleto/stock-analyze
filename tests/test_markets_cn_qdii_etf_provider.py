@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -231,6 +232,14 @@ class EmptyFundBasicClient(FakeTushareClient):
         return pd.DataFrame()
 
 
+class RateLimitedFundDailyClient(FakeTushareClient):
+    def fund_daily(self, **kwargs):
+        self.daily_calls.append(kwargs)
+        if len(self.daily_calls) == 1:
+            raise Exception("抱歉，您访问接口(fund_daily)频率超限(200次/分钟)")
+        return _daily_frame()
+
+
 def _daily_frame() -> pd.DataFrame:
     rows = []
     start = pd.Timestamp("2026-04-01")
@@ -294,6 +303,19 @@ class ProviderSnapshotTests(unittest.TestCase):
             snap.avg_amount_20,
             float(raw.tail(20)["amount"].mean()) * 1_000.0,
         )
+
+    def test_fund_daily_rate_limit_retries_after_backoff(self):
+        client = RateLimitedFundDailyClient()
+        provider = CNQDIETFProvider(pro_client=client, cache_dir=None)
+
+        with patch(
+            "stock_analyze.markets.cn_qdii_etf.data_provider.time.sleep"
+        ) as mocked_sleep:
+            frame = provider._fund_daily_liquidity("513100.SH", "20260712")
+
+        self.assertFalse(frame.empty)
+        self.assertEqual(len(client.daily_calls), 2)
+        mocked_sleep.assert_called_once()
 
     def test_price_snapshot_uses_adjusted_closes_for_momentum(self):
         provider = CNQDIETFProvider(pro_client=AdjustedTushareClient(), cache_dir=None)
