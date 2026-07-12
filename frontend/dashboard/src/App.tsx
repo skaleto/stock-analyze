@@ -389,6 +389,7 @@ export default function App() {
           <EtfResearchPanel
             selection={activeDetail?.selection}
             lookthrough={activeDetail?.lookthrough}
+            research={activeDetail?.research}
           />
         ) : null}
 

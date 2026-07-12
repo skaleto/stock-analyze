@@ -131,6 +131,88 @@ def _read_selection_snapshot(data_dir: Path) -> dict[str, Any]:
     return payload
 
 
+def _latest_research_run(base: Path) -> Path | None:
+    if not base.exists():
+        return None
+    candidates = [path for path in base.iterdir() if path.is_dir() and (path / "summary.json").exists()]
+    return max(candidates, key=lambda path: (path.stat().st_mtime, path.name), default=None)
+
+
+def _read_json_object(path: Path, source: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise DashboardDataError(source) from exc
+    if not isinstance(payload, dict):
+        raise DashboardDataError(source)
+    return payload
+
+
+def _read_optional_csv(path: Path, source: str) -> list[dict[str, Any]]:
+    if not path.exists() or path.stat().st_size == 0:
+        return []
+    try:
+        return pd.read_csv(
+            path,
+            dtype={
+                "code": str,
+                "event_id": str,
+                "report_id": str,
+                "index_key": str,
+                "week_end": str,
+                "observed_at": str,
+            },
+        ).to_dict(orient="records")
+    except (OSError, UnicodeDecodeError, pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
+        raise DashboardDataError(source) from exc
+
+
+def _read_qdii_research(root: Path, agent: str) -> dict[str, Any]:
+    research = root / "data" / "cn_qdii_etf" / "research"
+    capacity_dir = _latest_research_run(research / "capacity")
+    shadow_dir = _latest_research_run(research / "shadow")
+    capacity: dict[str, Any] = {}
+    shadow: dict[str, Any] = {}
+    if capacity_dir is not None:
+        capacity = _read_json_object(capacity_dir / "summary.json", "qdii_capacity_summary")
+        capacity["metrics"] = _read_optional_csv(capacity_dir / "metrics.csv", "qdii_capacity_metrics")
+    if shadow_dir is not None:
+        shadow = _read_json_object(shadow_dir / "summary.json", "qdii_shadow_summary")
+        shadow["metrics"] = _read_optional_csv(shadow_dir / "metrics.csv", "qdii_shadow_metrics")
+        shadow["catalog"] = _read_optional_csv(shadow_dir / "catalog.csv", "qdii_shadow_catalog")
+
+    from .markets.cn_qdii_etf.fund_events import active_event_state, load_event_store
+    from .markets.cn_qdii_etf.theme_sentiment import load_theme_sentiment
+
+    event_path = root / "data" / "cn_qdii_etf" / "shared" / "fund_events.csv"
+    events = load_event_store(event_path)
+    now = datetime.now().isoformat(timespec="seconds")
+    active_blocks = 0
+    if not events.empty:
+        for code in events["code"].astype(str).drop_duplicates():
+            active_blocks += int(active_event_state(events, code, now).get("hard_block", False))
+        event_rows = events.sort_values(["published_at", "code"], ascending=[False, True]).head(50).to_dict(orient="records")
+        latest_observed = str(events["observed_at"].max())
+    else:
+        event_rows = []
+        latest_observed = None
+    theme = load_theme_sentiment(research / "theme_sentiment.csv")
+    if not theme.empty:
+        theme = theme.loc[theme["agent"].astype(str).eq(agent)].sort_values("observed_at", ascending=False)
+    return {
+        "capacity": capacity,
+        "shadow": shadow,
+        "events": {
+            "rows": event_rows,
+            "total": len(events),
+            "active_hard_blocks": active_blocks,
+            "latest_observed_at": latest_observed,
+            "source": "eastmoney_fund_announcements",
+        },
+        "theme_sentiment": theme.head(50).to_dict(orient="records") if not theme.empty else [],
+    }
+
+
 # _today is imported from .utils as a single canonical helper.
 # Tests can still patch `stock_analyze.dashboard_aggregator._today` —
 # that targets the local alias name in this module's namespace.
@@ -1003,6 +1085,7 @@ def build_dashboard_detail_data(
         )
     else:
         lookthrough = {}
+    research = _read_qdii_research(root, agent) if market == "cn_qdii_etf" else {}
     payload = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "market": market,
@@ -1012,6 +1095,7 @@ def build_dashboard_detail_data(
         "strategy": strategy,
         "selection": selection,
         "lookthrough": lookthrough,
+        "research": research,
         "nav": _read_nav_detail(paths.data_dir, market),
         "activity": {"summary": {"total": len(activity)}, "rows": activity[:limit]},
         "orders": {

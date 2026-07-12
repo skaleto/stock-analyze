@@ -244,6 +244,48 @@ class DashboardAppApiTests(unittest.TestCase):
         self.assertAlmostEqual(companies["NVDA"]["weight"], 0.076)
         self.assertEqual(payload["lookthrough"]["sources"][0]["as_of"], "2026-06-30")
 
+    def test_qdii_detail_payload_includes_dynamic_p2_research_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            research = root / "data" / "cn_qdii_etf" / "research"
+            capacity = research / "capacity" / "capacity-run"
+            shadow = research / "shadow" / "shadow-run"
+            shared = root / "data" / "cn_qdii_etf" / "shared"
+            capacity.mkdir(parents=True)
+            shadow.mkdir(parents=True)
+            shared.mkdir(parents=True, exist_ok=True)
+            (capacity / "summary.json").write_text(
+                json.dumps({"run_id": "capacity-run", "recommendations": [{"strategy": "codex", "scope": "us_exposure", "recommended_top_n": 5}]}),
+                encoding="utf-8",
+            )
+            pd.DataFrame([{"strategy": "codex", "scope": "us_exposure", "top_n": 5, "sharpe_ratio": 1.2}]).to_csv(capacity / "metrics.csv", index=False)
+            (shadow / "summary.json").write_text(
+                json.dumps({"run_id": "shadow-run", "mode": "research_only", "skipped_scopes": []}),
+                encoding="utf-8",
+            )
+            pd.DataFrame([{"asset_class": "global_equity", "scope": "japan_exposure", "factor_model": "global_equity_v1", "cumulative_return": 0.12, "sharpe_ratio": 0.8, "max_drawdown": -0.1, "promotion_status": "shadow_ready"}]).to_csv(shadow / "metrics.csv", index=False)
+            pd.DataFrame([{"code": "159866.SZ", "name": "日经ETF", "asset_class": "global_equity", "research_scope": "japan_exposure", "promotion_status": "shadow_ready"}]).to_csv(shadow / "catalog.csv", index=False)
+            pd.DataFrame([{
+                "event_id": "AN1", "report_id": "AN1", "code": "513100.SH", "name": "纳指ETF", "category": "1",
+                "title": "暂停申购公告", "published_at": "2026-07-10T00:00:00", "observed_at": "2026-07-10T08:00:00",
+                "effective_at": "2026-07-10T00:00:00", "expires_at": "2026-08-09T00:00:00", "event_type": "suspension",
+                "severity": "hard", "hard_block": True, "clears_temporary_blocks": False, "source_url": "https://example.test/a",
+                "raw_content_hash": "hash", "parser_version": "v1",
+            }]).to_csv(shared / "fund_events.csv", index=False)
+            pd.DataFrame([{
+                "agent": "codex", "week_end": "2026-07-10", "index_key": "nikkei_225", "score": 0.4, "confidence": 0.8,
+                "drivers": "日元走弱", "sources": "https://example.test/n", "llm_model": "gpt-5.6", "prompt_version": "theme_v1",
+                "observed_at": "2026-07-10T08:00:00", "expires_at": "2026-07-24T08:00:00",
+            }]).to_csv(research / "theme_sentiment.csv", index=False)
+
+            payload = build_dashboard_detail_data(repo_root=root, market="cn_qdii_etf", agent="codex")
+
+        self.assertEqual(payload["research"]["capacity"]["run_id"], "capacity-run")
+        self.assertEqual(payload["research"]["shadow"]["metrics"][0]["scope"], "japan_exposure")
+        self.assertEqual(payload["research"]["events"]["active_hard_blocks"], 1)
+        self.assertEqual(payload["research"]["theme_sentiment"][0]["index_key"], "nikkei_225")
+
     def test_detail_api_route_is_recognised_with_query_string(self) -> None:
         self.assertTrue(_is_dashboard_api_path("/api/dashboard/detail.json"))
         self.assertFalse(_is_dashboard_api_path("/api/dashboard/unknown.json"))
