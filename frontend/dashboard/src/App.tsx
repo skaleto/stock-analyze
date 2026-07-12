@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { fetchDetail, fetchSummary } from "./api";
 import CompetitionPanel from "./CompetitionPanel";
+import EtfResearchPanel from "./EtfResearchPanel";
 import { PerformanceChart } from "./FinancialCharts";
 import InstrumentDrawer from "./InstrumentDrawer";
 import { PortfolioSection, RuntimeHistory, StrategyBrief, TradeTimeline } from "./PortfolioViews";
@@ -383,6 +384,13 @@ export default function App() {
           </header>
           <PerformanceChart points={activeDetail?.nav.series ?? []} benchmarkLabel={benchmarkLabel} />
         </section>
+
+        {selectedMarket === "cn_qdii_etf" ? (
+          <EtfResearchPanel
+            selection={activeDetail?.selection}
+            lookthrough={activeDetail?.lookthrough}
+          />
+        ) : null}
 
         <PortfolioSection positions={filteredPositions} planned={orders} currency={activeDetail?.currency ?? selectedMarketSummary?.currency ?? "¥"} onSelect={openDrawer} />
 

@@ -76,6 +76,9 @@ const comparison: StrategyComparison = {
   },
   pair: {
     position_overlap: 0.43,
+    underlying_index_overlap: 0.25,
+    underlying_company_overlap: 0.38,
+    weighted_company_overlap: 0.21,
     return_correlation: 0.36,
     factor_distance: 0.65,
     factor_distance_floor: 0.45,
@@ -118,6 +121,8 @@ describe("CompetitionPanel", () => {
     expect(within(panel).getAllByText("稳健防守").length).toBeGreaterThan(0);
     expect(within(panel).getAllByText("趋势进攻").length).toBeGreaterThan(0);
     expect(within(panel).getByText("持仓重合度")).toBeInTheDocument();
+    expect(within(panel).getByText("底层指数重合")).toBeInTheDocument();
+    expect(within(panel).getByText("底层公司重合")).toBeInTheDocument();
     expect(within(panel).getByText("收益相关性")).toBeInTheDocument();
     expect(within(panel).getByText("因子差异度")).toBeInTheDocument();
     expect(within(panel).getByText("年化波动")).toBeInTheDocument();

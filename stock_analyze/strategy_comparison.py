@@ -208,6 +208,42 @@ def _correlation(left: dict[str, float], right: dict[str, float]) -> float | Non
     return covariance / (left_std * right_std)
 
 
+def _jaccard(left: set[str], right: set[str]) -> float | None:
+    union = left | right
+    return len(left & right) / len(union) if union else None
+
+
+def _underlying_index_set(detail: dict[str, Any]) -> set[str]:
+    return {
+        str(row.get("index_key"))
+        for row in detail.get("lookthrough", {}).get("indexes", [])
+        if isinstance(row, dict) and row.get("index_key")
+    }
+
+
+def _underlying_company_weights(detail: dict[str, Any]) -> dict[str, float]:
+    output: dict[str, float] = {}
+    lookthrough = detail.get("lookthrough", {})
+    for row in lookthrough.get("companies", []):
+        if not isinstance(row, dict) or not row.get("symbol"):
+            continue
+        weight = _number(row.get("weight"))
+        if weight is not None and weight >= 0:
+            output[str(row["symbol"])] = weight
+    for symbol in lookthrough.get("company_symbols", []):
+        output.setdefault(str(symbol), 0.0)
+    return output
+
+
+def _weighted_overlap(left: dict[str, float], right: dict[str, float]) -> float | None:
+    keys = set(left) | set(right)
+    if not keys:
+        return None
+    numerator = sum(min(left.get(key, 0.0), right.get(key, 0.0)) for key in keys)
+    denominator = sum(max(left.get(key, 0.0), right.get(key, 0.0)) for key in keys)
+    return numerator / denominator if denominator > 0 else None
+
+
 def _factor_rows(details: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     by_agent = {agent: _strategy_factors(details[agent]) for agent in PAIR_SLOTS}
     keys = set().union(*(set(factors) for factors in by_agent.values()))
@@ -275,6 +311,7 @@ def build_strategy_comparison(
             "strategy_name": detail.get("strategy", {}).get("name"),
             "holdings_source": holdings_source,
             "allocations": _allocations(holdings, holdings_source),
+            "lookthrough": detail.get("lookthrough", {}),
             "metrics": {
                 "season_return": season_return,
                 "benchmark_return": benchmark_return,
@@ -306,6 +343,12 @@ def build_strategy_comparison(
         if union
         else None
     )
+    underlying_indexes = {
+        agent: _underlying_index_set(details[agent]) for agent in PAIR_SLOTS
+    }
+    underlying_companies = {
+        agent: _underlying_company_weights(details[agent]) for agent in PAIR_SLOTS
+    }
     overlay_like: dict[str, dict[str, Any]] = {}
     for agent in PAIR_SLOTS:
         overlay_like[agent] = {
@@ -353,6 +396,18 @@ def build_strategy_comparison(
         "strategies": strategy_rows,
         "pair": {
             "position_overlap": overlap,
+            "underlying_index_overlap": _jaccard(
+                underlying_indexes[PAIR_SLOTS[0]],
+                underlying_indexes[PAIR_SLOTS[1]],
+            ),
+            "underlying_company_overlap": _jaccard(
+                set(underlying_companies[PAIR_SLOTS[0]]),
+                set(underlying_companies[PAIR_SLOTS[1]]),
+            ),
+            "weighted_company_overlap": _weighted_overlap(
+                underlying_companies[PAIR_SLOTS[0]],
+                underlying_companies[PAIR_SLOTS[1]],
+            ),
             "return_correlation": _correlation(
                 nav[PAIR_SLOTS[0]]["returns"],
                 nav[PAIR_SLOTS[1]]["returns"],

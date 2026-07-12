@@ -29,6 +29,67 @@ export type StrategyAllocation = {
   weight: number | null;
 };
 
+export type SelectionStage = {
+  key: string;
+  label: string;
+  count: number;
+};
+
+export type SelectionScope = {
+  universe_hash?: string | null;
+  stages: SelectionStage[];
+  rejections: { reason: string; count: number }[];
+  data_gaps?: Record<string, number>;
+  ranked?: Record<string, unknown>[];
+  selected: Record<string, unknown>[];
+};
+
+export type SelectionSnapshot = {
+  schema_version: number;
+  as_of?: string | null;
+  universe_hash?: string | null;
+  universe_source_status?: string | null;
+  catalog_stats?: Record<string, Record<string, number>>;
+  scopes: Record<string, SelectionScope>;
+};
+
+export type ExposureWeight = {
+  label: string;
+  weight: number;
+};
+
+export type UnderlyingCompany = {
+  symbol: string;
+  name: string;
+  sector: string;
+  weight: number;
+};
+
+export type PortfolioLookthrough = {
+  status: "complete" | "partial" | "unavailable" | string;
+  source: string;
+  profile_coverage: number;
+  company_weight_coverage: number;
+  indexes: { index_key: string; label: string; weight: number; profile_available: boolean }[];
+  countries: ExposureWeight[];
+  sectors: ExposureWeight[];
+  companies: UnderlyingCompany[];
+  company_symbols: string[];
+  sources: { index_key: string; name?: string; as_of?: string; source_url?: string; source_label?: string }[];
+  unsupported_indexes: string[];
+};
+
+export type IndexProfile = {
+  index_key: string;
+  name: string;
+  country?: string;
+  as_of: string;
+  source_url: string;
+  source_label?: string;
+  constituents: { symbol: string; name: string; sector?: string; weight?: number | null }[];
+  sector_weights?: ExposureWeight[];
+};
+
 export type StrategyComparisonSide = {
   agent: string;
   label: string;
@@ -38,6 +99,7 @@ export type StrategyComparisonSide = {
   strategy_name?: string | null;
   holdings_source: "positions" | "planned_orders" | string;
   allocations: StrategyAllocation[];
+  lookthrough?: PortfolioLookthrough | Record<string, never>;
   metrics: StrategyMetrics;
 };
 
@@ -70,6 +132,9 @@ export type StrategyComparison = {
   };
   pair: {
     position_overlap: number | null;
+    underlying_index_overlap: number | null;
+    underlying_company_overlap: number | null;
+    weighted_company_overlap: number | null;
     return_correlation: number | null;
     factor_distance: number | null;
     factor_distance_floor: number | null;
@@ -144,6 +209,9 @@ export type OrderRow = Record<string, string | number | null | undefined> & {
   reason?: string;
   exposure_group?: string;
   theme?: string;
+  index_key?: string;
+  country?: string;
+  sector?: string;
   industry?: string;
   account_label?: string;
   side_label?: string;
@@ -206,7 +274,9 @@ export type InstrumentDetail = {
     name?: string | null;
     exposure_group?: string;
     theme?: string;
+    index_key?: string;
   };
+  underlying?: IndexProfile | null;
   latest: (Candle & { change_pct?: number | null }) | null;
   candles: Candle[];
   metrics: InstrumentMetric[];
@@ -221,6 +291,8 @@ export type DashboardDetail = {
   currency: string;
   agent: string;
   strategy: StrategyProfile;
+  selection?: SelectionSnapshot;
+  lookthrough?: PortfolioLookthrough | Record<string, never>;
   nav: {
     latest: NavPoint | null;
     series: NavPoint[];

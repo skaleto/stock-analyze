@@ -119,11 +119,12 @@ def instrument_metadata(
     name: str | None = None,
     *,
     industry: str | None = None,
+    repo_root: str | Path | None = None,
 ) -> dict[str, Any]:
     if market == "cn_qdii_etf":
         from .markets.cn_qdii_etf.universe import metadata_for_code
 
-        classification = metadata_for_code(code)
+        classification = metadata_for_code(code, repo_root=repo_root)
     else:
         group = str(industry or "未分类")
         classification = {"exposure_group": group, "theme": group}
@@ -134,7 +135,12 @@ def instrument_metadata(
     }
 
 
-def enrich_rows(market: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def enrich_rows(
+    market: str,
+    rows: list[dict[str, Any]],
+    *,
+    repo_root: str | Path | None = None,
+) -> list[dict[str, Any]]:
     enriched: list[dict[str, Any]] = []
     for raw in rows:
         row = dict(raw)
@@ -146,6 +152,7 @@ def enrich_rows(market: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]
                     code,
                     str(row.get("name") or "") or None,
                     industry=str(row.get("industry") or "") or None,
+                    repo_root=repo_root,
                 )
             )
         account_id = str(row.get("account_id") or "")
@@ -317,6 +324,10 @@ def read_instrument_history(
         frame["amount"] = None
     for column in ("open", "high", "low", "close", "volume", "amount"):
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    if market == "cn_qdii_etf":
+        from .markets.cn_qdii_etf.data_provider import TUSHARE_AMOUNT_TO_YUAN
+
+        frame["amount"] = frame["amount"] * TUSHARE_AMOUNT_TO_YUAN
     date_text = frame["date"].astype(str).str.replace("-", "", regex=False).str[:8]
     frame["date"] = (
         date_text.str[:4] + "-" + date_text.str[4:6] + "-" + date_text.str[6:8]

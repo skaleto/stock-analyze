@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, BookOpen, LoaderCircle, X } from "lucide-react";
+import { AlertCircle, BookOpen, ExternalLink, Layers3, LoaderCircle, X } from "lucide-react";
 import { fetchInstrument } from "./api";
 import { CandlestickChart } from "./FinancialCharts";
-import { fieldMeta, formatFieldValue, visibleRowEntries } from "./finance";
+import { fieldMeta, formatFieldValue, formatPercent, visibleRowEntries } from "./finance";
 import type { InstrumentDetail, OrderRow } from "./types";
 
 export default function InstrumentDrawer({
@@ -104,6 +104,27 @@ export default function InstrumentDrawer({
                 strategyLabel={strategyLabel}
                 seasonEffectiveDate={seasonEffectiveDate}
               />
+            </section>
+          ) : null}
+          {detail?.underlying ? (
+            <section className="underlying-profile">
+              <div className="drawer-section-title underlying-title">
+                <Layers3 size={15} aria-hidden="true" />
+                <h3>底层指数成分</h3>
+                <span>数据日期 {detail.underlying.as_of}</span>
+                <a href={detail.underlying.source_url} target="_blank" rel="noreferrer" aria-label="打开官方指数资料">
+                  <ExternalLink size={14} aria-hidden="true" />
+                </a>
+              </div>
+              <div className="underlying-table" role="table" aria-label={`${detail.underlying.name}主要成分`}>
+                {detail.underlying.constituents.slice(0, 10).map((constituent) => (
+                  <div role="row" key={constituent.symbol}>
+                    <span role="cell"><b>{constituent.name}</b><small>{constituent.symbol}</small></span>
+                    <span role="cell">{constituent.sector || "未分类"}</span>
+                    <strong role="cell">{constituent.weight == null ? "未披露" : formatPercent(constituent.weight)}</strong>
+                  </div>
+                ))}
+              </div>
             </section>
           ) : null}
           {detail?.metrics.length ? (
