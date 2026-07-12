@@ -1517,14 +1517,16 @@ class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(raw)
 
 
+class _DashboardHTTPServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
 def serve_dashboard(reports_dir: str, host: str, port: int) -> int:
     directory = Path(reports_dir).resolve()
     handler = partial(_DashboardRequestHandler, directory=str(directory))
 
-    class ReusableTCPServer(socketserver.TCPServer):
-        allow_reuse_address = True
-
-    with ReusableTCPServer((host, port), handler) as httpd:
+    with _DashboardHTTPServer((host, port), handler) as httpd:
         print(f"Serving {directory} at http://{host}:{port}")
         print("Routes: / → /competition/simple.html (beginner), /pro.html → /competition/dashboard.html")
         httpd.serve_forever()
