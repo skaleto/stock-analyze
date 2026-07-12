@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const chartMocks = vi.hoisted(() => {
@@ -100,7 +100,7 @@ describe("financial charts", () => {
           { date: "2026-07-14", open: 2.1, high: 2.3, low: 2.0, close: 2.2 },
         ]}
         trades={[
-          { trade_date: "2026-07-10", side: "buy", shares: 100 },
+          { trade_date: "2026-07-10", side: "buy", shares: 100, price: 2.01, gross_amount: 201, commission: 0.1, slippage: 0.05 },
           { trade_date: "2026-07-14", side: "buy", shares: 200 },
           { trade_date: "2026-07-14", side: "sell", shares: 100 },
         ]}
@@ -111,30 +111,45 @@ describe("financial charts", () => {
     expect(chartMocks.createSeriesMarkers).toHaveBeenCalledTimes(1);
     expect(chartMocks.createSeriesMarkers.mock.calls[0]?.[1]).toEqual([
       {
+        id: "trade:2026-07-10:buy",
         time: "2026-07-10",
         position: "belowBar",
-        color: "#ef4444",
-        shape: "arrowUp",
-        text: "趋势买",
+        color: "#38bdf8",
+        shape: "circle",
+        size: 1.5,
       },
       {
+        id: "trade:2026-07-14:buy",
         time: "2026-07-14",
         position: "belowBar",
-        color: "#ef4444",
-        shape: "arrowUp",
-        text: "趋势买",
+        color: "#38bdf8",
+        shape: "circle",
+        size: 1.5,
       },
       {
+        id: "trade:2026-07-14:sell",
         time: "2026-07-14",
         position: "aboveBar",
-        color: "#22c55e",
-        shape: "arrowDown",
-        text: "趋势卖",
+        color: "#f59e0b",
+        shape: "circle",
+        size: 1.5,
       },
     ]);
     expect(screen.getByText("历史成交 · 趋势进攻")).toBeInTheDocument();
     expect(screen.getByText("买入 2")).toBeInTheDocument();
     expect(screen.getByText("卖出 1")).toBeInTheDocument();
+
+    act(() => {
+      chartMocks.subscribeCrosshairMove.mock.calls[0]?.[0]({
+        time: "2026-07-10",
+        hoveredObjectId: "trade:2026-07-10:buy",
+      });
+    });
+    expect(screen.getByText("趋势进攻 · 买入")).toBeInTheDocument();
+    expect(screen.getByText("成交价 2.010")).toBeInTheDocument();
+    expect(screen.getByText("份额 100")).toBeInTheDocument();
+    expect(screen.getByText("金额 ¥201.00")).toBeInTheDocument();
+    expect(screen.getByText("费用 ¥0.15")).toBeInTheDocument();
   });
 
   it("renders two strategy series and a benchmark with crosshair readout", () => {

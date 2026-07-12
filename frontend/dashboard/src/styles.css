@@ -537,8 +537,32 @@ a:hover { text-decoration: underline; }
   font-size: 10px;
 }
 .trade-marker-summary strong { color: var(--text); font-size: 11px; font-weight: 600; }
-.trade-marker-buy { color: var(--positive); }
-.trade-marker-sell { color: var(--negative); }
+.trade-marker-buy { color: #38bdf8; }
+.trade-marker-sell { color: #f59e0b; }
+.candle-chart { position: relative; }
+.trade-marker-tooltip {
+  position: absolute;
+  z-index: 3;
+  top: 68px;
+  right: 10px;
+  max-width: min(420px, calc(100% - 20px));
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: rgba(9, 14, 22, 0.96);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+}
+.trade-marker-tooltip header,
+.trade-marker-tooltip > div { display: flex; align-items: center; gap: 9px; }
+.trade-marker-tooltip header i { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; }
+.trade-marker-tooltip header strong { color: var(--text); font-size: 11px; font-weight: 600; }
+.trade-marker-tooltip header time { margin-left: auto; color: var(--faint); font-family: "SF Mono", Menlo, monospace; font-size: 9px; }
+.trade-marker-tooltip > div { flex-wrap: wrap; margin-top: 7px; color: var(--muted); font-family: "SF Mono", Menlo, monospace; font-size: 9px; }
+.trade-marker-tooltip-buy { border-color: rgba(56, 189, 248, 0.42); }
+.trade-marker-tooltip-buy header i { background: #38bdf8; box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.12); }
+.trade-marker-tooltip-sell { border-color: rgba(245, 158, 11, 0.42); }
+.trade-marker-tooltip-sell header i { background: #f59e0b; box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.12); }
 .chart-toolbar {
   display: flex;
   align-items: center;
