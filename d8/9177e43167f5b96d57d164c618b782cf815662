@@ -1,0 +1,29 @@
+stock_analyze/markets/cn_qdii_etf/capacity_study.py
+  s_db9afa53cf7b72::t_aad839907fc075 81-86
+stock_analyze/markets/cn_qdii_etf/research_catalog.py
+  s_db9afa53cf7b72::t_8b58a56d1551a3 1-151
+stock_analyze/markets/cn_qdii_etf/shadow_research.py
+  s_db9afa53cf7b72::t_509573c9ce7e07 1-227
+tests/test_qdii_research_catalog.py
+  s_db9afa53cf7b72::t_7f0deeaf9bafc7 1-56
+tests/test_qdii_shadow_research.py
+  s_db9afa53cf7b72::t_bcb9e9a685d50b 1-76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "d89177e43167f5b96d57d164c618b782cf815662",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
