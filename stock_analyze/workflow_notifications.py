@@ -432,7 +432,7 @@ def build_workflow_summary_card(
     color, badge = _notification_health(cadence, repo_root, target)
     title_by_cadence = {
         "daily": "任务日报",
-        "weekly": "周任务与复盘提醒",
+        "weekly": "周度复盘提醒",
         "monthly": "月任务与策略演化提醒",
     }
     return {
