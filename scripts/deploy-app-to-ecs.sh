@@ -101,6 +101,9 @@ python -m unittest \
   tests.test_qdii_universe \
   tests.test_qdii_lookthrough \
   tests.test_qdii_systemd_units \
+  tests.test_qdii_research_panel \
+  tests.test_qdii_capacity_study \
+  tests.test_cli_qdii_capacity_study \
   tests.test_workflow_notifications \
   tests.test_workflow_summary_systemd \
   tests.test_operator_workflow_docs \
