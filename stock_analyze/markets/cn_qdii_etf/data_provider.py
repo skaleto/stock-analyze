@@ -23,6 +23,7 @@ from .._yfinance_base import (
     _trailing_volatility,
 )
 from . import mechanics
+from .fund_events import active_event_state, load_event_store
 from .universe import (
     UNIVERSES,
     build_catalog_candidates,
@@ -410,6 +411,7 @@ class CNQDIETFProvider:
                 enriched[scope].append(row)
 
         self._attach_peer_tracking_error(enriched, as_of_key)
+        self._attach_event_states(enriched, as_of_key)
 
         universe_hash = catalog_content_hash(enriched)
         for rows in enriched.values():
@@ -439,6 +441,13 @@ class CNQDIETFProvider:
                     ),
                 }
                 for scope in UNIVERSES
+            },
+            "event_source": {
+                "path": "data/cn_qdii_etf/shared/fund_events.csv",
+                "available": bool(
+                    self.cache_dir is not None
+                    and (self.cache_dir.parent / "fund_events.csv").exists()
+                ),
             },
             "scopes": enriched,
         }
@@ -555,6 +564,24 @@ class CNQDIETFProvider:
                         if len(peers) > 1
                         else None
                     )
+
+    def _attach_event_states(
+        self,
+        scopes: dict[str, list[dict[str, Any]]],
+        as_of_key: str,
+    ) -> None:
+        path = self.cache_dir.parent / "fund_events.csv" if self.cache_dir is not None else None
+        events = load_event_store(path) if path is not None else pd.DataFrame()
+        cutoff = f"{_iso(as_of_key)}T23:59:59"
+        for rows in scopes.values():
+            for row in rows:
+                state = active_event_state(events, str(row.get("code") or ""), cutoff)
+                row["active_hard_event"] = bool(state.get("hard_block"))
+                row["active_fund_event_blocks"] = state.get("hard_events") or []
+                row["fund_event_warnings"] = state.get("warnings") or []
+                row["recent_fund_events"] = state.get("recent_events") or []
+                row["latest_event_type"] = state.get("latest_event_type")
+                row["latest_event_published_at"] = state.get("latest_published_at")
 
     def _peer_tracking_error_60(
         self,

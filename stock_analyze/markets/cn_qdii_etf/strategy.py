@@ -53,6 +53,8 @@ def _number(value: Any) -> float | None:
 
 
 def _risk_rejection_reason(row: pd.Series, filters: dict[str, Any]) -> str | None:
+    if bool(row.get("active_hard_event", False)):
+        return "active_fund_event_block"
     if bool(row.get("paused", False)):
         return "paused_or_stale"
     amount = _number(row.get("avg_amount_20"))
@@ -136,6 +138,11 @@ def _record_funnel(
         if "history_complete" in spot_df.columns
         else len(spot_df)
     )
+    recent_events: list[dict[str, Any]] = []
+    for row in spot_df.to_dict(orient="records"):
+        for event in row.get("recent_fund_events") or []:
+            recent_events.append({"code": row.get("code"), "name": row.get("name"), **event})
+    recent_events.sort(key=lambda item: str(item.get("published_at") or ""), reverse=True)
     recorder(
         scope,
         {
@@ -151,6 +158,13 @@ def _record_funnel(
                 for reason, count in sorted(rejected.items())
             ],
             "data_gaps": data_gaps,
+            "recent_events": recent_events[:20],
+            "active_hard_blocks": int(
+                spot_df.get("active_hard_event", pd.Series(False, index=spot_df.index))
+                .fillna(False)
+                .astype(bool)
+                .sum()
+            ),
             "ranked": [
                 {
                     key: row.get(key)
@@ -167,6 +181,9 @@ def _record_funnel(
                         "history_start",
                         "history_end",
                         "history_complete",
+                        "active_hard_event",
+                        "latest_event_type",
+                        "latest_event_published_at",
                     )
                     if key in row
                 }

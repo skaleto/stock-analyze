@@ -211,6 +211,21 @@ def build_parser() -> argparse.ArgumentParser:
     qdii_capacity.add_argument("--output-root", type=Path, default=Path("."))
     qdii_capacity.add_argument("--min-signal-weeks", type=int, default=20)
 
+    qdii_events = sub.add_parser(
+        "refresh-qdii-events",
+        help="Refresh source-dated fund announcements for the current QDII catalog.",
+    )
+    qdii_events.add_argument(
+        "--universe",
+        type=Path,
+        default=Path("data/cn_qdii_etf/shared/universe_latest.json"),
+    )
+    qdii_events.add_argument(
+        "--output",
+        type=Path,
+        default=Path("data/cn_qdii_etf/shared/fund_events.csv"),
+    )
+
     rec = sub.add_parser(
         "record-sentiment",
         help="Record one week of operator-curated market sentiment from LLM client.",
@@ -469,6 +484,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "qdii-capacity-study":
         ensure_dirs(args.logs_dir)
         return _command_qdii_capacity_study(args)
+    if args.command == "refresh-qdii-events":
+        ensure_dirs(args.logs_dir)
+        return _command_refresh_qdii_events(args)
     if args.command == "record-sentiment":
         ensure_dirs(args.logs_dir)
         return _command_record_sentiment(args)
@@ -978,6 +996,29 @@ def _command_qdii_capacity_study(args: argparse.Namespace) -> int:
             f"{item.get('strategy')}/{item.get('scope')} "
             f"top_n={item.get('recommended_top_n')}"
         )
+    return 0
+
+
+def _command_refresh_qdii_events(args: argparse.Namespace) -> int:
+    from .markets.cn_qdii_etf import fund_events
+
+    try:
+        payload = json.loads(args.universe.read_text(encoding="utf-8"))
+        codes = sorted(
+            {
+                str(row["code"])
+                for rows in (payload.get("scopes") or {}).values()
+                for row in rows
+                if row.get("code")
+            }
+        )
+        if not codes:
+            raise ValueError("empty_qdii_universe")
+        events = fund_events.refresh_event_store(codes, args.output)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError, RuntimeError) as exc:
+        print(f"error: QDII event refresh failed: {exc}", file=sys.stderr)
+        return 2
+    print(f"QDII events refreshed: codes={len(codes)} events={len(events)} output={args.output}")
     return 0
 
 
