@@ -938,19 +938,23 @@ def _command_qdii_capacity_study(args: argparse.Namespace) -> int:
             start=start_date.isoformat(),
             end=end_date.isoformat(),
         )
+        panel_start = date.fromisoformat(str(panel.metadata.get("start") or start_date))
+        panel_end = date.fromisoformat(str(panel.metadata.get("end") or end_date))
+        effective_start = max(start_date, panel_start)
+        effective_end = min(end_date, panel_end)
         result = capacity_study.run_capacity_study(
             panel,
             overlays=overlays,
             baseline=baseline,
             top_ns=list(args.top_n),
-            start=start_date.isoformat(),
-            end=end_date.isoformat(),
+            start=effective_start.isoformat(),
+            end=effective_end.isoformat(),
             min_signal_weeks=max(int(args.min_signal_weeks), 1),
         )
         paths = capacity_study.write_capacity_artifacts(
             result,
             args.output_root,
-            end_date=end_date.isoformat(),
+            end_date=effective_end.isoformat(),
         )
     except (
         OSError,
