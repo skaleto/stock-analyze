@@ -71,6 +71,8 @@ for unit in \
   stock-analyze-codex-cn-qdii-etf-daily.timer \
   stock-analyze-codex-cn-qdii-etf-weekly.service \
   stock-analyze-codex-cn-qdii-etf-weekly.timer \
+  stock-analyze-qdii-research.service \
+  stock-analyze-qdii-research.timer \
   stock-analyze-aggregate-dashboard.service \
   stock-analyze-daily-summary.service \
   stock-analyze-daily-summary.timer \
@@ -104,6 +106,12 @@ python -m unittest \
   tests.test_qdii_research_panel \
   tests.test_qdii_capacity_study \
   tests.test_cli_qdii_capacity_study \
+  tests.test_qdii_fund_events \
+  tests.test_cli_qdii_events \
+  tests.test_qdii_research_catalog \
+  tests.test_qdii_shadow_research \
+  tests.test_cli_qdii_shadow_research \
+  tests.test_qdii_theme_sentiment \
   tests.test_workflow_notifications \
   tests.test_workflow_summary_systemd \
   tests.test_operator_workflow_docs \
@@ -128,6 +136,7 @@ for timer in \
   stock-analyze-claude-cn-qdii-etf-weekly.timer \
   stock-analyze-codex-cn-qdii-etf-daily.timer \
   stock-analyze-codex-cn-qdii-etf-weekly.timer \
+  stock-analyze-qdii-research.timer \
   stock-analyze-weekly-summary.timer \
   stock-analyze-monthly-summary.timer; do
   stamp="/var/lib/systemd/timers/stamp-$timer"
@@ -139,6 +148,7 @@ systemctl enable --now stock-analyze-claude-cn-qdii-etf-daily.timer
 systemctl enable --now stock-analyze-claude-cn-qdii-etf-weekly.timer
 systemctl enable --now stock-analyze-codex-cn-qdii-etf-daily.timer
 systemctl enable --now stock-analyze-codex-cn-qdii-etf-weekly.timer
+systemctl enable --now stock-analyze-qdii-research.timer
 systemctl enable --now stock-analyze-daily-summary.timer
 systemctl enable --now stock-analyze-weekly-summary.timer
 systemctl enable --now stock-analyze-monthly-summary.timer
@@ -148,6 +158,7 @@ systemctl is-active --quiet stock-analyze-claude-cn-qdii-etf-daily.timer
 systemctl is-active --quiet stock-analyze-claude-cn-qdii-etf-weekly.timer
 systemctl is-active --quiet stock-analyze-codex-cn-qdii-etf-daily.timer
 systemctl is-active --quiet stock-analyze-codex-cn-qdii-etf-weekly.timer
+systemctl is-active --quiet stock-analyze-qdii-research.timer
 systemctl is-active --quiet stock-analyze-daily-summary.timer
 systemctl is-active --quiet stock-analyze-weekly-summary.timer
 systemctl is-active --quiet stock-analyze-monthly-summary.timer

@@ -295,6 +295,42 @@ def _strategy_lines(
     return lines
 
 
+def _qdii_research_alerts(repo_root: Path, today_d: date) -> list[str]:
+    from .markets.cn_qdii_etf.fund_events import active_event_state, load_event_store
+
+    alerts: list[str] = []
+    event_path = repo_root / "data" / "cn_qdii_etf" / "shared" / "fund_events.csv"
+    events = load_event_store(event_path)
+    if not events.empty:
+        cutoff = f"{today_d.isoformat()}T23:59:59"
+        blocked = sum(
+            bool(active_event_state(events, code, cutoff).get("hard_block"))
+            for code in events["code"].astype(str).drop_duplicates()
+        )
+        if blocked:
+            alerts.append(f"{blocked} 只基金存在公告硬阻断")
+
+    shadow_root = repo_root / "data" / "cn_qdii_etf" / "research" / "shadow"
+    summaries = sorted(shadow_root.glob("*/summary.json")) if shadow_root.exists() else []
+    if not summaries:
+        alerts.append("影子研究尚未生成")
+        return alerts
+    try:
+        summary = json.loads(summaries[-1].read_text(encoding="utf-8"))
+        end_date = date.fromisoformat(str(summary.get("end") or "")[:10])
+    except (OSError, ValueError, json.JSONDecodeError):
+        alerts.append("影子研究摘要不可读")
+        return alerts
+    age = (today_d - end_date).days
+    if age > 8:
+        alerts.append(f"影子研究已 {age} 天未更新")
+    skipped = summary.get("skipped_scopes") or []
+    failed = [item for item in skipped if "history_unavailable" not in str(item.get("reason"))]
+    if failed:
+        alerts.append(f"{len(failed)} 个研究范围运行失败")
+    return alerts
+
+
 def build_workflow_summary(
     cadence: Cadence,
     repo_root: Path | None = None,
@@ -331,6 +367,9 @@ def build_workflow_summary(
             lines[-1] += f"，待执行订单 {pending}"
         lines.extend(["", "任务运行:", *_task_lines(results, repo_root)])
         if cadence == "weekly":
+            research_alerts = _qdii_research_alerts(repo_root, today_d)
+            if research_alerts:
+                lines.extend(["", "研究异常:", *research_alerts])
             lines.extend(
                 [
                     "",

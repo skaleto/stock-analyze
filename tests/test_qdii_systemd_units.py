@@ -44,6 +44,16 @@ class QDIISystemdUnitTests(unittest.TestCase):
                 self.assertIn("Persistent=true", daily)
                 self.assertIn("Persistent=true", weekly)
 
+    def test_weekly_research_timer_runs_after_strategy_slots_and_before_summary(self) -> None:
+        service = (UNIT_DIR / "stock-analyze-qdii-research.service").read_text(encoding="utf-8")
+        timer = (UNIT_DIR / "stock-analyze-qdii-research.timer").read_text(encoding="utf-8")
+
+        self.assertIn("EnvironmentFile=-/etc/stock-analyze/secrets.env", service)
+        self.assertIn("scripts/run-qdii-research.sh", service)
+        self.assertIn("OnSuccess=stock-analyze-aggregate-dashboard.service", service)
+        self.assertIn("OnCalendar=Sat *-*-* 10:30:00 Asia/Shanghai", timer)
+        self.assertIn("Persistent=true", timer)
+
 
 if __name__ == "__main__":
     unittest.main()

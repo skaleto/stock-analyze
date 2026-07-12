@@ -1,0 +1,16 @@
+[Unit]
+Description=Stock Analyze weekly QDII research and fund-event refresh
+After=network-online.target stock-analyze-claude-cn-qdii-etf-weekly.service stock-analyze-codex-cn-qdii-etf-weekly.service
+Wants=network-online.target
+OnFailure=stock-analyze-pipeline-failure@%n.service
+OnSuccess=stock-analyze-aggregate-dashboard.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+EnvironmentFile=-/etc/stock-analyze/secrets.env
+ExecStart=/opt/stock-analyze/app/scripts/run-qdii-research.sh
+StandardOutput=append:/opt/stock-analyze/logs/qdii-research.log
+StandardError=append:/opt/stock-analyze/logs/qdii-research.err
+

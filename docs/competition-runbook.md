@@ -119,6 +119,31 @@ python3 -m stock_analyze qdii-capacity-study \
 当前研究使用现存基金目录回放历史，明确存在幸存者偏差；在补齐历史目录和公告
 事件链路前，报告只能作为容量证据，不能单独触发新赛季发布。
 
+### QDII P2 研究工作流
+
+全球权益、商品与债券范围始终写入 `data/cn_qdii_etf/research/`，不会创建活动
+账户或竞赛订单。手工刷新命令：
+
+```bash
+python3 -m stock_analyze refresh-qdii-events
+python3 -m stock_analyze qdii-shadow-research --refresh-data
+```
+
+公告记录保留发布时间、首次观测时间、解析版本、内容哈希和来源链接。暂停申赎、
+终止与清盘等活动硬事件会阻断新订单；恢复公告只解除临时阻断。指数级主题观点
+必须带来源，并只进入影子研究：
+
+```bash
+python3 -m stock_analyze record-theme-sentiment \
+  --agent codex --week-end YYYY-MM-DD --index-key nikkei_225 \
+  --score 0.2 --confidence 0.7 --drivers "日元与企业盈利" \
+  --sources "https://source.example/item" --llm-model gpt-5.6
+```
+
+Dashboard 的“跨境 ETF 研究工作台”包含候选、全球影子、风险事件和主题观点四个
+动态页签。任何范围晋级前仍需满足三年数据、95% 风险字段覆盖、无前视、回测门槛
+和连续四周影子运行。
+
 ## 6. ECS 调度
 
 A 股继续使用共享行情缓存和触发器：
@@ -132,6 +157,7 @@ QDII 两套策略都有独立定时器：
 
 - `stock-analyze-{claude,codex}-cn-qdii-etf-daily.timer`：周一至周五 18:50。
 - `stock-analyze-{claude,codex}-cn-qdii-etf-weekly.timer`：周六 10:15。
+- `stock-analyze-qdii-research.timer`：周六 10:30，刷新公告与多资产影子研究。
 
 飞书只在固定汇总窗口发送整体消息：
 
