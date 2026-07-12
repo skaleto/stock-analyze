@@ -29,6 +29,8 @@ rsync -az --relative \
   ./stock_analyze/ \
   ./scripts/ \
   ./deploy/ \
+  ./.claude/ \
+  ./docs/ \
   ./archive/direct-overseas/ \
   ./tests/ \
   ./frontend/dashboard/ \
