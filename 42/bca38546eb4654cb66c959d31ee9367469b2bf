@@ -1,0 +1,29 @@
+stock_analyze/cli.py
+  s_db9afa53cf7b72::t_ac81384e5273cb 244-267,533-535,1072,1135-1136,1155-1181
+stock_analyze/markets/cn_qdii_etf/shadow_research.py
+  s_db9afa53cf7b72::t_a49ae6d57d5595 15,25,33,41,96-97,104-108,112,158-159
+stock_analyze/markets/cn_qdii_etf/theme_sentiment.py
+  s_db9afa53cf7b72::t_fb9251f3621120 1-180
+tests/test_qdii_shadow_research.py
+  s_db9afa53cf7b72::t_c2d2d03002fc6a 39-45,53-54,63-64
+tests/test_qdii_theme_sentiment.py
+  s_db9afa53cf7b72::t_e3b46f621a0651 1-116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "42bca38546eb4654cb66c959d31ee9367469b2bf",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
