@@ -1,0 +1,25 @@
+stock_analyze/dashboard_aggregator.py
+  s_db9afa53cf7b72::t_e62da45a4f2265 225,227,235,237
+stock_analyze/workflow_notifications.py
+  s_db9afa53cf7b72::t_f148ede9574381 435
+tests/test_dashboard_multi_market.py
+  s_db9afa53cf7b72::t_e3c2e35f201fab 144
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "269e29148796735b4440428118527389fa6df8a6",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
