@@ -412,7 +412,6 @@ export default function App() {
           market={selectedMarket}
           agent={selectedAgent}
           strategyLabel={selectedStrategyLabel}
-          seasonEffectiveDate={selectedMarketSummary?.comparison?.season.effective_date ?? ""}
           onClose={closeDrawer}
         />
       ) : null}

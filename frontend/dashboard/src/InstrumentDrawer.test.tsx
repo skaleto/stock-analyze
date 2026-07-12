@@ -44,7 +44,6 @@ describe("instrument drawer", () => {
         market="cn_qdii_etf"
         agent="codex"
         strategyLabel="趋势进攻"
-        seasonEffectiveDate="2026-07-11"
         onClose={vi.fn()}
       />
     );
@@ -61,7 +60,6 @@ describe("instrument drawer", () => {
     expect(chartMocks.CandlestickChart.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
       trades: [{ trade_date: "2026-07-14", side: "buy", shares: 100 }],
       strategyLabel: "趋势进攻",
-      seasonEffectiveDate: "2026-07-11",
     }));
   });
 });

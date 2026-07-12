@@ -241,11 +241,7 @@ function markerStrategyName(label: string): string {
   return label.split(/[·\s]/)[0]?.slice(0, 4) || "策略";
 }
 
-function currentSeasonTrades(
-  candles: Candle[],
-  trades: OrderRow[],
-  seasonEffectiveDate: string,
-): OrderRow[] {
+function visibleCandleTrades(candles: Candle[], trades: OrderRow[]): OrderRow[] {
   const candleDates = new Set(candles.map((candle) => candle.date));
   return trades.filter((trade) => {
     const tradeDate = String(trade.trade_date ?? trade.date ?? "").slice(0, 10);
@@ -253,7 +249,6 @@ function currentSeasonTrades(
     return Boolean(
       tradeDate
       && candleDates.has(tradeDate)
-      && (!seasonEffectiveDate || tradeDate >= seasonEffectiveDate)
       && (BUY_SIDES.has(side) || SELL_SIDES.has(side))
     );
   });
@@ -285,18 +280,16 @@ export function CandlestickChart({
   candles,
   trades = [],
   strategyLabel = "当前策略",
-  seasonEffectiveDate = "",
 }: {
   candles: Candle[];
   trades?: OrderRow[];
   strategyLabel?: string;
-  seasonEffectiveDate?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState<Candle | null>(candles[candles.length - 1] ?? null);
   const visibleTrades = useMemo(
-    () => currentSeasonTrades(candles, trades, seasonEffectiveDate),
-    [candles, seasonEffectiveDate, trades],
+    () => visibleCandleTrades(candles, trades),
+    [candles, trades],
   );
   const tradeMarkers = useMemo(
     () => buildTradeMarkers(visibleTrades, strategyLabel),
@@ -368,7 +361,7 @@ export function CandlestickChart({
   return (
     <div className="financial-chart candle-chart">
       <div className="trade-marker-summary" aria-label="当前策略成交标记">
-        <strong>当前赛季 · {strategyLabel}</strong>
+        <strong>历史成交 · {strategyLabel}</strong>
         {visibleTrades.length ? (
           <>
             <span className="trade-marker-buy">买入 {buyCount}</span>
