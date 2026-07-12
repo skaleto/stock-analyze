@@ -41,6 +41,10 @@ from .dashboard_finance import (
     read_instrument_history,
     read_latest_factor_values,
 )
+from .markets.cn_qdii_etf.lookthrough import (
+    build_portfolio_lookthrough,
+    profile_for_index,
+)
 from .strategy_comparison import build_strategy_comparison
 from .strategy_registry import PAIR_SLOTS, StrategyRegistryInvalid, load_strategy_registry
 from .utils import (
@@ -107,6 +111,24 @@ class DashboardDataError(RuntimeError):
     def __init__(self, source: str) -> None:
         self.source = source
         super().__init__(f"dashboard data source is unreadable: {source}")
+
+
+def _read_selection_snapshot(data_dir: Path) -> dict[str, Any]:
+    path = data_dir / "selection_snapshot.json"
+    if not path.exists():
+        return {
+            "schema_version": 1,
+            "as_of": None,
+            "universe_hash": None,
+            "scopes": {},
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise DashboardDataError("selection_snapshot") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("scopes", {}), dict):
+        raise DashboardDataError("selection_snapshot")
+    return payload
 
 
 # _today is imported from .utils as a single canonical helper.
@@ -612,8 +634,19 @@ def _collapse_run_transitions(rows: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def _read_fund_name_lookup(root: Path, market: str) -> dict[str, str]:
-    path = root / "data" / market / "shared" / "cache" / "fund_basic_E.csv"
-    if not path.exists() or path.stat().st_size == 0:
+    cache_dir = root / "data" / market / "shared" / "cache"
+    path = next(
+        (
+            candidate
+            for candidate in (
+                cache_dir / "fund_basic_E_v2.csv",
+                cache_dir / "fund_basic_E.csv",
+            )
+            if candidate.exists() and candidate.stat().st_size > 0
+        ),
+        None,
+    )
+    if path is None:
         return {}
     try:
         df = pd.read_csv(path, dtype={"ts_code": str, "name": str}, keep_default_na=False)
@@ -870,6 +903,7 @@ def build_dashboard_detail_data(
             paths.data_dir,
             name_lookup=_read_fund_name_lookup(root, market),
         ),
+        repo_root=root,
     )
     positions_all = enrich_rows(
         market,
@@ -899,6 +933,7 @@ def build_dashboard_detail_data(
             limit=0,
             sort_by=["account_id", "code"],
         ),
+        repo_root=root,
     )
     trades_all = enrich_rows(
         market,
@@ -920,6 +955,7 @@ def build_dashboard_detail_data(
             limit=0,
             sort_by=["trade_date"],
         ),
+        repo_root=root,
     )
     runs_all = _limited_csv_rows(
         paths.data_dir / "runs.csv",
@@ -955,6 +991,18 @@ def build_dashboard_detail_data(
         safe_float(row.get("market_value")) or 0.0
         for row in positions_all
     )
+    selection = _read_selection_snapshot(paths.data_dir)
+    if market == "cn_qdii_etf":
+        lookthrough_source = "positions" if positions_all else "planned_orders"
+        lookthrough_rows = positions_all or [
+            row for row in orders if str(row.get("side") or "").lower() == "buy"
+        ]
+        lookthrough = build_portfolio_lookthrough(
+            lookthrough_rows,
+            source=lookthrough_source,
+        )
+    else:
+        lookthrough = {}
     payload = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "market": market,
@@ -962,6 +1010,8 @@ def build_dashboard_detail_data(
         "currency": MARKET_CURRENCY.get(market, ""),
         "agent": agent,
         "strategy": strategy,
+        "selection": selection,
+        "lookthrough": lookthrough,
         "nav": _read_nav_detail(paths.data_dir, market),
         "activity": {"summary": {"total": len(activity)}, "rows": activity[:limit]},
         "orders": {
@@ -1036,6 +1086,7 @@ def build_dashboard_instrument_data(
     related = enrich_rows(
         market,
         [row for row in related if str(row.get("code") or "").split(".", 1)[0].zfill(6) == digits],
+        repo_root=root,
     )
     latest = None
     if candles:
@@ -1047,12 +1098,19 @@ def build_dashboard_instrument_data(
             if close is not None and previous_close not in {None, 0}
             else None
         )
+    metadata = instrument_metadata(market, normalized, name, repo_root=root)
+    underlying = (
+        profile_for_index(str(metadata.get("index_key") or ""))
+        if market == "cn_qdii_etf"
+        else None
+    )
     return _json_safe(
         {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "market": market,
             "agent": agent,
-            "instrument": instrument_metadata(market, normalized, name),
+            "instrument": metadata,
+            "underlying": underlying,
             "latest": latest,
             "candles": candles,
             "metrics": metrics,

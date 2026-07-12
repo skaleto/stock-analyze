@@ -151,6 +151,23 @@ def _seed_detail_repo(root: Path) -> None:
 
 
 class DashboardAppApiTests(unittest.TestCase):
+    def test_detail_payload_prefers_current_fund_basic_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            shared_cache = root / "data" / "cn_qdii_etf" / "shared" / "cache"
+            pd.DataFrame(
+                [{"ts_code": "513100.SH", "name": "新版纳指ETF"}]
+            ).to_csv(shared_cache / "fund_basic_E_v2.csv", index=False)
+
+            payload = build_dashboard_detail_data(
+                repo_root=root,
+                market="cn_qdii_etf",
+                agent="codex",
+            )
+
+        self.assertEqual(payload["orders"]["rows"][0]["name"], "新版纳指ETF")
+
     def test_detail_payload_reads_runtime_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -185,6 +202,47 @@ class DashboardAppApiTests(unittest.TestCase):
             self.assertEqual(payload["activity"]["rows"][0]["status"], "planned")
             self.assertIn("目标订单", payload["weekly_report"]["markdown"])
             json.dumps(payload, allow_nan=False, ensure_ascii=False)
+
+    def test_qdii_detail_payload_includes_selection_funnel_and_underlying_lookthrough(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            data_dir = root / "data" / "cn_qdii_etf" / "codex"
+            (data_dir / "selection_snapshot.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "as_of": "2026-07-10",
+                        "universe_hash": "shared-hash",
+                        "scopes": {
+                            "us_exposure": {
+                                "stages": [
+                                    {"key": "catalog", "label": "动态目录", "count": 13},
+                                    {"key": "portfolio_target", "label": "目标持仓", "count": 1},
+                                ],
+                                "rejections": [{"reason": "abnormal_premium", "count": 2}],
+                                "selected": [{"code": "513100.SH", "index_key": "nasdaq_100"}],
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            payload = build_dashboard_detail_data(
+                repo_root=root,
+                market="cn_qdii_etf",
+                agent="codex",
+            )
+
+        self.assertEqual(payload["selection"]["universe_hash"], "shared-hash")
+        self.assertEqual(payload["selection"]["scopes"]["us_exposure"]["stages"][0]["count"], 13)
+        self.assertEqual(payload["lookthrough"]["source"], "positions")
+        self.assertEqual(payload["lookthrough"]["indexes"][0]["index_key"], "nasdaq_100")
+        companies = {row["symbol"]: row for row in payload["lookthrough"]["companies"]}
+        self.assertAlmostEqual(companies["NVDA"]["weight"], 0.076)
+        self.assertEqual(payload["lookthrough"]["sources"][0]["as_of"], "2026-06-30")
 
     def test_detail_api_route_is_recognised_with_query_string(self) -> None:
         self.assertTrue(_is_dashboard_api_path("/api/dashboard/detail.json"))
@@ -405,6 +463,11 @@ class DashboardAppApiTests(unittest.TestCase):
         self.assertAlmostEqual(payload["latest"]["change_pct"], 2.19 / 2.15 - 1.0)
         self.assertEqual(payload["related_trades"][0]["side_label"], "买入")
         self.assertIn("avg_amount_20", {item["key"] for item in payload["metrics"]})
+        self.assertEqual(payload["latest"]["amount"], 2_600_000.0)
+        average_amount = next(item for item in payload["metrics"] if item["key"] == "avg_amount_20")
+        self.assertEqual(average_amount["value"], 2_400_000.0)
+        self.assertEqual(payload["underlying"]["index_key"], "nasdaq_100")
+        self.assertEqual(payload["underlying"]["constituents"][0]["symbol"], "NVDA")
 
     def test_instrument_payload_normalizes_a_share_chinese_cache_columns(self) -> None:
         from stock_analyze.dashboard_aggregator import build_dashboard_instrument_data

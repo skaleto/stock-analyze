@@ -53,6 +53,9 @@ const comparisonPayload = {
   },
   pair: {
     position_overlap: 0.43,
+    underlying_index_overlap: 0.25,
+    underlying_company_overlap: 0.38,
+    weighted_company_overlap: 0.21,
     return_correlation: null,
     factor_distance: 0.65,
     factor_distance_floor: 0.45,
@@ -129,6 +132,34 @@ const detailPayload = {
   market_label: "跨境ETF",
   currency: "¥",
   agent: "codex",
+  selection: {
+    schema_version: 1,
+    as_of: "2026-07-10",
+    universe_hash: "shared-hash",
+    scopes: {
+      us_exposure: {
+        stages: [
+          { key: "catalog", label: "动态目录", count: 13 },
+          { key: "portfolio_target", label: "目标持仓", count: 1 },
+        ],
+        rejections: [],
+        selected: [],
+      },
+    },
+  },
+  lookthrough: {
+    status: "partial",
+    source: "planned_orders",
+    profile_coverage: 1,
+    company_weight_coverage: 0.4504,
+    indexes: [{ index_key: "nasdaq_100", label: "纳斯达克100", weight: 1, profile_available: true }],
+    countries: [{ label: "美国", weight: 1 }],
+    sectors: [{ label: "信息技术", weight: 0.6851 }],
+    companies: [{ symbol: "NVDA", name: "英伟达", sector: "信息技术", weight: 0.076 }],
+    company_symbols: ["NVDA"],
+    sources: [{ index_key: "nasdaq_100", name: "纳斯达克100", as_of: "2026-06-30", source_url: "https://example.com", source_label: "official" }],
+    unsupported_indexes: [],
+  },
   nav: {
     latest: {
       date: "2026-07-10",
@@ -301,6 +332,8 @@ describe("Dashboard app", () => {
     expect(screen.getAllByText("趋势进攻 · 全球动量").length).toBeGreaterThan(0);
     expect(screen.getAllByText("纳斯达克100基准").length).toBeGreaterThan(0);
     expect(screen.queryByText("周报摘录")).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "ETF候选与底层暴露" })).toBeInTheDocument();
+    expect(screen.getByText("shared-hash")).toBeInTheDocument();
 
     const arena = screen.getByRole("region", { name: "双策略竞技场" });
     const accountOverview = screen.getByRole("region", { name: "账户总览" });

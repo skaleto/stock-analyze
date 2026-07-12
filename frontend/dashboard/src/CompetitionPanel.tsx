@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { ArrowUpRight, GitCompareArrows, ShieldCheck, Split } from "lucide-react";
+import { ArrowUpRight, Building2, GitCompareArrows, Layers3, ShieldCheck, Split } from "lucide-react";
 import { StrategyComparisonChart } from "./FinancialCharts";
 import { formatMoney, formatPercent } from "./finance";
 import type { StrategyAllocation, StrategyComparison, StrategyComparisonSide } from "./types";
@@ -103,6 +103,8 @@ export default function CompetitionPanel({
         </div>
         <div className="divergence-strip" aria-label="策略差异指标">
           <div><Split size={15} aria-hidden="true" /><span>持仓重合度</span><strong>{comparison.pair.position_overlap == null ? "数据积累中" : formatPercent(comparison.pair.position_overlap)}</strong></div>
+          <div><Layers3 size={15} aria-hidden="true" /><span>底层指数重合</span><strong>{comparison.pair.underlying_index_overlap == null ? "数据积累中" : formatPercent(comparison.pair.underlying_index_overlap)}</strong></div>
+          <div title="按官方成分名单计算"><Building2 size={15} aria-hidden="true" /><span>底层公司重合</span><strong>{comparison.pair.underlying_company_overlap == null ? "数据积累中" : formatPercent(comparison.pair.underlying_company_overlap)}</strong></div>
           <div><GitCompareArrows size={15} aria-hidden="true" /><span>收益相关性</span><strong>{formatRatio(comparison.pair.return_correlation)}</strong></div>
           <div><ShieldCheck size={15} aria-hidden="true" /><span>因子差异度</span><strong>{formatRatio(comparison.pair.factor_distance)}</strong></div>
         </div>

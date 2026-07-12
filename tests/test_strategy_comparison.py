@@ -14,6 +14,7 @@ def _detail(
     orders: list[dict] | None = None,
     trades: list[dict] | None = None,
     cash: float = 20.0,
+    lookthrough: dict | None = None,
 ) -> dict:
     dates = ["2026-07-10", "2026-07-13", "2026-07-14"]
     series = [
@@ -40,6 +41,7 @@ def _detail(
         "positions": {"rows": positions or [], "summary": {"total": len(positions or [])}},
         "orders": {"rows": orders or [], "summary": {"total": len(orders or [])}},
         "trades": {"rows": trades or [], "summary": {"total": len(trades or [])}},
+        "lookthrough": lookthrough or {},
     }
 
 
@@ -190,6 +192,41 @@ class StrategyComparisonTests(unittest.TestCase):
             self.assertIsNone(metrics["annualized_volatility"])
             self.assertIsNone(metrics["sharpe"])
         self.assertIsNone(result["pair"]["return_correlation"])
+
+    def test_qdii_comparison_reports_underlying_index_and_company_overlap(self) -> None:
+        from stock_analyze.strategy_comparison import build_strategy_comparison
+
+        defensive = _detail(
+            "claude",
+            [100.0],
+            [0.0],
+            factors={"low_volatility_60": 1.0},
+            lookthrough={
+                "indexes": [{"index_key": "nasdaq_100"}, {"index_key": "sp_500"}],
+                "companies": [{"symbol": "NVDA", "weight": 0.2}, {"symbol": "AAPL", "weight": 0.1}],
+            },
+        )
+        trend = _detail(
+            "codex",
+            [100.0],
+            [0.0],
+            factors={"momentum_20": 1.0},
+            lookthrough={
+                "indexes": [{"index_key": "nasdaq_100"}, {"index_key": "hang_seng_tech"}],
+                "companies": [{"symbol": "NVDA", "weight": 0.3}, {"symbol": "0700.HK", "weight": 0.2}],
+            },
+        )
+
+        result = build_strategy_comparison(
+            "cn_qdii_etf",
+            {"claude": defensive, "codex": trend},
+            registry=self.registry,
+        )
+
+        self.assertAlmostEqual(result["pair"]["underlying_index_overlap"], 1 / 3)
+        self.assertAlmostEqual(result["pair"]["underlying_company_overlap"], 1 / 3)
+        self.assertAlmostEqual(result["pair"]["weighted_company_overlap"], 0.2 / 0.6)
+        self.assertEqual(result["strategies"]["codex"]["lookthrough"], trend["lookthrough"])
 
 
 if __name__ == "__main__":

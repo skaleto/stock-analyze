@@ -89,6 +89,8 @@ python -m unittest \
   tests.test_strategy_registry \
   tests.test_strategy_release \
   tests.test_strategy_comparison \
+  tests.test_qdii_universe \
+  tests.test_qdii_lookthrough \
   tests.test_qdii_systemd_units \
   tests.test_deploy_app_script
 

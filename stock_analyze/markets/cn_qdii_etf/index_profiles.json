@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "nasdaq_100": {
+      "index_key": "nasdaq_100",
+      "name": "纳斯达克100",
+      "country": "美国",
+      "as_of": "2026-06-30",
+      "source_url": "https://indexes.nasdaq.com/docs/FS_NDX.pdf",
+      "source_label": "Nasdaq-100 official factsheet",
+      "constituents": [
+        {"symbol": "NVDA", "name": "英伟达", "sector": "信息技术", "weight": 0.0760},
+        {"symbol": "AAPL", "name": "苹果", "sector": "信息技术", "weight": 0.0667},
+        {"symbol": "MU", "name": "美光科技", "sector": "信息技术", "weight": 0.0564},
+        {"symbol": "MSFT", "name": "微软", "sector": "信息技术", "weight": 0.0435},
+        {"symbol": "AMD", "name": "超威半导体", "sector": "信息技术", "weight": 0.0411},
+        {"symbol": "AMZN", "name": "亚马逊", "sector": "可选消费", "weight": 0.0403},
+        {"symbol": "TSLA", "name": "特斯拉", "sector": "可选消费", "weight": 0.0330},
+        {"symbol": "GOOGL", "name": "Alphabet A", "sector": "通信服务", "weight": 0.0327},
+        {"symbol": "INTC", "name": "英特尔", "sector": "信息技术", "weight": 0.0304},
+        {"symbol": "GOOG", "name": "Alphabet C", "sector": "通信服务", "weight": 0.0303}
+      ],
+      "sector_weights": [
+        {"label": "信息技术", "weight": 0.6851},
+        {"label": "可选消费", "weight": 0.1643},
+        {"label": "医疗保健", "weight": 0.0356},
+        {"label": "通信服务", "weight": 0.0346},
+        {"label": "工业", "weight": 0.0313},
+        {"label": "日常消费", "weight": 0.0204},
+        {"label": "原材料", "weight": 0.0128},
+        {"label": "公用事业", "weight": 0.0114},
+        {"label": "能源", "weight": 0.0045}
+      ]
+    },
+    "sp_500": {
+      "index_key": "sp_500",
+      "name": "标普500",
+      "country": "美国",
+      "as_of": "2026-06-30",
+      "source_url": "https://www.spglobal.com/spdji/en/indices/equity/sp-500/",
+      "source_label": "S&P Dow Jones Indices official index page",
+      "constituents": [
+        {"symbol": "NVDA", "name": "英伟达", "sector": "信息技术", "weight": null},
+        {"symbol": "AAPL", "name": "苹果", "sector": "信息技术", "weight": null},
+        {"symbol": "MSFT", "name": "微软", "sector": "信息技术", "weight": null},
+        {"symbol": "AMZN", "name": "亚马逊", "sector": "可选消费", "weight": null},
+        {"symbol": "GOOGL", "name": "Alphabet A", "sector": "通信服务", "weight": null},
+        {"symbol": "AVGO", "name": "博通", "sector": "信息技术", "weight": null},
+        {"symbol": "GOOG", "name": "Alphabet C", "sector": "通信服务", "weight": null},
+        {"symbol": "MU", "name": "美光科技", "sector": "信息技术", "weight": null},
+        {"symbol": "META", "name": "Meta Platforms", "sector": "通信服务", "weight": null},
+        {"symbol": "TSLA", "name": "特斯拉", "sector": "可选消费", "weight": null}
+      ],
+      "sector_weights": [
+        {"label": "信息技术", "weight": 0.380},
+        {"label": "金融", "weight": 0.118},
+        {"label": "通信服务", "weight": 0.097},
+        {"label": "可选消费", "weight": 0.093},
+        {"label": "工业", "weight": 0.089},
+        {"label": "医疗保健", "weight": 0.089},
+        {"label": "日常消费", "weight": 0.046},
+        {"label": "能源", "weight": 0.030},
+        {"label": "公用事业", "weight": 0.022},
+        {"label": "原材料", "weight": 0.018},
+        {"label": "房地产", "weight": 0.018}
+      ]
+    },
+    "hang_seng_tech": {
+      "index_key": "hang_seng_tech",
+      "name": "恒生科技",
+      "country": "香港",
+      "as_of": "2026-06-30",
+      "source_url": "https://www.hsi.com.hk/static/uploads/contents/en/dl_centre/factsheets/hsteche.pdf",
+      "source_label": "Hang Seng TECH Index official factsheet",
+      "constituents": [
+        {"symbol": "0981.HK", "name": "中芯国际", "sector": "信息技术", "weight": 0.1015},
+        {"symbol": "9999.HK", "name": "网易", "sector": "信息技术", "weight": 0.0953},
+        {"symbol": "0700.HK", "name": "腾讯控股", "sector": "信息技术", "weight": 0.0830},
+        {"symbol": "3690.HK", "name": "美团", "sector": "可选消费", "weight": 0.0745},
+        {"symbol": "1211.HK", "name": "比亚迪股份", "sector": "可选消费", "weight": 0.0697},
+        {"symbol": "1810.HK", "name": "小米集团", "sector": "信息技术", "weight": 0.0680},
+        {"symbol": "9988.HK", "name": "阿里巴巴", "sector": "可选消费", "weight": 0.0660},
+        {"symbol": "1347.HK", "name": "华虹半导体", "sector": "信息技术", "weight": 0.0514},
+        {"symbol": "9888.HK", "name": "百度集团", "sector": "可选消费", "weight": 0.0496},
+        {"symbol": "9618.HK", "name": "京东集团", "sector": "可选消费", "weight": 0.0473}
+      ],
+      "sector_weights": [
+        {"label": "信息技术", "weight": 0.4926},
+        {"label": "可选消费", "weight": 0.4776},
+        {"label": "医疗保健", "weight": 0.0170},
+        {"label": "工业", "weight": 0.0128}
+      ]
+    },
+    "hang_seng": {
+      "index_key": "hang_seng",
+      "name": "恒生指数",
+      "country": "香港",
+      "as_of": "2026-06-30",
+      "source_url": "https://www.hsi.com.hk/static/uploads/contents/en/dl_centre/factsheets/hsie.pdf",
+      "source_label": "Hang Seng Index official factsheet",
+      "constituents": [
+        {"symbol": "0005.HK", "name": "汇丰控股", "sector": "金融", "weight": 0.0915},
+        {"symbol": "0700.HK", "name": "腾讯控股", "sector": "信息技术", "weight": 0.0813},
+        {"symbol": "9988.HK", "name": "阿里巴巴", "sector": "可选消费", "weight": 0.0646},
+        {"symbol": "0939.HK", "name": "建设银行", "sector": "金融", "weight": 0.0519},
+        {"symbol": "1299.HK", "name": "友邦保险", "sector": "金融", "weight": 0.0502},
+        {"symbol": "1398.HK", "name": "工商银行", "sector": "金融", "weight": 0.0354},
+        {"symbol": "0941.HK", "name": "中国移动", "sector": "通信服务", "weight": 0.0317},
+        {"symbol": "0388.HK", "name": "香港交易所", "sector": "金融", "weight": 0.0292},
+        {"symbol": "1810.HK", "name": "小米集团", "sector": "信息技术", "weight": 0.0263},
+        {"symbol": "3690.HK", "name": "美团", "sector": "可选消费", "weight": 0.0254}
+      ],
+      "sector_weights": [
+        {"label": "金融", "weight": 0.2582},
+        {"label": "信息技术", "weight": 0.1076},
+        {"label": "可选消费", "weight": 0.0900},
+        {"label": "通信服务", "weight": 0.0317}
+      ]
+    },
+    "hang_seng_internet": {
+      "index_key": "hang_seng_internet",
+      "name": "恒生互联网科技业",
+      "country": "香港",
+      "as_of": "2026-02-05",
+      "source_url": "https://www.hsi.com.hk/static/uploads/contents/en/dl_centre/blog/20260210T000000.pdf",
+      "source_label": "Hang Seng Indexes official technology report",
+      "constituents": [
+        {"symbol": "9988.HK", "name": "阿里巴巴", "sector": "可选消费", "weight": 0.156},
+        {"symbol": "0700.HK", "name": "腾讯控股", "sector": "信息技术", "weight": 0.138},
+        {"symbol": "3690.HK", "name": "美团", "sector": "可选消费", "weight": 0.099},
+        {"symbol": "9999.HK", "name": "网易", "sector": "信息技术", "weight": 0.088},
+        {"symbol": "1810.HK", "name": "小米集团", "sector": "信息技术", "weight": 0.088},
+        {"symbol": "1024.HK", "name": "快手", "sector": "可选消费", "weight": 0.084},
+        {"symbol": "9618.HK", "name": "京东集团", "sector": "可选消费", "weight": 0.073},
+        {"symbol": "9888.HK", "name": "百度集团", "sector": "可选消费", "weight": 0.067},
+        {"symbol": "9660.HK", "name": "地平线机器人", "sector": "信息技术", "weight": 0.033},
+        {"symbol": "0020.HK", "name": "商汤", "sector": "信息技术", "weight": 0.030}
+      ],
+      "sector_weights": [
+        {"label": "可选消费", "weight": 0.479},
+        {"label": "信息技术", "weight": 0.377}
+      ]
+    }
+  }
+}

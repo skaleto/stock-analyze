@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from datetime import date
 from tempfile import TemporaryDirectory
@@ -312,6 +313,35 @@ class ETFSimulatorTests(unittest.TestCase):
             sum(order["account_id"] == "hk_exposure" for order in orders),
             2,
         )
+
+    def test_config_rebalance_prioritizes_distinct_underlying_indexes_and_persists_funnel(self):
+        config = _config()
+        config["accounts"][0]["cash"] = 500_000.0
+        config["accounts"][0]["top_n"] = 3
+        config["trading"] = {"max_single_weight": 0.34}
+        scored = [
+            {"code": "A.SH", "account_id": "us_exposure", "score": 1.0, "index_key": "nasdaq_100", "theme": "纳斯达克100", "universe_hash": "shared-hash"},
+            {"code": "B.SH", "account_id": "us_exposure", "score": 0.99, "index_key": "nasdaq_100", "theme": "纳斯达克100", "universe_hash": "shared-hash"},
+            {"code": "C.SH", "account_id": "us_exposure", "score": 0.90, "index_key": "sp_500", "theme": "标普500", "universe_hash": "shared-hash"},
+            {"code": "D.SH", "account_id": "us_exposure", "score": 0.80, "index_key": "dow_jones_industrial", "theme": "道琼斯工业平均", "universe_hash": "shared-hash"},
+        ]
+        with TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            initialize(config, store)
+            with patch("stock_analyze.markets.cn_qdii_etf.run.build_signals", return_value=scored):
+                orders = generate_config_orders(
+                    config,
+                    store,
+                    FakeProvider(price=2.0),
+                    as_of=date(2026, 7, 10),
+                )
+            selection = json.loads((store.data_dir / "selection_snapshot.json").read_text(encoding="utf-8"))
+
+        self.assertEqual([order["code"] for order in orders], ["A.SH", "C.SH", "D.SH"])
+        scope = selection["scopes"]["us_exposure"]
+        self.assertEqual(scope["stages"][-1], {"key": "portfolio_target", "label": "目标持仓", "count": 3})
+        self.assertEqual([row["code"] for row in scope["selected"]], ["A.SH", "C.SH", "D.SH"])
+        self.assertEqual(selection["universe_hash"], "shared-hash")
 
     def test_config_rebalance_reserves_enough_cash_for_all_initial_buys(self):
         config = _config()

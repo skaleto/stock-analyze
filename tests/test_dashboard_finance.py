@@ -19,6 +19,46 @@ class DashboardFinanceTests(unittest.TestCase):
         self.assertEqual(metadata["exposure_group"], "美国市场")
         self.assertEqual(metadata["theme"], "纳斯达克100")
 
+    def test_qdii_metadata_prefers_latest_dynamic_universe_snapshot(self) -> None:
+        from stock_analyze.dashboard_finance import instrument_metadata
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shared = root / "data" / "cn_qdii_etf" / "shared"
+            shared.mkdir(parents=True)
+            (shared / "universe_latest.json").write_text(
+                json.dumps(
+                    {
+                        "scopes": {
+                            "us_exposure": [
+                                {
+                                    "code": "159509.SZ",
+                                    "exposure_group": "美国市场",
+                                    "theme": "纳斯达克科技",
+                                    "index_key": "nasdaq_technology",
+                                    "country": "美国",
+                                    "sector": "信息技术",
+                                    "benchmark": "纳斯达克科技市值加权指数",
+                                }
+                            ]
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            metadata = instrument_metadata(
+                "cn_qdii_etf",
+                "159509.SZ",
+                "纳斯达克科技ETF",
+                repo_root=root,
+            )
+
+        self.assertEqual(metadata["theme"], "纳斯达克科技")
+        self.assertEqual(metadata["index_key"], "nasdaq_technology")
+        self.assertEqual(metadata["sector"], "信息技术")
+
     def test_a_share_metadata_uses_industry(self) -> None:
         from stock_analyze.dashboard_finance import instrument_metadata
 
