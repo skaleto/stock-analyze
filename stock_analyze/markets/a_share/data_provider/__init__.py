@@ -232,7 +232,7 @@ class DataProvider(ABC):
         ``start`` and ``end`` (YYYYMMDD).
 
         Output columns: ``日期``, ``开盘``, ``收盘``, ``最高``, ``最低``,
-        ``成交额`` (元), ``停牌``, ``is_st``, ``pe``, ``pb``, ``source``.
+        ``成交量``, ``成交额`` (元), ``停牌``, ``is_st``, ``pe``, ``pb``, ``source``.
         """
 
     @abstractmethod
@@ -485,9 +485,16 @@ class DataProvider(ABC):
                 empty = normalize_history(pd.DataFrame())
                 self._history_cache[cache_key] = empty
                 return empty.copy()
-            normalized = normalize_history(cached)
-            self._history_cache[cache_key] = normalized
-            return normalized.copy()
+            has_volume = any(column in cached.columns for column in ("成交量", "volume", "vol"))
+            if self.offline or has_volume:
+                normalized = normalize_history(cached)
+                self._history_cache[cache_key] = normalized
+                return normalized.copy()
+            self.record_health(
+                f"history_{code}",
+                "refresh",
+                f"legacy cache missing volume: {cache_name}",
+            )
 
         if self.offline:
             # prepare-market-data prewarms a three-year window for the
@@ -847,12 +854,13 @@ class TushareProvider(DataProvider):
         df["收盘"] = pd.to_numeric(df["close"], errors="coerce")
         df["最高"] = pd.to_numeric(df["high"], errors="coerce")
         df["最低"] = pd.to_numeric(df["low"], errors="coerce")
+        df["成交量"] = pd.to_numeric(df["vol"], errors="coerce")
         # Tushare amount unit is 千元 → convert to 元.
         df["成交额"] = pd.to_numeric(df["amount"], errors="coerce") * 1000
         df["停牌"] = False
         df["is_st"] = False
         df["source"] = "tushare_daily"
-        out = df[["日期", "开盘", "收盘", "最高", "最低", "成交额", "停牌", "is_st", "source"]].copy()
+        out = df[["日期", "开盘", "收盘", "最高", "最低", "成交量", "成交额", "停牌", "is_st", "source"]].copy()
         return out.sort_values("日期").reset_index(drop=True)
 
     def fina_indicator(self, code: str) -> pd.DataFrame:
@@ -1086,6 +1094,7 @@ class BaostockProvider(DataProvider):
         out["收盘"] = pd.to_numeric(df["close"], errors="coerce")
         out["最高"] = pd.to_numeric(df["high"], errors="coerce")
         out["最低"] = pd.to_numeric(df["low"], errors="coerce")
+        out["成交量"] = pd.to_numeric(df["volume"], errors="coerce")
         out["成交额"] = pd.to_numeric(df["amount"], errors="coerce")
         out["停牌"] = df["tradestatus"].astype(str).ne("1")
         out["is_st"] = df["isST"].astype(str).eq("1")
@@ -1461,7 +1470,7 @@ def normalize_constituents(df: pd.DataFrame) -> pd.DataFrame:
 
 def normalize_history(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
-        return pd.DataFrame(columns=["日期", "开盘", "收盘", "最高", "最低", "成交额", "source"])
+        return pd.DataFrame(columns=["日期", "开盘", "收盘", "最高", "最低", "成交量", "成交额", "source"])
     out = df.copy()
     date_col = first_available_column(out, ["日期", "date", "trade_date"])
     open_col = first_available_column(out, ["开盘", "open"])
@@ -1469,15 +1478,16 @@ def normalize_history(df: pd.DataFrame) -> pd.DataFrame:
     high_col = first_available_column(out, ["最高", "high"])
     low_col = first_available_column(out, ["最低", "low"])
     amount_col = first_available_column(out, ["成交额", "amount"])
-    volume_col = first_available_column(out, ["成交量", "volume"])
+    volume_col = first_available_column(out, ["成交量", "volume", "vol"])
     if not date_col or not close_col:
-        return pd.DataFrame(columns=["日期", "开盘", "收盘", "最高", "最低", "成交额", "source"])
+        return pd.DataFrame(columns=["日期", "开盘", "收盘", "最高", "最低", "成交量", "成交额", "source"])
     normalized = pd.DataFrame()
     normalized["日期"] = pd.to_datetime(out[date_col]).dt.date.astype(str)
     normalized["开盘"] = out[open_col].map(safe_float) if open_col else None
     normalized["收盘"] = out[close_col].map(safe_float)
     normalized["最高"] = out[high_col].map(safe_float) if high_col else None
     normalized["最低"] = out[low_col].map(safe_float) if low_col else None
+    normalized["成交量"] = out[volume_col].map(safe_float) if volume_col else None
     if amount_col:
         normalized["成交额"] = normalize_amount_series(out[amount_col].map(safe_float))
     elif volume_col:
