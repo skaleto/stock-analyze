@@ -222,9 +222,9 @@ def _read_qdii_research(root: Path, agent: str) -> dict[str, Any]:
 _DAILY_TASK_ROWS = [
     ("prepare-market-data", "ECS 17:25 Mon-Fri 拉数据 → 触发 daily agents",
      "_pipeline_market_data"),
-    ("stock-analyze-claude-daily", "执行待发订单 + 更新 NAV",
+    ("stock-analyze-claude-daily", "执行待发订单 + 更新 NAV + 生成次日目标",
      "_pipeline_agent_daily:claude"),
-    ("stock-analyze-codex-daily", "执行待发订单 + 更新 NAV",
+    ("stock-analyze-codex-daily", "执行待发订单 + 更新 NAV + 生成次日目标",
      "_pipeline_agent_daily:codex"),
     ("aggregate-dashboard (OnSuccess)", "agent daily 完成后自动刷新 competition 聚合页",
      "_pipeline_aggregate_dashboard"),
@@ -232,9 +232,9 @@ _DAILY_TASK_ROWS = [
 _WEEKLY_TASK_ROWS = [
     ("stock-analyze-weekly-trigger", "ECS Sat 10:00 触发 weekly agents（用周五 cache）",
      "_pipeline_weekly_trigger"),
-    ("stock-analyze-claude-weekly", "生成下周一执行的 pending orders + 周报",
+    ("stock-analyze-claude-weekly", "周度归因复盘 + 周报（不生成订单）",
      "_pipeline_agent_weekly:claude"),
-    ("stock-analyze-codex-weekly", "生成下周一执行的 pending orders + 周报",
+    ("stock-analyze-codex-weekly", "周度归因复盘 + 周报（不生成订单）",
      "_pipeline_agent_weekly:codex"),
 ]
 

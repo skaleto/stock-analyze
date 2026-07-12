@@ -141,7 +141,7 @@ class MultiMarketDashboardTests(unittest.TestCase):
             self.assertNotIn("/pro/hk/", html)
             self.assertNotIn("/pro/us/", html)
             self.assertIn("日任务", html)
-            self.assertIn("周任务", html)
+            self.assertIn("周度复盘", html)
             self.assertIn("月任务", html)
             self.assertIn("run-daily", html)
             self.assertIn("run-weekly", html)
