@@ -25,6 +25,8 @@ from ...utils import write_json
 
 MAX_NAV_AGE_DAYS = 7
 MAX_PRICE_AGE_DAYS = 7
+INSTRUMENT_HISTORY_YEARS = 3
+HISTORY_START_TOLERANCE_DAYS = 7
 
 
 @dataclass
@@ -373,6 +375,12 @@ class CNQDIETFProvider:
 
     def _fund_daily(self, ts_code: str, as_of_key: str) -> pd.DataFrame:
         cache_name = self._cache_name("fund_daily", ts_code, as_of_key)
+        end = datetime.strptime(as_of_key, "%Y%m%d").date()
+        try:
+            start_day = end.replace(year=end.year - INSTRUMENT_HISTORY_YEARS)
+        except ValueError:
+            start_day = end.replace(year=end.year - INSTRUMENT_HISTORY_YEARS, day=28)
+        start = start_day.strftime("%Y%m%d")
         fallback: pd.DataFrame | None = None
         if cache_name in self._daily_cache:
             fallback = self._daily_cache[cache_name]
@@ -383,7 +391,7 @@ class CNQDIETFProvider:
             if fallback is not None:
                 self._daily_cache[cache_name] = fallback
         if fallback is not None:
-            complete = self._daily_has_target(fallback, as_of_key)
+            complete = self._daily_covers_window(fallback, start, as_of_key)
             if self.offline or complete or cache_name in self._daily_refresh_attempted:
                 self.record_health("fund_daily", cache_status, cache_name, rows=len(fallback))
                 return fallback
@@ -397,8 +405,6 @@ class CNQDIETFProvider:
             self.record_health("fund_daily", "cache_miss", cache_name)
             raise CacheMiss(method="fund_daily", cache_name=cache_name)
         self._daily_refresh_attempted.add(cache_name)
-        end = datetime.strptime(as_of_key, "%Y%m%d").date()
-        start = (end - timedelta(days=260)).strftime("%Y%m%d")
         try:
             df = self.pro.fund_daily(
                 ts_code=ts_code,
@@ -417,10 +423,17 @@ class CNQDIETFProvider:
         return self._daily_cache[cache_name]
 
     @staticmethod
-    def _daily_has_target(df: pd.DataFrame, as_of_key: str) -> bool:
+    def _daily_covers_window(df: pd.DataFrame, start_key: str, as_of_key: str) -> bool:
         if df.empty or "trade_date" not in df.columns:
             return False
-        return bool((df["trade_date"].astype(str) == as_of_key).any())
+        dates = df["trade_date"].astype(str).str.replace("-", "", regex=False).str[:8]
+        if not bool((dates == as_of_key).any()):
+            return False
+        tolerance = (
+            datetime.strptime(start_key, "%Y%m%d").date()
+            + timedelta(days=HISTORY_START_TOLERANCE_DAYS)
+        ).strftime("%Y%m%d")
+        return bool(dates.min() <= tolerance)
 
     def _fund_nav(self, ts_code: str, as_of_key: str) -> pd.DataFrame:
         cache_name = self._cache_name("fund_nav", ts_code, as_of_key)

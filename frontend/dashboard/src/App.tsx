@@ -396,7 +396,17 @@ export default function App() {
         <TargetOrders rows={orders} currency={activeDetail?.currency ?? selectedMarketSummary?.currency ?? "¥"} onSelect={openDrawer} />
       </section>
 
-      {selectedRow ? <InstrumentDrawer row={selectedRow} title={selectedRowTitle} market={selectedMarket} agent={selectedAgent} onClose={closeDrawer} /> : null}
+      {selectedRow ? (
+        <InstrumentDrawer
+          row={selectedRow}
+          title={selectedRowTitle}
+          market={selectedMarket}
+          agent={selectedAgent}
+          strategyLabel={selectedStrategyLabel}
+          seasonEffectiveDate={selectedMarketSummary?.comparison?.season.effective_date ?? ""}
+          onClose={closeDrawer}
+        />
+      ) : null}
     </main>
   );
 }

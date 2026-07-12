@@ -10,12 +10,16 @@ export default function InstrumentDrawer({
   title,
   market,
   agent,
+  strategyLabel,
+  seasonEffectiveDate,
   onClose,
 }: {
   row: OrderRow;
   title: string;
   market: string;
   agent: string;
+  strategyLabel: string;
+  seasonEffectiveDate: string;
   onClose: () => void;
 }) {
   const drawerRef = useRef<HTMLElement>(null);
@@ -94,7 +98,12 @@ export default function InstrumentDrawer({
                 <b className={(detail.latest?.change_pct ?? 0) >= 0 ? "positive" : "negative"}>{formatFieldValue("momentum_20", detail.latest?.change_pct)}</b>
                 <small>{detail.latest?.date ?? "-"}</small>
               </div>
-              <CandlestickChart candles={detail.candles} />
+              <CandlestickChart
+                candles={detail.candles}
+                trades={detail.related_trades}
+                strategyLabel={strategyLabel}
+                seasonEffectiveDate={seasonEffectiveDate}
+              />
             </section>
           ) : null}
           {detail?.metrics.length ? (

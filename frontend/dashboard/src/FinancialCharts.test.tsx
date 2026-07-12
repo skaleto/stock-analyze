@@ -8,6 +8,8 @@ const chartMocks = vi.hoisted(() => {
   const remove = vi.fn();
   const subscribeCrosshairMove = vi.fn();
   const fitContent = vi.fn();
+  const detachMarkers = vi.fn();
+  const createSeriesMarkers = vi.fn((_series: unknown, _markers: unknown[]) => ({ detach: detachMarkers }));
   const createChart = vi.fn(() => ({
     addSeries,
     remove,
@@ -15,11 +17,12 @@ const chartMocks = vi.hoisted(() => {
     timeScale: () => ({ fitContent }),
     applyOptions: vi.fn(),
   }));
-  return { setData, addSeries, remove, subscribeCrosshairMove, fitContent, createChart };
+  return { setData, addSeries, remove, subscribeCrosshairMove, fitContent, createChart, createSeriesMarkers, detachMarkers };
 });
 
 vi.mock("lightweight-charts", () => ({
   createChart: chartMocks.createChart,
+  createSeriesMarkers: chartMocks.createSeriesMarkers,
   AreaSeries: { type: "area" },
   CandlestickSeries: { type: "candlestick" },
   HistogramSeries: { type: "histogram" },
@@ -87,6 +90,45 @@ describe("financial charts", () => {
     expect(chartMocks.setData).toHaveBeenCalled();
     unmount();
     expect(chartMocks.remove).toHaveBeenCalled();
+  });
+
+  it("marks only current-season trades with the selected strategy identity", () => {
+    render(
+      <CandlestickChart
+        candles={[
+          { date: "2026-07-10", open: 2.0, high: 2.1, low: 1.9, close: 2.05 },
+          { date: "2026-07-14", open: 2.1, high: 2.3, low: 2.0, close: 2.2 },
+        ]}
+        trades={[
+          { trade_date: "2026-07-10", side: "buy", shares: 100 },
+          { trade_date: "2026-07-14", side: "buy", shares: 200 },
+          { trade_date: "2026-07-14", side: "sell", shares: 100 },
+        ]}
+        strategyLabel="趋势进攻"
+        seasonEffectiveDate="2026-07-11"
+      />
+    );
+
+    expect(chartMocks.createSeriesMarkers).toHaveBeenCalledTimes(1);
+    expect(chartMocks.createSeriesMarkers.mock.calls[0]?.[1]).toEqual([
+      {
+        time: "2026-07-14",
+        position: "belowBar",
+        color: "#ef4444",
+        shape: "arrowUp",
+        text: "趋势买",
+      },
+      {
+        time: "2026-07-14",
+        position: "aboveBar",
+        color: "#22c55e",
+        shape: "arrowDown",
+        text: "趋势卖",
+      },
+    ]);
+    expect(screen.getByText("当前赛季 · 趋势进攻")).toBeInTheDocument();
+    expect(screen.getByText("买入 1")).toBeInTheDocument();
+    expect(screen.getByText("卖出 1")).toBeInTheDocument();
   });
 
   it("renders two strategy series and a benchmark with crosshair readout", () => {

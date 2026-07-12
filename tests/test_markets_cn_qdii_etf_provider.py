@@ -289,6 +289,23 @@ class ProviderSnapshotTests(unittest.TestCase):
         self.assertEqual(quote.trade_date, "2026-07-10")
         self.assertEqual(len(client.daily_calls), 1)
 
+    def test_short_online_cache_is_refreshed_with_three_year_request(self):
+        with TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            _daily_frame().to_csv(cache / "fund_daily_513100_SH_20260710.csv", index=False)
+            client = FakeTushareClient()
+            provider = CNQDIETFProvider(
+                pro_client=client,
+                cache_dir=cache,
+                offline=False,
+            )
+
+            provider.price_snapshot("513100.SH", as_of="2026-07-10")
+
+        self.assertEqual(len(client.daily_calls), 1)
+        self.assertLessEqual(client.daily_calls[0]["start_date"], "20230710")
+        self.assertEqual(client.daily_calls[0]["end_date"], "20260710")
+
     def test_offline_cache_miss_raises_structured_cache_miss(self):
         with TemporaryDirectory() as tmp:
             provider = CNQDIETFProvider(
