@@ -578,6 +578,23 @@ a:hover { text-decoration: underline; }
 .range-control { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); }
 .range-control button { min-width: 42px; height: 26px; border: 0; border-radius: 3px; background: transparent; color: var(--muted); font-size: 11px; }
 .range-control button.active { background: var(--panel-3); color: var(--text); }
+.indicator-controls {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 0 0 5px;
+  color: var(--muted);
+  font-family: "SF Mono", "JetBrains Mono", Menlo, monospace;
+  font-size: 10px;
+}
+.indicator-toggle { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.indicator-toggle input { width: 12px; height: 12px; margin: 0; accent-color: var(--accent); }
+.indicator-toggle i { width: 13px; height: 2px; display: inline-block; }
+.indicator-toggle .indicator-volume { height: 5px; background: #64748b; }
+.indicator-toggle:has(input:not(:checked)) { color: var(--faint); }
+.indicator-toggle:has(input:not(:checked)) i { opacity: 0.35; }
 .chart-readout, .ohlc-readout {
   min-height: 28px;
   display: flex;

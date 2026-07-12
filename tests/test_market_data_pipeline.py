@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from stock_analyze.markets.a_share.data_provider import AkshareProvider, CacheMiss, filter_financial_visible_as_of
+from stock_analyze.markets.a_share.data_provider import AkshareProvider, CacheMiss, filter_financial_visible_as_of, normalize_history
 from stock_analyze.markets.a_share.market_data import (
     _acquire_spot_with_retry,
     _merged_filters,
@@ -75,6 +75,53 @@ class FakeProvider(AkshareProvider):
 
 
 class CacheMissBehaviorTests(unittest.TestCase):
+    def test_normalize_history_preserves_tushare_volume(self) -> None:
+        history = normalize_history(pd.DataFrame([
+            {
+                "trade_date": "20260710",
+                "open": 10.0,
+                "high": 10.8,
+                "low": 9.8,
+                "close": 10.5,
+                "vol": 123_456,
+                "amount": 1_200_000,
+            }
+        ]))
+
+        self.assertEqual(float(history.iloc[0]["成交量"]), 123_456)
+
+    def test_online_history_refreshes_legacy_cache_without_volume(self) -> None:
+        class VolumeProvider(AkshareProvider):
+            def __init__(self, cache_dir: Path) -> None:
+                super().__init__(cache_dir=cache_dir, offline=False, as_of="2026-07-10")
+                self.daily_calls = 0
+
+            def daily(self, code: str, start: str, end: str) -> pd.DataFrame:
+                self.daily_calls += 1
+                return pd.DataFrame([
+                    {
+                        "日期": "2026-07-10",
+                        "开盘": 10.0,
+                        "最高": 10.8,
+                        "最低": 9.8,
+                        "收盘": 10.5,
+                        "成交量": 123_456,
+                        "成交额": 1_200_000,
+                    }
+                ])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            pd.DataFrame([
+                {"日期": "2026-07-10", "开盘": 10, "最高": 10.8, "最低": 9.8, "收盘": 10.5, "成交额": 1_200_000}
+            ]).to_csv(cache / "history_000001_20260710_1098.csv", index=False)
+            provider = VolumeProvider(cache)
+
+            history = provider.price_history("000001", days=1098)
+
+        self.assertEqual(provider.daily_calls, 1)
+        self.assertEqual(float(history.iloc[0]["成交量"]), 123_456)
+
     def test_offline_raises_cache_miss_for_uncached_method(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             provider = AkshareProvider(cache_dir=tmp, offline=True, as_of="2026-05-22")

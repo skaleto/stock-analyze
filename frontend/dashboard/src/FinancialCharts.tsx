@@ -251,6 +251,45 @@ type TradeMarkerDetail = {
 
 type CandleRange = 30 | 90 | 365 | 0;
 
+const MOVING_AVERAGES = [
+  { key: "ma5", label: "MA5", period: 5, color: "#a78bfa" },
+  { key: "ma10", label: "MA10", period: 10, color: "#2dd4bf" },
+  { key: "ma20", label: "MA20", period: 20, color: "#f472b6" },
+  { key: "ma60", label: "MA60", period: 60, color: "#94a3b8" },
+] as const;
+
+type MovingAverageKey = typeof MOVING_AVERAGES[number]["key"];
+type IndicatorKey = MovingAverageKey | "volume";
+type IndicatorVisibility = Record<IndicatorKey, boolean>;
+
+const DEFAULT_INDICATORS: IndicatorVisibility = {
+  ma5: true,
+  ma10: true,
+  ma20: true,
+  ma60: true,
+  volume: true,
+};
+
+function movingAverageData(candles: Candle[], period: number): { time: Time; value: number }[] {
+  let rollingTotal = 0;
+  const points: { time: Time; value: number }[] = [];
+  candles.forEach((candle, index) => {
+    rollingTotal += candle.close;
+    if (index >= period) rollingTotal -= candles[index - period].close;
+    if (index >= period - 1) {
+      points.push({ time: candle.date as Time, value: rollingTotal / period });
+    }
+  });
+  return points;
+}
+
+function formatVolume(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "-";
+  if (Math.abs(value) >= 100_000_000) return `${(value / 100_000_000).toFixed(2)}亿`;
+  if (Math.abs(value) >= 10_000) return `${(value / 10_000).toFixed(2)}万`;
+  return value.toLocaleString("zh-CN", { maximumFractionDigits: 0 });
+}
+
 function candleVisibleRange(candles: Candle[], range: CandleRange): { from: Time; to: Time } | null {
   if (range === 0 || candles.length === 0) return null;
   const last = candles[candles.length - 1];
@@ -344,6 +383,7 @@ export function CandlestickChart({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [range, setRange] = useState<CandleRange>(30);
+  const [visibleIndicators, setVisibleIndicators] = useState<IndicatorVisibility>(DEFAULT_INDICATORS);
   const [hovered, setHovered] = useState<Candle | null>(candles[candles.length - 1] ?? null);
   const [hoveredTrade, setHoveredTrade] = useState<TradeMarkerDetail | null>(null);
   const visibleTrades = useMemo(
@@ -382,13 +422,6 @@ export function CandlestickChart({
       wickDownColor: "#22c55e",
       priceLineVisible: false,
     });
-    const volumeSeries = chart.addSeries(HistogramSeries, {
-      priceFormat: { type: "volume" },
-      priceScaleId: "volume",
-      lastValueVisible: false,
-      priceLineVisible: false,
-    });
-    volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
     priceSeries.setData(candles.map((candle) => ({
       time: candle.date as Time,
       open: candle.open,
@@ -396,11 +429,32 @@ export function CandlestickChart({
       low: candle.low,
       close: candle.close,
     })));
-    volumeSeries.setData(candles.map((candle) => ({
-      time: candle.date as Time,
-      value: candle.volume ?? 0,
-      color: candle.close >= candle.open ? "rgba(239,68,68,0.46)" : "rgba(34,197,94,0.46)",
-    })));
+    if (visibleIndicators.volume) {
+      const volumeSeries = chart.addSeries(HistogramSeries, {
+        priceFormat: { type: "volume" },
+        priceScaleId: "volume",
+        lastValueVisible: false,
+        priceLineVisible: false,
+      });
+      volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
+      volumeSeries.setData(candles.map((candle) => ({
+        time: candle.date as Time,
+        value: candle.volume ?? 0,
+        color: candle.close >= candle.open ? "rgba(239,68,68,0.46)" : "rgba(34,197,94,0.46)",
+      })));
+    }
+    for (const average of MOVING_AVERAGES) {
+      if (!visibleIndicators[average.key]) continue;
+      const series = chart.addSeries(LineSeries, {
+        color: average.color,
+        lineWidth: 1,
+        title: average.label,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      series.setData(movingAverageData(candles, average.period));
+    }
     const markerPlugin = markerBundle.markers.length ? createSeriesMarkers(priceSeries, markerBundle.markers) : null;
     const candleByDate = new Map(candles.map((candle) => [candle.date, candle]));
     chart.subscribeCrosshairMove((parameter) => {
@@ -417,7 +471,7 @@ export function CandlestickChart({
       markerPlugin?.detach();
       chart.remove();
     };
-  }, [candles, markerBundle, visibleRange]);
+  }, [candles, markerBundle, visibleIndicators, visibleRange]);
 
   if (candles.length === 0) return <div className="chart-empty">暂无历史行情缓存</div>;
   const change = hovered ? hovered.close - hovered.open : 0;
@@ -448,12 +502,41 @@ export function CandlestickChart({
           ))}
         </div>
       </div>
+      <div className="indicator-controls" aria-label="技术指标">
+        {MOVING_AVERAGES.map((average) => (
+          <label key={average.key} className="indicator-toggle">
+            <input
+              type="checkbox"
+              checked={visibleIndicators[average.key]}
+              onChange={() => setVisibleIndicators((current) => ({
+                ...current,
+                [average.key]: !current[average.key],
+              }))}
+            />
+            <i style={{ background: average.color }} aria-hidden="true" />
+            <span>{average.label}</span>
+          </label>
+        ))}
+        <label className="indicator-toggle">
+          <input
+            type="checkbox"
+            checked={visibleIndicators.volume}
+            onChange={() => setVisibleIndicators((current) => ({
+              ...current,
+              volume: !current.volume,
+            }))}
+          />
+          <i className="indicator-volume" aria-hidden="true" />
+          <span>成交量</span>
+        </label>
+      </div>
       <div className="ohlc-readout" aria-live="polite">
         <span>{hovered?.date}</span>
         <span>开 <b>{hovered?.open.toFixed(3)}</b></span>
         <span>高 <b>{hovered?.high.toFixed(3)}</b></span>
         <span>低 <b>{hovered?.low.toFixed(3)}</b></span>
         <span>收 <b className={change >= 0 ? "positive" : "negative"}>{hovered?.close.toFixed(3)}</b></span>
+        {visibleIndicators.volume ? <span>量 <b>{formatVolume(hovered?.volume)}</b></span> : null}
         <span>成交额 <b>{formatMoney(hovered?.amount)}</b></span>
       </div>
       {hoveredTrade ? (

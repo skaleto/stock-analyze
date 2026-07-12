@@ -4,7 +4,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const chartMocks = vi.hoisted(() => {
   const setData = vi.fn();
   const applyPriceScaleOptions = vi.fn();
-  const addSeries = vi.fn(() => ({ setData, priceScale: () => ({ applyOptions: applyPriceScaleOptions }) }));
+  const addSeries = vi.fn((_seriesType: { type?: string }, _options?: unknown) => ({
+    setData,
+    priceScale: () => ({ applyOptions: applyPriceScaleOptions }),
+  }));
   const remove = vi.fn();
   const subscribeCrosshairMove = vi.fn();
   const fitContent = vi.fn();
@@ -78,7 +81,7 @@ describe("financial charts", () => {
     expect(screen.getByText("0.00%")).toBeInTheDocument();
   });
 
-  it("renders candlesticks and volume and releases the chart", () => {
+  it("renders candlesticks, indicators, and releases the chart", () => {
     const { unmount } = render(
       <CandlestickChart
         candles={[
@@ -87,7 +90,7 @@ describe("financial charts", () => {
       />
     );
 
-    expect(chartMocks.addSeries).toHaveBeenCalledTimes(2);
+    expect(chartMocks.addSeries).toHaveBeenCalledTimes(6);
     expect(chartMocks.setData).toHaveBeenCalled();
     unmount();
     expect(chartMocks.remove).toHaveBeenCalled();
@@ -112,6 +115,35 @@ describe("financial charts", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "全部" }));
     expect(chartMocks.fitContent).toHaveBeenLastCalledWith();
+  });
+
+  it("renders selectable moving averages and volume from the full candle history", () => {
+    const candles = Array.from({ length: 61 }, (_, index) => {
+      const day = new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10);
+      return { date: day, open: index + 1, high: index + 2, low: index, close: index + 1, volume: (index + 1) * 1000 };
+    });
+    render(<CandlestickChart candles={candles} />);
+
+    for (const label of ["MA5", "MA10", "MA20", "MA60", "成交量"]) {
+      expect(screen.getByRole("checkbox", { name: label })).toBeChecked();
+    }
+    const ma5Data = chartMocks.setData.mock.calls
+      .map(([rows]) => rows)
+      .find((rows) => Array.isArray(rows) && rows.length === 57);
+    expect(ma5Data?.[0]).toEqual({ time: "2026-01-05", value: 3 });
+    expect(ma5Data?.at(-1)?.value).toBe(59);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "MA60" }));
+    expect(screen.getByRole("checkbox", { name: "MA60" })).not.toBeChecked();
+
+    const callCountBeforeVolumeToggle = chartMocks.addSeries.mock.calls.length;
+    fireEvent.click(screen.getByRole("checkbox", { name: "成交量" }));
+    expect(screen.getByRole("checkbox", { name: "成交量" })).not.toBeChecked();
+    expect(
+      chartMocks.addSeries.mock.calls
+        .slice(callCountBeforeVolumeToggle)
+        .some(([seriesType]) => seriesType?.type === "histogram")
+    ).toBe(false);
   });
 
   it("marks all instrument trades covered by the visible candle history", () => {
