@@ -48,6 +48,8 @@ class DeployAppScriptTests(unittest.TestCase):
         self.assertIn("tests.test_operator_workflow_docs", script)
         self.assertIn("tests.test_check_ecs_timers", script)
         self.assertIn("./archive/direct-overseas/", script)
+        self.assertIn("./.claude/", script)
+        self.assertIn("./docs/", script)
         self.assertIn("./configs/strategy_competition.json", script)
         self.assertIn("./configs/strategy_versions/", script)
         self.assertIn("./configs/agents/claude_a_share.yaml", script)
