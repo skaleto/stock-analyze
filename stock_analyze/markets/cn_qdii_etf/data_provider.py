@@ -5,6 +5,8 @@ from __future__ import annotations
 import fcntl
 import math
 import os
+import threading
+import time
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -46,6 +48,9 @@ UNIVERSE_RULES_VERSION = "2026-07-12-p0"
 MAX_ETFS_PER_INDEX = 2
 MAX_ETFS_PER_SCOPE = 24
 FUND_BASIC_REQUIRED_COLUMNS = {"ts_code", "name", "benchmark", "list_date", "status"}
+TUSHARE_FUND_DAILY_MIN_INTERVAL_S = 0.38
+TUSHARE_FUND_DAILY_RATE_RETRIES = 2
+TUSHARE_FUND_DAILY_RATE_BACKOFF_S = 61.0
 
 
 @contextmanager
@@ -153,6 +158,9 @@ class CNQDIETFProvider:
         self.as_of = as_of
         self._pro_client = pro_client
         self._token = token
+        self._fund_daily_throttle_enabled = pro_client is None
+        self._fund_daily_last_call_at = 0.0
+        self._fund_daily_throttle_lock = threading.Lock()
         self._daily_cache: dict[str, pd.DataFrame] = {}
         self._daily_refresh_attempted: set[str] = set()
         self._nav_cache: dict[str, pd.DataFrame] = {}
@@ -177,6 +185,43 @@ class CNQDIETFProvider:
         import tushare as ts
 
         return ts.pro_api(resolved)
+
+    @staticmethod
+    def _is_fund_daily_rate_limit(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return any(
+            marker in message
+            for marker in ("频率超限", "rate limit", "too many requests", "429")
+        )
+
+    def _throttle_fund_daily(self) -> None:
+        if not self._fund_daily_throttle_enabled:
+            return
+        with self._fund_daily_throttle_lock:
+            elapsed = time.monotonic() - self._fund_daily_last_call_at
+            if elapsed < TUSHARE_FUND_DAILY_MIN_INTERVAL_S:
+                time.sleep(TUSHARE_FUND_DAILY_MIN_INTERVAL_S - elapsed)
+            self._fund_daily_last_call_at = time.monotonic()
+
+    def _call_fund_daily(self, **kwargs: Any) -> pd.DataFrame:
+        for attempt in range(TUSHARE_FUND_DAILY_RATE_RETRIES + 1):
+            self._throttle_fund_daily()
+            try:
+                return self.pro.fund_daily(**kwargs)
+            except Exception as exc:
+                if (
+                    self._is_fund_daily_rate_limit(exc)
+                    and attempt < TUSHARE_FUND_DAILY_RATE_RETRIES
+                ):
+                    self.record_health(
+                        "fund_daily",
+                        "rate_limited_retry",
+                        f"attempt={attempt + 1}",
+                    )
+                    time.sleep(TUSHARE_FUND_DAILY_RATE_BACKOFF_S * (attempt + 1))
+                    continue
+                raise
+        raise RuntimeError("fund_daily_retry_exhausted")
 
     def persist_health(self) -> None:
         if self.cache_dir is not None:
@@ -766,7 +811,7 @@ class CNQDIETFProvider:
         end = datetime.strptime(as_of_key, "%Y%m%d").date()
         start = (end - timedelta(days=LIQUIDITY_LOOKBACK_DAYS)).strftime("%Y%m%d")
         try:
-            df = self.pro.fund_daily(
+            df = self._call_fund_daily(
                 ts_code=ts_code,
                 start_date=start,
                 end_date=as_of_key,
@@ -808,7 +853,7 @@ class CNQDIETFProvider:
             raise CacheMiss(method="fund_daily", cache_name=cache_name)
         self._daily_refresh_attempted.add(cache_name)
         try:
-            df = self.pro.fund_daily(
+            df = self._call_fund_daily(
                 ts_code=ts_code,
                 start_date=start,
                 end_date=as_of_key,
