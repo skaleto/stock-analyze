@@ -78,13 +78,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=5,
         help="ThreadPoolExecutor size for per-candidate fetch (default: 5)",
     )
-    daily = sub.add_parser("run-daily", help="Execute due orders, update NAV, refresh dashboard")
+    daily = sub.add_parser("run-daily", help="Execute due orders, update NAV, and generate the next-session target")
     daily.add_argument(
         "--offline",
         action="store_true",
         help="Forbid the provider from reaching the network — cache miss raises CacheMiss and fails the run.",
     )
-    weekly = sub.add_parser("run-weekly", help="Generate signals, update NAV, report, and dashboard")
+    weekly = sub.add_parser("run-weekly", help="Refresh diagnostics, weekly review, report, and dashboard without orders")
     weekly.add_argument(
         "--offline",
         action="store_true",
@@ -475,6 +475,60 @@ def _resolve_runtime(args: argparse.Namespace) -> tuple[dict | None, str, str, P
     return cfg, data_dir, reports_dir, cache_dir, market
 
 
+def _run_daily_decision_cycle(
+    config: dict,
+    store: PortfolioStore,
+    provider,
+    market_module,
+    *,
+    as_of: str | None,
+    run_id: str,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    trades = market_module.execute_due_orders(config, store, provider, as_of=as_of)
+    nav_rows = market_module.update_nav(
+        config,
+        store,
+        provider,
+        as_of=as_of,
+        notes=f"daily decision; trades={len(trades)}",
+    )
+    previous_targets = store.load_pending()
+    store.save_pending([])
+    try:
+        batches = market_module.generate_rebalance_orders(
+            config,
+            store,
+            provider,
+            as_of=as_of,
+            run_id=run_id,
+        )
+    except Exception:
+        store.save_pending(previous_targets)
+        raise
+    return trades, nav_rows, batches
+
+
+def _run_weekly_review_state(
+    config: dict,
+    store: PortfolioStore,
+    provider,
+    market_module,
+    *,
+    market: str,
+    as_of: str | None,
+) -> list[dict]:
+    rows = market_module.update_nav(
+        config,
+        store,
+        provider,
+        as_of=as_of,
+        notes="weekly review",
+    )
+    if market == "a_share":
+        compute_pending_forward_ic(config, store, provider, as_of=as_of)
+    return rows
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -598,8 +652,14 @@ def main(argv: list[str] | None = None) -> int:
                 fragment_path = generate_dashboard(config, store, reports_dir, mode="fragment")
                 print(f"Dashboard written to {page_path}; fragment {fragment_path}")
             elif args.command == "run-daily":
-                trades = market_module.execute_due_orders(config, store, provider, as_of=args.as_of)
-                rows = market_module.update_nav(config, store, provider, as_of=args.as_of, notes=f"daily; trades={len(trades)}")
+                trades, rows, batches = _run_daily_decision_cycle(
+                    config,
+                    store,
+                    provider,
+                    market_module,
+                    as_of=args.as_of,
+                    run_id=run_id,
+                )
                 # Forward-IC diagnostic is A-share-only (uses Tushare-specific
                 # provider methods); skip for hk/us.
                 if market == "a_share":
@@ -607,12 +667,20 @@ def main(argv: list[str] | None = None) -> int:
                 provider.persist_health()
                 page_path = generate_dashboard(config, store, reports_dir)
                 generate_dashboard(config, store, reports_dir, mode="fragment")
-                print(f"Daily run complete: trades={len(trades)}, nav_rows={len(rows)}, dashboard={page_path}")
+                order_count = sum(len(batch.get("orders", [])) for batch in batches)
+                print(
+                    f"Daily decision complete: trades={len(trades)}, "
+                    f"orders={order_count}, nav_rows={len(rows)}, dashboard={page_path}"
+                )
             elif args.command == "run-weekly":
-                batches = market_module.generate_rebalance_orders(config, store, provider, as_of=args.as_of, run_id=run_id)
-                rows = market_module.update_nav(config, store, provider, as_of=args.as_of, notes="weekly signal")
-                if market == "a_share":
-                    compute_pending_forward_ic(config, store, provider, as_of=args.as_of)
+                rows = _run_weekly_review_state(
+                    config,
+                    store,
+                    provider,
+                    market_module,
+                    market=market,
+                    as_of=args.as_of,
+                )
                 provider.persist_health()
                 report = generate_weekly_report(config, store, reports_dir, run_id=run_id)
                 dashboard = generate_dashboard(config, store, reports_dir)
@@ -620,7 +688,10 @@ def main(argv: list[str] | None = None) -> int:
                 # The weekly briefing is part of the A-share review workflow.
                 briefing = _auto_write_weekly_briefing(args.agent, args.as_of) if market == "a_share" else None
                 briefing_note = f", briefing={briefing}" if briefing else ""
-                print(f"Weekly run complete: batches={len(batches)}, nav_rows={len(rows)}, report={report}, dashboard={dashboard}{briefing_note}")
+                print(
+                    f"Weekly review complete: orders=0, nav_rows={len(rows)}, "
+                    f"report={report}, dashboard={dashboard}{briefing_note}"
+                )
             else:
                 parser.error(f"Unknown command: {args.command}")
     finally:
