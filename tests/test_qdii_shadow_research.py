@@ -8,6 +8,7 @@ import pandas as pd
 
 from stock_analyze.markets.cn_qdii_etf.research_panel import ResearchPanelResult
 from stock_analyze.markets.cn_qdii_etf.shadow_research import (
+    FACTOR_MODELS,
     run_shadow_research,
     write_shadow_artifacts,
 )
@@ -55,13 +56,23 @@ class QDIIShadowResearchTests(unittest.TestCase):
         )
 
         self.assertEqual(set(result.metrics["asset_class"]), {"global_equity", "commodity"})
-        self.assertEqual(set(result.metrics["factor_model"]), {"global_equity_v1", "commodity_v1"})
+        self.assertEqual(set(result.metrics["strategy_variant"]), {"defensive_shadow", "trend_shadow"})
+        self.assertEqual(
+            set(result.metrics["factor_model"]),
+            {
+                "global_equity_defensive_v1", "global_equity_trend_v1",
+                "commodity_defensive_v1", "commodity_trend_v1",
+            },
+        )
         self.assertTrue((result.metrics["mode"] == "research_only").all())
         self.assertGreater(len(result.nav), 0)
         self.assertGreater(len(result.trades), 0)
-        self.assertIn("premium_persistence_20", result.summary["factor_models"]["commodity_v1"])
-        self.assertEqual(result.summary["sentiment_agent"], "codex")
-        self.assertIn("theme_sentiment_score", result.summary["factor_models"]["global_equity_v1"])
+        self.assertIn("premium_persistence_20", result.summary["factor_models"]["commodity_defensive_v1"])
+        self.assertEqual(result.summary["sentiment_agents"], {"defensive_shadow": "codex", "trend_shadow": "codex"})
+        self.assertIn("trend_theme_sentiment", result.summary["factor_models"]["global_equity_trend_v1"])
+        self.assertIn("defensive_theme_risk", result.summary["factor_models"]["global_equity_defensive_v1"])
+        for factors in FACTOR_MODELS.values():
+            self.assertAlmostEqual(sum(float(spec["weight"]) for spec in factors.values()), 1.0)
 
     def test_writes_only_research_artifacts(self) -> None:
         panel, catalog = _shadow_panel()

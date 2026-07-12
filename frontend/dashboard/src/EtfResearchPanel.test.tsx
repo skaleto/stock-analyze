@@ -78,7 +78,10 @@ describe("ETF research panel", () => {
           shadow: {
             run_id: "shadow-run",
             mode: "research_only",
-            metrics: [{ asset_class: "global_equity", scope: "japan_exposure", factor_model: "global_equity_v1", cumulative_return: 0.12, sharpe_ratio: 0.8, max_drawdown: -0.1, promotion_status: "shadow_ready" }],
+            metrics: [
+              { strategy_variant: "defensive_shadow", asset_class: "global_equity", scope: "japan_exposure", factor_model: "global_equity_defensive_v1", cumulative_return: 0.12, sharpe_ratio: 0.8, max_drawdown: -0.1, promotion_status: "shadow_ready" },
+              { strategy_variant: "trend_shadow", asset_class: "global_equity", scope: "japan_exposure", factor_model: "global_equity_trend_v1", cumulative_return: 0.18, sharpe_ratio: 1.0, max_drawdown: -0.12, promotion_status: "shadow_ready" },
+            ],
             catalog: [{ code: "159866.SZ", name: "日经ETF", asset_class: "global_equity", research_scope: "japan_exposure", promotion_status: "shadow_ready" }],
           },
           events: { total: 1, active_hard_blocks: 1, latest_observed_at: "2026-07-10T08:00:00", source: "eastmoney_fund_announcements", rows: [{ event_id: "AN1", code: "513100.SH", title: "暂停申购公告", event_type: "suspension", severity: "hard", published_at: "2026-07-10T00:00:00", source_url: "https://example.test/a" }] },
@@ -88,8 +91,10 @@ describe("ETF research panel", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "全球影子" }));
-    expect(screen.getByText("日本市场")).toBeInTheDocument();
+    expect(screen.getAllByText("日本市场")).toHaveLength(2);
     expect(screen.getByText("12.00%")).toBeInTheDocument();
+    expect(screen.getByText("稳健防守")).toBeInTheDocument();
+    expect(screen.getByText("趋势进攻")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "风险事件" }));
     expect(screen.getByText("暂停申购公告")).toBeInTheDocument();
