@@ -92,7 +92,7 @@ describe("financial charts", () => {
     expect(chartMocks.remove).toHaveBeenCalled();
   });
 
-  it("marks only current-season trades with the selected strategy identity", () => {
+  it("marks all instrument trades covered by the visible candle history", () => {
     render(
       <CandlestickChart
         candles={[
@@ -105,12 +105,18 @@ describe("financial charts", () => {
           { trade_date: "2026-07-14", side: "sell", shares: 100 },
         ]}
         strategyLabel="趋势进攻"
-        seasonEffectiveDate="2026-07-11"
       />
     );
 
     expect(chartMocks.createSeriesMarkers).toHaveBeenCalledTimes(1);
     expect(chartMocks.createSeriesMarkers.mock.calls[0]?.[1]).toEqual([
+      {
+        time: "2026-07-10",
+        position: "belowBar",
+        color: "#ef4444",
+        shape: "arrowUp",
+        text: "趋势买",
+      },
       {
         time: "2026-07-14",
         position: "belowBar",
@@ -126,8 +132,8 @@ describe("financial charts", () => {
         text: "趋势卖",
       },
     ]);
-    expect(screen.getByText("当前赛季 · 趋势进攻")).toBeInTheDocument();
-    expect(screen.getByText("买入 1")).toBeInTheDocument();
+    expect(screen.getByText("历史成交 · 趋势进攻")).toBeInTheDocument();
+    expect(screen.getByText("买入 2")).toBeInTheDocument();
     expect(screen.getByText("卖出 1")).toBeInTheDocument();
   });
 

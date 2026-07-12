@@ -11,7 +11,6 @@ export default function InstrumentDrawer({
   market,
   agent,
   strategyLabel,
-  seasonEffectiveDate,
   onClose,
 }: {
   row: OrderRow;
@@ -19,7 +18,6 @@ export default function InstrumentDrawer({
   market: string;
   agent: string;
   strategyLabel: string;
-  seasonEffectiveDate: string;
   onClose: () => void;
 }) {
   const drawerRef = useRef<HTMLElement>(null);
@@ -102,7 +100,6 @@ export default function InstrumentDrawer({
                 candles={detail.candles}
                 trades={detail.related_trades}
                 strategyLabel={strategyLabel}
-                seasonEffectiveDate={seasonEffectiveDate}
               />
             </section>
           ) : null}
