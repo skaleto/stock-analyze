@@ -1,0 +1,31 @@
+frontend/dashboard/src/App.test.tsx
+  s_db9afa53cf7b72::t_b1db83ee65755d 329-330
+tests/test_deploy_app_script.py
+  s_db9afa53cf7b72::t_c3405ec5c8be79 57
+tests/test_operator_workflow_docs.py
+  s_db9afa53cf7b72::t_67857e119f4f99 34-42
+tests/test_qdii_systemd_units.py
+  s_db9afa53cf7b72::t_15f941b4f8d778 29
+tests/test_strategy_registry.py
+  s_db9afa53cf7b72::t_bb6c69a3a99dc0 23-24,29-38
+tests/test_workflow_notifications.py
+  s_db9afa53cf7b72::t_9280d286bba42b 119,129,162-163
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "01b47961077c134736def6adfb0be2a82e0b8538",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
