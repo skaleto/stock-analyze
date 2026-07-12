@@ -1,0 +1,43 @@
+.claude/skills/stock-analyze-workflows/SKILL.md
+  s_db9afa53cf7b72::t_de6525771aa1f6 35,121-136
+deploy/systemd/stock-analyze-qdii-research.service
+  s_db9afa53cf7b72::t_de9bae82a3f68f 1-16
+deploy/systemd/stock-analyze-qdii-research.timer
+  s_db9afa53cf7b72::t_716b7d510fbd8b 1-12
+docs/competition-runbook.md
+  s_db9afa53cf7b72::t_d08218021b6db3 122-146,160
+scripts/check-ecs-timers.sh
+  s_db9afa53cf7b72::t_39c02974a36d9f 48
+scripts/deploy-app-to-ecs.sh
+  s_db9afa53cf7b72::t_5dcd8f06d7f703 74-75,109-114,139,151,161
+scripts/run-qdii-research.sh
+  s_db9afa53cf7b72::t_aa8826cd154ed5 1-17
+stock_analyze/workflow_notifications.py
+  s_db9afa53cf7b72::t_816b0fdc356d59 298-333,370-372
+tests/test_check_ecs_timers.py
+  s_db9afa53cf7b72::t_5a5423f06e6b99 21
+tests/test_deploy_app_script.py
+  s_db9afa53cf7b72::t_3752d90152fba1 30,50-55
+tests/test_qdii_systemd_units.py
+  s_db9afa53cf7b72::t_12ec1a41fe3006 47-56
+tests/test_workflow_notifications.py
+  s_db9afa53cf7b72::t_03a088497a953f 163-182
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "48fa0517f429465e7374f257a89fe54995e3f041",
+  "prompts": {},
+  "sessions": {
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
