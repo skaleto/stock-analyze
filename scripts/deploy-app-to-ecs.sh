@@ -68,7 +68,14 @@ for unit in \
   stock-analyze-codex-cn-qdii-etf-daily.service \
   stock-analyze-codex-cn-qdii-etf-daily.timer \
   stock-analyze-codex-cn-qdii-etf-weekly.service \
-  stock-analyze-codex-cn-qdii-etf-weekly.timer; do
+  stock-analyze-codex-cn-qdii-etf-weekly.timer \
+  stock-analyze-aggregate-dashboard.service \
+  stock-analyze-daily-summary.service \
+  stock-analyze-daily-summary.timer \
+  stock-analyze-weekly-summary.service \
+  stock-analyze-weekly-summary.timer \
+  stock-analyze-monthly-summary.service \
+  stock-analyze-monthly-summary.timer; do
   install -m 0644 "$unit_dir/$unit" "/etc/systemd/system/$unit"
 done
 
@@ -92,6 +99,10 @@ python -m unittest \
   tests.test_qdii_universe \
   tests.test_qdii_lookthrough \
   tests.test_qdii_systemd_units \
+  tests.test_workflow_notifications \
+  tests.test_workflow_summary_systemd \
+  tests.test_operator_workflow_docs \
+  tests.test_check_ecs_timers \
   tests.test_deploy_app_script
 
 systemctl daemon-reload
@@ -111,7 +122,9 @@ for timer in \
   stock-analyze-claude-cn-qdii-etf-daily.timer \
   stock-analyze-claude-cn-qdii-etf-weekly.timer \
   stock-analyze-codex-cn-qdii-etf-daily.timer \
-  stock-analyze-codex-cn-qdii-etf-weekly.timer; do
+  stock-analyze-codex-cn-qdii-etf-weekly.timer \
+  stock-analyze-weekly-summary.timer \
+  stock-analyze-monthly-summary.timer; do
   stamp="/var/lib/systemd/timers/stamp-$timer"
   if [[ ! -e "$stamp" ]]; then
     touch "$stamp"
@@ -121,12 +134,18 @@ systemctl enable --now stock-analyze-claude-cn-qdii-etf-daily.timer
 systemctl enable --now stock-analyze-claude-cn-qdii-etf-weekly.timer
 systemctl enable --now stock-analyze-codex-cn-qdii-etf-daily.timer
 systemctl enable --now stock-analyze-codex-cn-qdii-etf-weekly.timer
+systemctl enable --now stock-analyze-daily-summary.timer
+systemctl enable --now stock-analyze-weekly-summary.timer
+systemctl enable --now stock-analyze-monthly-summary.timer
 systemctl restart stock-analyze-dashboard.service
 systemctl is-active --quiet stock-analyze-dashboard.service
 systemctl is-active --quiet stock-analyze-claude-cn-qdii-etf-daily.timer
 systemctl is-active --quiet stock-analyze-claude-cn-qdii-etf-weekly.timer
 systemctl is-active --quiet stock-analyze-codex-cn-qdii-etf-daily.timer
 systemctl is-active --quiet stock-analyze-codex-cn-qdii-etf-weekly.timer
+systemctl is-active --quiet stock-analyze-daily-summary.timer
+systemctl is-active --quiet stock-analyze-weekly-summary.timer
+systemctl is-active --quiet stock-analyze-monthly-summary.timer
 REMOTE
 
 echo "Deployed $DEPLOY_VERSION to $REMOTE_HOST:$REMOTE_PATH"

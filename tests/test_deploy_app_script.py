@@ -27,6 +27,9 @@ class DeployAppScriptTests(unittest.TestCase):
             "systemctl enable --now stock-analyze-claude-cn-qdii-etf-weekly.timer",
             "systemctl enable --now stock-analyze-codex-cn-qdii-etf-daily.timer",
             "systemctl enable --now stock-analyze-codex-cn-qdii-etf-weekly.timer",
+            "systemctl enable --now stock-analyze-daily-summary.timer",
+            "systemctl enable --now stock-analyze-weekly-summary.timer",
+            "systemctl enable --now stock-analyze-monthly-summary.timer",
             "systemctl restart stock-analyze-dashboard.service",
         ]
         for token in required:
@@ -40,6 +43,10 @@ class DeployAppScriptTests(unittest.TestCase):
         self.assertIn("tests.test_strategy_registry", script)
         self.assertIn("tests.test_strategy_release", script)
         self.assertIn("tests.test_strategy_comparison", script)
+        self.assertIn("tests.test_workflow_notifications", script)
+        self.assertIn("tests.test_workflow_summary_systemd", script)
+        self.assertIn("tests.test_operator_workflow_docs", script)
+        self.assertIn("tests.test_check_ecs_timers", script)
         self.assertIn("./archive/direct-overseas/", script)
         self.assertIn("./configs/strategy_competition.json", script)
         self.assertIn("./configs/strategy_versions/", script)

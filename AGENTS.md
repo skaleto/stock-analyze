@@ -117,6 +117,16 @@ timers:
 - `stock-analyze-{claude,codex}-cn-qdii-etf-daily.timer`
 - `stock-analyze-{claude,codex}-cn-qdii-etf-weekly.timer`
 
+Operator notifications are consolidated rather than emitted by every child:
+
+- `stock-analyze-daily-summary.timer` at 19:30 on weekdays.
+- `stock-analyze-weekly-summary.timer` at 10:45 on Saturday.
+- `stock-analyze-monthly-summary.timer` at 09:30 on day 1.
+
+Weekly and monthly cards remind the operator to return to Codex for judgement.
+ECS never runs an unattended LLM. Active overlays do not consume manually
+recorded sentiment; do not restore the legacy sentiment workflow implicitly.
+
 Run `scripts/check-ecs-timers.sh` after deployment. A successful parent trigger
 is not enough; inspect child service journals and `runs.csv` consistency.
 
