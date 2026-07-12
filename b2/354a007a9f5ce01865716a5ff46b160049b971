@@ -1,0 +1,93 @@
+.claude/commands/monthly-strategy.md
+  s_db9afa53cf7b72::t_88b716a57f6929 1-22
+.claude/commands/weekly-review.md
+  s_db9afa53cf7b72::t_9a0bc89feb2d4e 1-17
+.claude/skills/stock-analyze-workflows/SKILL.md
+  s_db9afa53cf7b72::t_8ba7792962d490 3,8,10-11,13,15-20,22-24,26,28,30-37,39-41,43,45,48-50,53-54,56,58-60,62,64-67,69,71-73,75,77,79,81-87,89,91,93-103,105,107,110-111,114-117,119,121-126,128,130-132
+AGENTS.md
+  s_db9afa53cf7b72::t_1d5516aea3c31e 120-129
+deploy/systemd/stock-analyze-daily-summary.service
+  s_db9afa53cf7b72::t_24694ef8adbff5 1-14
+deploy/systemd/stock-analyze-daily-summary.timer
+  s_db9afa53cf7b72::t_25cbc029579e1d 1-11
+deploy/systemd/stock-analyze-monthly-summary.service
+  s_db9afa53cf7b72::t_21fedf325df0e5 1-14
+deploy/systemd/stock-analyze-monthly-summary.timer
+  s_db9afa53cf7b72::t_b337b153f2ad51 1-11
+deploy/systemd/stock-analyze-weekly-summary.service
+  s_db9afa53cf7b72::t_678fe82a270c1b 1-14
+deploy/systemd/stock-analyze-weekly-summary.timer
+  s_db9afa53cf7b72::t_b7664945bebad5 1-11
+docs/competition-runbook.md
+  s_db9afa53cf7b72::t_442e9497a526e5 118-127,139-149
+docs/operator-alerting-setup.md
+  s_db9afa53cf7b72::t_7268785ffaf29a 1,3,5-10,12-13,15,17-18,20-23,26,28,30-31,34,36,38-41,44,46-49,52-53,55,57,60-62,65,68-70,73-74,76,78-79,81-82,85,88-90,93-94
+docs/superpowers/plans/2026-07-12-cn-qdii-etf-p2-roadmap.md
+  s_db9afa53cf7b72::t_469730616cb4fd 1-163
+docs/superpowers/specs/2026-07-12-workflow-notification-design.md
+  s_db9afa53cf7b72::t_62d7adafcb861e 1-69
+docs/three-market-runbook.md
+  s_db9afa53cf7b72::t_f932febb0888b4 1,3-4,6,8-9,11,13-16
+scripts/README.md
+  s_db9afa53cf7b72::t_319f441bd96845 1,3-5,7,9-16,18,20-23,26,28-35,37-38,40,42-45,47,49-50,53,55-56,59-60,62,64,67-68,71-74,76,78-80
+scripts/check-ecs-timers.sh
+  s_db9afa53cf7b72::t_01a2f550817b8e 48-50
+scripts/deploy-app-to-ecs.sh
+  s_db9afa53cf7b72::t_7d07c5a27e02a3 71-78,102-105,125-127,137-139,146-148
+scripts/monthly.sh
+  s_db9afa53cf7b72::t_bb4ea024c6c9d3 2-3,7-8,10,12-17,19-23,26
+scripts/notify-daily-summary.sh
+  s_db9afa53cf7b72::t_640cb56eefe9c6 2-3,19-20
+scripts/weekly.sh
+  s_db9afa53cf7b72::t_2fee15fbdaf360 2-3,7-8,10,12-17,19-23,26
+stock_analyze/cli.py
+  s_3763c25b1ade0d::t_94f20d22c1a31d 279,291-315,458-460,1023-1024,1026,1028-1038
+stock_analyze/notifier.py
+  s_3763c25b1ade0d::t_6692c0a2bf8e0e 1,3-5,7-8
+stock_analyze/workflow_notifications.py
+  s_3fbbec0e0d1797::t_41e5507e39238d 1-495
+tests/test_check_ecs_timers.py
+  s_db9afa53cf7b72::t_d48b40061a2cbd 26-32
+tests/test_deploy_app_script.py
+  s_db9afa53cf7b72::t_4b22c98b2779cc 30-32,46-49
+tests/test_operator_workflow_docs.py
+  s_db9afa53cf7b72::t_cda19a4b25cfce 1-45
+tests/test_workflow_notifications.py
+  s_db9afa53cf7b72::t_91ce370365e854 1-248
+tests/test_workflow_summary_systemd.py
+  s_db9afa53cf7b72::t_3a2337af5f10a1 1-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "b2354a007a9f5ce01865716a5ff46b160049b971",
+  "prompts": {},
+  "sessions": {
+    "s_3763c25b1ade0d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f556f-9702-7b23-a255-782f166d5b27",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    },
+    "s_3fbbec0e0d1797": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5575-184d-7f31-906b-e60d62087d21",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    },
+    "s_db9afa53cf7b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81fe-fdf5-77d3-abcf-ba82316afe32",
+        "model": "unknown"
+      },
+      "human_author": "yaoyibin.vi <yaoyibin.vi@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
