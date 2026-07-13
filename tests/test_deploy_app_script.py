@@ -41,6 +41,8 @@ class DeployAppScriptTests(unittest.TestCase):
         self.assertIn("/var/lib/systemd/timers/stamp-$timer", script)
         self.assertIn('if [[ ! -e "$stamp" ]]', script)
         self.assertIn("tests.test_dashboard_finance", script)
+        self.assertIn("tests.test_dashboard_http", script)
+        self.assertIn("tests.test_dashboard_resource_api", script)
         self.assertIn("tests.test_archived_markets", script)
         self.assertIn("tests.test_strategy_registry", script)
         self.assertIn("tests.test_strategy_release", script)

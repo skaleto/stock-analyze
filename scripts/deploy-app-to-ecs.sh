@@ -99,6 +99,8 @@ python -m unittest \
   tests.test_markets_cn_qdii_etf_strategy \
   tests.test_markets_cn_qdii_etf_simulator \
   tests.test_dashboard_app_api \
+  tests.test_dashboard_http \
+  tests.test_dashboard_resource_api \
   tests.test_cli_dashboard_routes \
   tests.test_dashboard_finance \
   tests.test_dashboard_multi_market \
