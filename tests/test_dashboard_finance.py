@@ -179,6 +179,33 @@ class DashboardFinanceTests(unittest.TestCase):
         self.assertEqual(formats["pe"], "number")
         self.assertEqual(formats["pb"], "number")
 
+    def test_latest_research_metrics_are_localized_and_ratio_normalized(self) -> None:
+        import pandas as pd
+
+        from stock_analyze.dashboard_finance import build_history_metrics, read_latest_research_values
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "data" / "research" / "features" / "a_share"
+            path.mkdir(parents=True)
+            pd.DataFrame([
+                {
+                    "code": "000001", "trade_date": "20260710", "roe": 10.0,
+                    "gross_margin": 30.0, "cash_conversion": 0.18,
+                    "high_value_add_proxy": 0.22, "declining_marginal_cost_proxy": 0.05,
+                }
+            ]).to_parquet(path / "20260710.parquet", index=False)
+
+            values = read_latest_research_values(root, "a_share", "000001.SZ")
+            metrics = {item["key"]: item for item in build_history_metrics(
+                [{"date": "2026-07-10", "close": 10.0, "amount": 100_000.0}],
+                values,
+            )}
+
+        self.assertAlmostEqual(values["roe"], 0.10)
+        self.assertEqual(metrics["high_value_add_proxy"]["label"], "高附加值代理")
+        self.assertEqual(metrics["declining_marginal_cost_proxy"]["format"], "percent")
+
 
 if __name__ == "__main__":
     unittest.main()

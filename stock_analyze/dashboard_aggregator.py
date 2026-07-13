@@ -41,6 +41,7 @@ from .dashboard_finance import (
     instrument_metadata,
     read_instrument_history,
     read_latest_factor_values,
+    read_latest_research_values,
 )
 from .markets.cn_qdii_etf.lookthrough import (
     build_portfolio_lookthrough,
@@ -1186,8 +1187,22 @@ def _read_regime_summary(root: Path, market: str) -> dict[str, Any]:
         frame = pd.read_parquet(files[-1])
     except Exception as exc:  # noqa: BLE001
         raise DashboardDataError("regime_artifact") from exc
-    rows = frame.tail(90).to_dict(orient="records")
-    return {"status": "available", "current": rows[-1] if rows else None, "history": rows}
+    if "scope" not in frame.columns:
+        rows = frame.tail(90).to_dict(orient="records")
+        return {"status": "available", "current": rows[-1] if rows else None, "history": rows, "industries": []}
+    market_frame = frame.loc[frame["scope"].eq("market")].sort_values("trade_date")
+    industry_frame = frame.loc[frame["scope"].astype("string").str.startswith("industry:")]
+    industries = (
+        industry_frame.sort_values("trade_date").groupby("scope", as_index=False, sort=True).tail(1).head(6).to_dict(orient="records")
+        if not industry_frame.empty else []
+    )
+    history = market_frame.tail(90).to_dict(orient="records")
+    return {
+        "status": "available",
+        "current": history[-1] if history else None,
+        "history": history,
+        "industries": industries,
+    }
 
 
 def _read_model_health(root: Path, market: str) -> dict[str, Any]:
@@ -1298,11 +1313,9 @@ def build_dashboard_instrument_data(
     paths = _resolve_dashboard_paths(market, agent, root)
     normalized, candles, warning = read_instrument_history(root, market, code)
     name = _instrument_name(root, market, normalized)
-    factor_values = (
-        read_latest_factor_values(root, agent, normalized)
-        if market == "a_share"
-        else {}
-    )
+    factor_values = read_latest_research_values(root, market, normalized)
+    if market == "a_share":
+        factor_values = {**read_latest_factor_values(root, agent, normalized), **factor_values}
     metrics = build_history_metrics(candles, factor_values)
     related = _limited_csv_rows(
         paths.data_dir / "trades.csv",

@@ -530,6 +530,15 @@ a:hover { text-decoration: underline; }
 .model-context-line { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px; color: var(--muted); font-size: 9px; }
 .model-context-line strong { margin-left: 4px; color: var(--text); font-family: "SF Mono", Menlo, monospace; }
 .model-context-line .warning { color: var(--warning); }
+.regime-dimensions { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: 1px solid var(--line); background: var(--panel-2); }
+.regime-dimensions > span { min-width: 0; padding: 7px 6px; border-right: 1px solid var(--line); }
+.regime-dimensions > span:last-child { border-right: 0; }
+.regime-dimensions small, .regime-dimensions b, .industry-regime-strip small, .industry-regime-strip b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.regime-dimensions small, .industry-regime-strip small { color: var(--faint); font-size: 7px; }
+.regime-dimensions b, .industry-regime-strip b { margin-top: 3px; color: var(--text); font-size: 8px; font-weight: 500; }
+.industry-regime-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--line); }
+.industry-regime-strip > span { min-width: 0; padding: 7px 8px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.industry-regime-strip > span:nth-child(3n) { border-right: 0; }
 .model-note { display: flex; align-items: center; gap: 6px; padding: 8px 10px; color: var(--warning); font-size: 9px; }
 
 .drawer-prediction { padding: 18px 0; border-bottom: 1px solid var(--line); }

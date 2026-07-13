@@ -48,6 +48,17 @@ const FIELDS: Record<string, FieldDefinition> = {
   low_volatility_60: { label: "近60日波动率", explanation: "最近60个交易日涨跌的离散程度，数值越低通常越稳定。", format: "percent" },
   avg_amount_20: { label: "20日平均成交额", explanation: "最近20个交易日的平均成交金额，用来判断流动性。", format: "money" },
   discount_premium: { label: "折溢价率", explanation: "ETF市场价格相对基金净值的偏离，正值为溢价、负值为折价。", format: "percent" },
+  roic: { label: "投入资本回报率 ROIC", explanation: "经营利润相对投入资本的回报。", format: "percent" },
+  net_profit_margin: { label: "净利率", explanation: "每一元收入最终形成净利润的比例。", format: "percent" },
+  cash_conversion: { label: "经营现金转化率", explanation: "经营现金流相对收入的比例。", format: "percent" },
+  accrual_ratio: { label: "应计比率", explanation: "利润与经营现金流差额相对资产的比例。", format: "percent" },
+  high_value_add_proxy: { label: "高附加值代理", explanation: "综合盈利、现金与研发质量的研究指标。", format: "percent" },
+  declining_marginal_cost_proxy: { label: "边际成本递减代理", explanation: "收入增长相对成本和经营利润变化的研究指标。", format: "percent" },
+  profit_pool_concentration: { label: "业务集中度", explanation: "按主营业务收入计算的集中度。", format: "percent" },
+  premium_persistence_20: { label: "20日平均折溢价", explanation: "近20个交易日价格相对净值偏离的平均水平。", format: "percent" },
+  tracking_difference_20: { label: "20日跟踪差", explanation: "ETF价格涨跌与基金净值涨跌之间的差异。", format: "percent" },
+  tracking_error_20: { label: "20日跟踪误差", explanation: "ETF日收益偏离净值日收益的年化波动。", format: "percent" },
+  fund_share_change_20: { label: "20日份额变化", explanation: "基金份额近20个交易日的变化。", format: "percent" },
   run_id: { label: "运行编号", explanation: "一次任务运行的唯一标识。", format: "text" },
   command: { label: "运行任务", explanation: "系统实际执行的任务类型。", format: "text" },
   status: { label: "状态", explanation: "任务、订单或成交当前所处的状态。", format: "text" },
@@ -64,6 +75,25 @@ const ACCOUNT_LABELS: Record<string, string> = {
 };
 
 const SIDE_LABELS: Record<string, string> = { buy: "买入", sell: "卖出" };
+const EVENT_LABELS: Record<string, string> = {
+  macd_golden_cross: "MACD金叉", macd_death_cross: "MACD死叉",
+  macd_zero_cross_up: "MACD上穿零轴", macd_zero_cross_down: "MACD下穿零轴",
+  macd_hist_reversal_up: "MACD柱转强", macd_hist_reversal_down: "MACD柱转弱",
+  macd_hist_sign_up: "MACD柱翻正", macd_hist_sign_down: "MACD柱翻负",
+  ma_golden_cross_5_20: "5日均线上穿20日均线", ma_death_cross_5_20: "5日均线下穿20日均线",
+  price_breakout_20: "突破20日高点", price_breakdown_20: "跌破20日低点",
+  rsi_oversold_exit: "RSI离开超卖区", rsi_overbought_exit: "RSI离开超买区",
+  adx_trend_strengthening: "趋势强度增强", adx_trend_weakening: "趋势强度减弱",
+  bollinger_breakout_up: "向上突破布林带", bollinger_breakout_down: "向下突破布林带",
+  bollinger_squeeze: "布林带收窄", macd_bearish_divergence: "MACD顶背离",
+  macd_bullish_divergence: "MACD底背离", flow_price_confirmation_up: "资金与价格同步转强",
+  flow_price_confirmation_down: "资金与价格同步转弱", flow_price_divergence_bearish: "价升资金背离",
+  flow_price_divergence_bullish: "价跌资金改善", industry_breadth_reversal_up: "行业宽度转强",
+  industry_breadth_reversal_down: "行业宽度转弱", volume_price_rise_confirmed: "量增价升",
+  volume_price_rise_divergent: "量缩价升", volume_price_fall_confirmed: "量增价跌",
+  volume_price_fall_exhausting: "量缩价跌", volume_expansion_flat_price: "放量滞涨",
+  volume_contraction_flat_price: "缩量盘整",
+};
 
 export function fieldMeta(key: string): FieldDefinition {
   return FIELDS[key] ?? { label: key, explanation: "该字段暂未配置中文说明。", format: "text" };
@@ -75,6 +105,11 @@ export function accountLabel(value: string): string {
 
 export function sideLabel(value: string): string {
   return SIDE_LABELS[value.toLowerCase()] ?? (value || "-");
+}
+
+export function eventLabel(value: unknown): string {
+  const key = String(value ?? "");
+  return EVENT_LABELS[key] ?? (key || "-");
 }
 
 function finiteNumber(value: unknown): number | null {

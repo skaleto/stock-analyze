@@ -18,7 +18,17 @@ describe("ModelHealthPanel", () => {
             shadow_cycles_remaining: 4,
           })),
         }}
-        regimes={{ status: "available", current: { composite_regime: "unknown" } }}
+        regimes={{
+          status: "available",
+          current: {
+            composite_regime: "mixed", trend_regime: "up", volatility_regime: "normal",
+            liquidity_regime: "expanding", macro_regime: "recovery", global_risk_regime: "risk_on",
+          },
+          industries: [
+            { scope: "industry:科技", composite_regime: "risk_on" },
+            { scope: "industry:银行", composite_regime: "risk_off" },
+          ],
+        }}
         sources={[
           { source: "news", status: "source_unavailable" },
           { source: "announcement", status: "source_unavailable" },
@@ -33,5 +43,9 @@ describe("ModelHealthPanel", () => {
     expect(screen.getAllByText("0/4")).toHaveLength(4);
     expect(screen.getByText("未接入文本源 3")).toBeInTheDocument();
     expect(screen.getByText("待补证据：区分能力、概率校准")).toBeInTheDocument();
+    expect(screen.getByText("上行")).toBeInTheDocument();
+    expect(screen.getByText("复苏")).toBeInTheDocument();
+    expect(screen.getByText("科技")).toBeInTheDocument();
+    expect(screen.getAllByText("风险偏好")).toHaveLength(2);
   });
 });

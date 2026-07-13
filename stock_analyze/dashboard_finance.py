@@ -73,6 +73,50 @@ FACTOR_METADATA: dict[str, dict[str, str]] = {
         "label": "折溢价率",
         "explanation": "ETF市场价格相对基金净值的偏离，正值为溢价、负值为折价。",
     },
+    "roic": {
+        "label": "投入资本回报率 ROIC",
+        "explanation": "经营利润相对投入资本的回报，用来观察主营业务创造价值的效率。",
+    },
+    "net_profit_margin": {
+        "label": "净利率",
+        "explanation": "每一元收入最终形成净利润的比例。",
+    },
+    "cash_conversion": {
+        "label": "经营现金转化率",
+        "explanation": "经营现金流相对收入的比例，用来检验利润是否转成真实现金。",
+    },
+    "accrual_ratio": {
+        "label": "应计比率",
+        "explanation": "利润与经营现金流的差额相对资产的比例，绝对值过高需要留意利润质量。",
+    },
+    "high_value_add_proxy": {
+        "label": "高附加值代理",
+        "explanation": "综合毛利率、ROIC、经营利润率、现金转化和研发强度的研究指标。",
+    },
+    "declining_marginal_cost_proxy": {
+        "label": "边际成本递减代理",
+        "explanation": "比较收入、成本和经营利润增速，观察规模扩大时单位成本是否改善。",
+    },
+    "profit_pool_concentration": {
+        "label": "业务集中度",
+        "explanation": "按主营业务收入计算的集中度，越高表示利润池更依赖少数业务。",
+    },
+    "premium_persistence_20": {
+        "label": "20日平均折溢价",
+        "explanation": "近20个交易日价格相对净值偏离的平均水平。",
+    },
+    "tracking_difference_20": {
+        "label": "20日跟踪差",
+        "explanation": "ETF价格涨跌与基金净值涨跌之间的差异。",
+    },
+    "tracking_error_20": {
+        "label": "20日跟踪误差",
+        "explanation": "ETF日收益偏离净值日收益的年化波动，越低通常跟踪越稳定。",
+    },
+    "fund_share_change_20": {
+        "label": "20日份额变化",
+        "explanation": "基金份额近20个交易日的变化，用来观察申购赎回方向。",
+    },
     "codex_market_sentiment_1w": {
         "label": "趋势进攻市场情绪",
         "explanation": "趋势进攻策略槽对最近一周市场信息的结构化情绪评分。",
@@ -377,6 +421,51 @@ def build_history_metrics(
             }
         )
     return metrics
+
+
+_RESEARCH_METRIC_KEYS = (
+    "pe_ttm", "pb", "roe", "gross_margin", "roic", "net_profit_margin",
+    "debt_ratio", "revenue_growth", "profit_growth", "cash_conversion",
+    "accrual_ratio", "high_value_add_proxy", "declining_marginal_cost_proxy",
+    "profit_pool_concentration",
+    "discount_premium", "premium_persistence_20", "tracking_difference_20",
+    "tracking_error_20", "fund_share_change_20",
+)
+
+_PERCENT_POINT_KEYS = {
+    "roe", "gross_margin", "roic", "net_profit_margin", "debt_ratio",
+    "revenue_growth", "profit_growth",
+}
+
+
+def read_latest_research_values(
+    repo_root: Path,
+    market: str,
+    code: str,
+) -> dict[str, float]:
+    directory = repo_root / "data" / "research" / "features" / market
+    candidates = sorted(directory.glob("*.parquet")) if directory.exists() else []
+    if not candidates:
+        return {}
+    digits = normalize_instrument_code(market, code).split(".", 1)[0]
+    try:
+        frame = pd.read_parquet(candidates[-1], filters=[("code", "==", digits)])
+    except Exception as exc:  # noqa: BLE001
+        raise InstrumentDataError("research_features") from exc
+    if frame.empty or "trade_date" not in frame.columns:
+        return {}
+    row = frame.sort_values("trade_date").iloc[-1]
+    values: dict[str, float] = {}
+    for key in _RESEARCH_METRIC_KEYS:
+        if key not in row or pd.isna(row[key]):
+            continue
+        try:
+            value = float(row[key])
+        except (TypeError, ValueError):
+            continue
+        output_key = "pe" if key == "pe_ttm" else key
+        values[output_key] = value / 100.0 if key in _PERCENT_POINT_KEYS else value
+    return values
 
 
 def read_latest_factor_values(

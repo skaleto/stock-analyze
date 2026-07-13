@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, BookOpen, ExternalLink, Layers3, LoaderCircle, X } from "lucide-react";
 import { fetchInstrument } from "./api";
 import { CandlestickChart } from "./FinancialCharts";
-import { fieldMeta, formatFieldValue, formatPercent, visibleRowEntries } from "./finance";
+import { eventLabel, fieldMeta, formatFieldValue, formatPercent, visibleRowEntries } from "./finance";
 import type { InstrumentDetail, OrderRow } from "./types";
 
 export default function InstrumentDrawer({
@@ -118,7 +118,7 @@ export default function InstrumentDrawer({
                 <div><span>支持证据</span>{preferredPrediction.reasons?.map((reason) => <p key={reason}>{reason}</p>)}</div>
                 <div><span>失效条件</span>{preferredPrediction.invalidation?.map((reason) => <p key={reason}>{reason}</p>)}</div>
               </div>
-              {latestPredictionEvent ? <div className="drawer-event-strip">最近事件 · {String(latestPredictionEvent.event ?? "-")}</div> : null}
+              {latestPredictionEvent ? <div className="drawer-event-strip">最近事件 · {eventLabel(latestPredictionEvent.event)}</div> : null}
             </section>
           ) : null}
           {detail?.underlying ? (
