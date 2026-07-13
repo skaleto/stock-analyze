@@ -47,6 +47,25 @@ class DashboardPredictionsTest(unittest.TestCase):
         self.assertEqual(payload["regimes"]["current"]["composite_regime"], "risk_on")
         self.assertEqual({item["source"] for item in payload["source_health"]}, {"news", "announcement", "policy"})
 
+    def test_regime_summary_keeps_market_current_and_lists_industries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            regime_dir = root / "data" / "research" / "regimes" / "cn_qdii_etf"
+            regime_dir.mkdir(parents=True)
+            pd.DataFrame([
+                {"trade_date": "20260709", "scope": "market", "composite_regime": "mixed", "regime_coverage": 1.0},
+                {"trade_date": "20260710", "scope": "market", "composite_regime": "risk_on", "regime_coverage": 1.0},
+                {"trade_date": "20260710", "scope": "industry:科技", "composite_regime": "risk_on", "regime_coverage": 1.0},
+                {"trade_date": "20260710", "scope": "industry:银行", "composite_regime": "risk_off", "regime_coverage": 1.0},
+            ]).to_parquet(regime_dir / "20260710.parquet", index=False)
+
+            payload = build_dashboard_detail_data(repo_root=root, market="cn_qdii_etf", agent="codex")
+
+        self.assertEqual(payload["regimes"]["current"]["scope"], "market")
+        self.assertEqual(len(payload["regimes"]["history"]), 2)
+        self.assertEqual({row["scope"] for row in payload["regimes"]["industries"]}, {"industry:科技", "industry:银行"})
+
     def test_missing_prediction_file_is_explicitly_unavailable(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

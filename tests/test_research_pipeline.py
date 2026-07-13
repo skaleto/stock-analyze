@@ -105,6 +105,99 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(set(output["horizon"]), {3, 5, 10, 20})
         self.assertEqual(result["predictions"], 4)
 
+    def test_prediction_uses_latest_persisted_regime_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10", offline=True)
+            pipeline.store.write_feature_snapshot(
+                "a_share",
+                "2026-07-10",
+                pd.DataFrame([{"code": "000001", "trade_date": "20260710", "factor": 1.0}]),
+            )
+            regimes = pd.DataFrame({
+                "trade_date": pd.date_range("2026-06-29", periods=10, freq="B").strftime("%Y%m%d"),
+                "composite_regime": ["risk_on"] * 10,
+                "regime_coverage": [0.8] * 10,
+            })
+            pipeline.store.write_parquet_atomic(pipeline._artifact_path("regimes"), regimes)
+            observed = {}
+
+            def prediction(bundle, features, **kwargs):
+                del bundle, features
+                observed.update(kwargs)
+                return [PredictionRecord(code="000001", as_of="2026-07-10", horizon=5, p_up=0.5, p_flat=0.3, p_down=0.2)]
+
+            with (
+                patch.object(pipeline, "_resolve_model", return_value=(Path("model.joblib"), "research")),
+                patch("stock_analyze.research.pipeline.load_model_bundle", return_value=SimpleNamespace(horizon=5, model_version="m5", metrics={})),
+                patch("stock_analyze.research.pipeline.generate_predictions", side_effect=prediction),
+            ):
+                result = pipeline.predict(horizon=5)
+
+        self.assertEqual(observed["regime"], "risk_on")
+        self.assertGreater(observed["regime_stability"], 0.9)
+        self.assertEqual(result["regime"], "risk_on")
+
+    def test_research_loads_macro_and_global_context_from_shared_raw_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_history(root)
+            pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10", offline=True)
+            pipeline.prepare_data()
+            a_raw = root / "data" / "research" / "raw" / "a_share" / "20260710"
+            qdii_raw = root / "data" / "research" / "raw" / "cn_qdii_etf" / "20260710"
+            a_raw.mkdir(parents=True)
+            qdii_raw.mkdir(parents=True)
+            pd.DataFrame([
+                {"MONTH": "202604", "PMI010000": 49.0},
+                {"MONTH": "202605", "PMI010000": 50.0},
+            ]).to_parquet(a_raw / "cn_pmi.parquet", index=False)
+            pd.DataFrame([
+                {"date": "20260610", "y2": 4.0, "y10": 4.4},
+                {"date": "20260710", "y2": 4.1, "y10": 4.6},
+            ]).to_parquet(a_raw / "us_tycr.parquet", index=False)
+            pd.DataFrame([
+                {"ts_code": "SPX", "trade_date": "20260610", "close": 100.0},
+                {"ts_code": "SPX", "trade_date": "20260709", "close": 105.0},
+                {"ts_code": "SPX", "trade_date": "20260710", "close": 110.0},
+            ]).to_parquet(qdii_raw / "index_global.parquet", index=False)
+
+            pipeline.run_research()
+            regimes = pd.read_parquet(pipeline._artifact_path("regimes"))
+            latest = regimes.sort_values("trade_date").iloc[-1]
+
+        self.assertNotEqual(latest["macro_regime"], "unknown")
+        self.assertNotEqual(latest["global_risk_regime"], "unknown")
+        self.assertEqual(float(latest["regime_coverage"]), 1.0)
+
+    def test_research_persists_market_and_industry_regimes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10", offline=True)
+            rows = []
+            for offset, trade_date in enumerate(pd.date_range("2026-05-25", periods=35, freq="B")):
+                for code, industry, tilt in (
+                    ("000001", "科技", 0.02), ("000002", "科技", 0.01),
+                    ("600000", "银行", -0.01), ("600001", "银行", -0.02),
+                ):
+                    rows.append({
+                        "code": code,
+                        "trade_date": trade_date.strftime("%Y%m%d"),
+                        "close": 10.0 + offset * (0.01 + tilt),
+                        "momentum_20": tilt + offset / 1000.0,
+                        "realized_volatility_20": 0.15 + abs(tilt),
+                        "volume_ratio_5_20": 1.0 + tilt,
+                        "industry": industry,
+                    })
+            pipeline.store.write_feature_snapshot("a_share", "2026-07-10", pd.DataFrame(rows))
+
+            pipeline.run_research()
+            regimes = pd.read_parquet(pipeline._artifact_path("regimes"))
+
+        self.assertIn("market", set(regimes["scope"]))
+        self.assertIn("industry:科技", set(regimes["scope"]))
+        self.assertIn("industry:银行", set(regimes["scope"]))
+
     def test_resolve_model_prefers_latest_registration_not_hash_sort(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

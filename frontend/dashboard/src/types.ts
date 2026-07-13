@@ -384,6 +384,7 @@ export type RegimeSummary = {
   status: "available" | "unavailable" | string;
   current?: Record<string, unknown> | null;
   history?: Record<string, unknown>[];
+  industries?: Record<string, unknown>[];
 };
 
 export type SourceHealth = { source: string; status: string; rows?: number; failed?: boolean; error?: string };

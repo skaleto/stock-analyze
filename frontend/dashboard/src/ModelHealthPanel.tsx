@@ -21,6 +21,13 @@ const gateLabels: Record<string, string> = {
 };
 
 const stateLabel = (status?: string) => status === "active" ? "已激活" : status === "shadow" ? "影子验证" : "研究中";
+const regimeLabels: Record<string, string> = {
+  risk_on: "风险偏好", risk_off: "风险规避", mixed: "多空交错", unknown: "数据不足",
+  up: "上行", flat: "震荡", down: "下行", high: "高波动", normal: "常态", low: "低波动",
+  expanding: "扩张", neutral: "中性", contracting: "收缩", recovery: "复苏",
+  expansion: "扩张", slowdown: "放缓", contraction: "收缩",
+};
+const regimeLabel = (value: unknown) => regimeLabels[String(value ?? "unknown")] ?? String(value ?? "数据不足");
 
 function MetricCell({ value, baseline, label }: { value?: number; baseline: number; label: string }) {
   const ratio = value == null ? 0 : Math.min(100, Math.max(0, value / baseline * 100));
@@ -40,6 +47,13 @@ export default function ModelHealthPanel({ health, regimes, sources = [] }: { he
     : models.some((model) => model.status === "shadow") ? "影子验证" : models.length ? "研究中" : "未训练";
   const missingEvidence = Array.from(new Set(models.flatMap((model) => model.gate_reasons ?? [])))
     .map((reason) => gateLabels[reason] ?? reason);
+  const current = regimes?.current ?? {};
+  const dimensions = [
+    ["趋势", current.trend_regime], ["波动", current.volatility_regime],
+    ["流动性", current.liquidity_regime], ["宏观", current.macro_regime],
+    ["全球", current.global_risk_regime],
+  ];
+  const industries = (regimes?.industries ?? []).slice(0, 6);
   return (
     <section className="model-health terminal-section" aria-label="模型健康">
       <header className="compact-panel-heading"><div><Braces size={15} aria-hidden="true" /><h2>模型与数据</h2></div><span>{overallState}</span></header>
@@ -58,7 +72,13 @@ export default function ModelHealthPanel({ health, regimes, sources = [] }: { he
         </div>
       ) : <div className="model-note"><CircleAlert size={14} aria-hidden="true" />模型尚未完成训练或晋级</div>}
       {missingEvidence.length ? <div className="model-gate-note">待补证据：{missingEvidence.join("、")}</div> : null}
-      <div className="model-context-line"><span>市场状态 <strong>{String(regimes?.current?.composite_regime ?? "暂无")}</strong></span><span className={unavailable ? "warning" : ""}>未接入文本源 {unavailable}</span></div>
+      <div className="model-context-line"><span>市场状态 <strong>{regimeLabel(current.composite_regime)}</strong></span><span className={unavailable ? "warning" : ""}>未接入文本源 {unavailable}</span></div>
+      <div className="regime-dimensions" aria-label="市场五维状态">
+        {dimensions.map(([label, value]) => <span key={String(label)}><small>{String(label)}</small><b>{regimeLabel(value)}</b></span>)}
+      </div>
+      {industries.length ? <div className="industry-regime-strip" aria-label="行业状态">
+        {industries.map((row) => <span key={String(row.scope)}><small>{String(row.scope ?? "").replace("industry:", "")}</small><b>{regimeLabel(row.composite_regime)}</b></span>)}
+      </div> : null}
     </section>
   );
 }

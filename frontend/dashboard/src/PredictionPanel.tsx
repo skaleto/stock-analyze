@@ -3,6 +3,8 @@ import { useMemo, useState } from "react";
 import type { PredictionSummary } from "./types";
 
 const percent = (value?: number | null) => value == null ? "-" : `${(value * 100).toFixed(1)}%`;
+const REGIME_LABELS: Record<string, string> = { risk_on: "风险偏好", risk_off: "风险规避", mixed: "多空交错", unknown: "状态未知" };
+const regimeLabel = (value?: string) => REGIME_LABELS[value ?? "unknown"] ?? value;
 
 export default function PredictionPanel({ summary }: { summary?: PredictionSummary }) {
   const horizons = summary?.horizons ?? [];
@@ -53,7 +55,7 @@ export default function PredictionPanel({ summary }: { summary?: PredictionSumma
                   </div>
                   <div className="confidence-row"><span>可信度</span><div><i style={{ width: `${row.confidence * 100}%` }} /></div><b>{percent(row.confidence)}</b></div>
                 </div>
-                <div className="prediction-return"><span>预期超额</span><strong>{percent(row.expected_excess_return)}</strong><small>{row.regime || "状态未知"}</small></div>
+                <div className="prediction-return"><span>预期超额</span><strong>{percent(row.expected_excess_return)}</strong><small>{regimeLabel(row.regime)}</small></div>
                 <div className="prediction-evidence">
                   <p>{row.reasons?.[0] ?? "等待证据积累"}</p>
                   <small>{row.invalidation?.[0] ?? "暂无失效条件"}</small>

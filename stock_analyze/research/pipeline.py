@@ -27,12 +27,26 @@ from .labels import build_forward_labels
 from .models import load_model_bundle, save_model_bundle, train_model_bundle
 from .prediction import generate_predictions
 from .regime import classify_regimes
-from .source_features import SourceCollection, build_source_features
+from .source_features import (
+    SourceCollection,
+    add_industry_features,
+    attach_industry_membership,
+    attach_point_in_time_features,
+    attach_qdii_point_in_time_features,
+    build_fundamental_history,
+    build_regime_components,
+    build_source_features,
+)
 from .storage import ResearchStore
 from .technical_features import compute_technical_features
 
 
 class ResearchPipeline:
+    _REGIME_SOURCE_NAMES = {
+        "cn_pmi", "cn_m", "cn_cpi", "cn_ppi", "shibor", "us_tycr",
+        "index_global", "fx_daily",
+    }
+
     def __init__(
         self,
         repo_root: str | Path,
@@ -137,7 +151,12 @@ class ResearchPipeline:
         featured = pd.concat(feature_parts, ignore_index=True)
         source_count = 0
         if not self.offline:
-            sources = self._collect_sources(sorted(featured["code"].dropna().astype(str).unique()))
+            available_codes = sorted(featured["code"].dropna().astype(str).unique())
+            source_codes = [
+                *sorted(code for code in full_history_codes if code in set(available_codes)),
+                *[code for code in available_codes if code not in full_history_codes],
+            ]
+            sources = self._collect_sources(source_codes)
             raw_root = self.research_root / "raw" / self.market / self.run_key
             for name, frame in sources.frames.items():
                 if frame.empty:
@@ -146,13 +165,32 @@ class ResearchPipeline:
                 source_count += 1
             if not sources.health.empty:
                 self.store.write_parquet_atomic(raw_root / "source_health.parquet", sources.health)
+            if self.market == "a_share":
+                fundamental_history = build_fundamental_history(sources.frames)
+                featured = attach_point_in_time_features(featured, fundamental_history)
+                featured = attach_industry_membership(
+                    featured,
+                    sources.frames.get("index_member_all", pd.DataFrame()),
+                )
+            else:
+                featured = attach_qdii_point_in_time_features(featured, sources.frames)
+            regime_sources = self._load_regime_source_frames()
+            regime_sources.update(sources.frames)
+            market_context = build_regime_components(regime_sources, featured["trade_date"])
+            featured = featured.merge(market_context, on="trade_date", how="left")
             source_features = build_source_features(sources.frames)
             if not source_features.empty:
                 source_features = source_features.set_index("code")
                 latest_indices = featured.sort_values("trade_date").groupby("code").tail(1).index
                 for column in source_features.columns.difference(["ts_code"]):
-                    featured[column] = np.nan
-                    featured.loc[latest_indices, column] = featured.loc[latest_indices, "code"].map(source_features[column])
+                    mapped = featured.loc[latest_indices, "code"].map(source_features[column])
+                    if column not in featured.columns:
+                        featured[column] = np.nan
+                    current = featured.loc[latest_indices, column]
+                    featured.loc[latest_indices, column] = current.where(current.notna(), mapped)
+        if self.market == "cn_qdii_etf":
+            featured = self._attach_qdii_metadata(featured)
+        featured = add_industry_features(featured)
         featured["feature_observed_at"] = self.as_of
         self.store.write_feature_snapshot(self.market, self.as_of, featured)
         return {
@@ -244,30 +282,157 @@ class ResearchPipeline:
     def _artifact_path(self, name: str) -> Path:
         return self.research_root / name / self.market / f"{self.run_key}.parquet"
 
+    def _attach_qdii_metadata(self, features: pd.DataFrame) -> pd.DataFrame:
+        from ..markets.cn_qdii_etf.research_catalog import build_research_catalog
+        from ..markets.cn_qdii_etf.universe import build_catalog_candidates
+
+        metadata_rows: list[dict[str, Any]] = []
+        cache = self._cache_dir()
+        basic_paths = [path for name in ("fund_basic_E_v2.csv", "fund_basic_E.csv") if (path := cache / name).exists()]
+        if basic_paths:
+            basic = pd.read_csv(basic_paths[0], dtype={"ts_code": str, "list_date": str, "delist_date": str})
+            metadata_rows.extend(build_catalog_candidates(basic, as_of=self.as_of))
+            metadata_rows.extend(build_research_catalog(basic, as_of=self.as_of).to_dict(orient="records"))
+        shadow_root = self.repo_root / "data" / "cn_qdii_etf" / "research" / "shadow"
+        catalogs = sorted(shadow_root.glob("*/catalog.csv")) if shadow_root.exists() else []
+        if catalogs:
+            metadata_rows.extend(pd.read_csv(catalogs[-1], dtype={"code": str}).to_dict(orient="records"))
+        snapshot_path = self.repo_root / "data" / "cn_qdii_etf" / self.agent / "selection_snapshot.json"
+        if snapshot_path.exists():
+            try:
+                snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                snapshot = {}
+            for scope, block in (snapshot.get("scopes") or {}).items():
+                if not isinstance(block, dict):
+                    continue
+                for row in [*(block.get("ranked") or []), *(block.get("selected") or [])]:
+                    if isinstance(row, dict):
+                        metadata_rows.append({**row, "research_scope": scope, "scope": scope})
+        if not metadata_rows:
+            result = features.copy()
+            result["industry"] = "unclassified"
+            result["industry_l2"] = "unclassified"
+            return result
+        metadata = pd.DataFrame(metadata_rows)
+        metadata["code"] = metadata["code"].astype("string").str.split(".").str[0].str.zfill(6)
+        for column in ("sector", "theme", "research_scope", "scope", "index_key", "asset_class", "country"):
+            if column not in metadata.columns:
+                metadata[column] = pd.NA
+        metadata["industry"] = metadata["sector"].fillna(metadata["theme"]).fillna(metadata["research_scope"]).fillna(metadata["scope"])
+        metadata["industry_l2"] = metadata["index_key"].fillna(metadata["research_scope"]).fillna(metadata["scope"])
+        metadata = metadata.drop_duplicates("code", keep="first").set_index("code")
+        result = features.copy()
+        for column in ("industry", "industry_l2", "research_scope", "index_key", "asset_class", "country", "theme"):
+            result[column] = result["code"].astype("string").map(metadata[column] if column in metadata.columns else pd.Series(dtype="string"))
+        result["industry"] = result["industry"].fillna("unclassified")
+        result["industry_l2"] = result["industry_l2"].fillna("unclassified")
+        return result
+
+    def _load_regime_source_frames(self) -> dict[str, pd.DataFrame]:
+        frames: dict[str, pd.DataFrame] = {}
+        markets = (self.market, "cn_qdii_etf" if self.market == "a_share" else "a_share")
+        for market in markets:
+            market_root = self.research_root / "raw" / market
+            if not market_root.exists():
+                continue
+            runs = sorted(
+                path for path in market_root.iterdir()
+                if path.is_dir() and path.name.isdigit() and path.name <= self.run_key
+            )
+            if not runs:
+                continue
+            for source in self._REGIME_SOURCE_NAMES:
+                path = next(
+                    (run / f"{source}.parquet" for run in reversed(runs) if (run / f"{source}.parquet").exists()),
+                    None,
+                )
+                if source not in frames and path is not None:
+                    frames[source] = pd.read_parquet(path)
+        return frames
+
+    def _current_regime_context(self) -> tuple[str, float]:
+        path = self._artifact_path("regimes")
+        if not path.exists():
+            return "unknown", 0.5
+        regimes = pd.read_parquet(path)
+        if regimes.empty or "composite_regime" not in regimes.columns:
+            return "unknown", 0.5
+        if "scope" in regimes.columns and regimes["scope"].eq("market").any():
+            regimes = regimes.loc[regimes["scope"].eq("market")]
+        if "trade_date" in regimes.columns:
+            regimes = regimes.loc[regimes["trade_date"].astype("string") <= self.run_key].sort_values("trade_date")
+        if regimes.empty:
+            return "unknown", 0.5
+        latest = regimes.iloc[-1]
+        regime = str(latest.get("composite_regime") or "unknown")
+        if regime == "unknown":
+            return regime, 0.5
+        recent = regimes.tail(10)["composite_regime"].astype("string")
+        consistency = float(recent.eq(regime).mean())
+        coverage = float(pd.to_numeric(pd.Series([latest.get("regime_coverage")]), errors="coerce").fillna(0.0).iloc[0])
+        stability = float(np.clip(0.7 * consistency + 0.3 * coverage, 0.0, 1.0))
+        return regime, stability
+
+    @staticmethod
+    def _score_regime_daily(frame: pd.DataFrame) -> pd.DataFrame:
+        scored = frame.sort_values("trade_date").copy()
+        scored["trend_score"] = np.tanh(pd.to_numeric(scored["momentum_20"], errors="coerce").fillna(0.0) * 8.0)
+        volatility = pd.to_numeric(scored["realized_volatility_20"], errors="coerce")
+        center = volatility.expanding(min_periods=10).median()
+        scale = volatility.expanding(min_periods=10).std().replace(0.0, np.nan)
+        scored["volatility_score"] = (volatility - center) / scale
+        scored["liquidity_score"] = np.tanh(
+            (pd.to_numeric(scored["volume_ratio_5_20"], errors="coerce").fillna(1.0) - 1.0) * 2.0
+        )
+        return scored
+
     def run_research(self) -> dict[str, Any]:
         features = self.store.read_feature_snapshot(self.market, self.as_of)
         price_columns = [column for column in ("code", "trade_date", "close") if column in features.columns]
         labels = build_forward_labels(features[price_columns])
         self.store.write_label_snapshot(self.market, self.as_of, labels)
 
-        daily = features.groupby("trade_date", as_index=False).agg(
+        market_daily = features.groupby("trade_date", as_index=False).agg(
             momentum_20=("momentum_20", "median"),
             realized_volatility_20=("realized_volatility_20", "median"),
             volume_ratio_5_20=("volume_ratio_5_20", "median"),
         )
-        daily["trend_score"] = np.tanh(daily["momentum_20"].fillna(0.0) * 8.0)
-        volatility_center = daily["realized_volatility_20"].expanding(min_periods=10).median()
-        volatility_scale = daily["realized_volatility_20"].expanding(min_periods=10).std().replace(0.0, np.nan)
-        daily["volatility_score"] = (daily["realized_volatility_20"] - volatility_center) / volatility_scale
-        daily["liquidity_score"] = np.tanh((daily["volume_ratio_5_20"].fillna(1.0) - 1.0) * 2.0)
-        daily["macro_score"] = np.nan
-        daily["global_risk_score"] = np.nan
-        regimes = classify_regimes(daily)
+        market_daily = self._score_regime_daily(market_daily)
+        market_daily["scope"] = "market"
+        regime_components = build_regime_components(
+            self._load_regime_source_frames(),
+            market_daily["trade_date"],
+        )
+        market_daily = market_daily.merge(regime_components, on="trade_date", how="left")
+        regime_inputs = [market_daily]
+        if "industry" in features.columns:
+            industry_source = features.loc[
+                features["industry"].notna() & features["industry"].ne("unclassified")
+            ]
+            if not industry_source.empty:
+                industry_daily = industry_source.groupby(["industry", "trade_date"], as_index=False).agg(
+                    momentum_20=("momentum_20", "median"),
+                    realized_volatility_20=("realized_volatility_20", "median"),
+                    volume_ratio_5_20=("volume_ratio_5_20", "median"),
+                    instruments=("code", "nunique"),
+                )
+                industry_daily = industry_daily.loc[industry_daily["instruments"] >= 2]
+                scored_industries = [
+                    self._score_regime_daily(group).assign(scope=f"industry:{industry}")
+                    for industry, group in industry_daily.groupby("industry", sort=False)
+                ]
+                if scored_industries:
+                    industry_regimes = pd.concat(scored_industries, ignore_index=True)
+                    industry_regimes = industry_regimes.merge(regime_components, on="trade_date", how="left")
+                    regime_inputs.append(industry_regimes)
+        regimes = classify_regimes(pd.concat(regime_inputs, ignore_index=True, sort=False))
         self.store.write_parquet_atomic(self._artifact_path("regimes"), regimes)
 
         events = detect_events(features, market=self.market)
         if not events.empty:
-            event_regime = regimes[["trade_date", "composite_regime"]].rename(columns={"composite_regime": "detected_regime"})
+            market_regimes = regimes.loc[regimes["scope"].eq("market")]
+            event_regime = market_regimes[["trade_date", "composite_regime"]].rename(columns={"composite_regime": "detected_regime"})
             events = events.merge(event_regime, on="trade_date", how="left")
             events["regime"] = events["detected_regime"].fillna(events["regime"])
             events = events.drop(columns="detected_regime")
@@ -355,6 +520,7 @@ class ResearchPipeline:
             statuses: dict[str, str] = {}
             failures: list[dict[str, Any]] = []
             cycle_counts: dict[str, int] = {}
+            regime, regime_stability = self._current_regime_context()
             target_horizons = (horizon,) if horizon is not None else (3, 5, 10, 20)
             for target_horizon in target_horizons:
                 try:
@@ -365,9 +531,9 @@ class ResearchPipeline:
                         latest,
                         as_of=self.as_of,
                         horizon=target_horizon,
-                        regime="unknown",
+                        regime=regime,
                         data_quality=1.0,
-                        regime_stability=0.5,
+                        regime_stability=regime_stability,
                         feature_snapshot_id=f"{self.market}-{self.run_key}",
                         active_status=status if status == "active" else "inactive",
                     )
@@ -379,7 +545,13 @@ class ResearchPipeline:
                         cycle_counts[str(target_horizon)] = cycle["count"]
                         statuses[str(target_horizon)] = cycle["status"]
                     if self.agent == "codex":
-                        self._run_shadow_challengers(target_horizon, latest, exclude_version=bundle.model_version)
+                        self._run_shadow_challengers(
+                            target_horizon,
+                            latest,
+                            exclude_version=bundle.model_version,
+                            regime=regime,
+                            regime_stability=regime_stability,
+                        )
                 except Exception as exc:  # noqa: BLE001 - preserve successful horizons
                     failures.append({"horizon": target_horizon, "error": str(exc)[:240]})
             if not rows:
@@ -394,6 +566,8 @@ class ResearchPipeline:
                 "active_status": statuses,
                 "failures": failures,
                 "shadow_cycles": cycle_counts,
+                "regime": regime,
+                "regime_stability": regime_stability,
             }
         except Exception as exc:  # noqa: BLE001 - trading path remains unchanged
             health = {"status": "fallback", "predictions": 0, "error": str(exc)[:240]}
@@ -431,7 +605,15 @@ class ResearchPipeline:
             status = str(state["models"][bundle.model_version]["status"])
         return {**cycle, "status": status}
 
-    def _run_shadow_challengers(self, horizon: int, features: pd.DataFrame, *, exclude_version: str) -> None:
+    def _run_shadow_challengers(
+        self,
+        horizon: int,
+        features: pd.DataFrame,
+        *,
+        exclude_version: str,
+        regime: str,
+        regime_stability: float,
+    ) -> None:
         model_root = self._model_root(horizon)
         registry_path = model_root / "registry.json"
         if not registry_path.exists():
@@ -455,9 +637,9 @@ class ResearchPipeline:
             features,
             as_of=self.as_of,
             horizon=horizon,
-            regime="unknown",
+            regime=regime,
             data_quality=1.0,
-            regime_stability=0.5,
+            regime_stability=regime_stability,
             feature_snapshot_id=f"{self.market}-{self.run_key}",
             active_status="inactive",
         )

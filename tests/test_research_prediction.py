@@ -2,10 +2,15 @@ import unittest
 
 from tests.test_research_models import model_dataset
 from stock_analyze.research.models import train_model_bundle
-from stock_analyze.research.prediction import compute_confidence, generate_predictions
+from stock_analyze.research.prediction import _reason_text, compute_confidence, generate_predictions
 
 
 class ResearchPredictionTest(unittest.TestCase):
+    def test_prediction_reason_uses_chinese_feature_label(self):
+        reason = _reason_text([("macd_hist_slope", 0.25), ("high_value_add_proxy", -0.12)])
+        self.assertEqual(reason[0], "MACD柱变化 正向贡献 0.250")
+        self.assertEqual(reason[1], "高附加值代理 负向贡献 0.120")
+
     def test_low_sample_support_caps_confidence(self):
         confidence = compute_confidence(
             calibration_quality=1.0,

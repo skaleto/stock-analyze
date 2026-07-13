@@ -160,8 +160,11 @@ python3 -m stock_analyze --market <market> --agent codex train-prediction-models
 python3 -m stock_analyze --market <market> --agent <agent> predict --offline
 ```
 
-系统从点时快照生成 3/5/10/20 日标签、技术与量价事件、市场状态、校准概率和
-独立可信度。新闻、公告和政策接口在当前权限下显示 `source_unavailable`，不会用
+系统从点时快照生成 3/5/10/20 日标签、技术与量价事件、市场/行业五维状态、校准概率和
+独立可信度。A 股财务指标以公告日做 as-of 合并，覆盖质量、成长、现金转化、高附加值和
+边际成本代理；跨境 ETF 同步使用净值折溢价、跟踪差、份额、全球指数与汇率。PMI、货币、
+通胀、Shibor 和美债曲线按保守发布日期进入宏观/全球状态，不把最新值倒灌到历史。
+新闻、公告和政策接口在当前权限下显示 `source_unavailable`，不会用
 零值或中性值伪造信号。研究预测默认不参与排序；只有模型注册表为 `active`、可信度
 不低于 70%、未触发失效条件的记录才能影响纸面策略，且仍受原交易成本、行业、
 单标的权重、手数与下一交易日执行规则约束。
