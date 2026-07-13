@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from dataclasses import asdict
 from datetime import date
@@ -34,12 +35,14 @@ class ResearchPipeline:
         agent: str,
         as_of: str | None = None,
         offline: bool = False,
+        max_full_history_instruments: int = 80,
     ) -> None:
         self.repo_root = Path(repo_root)
         self.market = market
         self.agent = agent
         self.as_of = as_of or date.today().isoformat()
         self.offline = offline
+        self.max_full_history_instruments = max(1, int(max_full_history_instruments))
         self.research_root = self.repo_root / "data" / "research"
         self.store = ResearchStore(self.research_root)
 
@@ -91,13 +94,29 @@ class ResearchPipeline:
         if destination.exists() and not force:
             rows = len(self.store.read_feature_snapshot(self.market, self.as_of))
             return {"status": "cached", "rows": rows, "path": str(destination)}
-        histories = [self._normalize_history(path) for path in self._history_files()]
-        histories = [frame for frame in histories if not frame.empty]
-        if not histories:
+        history_files = self._history_files()
+        if not history_files:
             raise FileNotFoundError(f"research_history_cache_missing:{self._cache_dir()}")
-        ohlcv = pd.concat(histories, ignore_index=True)
-        ohlcv = ohlcv.loc[ohlcv["trade_date"] <= self.run_key]
-        featured = compute_technical_features(ohlcv)
+        all_codes = [
+            match.group(1)
+            for path in history_files
+            if (match := re.search(r"(?:fund_daily|history)_(\d{6})", path.name))
+        ]
+        full_history_codes = self._full_history_codes(all_codes)
+        feature_parts: list[pd.DataFrame] = []
+        for path in history_files:
+            history = self._normalize_history(path)
+            history = history.loc[history["trade_date"] <= self.run_key]
+            if history.empty:
+                continue
+            part = compute_technical_features(history)
+            code = str(part.iloc[-1]["code"])
+            keep_full = self.market != "a_share" or code in full_history_codes
+            part["history_role"] = "full" if keep_full else "latest_only"
+            feature_parts.append(part if keep_full else part.tail(1))
+        if not feature_parts:
+            raise FileNotFoundError(f"research_history_cache_empty:{self._cache_dir()}")
+        featured = pd.concat(feature_parts, ignore_index=True)
         source_count = 0
         if not self.offline:
             sources = self._collect_sources(sorted(featured["code"].dropna().astype(str).unique()))
@@ -125,7 +144,43 @@ class ResearchPipeline:
             "path": str(destination),
             "offline": self.offline,
             "sources": source_count,
+            "full_history_instruments": len(full_history_codes) if self.market == "a_share" else int(featured["code"].nunique()),
         }
+
+    def _full_history_codes(self, all_codes: list[str]) -> set[str]:
+        if self.market != "a_share":
+            return set(all_codes)
+        available = set(all_codes)
+        priority: list[str] = []
+        market_root = self.repo_root / "data" / "a_share"
+        if market_root.exists():
+            for data_dir in sorted(path for path in market_root.iterdir() if path.is_dir()):
+                positions = data_dir / "positions.csv"
+                if positions.exists():
+                    try:
+                        frame = pd.read_csv(positions, dtype={"code": str})
+                        priority.extend(frame.get("code", pd.Series(dtype=str)).dropna().astype(str).str.split(".").str[0])
+                    except (OSError, pd.errors.ParserError):
+                        pass
+                pending = data_dir / "pending_orders.json"
+                if pending.exists():
+                    try:
+                        payload = json.loads(pending.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        payload = []
+                    for batch in payload if isinstance(payload, list) else []:
+                        orders = batch.get("orders") if isinstance(batch, dict) else None
+                        for order in orders if isinstance(orders, list) else ([batch] if isinstance(batch, dict) else []):
+                            code = str(order.get("code") or "").split(".")[0]
+                            if code:
+                                priority.append(code)
+        prioritized = list(dict.fromkeys(code for code in priority if code in available))
+        remaining = sorted(
+            available.difference(prioritized),
+            key=lambda code: hashlib.sha256(f"a-share-research-v1|{code}".encode("utf-8")).hexdigest(),
+        )
+        ordered = [*prioritized, *remaining]
+        return set(ordered[: self.max_full_history_instruments])
 
     def _collect_sources(self, codes: list[str]) -> SourceCollection:
         if self.market == "cn_qdii_etf":
