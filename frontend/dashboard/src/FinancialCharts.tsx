@@ -259,7 +259,7 @@ const MOVING_AVERAGES = [
 ] as const;
 
 type MovingAverageKey = typeof MOVING_AVERAGES[number]["key"];
-type IndicatorKey = MovingAverageKey | "volume";
+type IndicatorKey = MovingAverageKey | "volume" | "macd";
 type IndicatorVisibility = Record<IndicatorKey, boolean>;
 
 const DEFAULT_INDICATORS: IndicatorVisibility = {
@@ -268,6 +268,19 @@ const DEFAULT_INDICATORS: IndicatorVisibility = {
   ma20: true,
   ma60: true,
   volume: true,
+  macd: true,
+};
+
+type MacdPoint = {
+  date: string;
+  dif: number;
+  dea: number;
+  histogram: number;
+};
+
+type TechnicalReading = {
+  label: string;
+  detail: string;
 };
 
 function movingAverageData(candles: Candle[], period: number): { time: Time; value: number }[] {
@@ -288,6 +301,85 @@ function formatVolume(value: number | null | undefined): string {
   if (Math.abs(value) >= 100_000_000) return `${(value / 100_000_000).toFixed(2)}亿`;
   if (Math.abs(value) >= 10_000) return `${(value / 10_000).toFixed(2)}万`;
   return value.toLocaleString("zh-CN", { maximumFractionDigits: 0 });
+}
+
+function calculateMacd(candles: Candle[]): MacdPoint[] {
+  if (candles.length === 0) return [];
+  const fastWeight = 2 / 13;
+  const slowWeight = 2 / 27;
+  const signalWeight = 2 / 10;
+  let fast = candles[0].close;
+  let slow = candles[0].close;
+  let signal = 0;
+  return candles.map((candle, index) => {
+    if (index > 0) {
+      fast = candle.close * fastWeight + fast * (1 - fastWeight);
+      slow = candle.close * slowWeight + slow * (1 - slowWeight);
+    }
+    const dif = fast - slow;
+    signal = index === 0 ? dif : dif * signalWeight + signal * (1 - signalWeight);
+    return {
+      date: candle.date,
+      dif,
+      dea: signal,
+      histogram: (dif - signal) * 2,
+    };
+  });
+}
+
+function macdReading(points: MacdPoint[]): TechnicalReading {
+  const latest = points[points.length - 1];
+  const previous = points[points.length - 2];
+  if (!latest || !previous) return { label: "数据不足", detail: "至少需要两个交易日" };
+  if (previous.dif <= previous.dea && latest.dif > latest.dea) {
+    return { label: "金叉", detail: latest.dif >= 0 ? "零轴上方转强" : "零轴下方修复" };
+  }
+  if (previous.dif >= previous.dea && latest.dif < latest.dea) {
+    return { label: "死叉", detail: latest.dif >= 0 ? "零轴上方动能回落" : "零轴下方偏弱" };
+  }
+  const strengthening = Math.abs(latest.histogram) > Math.abs(previous.histogram);
+  if (latest.histogram >= 0) {
+    return { label: strengthening ? "多头动能增强" : "多头动能收敛", detail: latest.dif >= 0 ? "位于零轴上方" : "仍在零轴下方" };
+  }
+  return { label: strengthening ? "空头动能增强" : "空头动能收敛", detail: latest.dif >= 0 ? "仍在零轴上方" : "位于零轴下方" };
+}
+
+function average(values: number[]): number | null {
+  const finite = values.filter(Number.isFinite);
+  return finite.length ? finite.reduce((total, value) => total + value, 0) / finite.length : null;
+}
+
+function volumePriceReading(candles: Candle[]): TechnicalReading {
+  if (candles.length < 11) return { label: "数据不足", detail: "量价八阶至少需要 11 个交易日" };
+  const previous = candles.slice(-10, -5);
+  const recent = candles.slice(-5);
+  const previousVolume = average(previous.map((candle) => candle.volume ?? Number.NaN));
+  const recentVolume = average(recent.map((candle) => candle.volume ?? Number.NaN));
+  const startClose = candles[candles.length - 6]?.close;
+  const latestClose = candles[candles.length - 1]?.close;
+  if (!previousVolume || !recentVolume || !startClose || !latestClose) {
+    return { label: "成交量数据不足", detail: "等待完整历史成交量" };
+  }
+  const volumeChange = recentVolume / previousVolume - 1;
+  const priceChange = latestClose / startClose - 1;
+  const volumeState = volumeChange > 0.1 ? "up" : volumeChange < -0.1 ? "down" : "flat";
+  const priceState = priceChange > 0.01 ? "up" : priceChange < -0.01 ? "down" : "flat";
+  const laws: Record<string, { stage: string; label: string; note: string }> = {
+    "up:flat": { stage: "第1阶", label: "量增价平", note: "成交活跃度提升，价格等待方向选择" },
+    "up:up": { stage: "第2阶", label: "量增价升", note: "量价同步走强，观察趋势持续性" },
+    "flat:up": { stage: "第3阶", label: "量平价升", note: "价格延续上行，增量资金一般" },
+    "down:up": { stage: "第4阶", label: "量减价升", note: "缩量上行，趋势仍在但动能减弱" },
+    "down:flat": { stage: "第5阶", label: "量减价平", note: "交投降温，进入方向观察期" },
+    "down:down": { stage: "第6阶", label: "量减价跌", note: "缩量回落，抛压有限但承接偏弱" },
+    "flat:down": { stage: "第7阶", label: "量平价跌", note: "价格走弱，成交未明显收缩" },
+    "up:down": { stage: "第8阶", label: "量增价跌", note: "放量下行，卖压与分歧同步扩大" },
+    "flat:flat": { stage: "中性", label: "量价平稳", note: "价格与成交量都没有显著变化" },
+  };
+  const law = laws[`${volumeState}:${priceState}`];
+  return {
+    label: `${law.stage} · ${law.label}`,
+    detail: `${law.note}；5日价 ${priceChange >= 0 ? "+" : ""}${(priceChange * 100).toFixed(2)}%，均量 ${volumeChange >= 0 ? "+" : ""}${(volumeChange * 100).toFixed(1)}%`,
+  };
 }
 
 function candleVisibleRange(candles: Candle[], range: CandleRange): { from: Time; to: Time } | null {
@@ -372,6 +464,81 @@ function buildTradeMarkerBundle(trades: OrderRow[], strategyLabel: string): {
   return { markers, details };
 }
 
+function MacdPanel({
+  points,
+  visibleRange,
+}: {
+  points: MacdPoint[];
+  visibleRange: { from: Time; to: Time } | null;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const latest = points[points.length - 1];
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || points.length === 0) return undefined;
+    const chart = createChart(container, {
+      width: Math.max(container.clientWidth, 320),
+      height: 156,
+      layout: chartLayout,
+      grid: {
+        vertLines: { color: "#182230" },
+        horzLines: { color: "#182230" },
+      },
+      rightPriceScale: { borderColor: "#2a3748", scaleMargins: { top: 0.15, bottom: 0.12 } },
+      timeScale: { borderColor: "#2a3748", rightOffset: 3 },
+      crosshair: { mode: CrosshairMode.Normal },
+    });
+    const histogram = chart.addSeries(HistogramSeries, {
+      priceLineVisible: false,
+      lastValueVisible: false,
+      priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
+    });
+    const dif = chart.addSeries(LineSeries, {
+      color: "#facc15",
+      lineWidth: 1,
+      title: "DIF",
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    const dea = chart.addSeries(LineSeries, {
+      color: "#60a5fa",
+      lineWidth: 1,
+      title: "DEA",
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    histogram.setData(points.map((point) => ({
+      time: point.date as Time,
+      value: point.histogram,
+      color: point.histogram >= 0 ? "rgba(239,68,68,0.58)" : "rgba(34,197,94,0.58)",
+    })));
+    dif.setData(points.map((point) => ({ time: point.date as Time, value: point.dif })));
+    dea.setData(points.map((point) => ({ time: point.date as Time, value: point.dea })));
+    if (visibleRange) chart.timeScale().setVisibleRange(visibleRange);
+    else chart.timeScale().fitContent();
+    const stopObserving = observeChart(container, chart);
+    return () => {
+      stopObserving();
+      chart.remove();
+    };
+  }, [points, visibleRange]);
+
+  return (
+    <div className="macd-panel">
+      <div className="macd-readout">
+        <strong>MACD (12, 26, 9)</strong>
+        <span>DIF <b>{latest?.dif.toFixed(4) ?? "-"}</b></span>
+        <span>DEA <b>{latest?.dea.toFixed(4) ?? "-"}</b></span>
+        <span>柱 <b>{latest?.histogram.toFixed(4) ?? "-"}</b></span>
+      </div>
+      <div ref={containerRef} className="macd-canvas" aria-label="MACD指标图" />
+    </div>
+  );
+}
+
 export function CandlestickChart({
   candles,
   trades = [],
@@ -386,6 +553,9 @@ export function CandlestickChart({
   const [visibleIndicators, setVisibleIndicators] = useState<IndicatorVisibility>(DEFAULT_INDICATORS);
   const [hovered, setHovered] = useState<Candle | null>(candles[candles.length - 1] ?? null);
   const [hoveredTrade, setHoveredTrade] = useState<TradeMarkerDetail | null>(null);
+  const macdPoints = useMemo(() => calculateMacd(candles), [candles]);
+  const macdStatus = useMemo(() => macdReading(macdPoints), [macdPoints]);
+  const volumePriceStatus = useMemo(() => volumePriceReading(candles), [candles]);
   const visibleTrades = useMemo(
     () => visibleCandleTrades(candles, trades),
     [candles, trades],
@@ -529,6 +699,18 @@ export function CandlestickChart({
           <i className="indicator-volume" aria-hidden="true" />
           <span>成交量</span>
         </label>
+        <label className="indicator-toggle">
+          <input
+            type="checkbox"
+            checked={visibleIndicators.macd}
+            onChange={() => setVisibleIndicators((current) => ({
+              ...current,
+              macd: !current.macd,
+            }))}
+          />
+          <i className="indicator-macd" aria-hidden="true" />
+          <span>MACD</span>
+        </label>
       </div>
       <div className="ohlc-readout" aria-live="polite">
         <span>{hovered?.date}</span>
@@ -539,6 +721,24 @@ export function CandlestickChart({
         {visibleIndicators.volume ? <span>量 <b>{formatVolume(hovered?.volume)}</b></span> : null}
         <span>成交额 <b>{formatMoney(hovered?.amount)}</b></span>
       </div>
+      {visibleIndicators.macd || visibleIndicators.volume ? (
+        <div className="technical-analysis" aria-label="技术指标解读">
+          {visibleIndicators.macd ? (
+            <div>
+              <span>MACD状态</span>
+              <strong>{macdStatus.label}</strong>
+              <small>{macdStatus.detail}</small>
+            </div>
+          ) : null}
+          {visibleIndicators.volume ? (
+            <div>
+              <span>量价阶段</span>
+              <strong>{volumePriceStatus.label}</strong>
+              <small>{volumePriceStatus.detail}</small>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {hoveredTrade ? (
         <div className={`trade-marker-tooltip trade-marker-tooltip-${hoveredTrade.kind}`} role="status" aria-label="成交标记详情">
           <header>
@@ -556,6 +756,7 @@ export function CandlestickChart({
         </div>
       ) : null}
       <div ref={containerRef} className="chart-canvas candle-canvas" aria-label="日K线和成交量图" />
+      {visibleIndicators.macd ? <MacdPanel points={macdPoints} visibleRange={visibleRange} /> : null}
     </div>
   );
 }

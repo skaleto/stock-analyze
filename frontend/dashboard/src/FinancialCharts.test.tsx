@@ -90,7 +90,7 @@ describe("financial charts", () => {
       />
     );
 
-    expect(chartMocks.addSeries).toHaveBeenCalledTimes(6);
+    expect(chartMocks.addSeries).toHaveBeenCalledTimes(9);
     expect(chartMocks.setData).toHaveBeenCalled();
     unmount();
     expect(chartMocks.remove).toHaveBeenCalled();
@@ -124,9 +124,11 @@ describe("financial charts", () => {
     });
     render(<CandlestickChart candles={candles} />);
 
-    for (const label of ["MA5", "MA10", "MA20", "MA60", "成交量"]) {
+    for (const label of ["MA5", "MA10", "MA20", "MA60", "成交量", "MACD"]) {
       expect(screen.getByRole("checkbox", { name: label })).toBeChecked();
     }
+    expect(screen.getByLabelText("MACD指标图")).toBeInTheDocument();
+    expect(screen.getByText("量价阶段")).toBeInTheDocument();
     const ma5Data = chartMocks.setData.mock.calls
       .map(([rows]) => rows)
       .find((rows) => Array.isArray(rows) && rows.length === 57);
@@ -144,6 +146,10 @@ describe("financial charts", () => {
         .slice(callCountBeforeVolumeToggle)
         .some(([seriesType]) => seriesType?.type === "histogram")
     ).toBe(false);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "MACD" }));
+    expect(screen.getByRole("checkbox", { name: "MACD" })).not.toBeChecked();
+    expect(screen.queryByLabelText("MACD指标图")).not.toBeInTheDocument();
   });
 
   it("marks all instrument trades covered by the visible candle history", () => {
