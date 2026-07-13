@@ -35,7 +35,7 @@ class ResearchPipeline:
         agent: str,
         as_of: str | None = None,
         offline: bool = False,
-        max_full_history_instruments: int = 80,
+        max_full_history_instruments: int = 60,
     ) -> None:
         self.repo_root = Path(repo_root)
         self.market = market

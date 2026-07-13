@@ -151,6 +151,12 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertTrue(selected[0].name.endswith("_1098.csv"))
 
+    def test_default_a_share_full_history_budget_is_sixty_instruments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline = ResearchPipeline(Path(tmp), market="a_share", agent="codex")
+            selected = pipeline._full_history_codes([f"{index:06d}" for index in range(100)])
+        self.assertEqual(len(selected), 60)
+
 
 if __name__ == "__main__":
     unittest.main()
