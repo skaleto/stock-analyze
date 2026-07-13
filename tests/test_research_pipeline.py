@@ -379,9 +379,12 @@ class ResearchPipelineTest(unittest.TestCase):
                 "q_sales_yoy": 15.0, "netprofit_yoy": 18.0, "q_op_qoq": 3.0,
             }]).to_parquet(raw / "fina_indicator.parquet", index=False)
             pd.DataFrame([{
-                "ts_code": "000001.SZ", "l1_name": "银行", "l2_name": "股份行",
+                "ts_code": "000002.SZ", "l1_name": "银行", "l2_name": "股份行",
                 "in_date": "20000101", "out_date": None,
             }]).to_parquet(raw / "index_member_all.parquet", index=False)
+            pd.DataFrame([{
+                "code": "000001", "name": "平安银行", "industry": "银行", "list_date": "19910403",
+            }]).to_csv(root / "data" / "shared" / "cache" / "stock_basic_20260710.csv", index=False)
             pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10", offline=True)
 
             result = pipeline.prepare_data(force=True)
@@ -444,6 +447,25 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(len(first), 10)
         self.assertGreater(max(int(code) for code in first), 50)
+
+    def test_a_share_history_sample_prioritizes_codes_with_persisted_financials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "data" / "research" / "raw" / "a_share" / "20260710"
+            raw.mkdir(parents=True)
+            financial_codes = [f"{index:06d}.SZ" for index in range(90, 100)]
+            pd.DataFrame([
+                {"ts_code": code, "ann_date": "20260425", "end_date": "20260331", "roe": 10.0}
+                for code in financial_codes
+            ]).to_parquet(raw / "fina_indicator.parquet", index=False)
+            pipeline = ResearchPipeline(
+                root, market="a_share", agent="codex", as_of="2026-07-10",
+                offline=True, max_full_history_instruments=10,
+            )
+
+            selected = pipeline._full_history_codes([f"{index:06d}" for index in range(100)])
+
+        self.assertEqual(selected, {f"{index:06d}" for index in range(90, 100)})
 
     def test_a_share_cache_selection_prefers_three_year_window(self):
         with tempfile.TemporaryDirectory() as tmp:

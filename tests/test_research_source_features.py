@@ -164,6 +164,7 @@ class ResearchSourceFeaturesTest(unittest.TestCase):
         self.assertAlmostEqual(featured.loc["20260711", "roe"], 99.0)
         self.assertAlmostEqual(featured.loc["20260710", "cash_conversion"], 0.18)
         self.assertAlmostEqual(featured.loc["20260710", "profit_pool_concentration"], 0.52)
+        self.assertAlmostEqual(featured.loc["20260711", "profit_pool_concentration"], 0.52)
         self.assertGreater(featured.loc["20260710", "high_value_add_proxy"], 0.0)
 
     def test_attaches_industry_membership_and_derives_industry_cycle_features(self):

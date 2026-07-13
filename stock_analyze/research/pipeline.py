@@ -65,6 +65,7 @@ class ResearchPipeline:
         self.max_full_history_instruments = max(1, int(max_full_history_instruments))
         self.research_root = self.repo_root / "data" / "research"
         self.store = ResearchStore(self.research_root)
+        self._persisted_source_frames_cache: dict[str, pd.DataFrame] | None = None
 
     @property
     def run_key(self) -> str:
@@ -153,8 +154,18 @@ class ResearchPipeline:
         source_frames: dict[str, pd.DataFrame] = {}
         if not self.offline:
             available_codes = sorted(featured["code"].dropna().astype(str).unique())
+            persisted_financials = self._load_persisted_source_frames().get("fina_indicator", pd.DataFrame())
+            persisted_financial_codes = (
+                persisted_financials["ts_code"].dropna().astype(str).str.split(".").str[0].tolist()
+                if not persisted_financials.empty and "ts_code" in persisted_financials.columns else []
+            )
+            preferred_full_history = [
+                code for code in dict.fromkeys(persisted_financial_codes)
+                if code in full_history_codes and code in set(available_codes)
+            ]
             source_codes = [
-                *sorted(code for code in full_history_codes if code in set(available_codes)),
+                *preferred_full_history,
+                *sorted(code for code in full_history_codes if code in set(available_codes) and code not in preferred_full_history),
                 *[code for code in available_codes if code not in full_history_codes],
             ]
             sources = self._collect_sources(source_codes)
@@ -178,6 +189,7 @@ class ResearchPipeline:
                     featured,
                     source_frames.get("index_member_all", pd.DataFrame()),
                 )
+                featured = self._attach_a_share_industry_fallback(featured)
             else:
                 featured = attach_qdii_point_in_time_features(featured, source_frames)
             regime_sources = self._load_regime_source_frames()
@@ -237,6 +249,10 @@ class ResearchPipeline:
                             if code:
                                 priority.append(code)
         prioritized = list(dict.fromkeys(code for code in priority if code in available))
+        financials = self._load_persisted_source_frames().get("fina_indicator", pd.DataFrame())
+        if not financials.empty and "ts_code" in financials.columns:
+            financial_codes = financials["ts_code"].dropna().astype(str).str.split(".").str[0]
+            prioritized.extend(code for code in financial_codes if code in available and code not in prioritized)
         remaining = sorted(
             available.difference(prioritized),
             key=lambda code: hashlib.sha256(f"a-share-research-v1|{code}".encode("utf-8")).hexdigest(),
@@ -286,6 +302,8 @@ class ResearchPipeline:
         )
 
     def _load_persisted_source_frames(self) -> dict[str, pd.DataFrame]:
+        if self._persisted_source_frames_cache is not None:
+            return self._persisted_source_frames_cache
         market_root = self.research_root / "raw" / self.market
         if not market_root.exists():
             return {}
@@ -300,7 +318,27 @@ class ResearchPipeline:
             if path.stem == "source_health":
                 continue
             frames[path.stem] = pd.read_parquet(path)
+        self._persisted_source_frames_cache = frames
         return frames
+
+    def _attach_a_share_industry_fallback(self, features: pd.DataFrame) -> pd.DataFrame:
+        cache = self._cache_dir()
+        candidates = sorted(
+            path for path in cache.glob("stock_basic_*.csv")
+            if path.stem.rsplit("_", 1)[-1].isdigit() and path.stem.rsplit("_", 1)[-1] <= self.run_key
+        )
+        if not candidates:
+            return features
+        basic = pd.read_csv(candidates[-1], dtype={"code": str})
+        if not {"code", "industry"}.issubset(basic.columns):
+            return features
+        mapping = basic.drop_duplicates("code", keep="last").set_index("code")["industry"]
+        result = features.copy()
+        fallback = result["code"].astype("string").str.zfill(6).map(mapping)
+        missing = result["industry"].isna() | result["industry"].eq("unclassified")
+        result.loc[missing, "industry"] = fallback.loc[missing].fillna("unclassified")
+        result.loc[missing & fallback.notna(), "industry_l2"] = fallback.loc[missing & fallback.notna()]
+        return result
 
     def _artifact_path(self, name: str) -> Path:
         return self.research_root / name / self.market / f"{self.run_key}.parquet"

@@ -397,6 +397,12 @@ def build_fundamental_history(frames: Mapping[str, pd.DataFrame]) -> pd.DataFram
     history["pricing_power_persistence"] = -history.groupby("ts_code")["gross_margin"].transform(
         lambda values: values.rolling(4, min_periods=2).std()
     )
+    business_columns = [
+        column for column in ("profit_pool_concentration", "largest_business_share", "business_profit_margin")
+        if column in history.columns
+    ]
+    if business_columns:
+        history[business_columns] = history.groupby("ts_code")[business_columns].ffill()
     history["code"] = history["ts_code"].astype("string").str.split(".").str[0]
     drop_columns = [column for column in ("ts_code", "revenue", "n_income", "n_cashflow_act", "free_cashflow", "total_assets") if column in history.columns]
     return history.drop(columns=drop_columns).reset_index(drop=True)
