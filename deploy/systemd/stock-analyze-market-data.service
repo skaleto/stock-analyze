@@ -16,10 +16,11 @@ Environment=TZ=Asia/Shanghai
 # See docs/tushare-token-setup.md for provisioning.
 EnvironmentFile=/etc/stock-analyze/secrets.env
 ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --logs-dir /opt/stock-analyze/logs prepare-market-data
-# When ExecStart succeeds, fire both daily agent services in parallel via --no-block.
-# If ExecStart fails (e.g. spot empty), ExecStartPost is skipped and agents do NOT run —
-# this prevents agents from running on stale or absent cache.
-ExecStartPost=/bin/systemctl start --no-block stock-analyze-claude-daily.service
-ExecStartPost=/bin/systemctl start --no-block stock-analyze-codex-daily.service
+# Source collection is the only research stage that receives credentials.
+ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --market a_share --agent codex prepare-research-data --force
+ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --market cn_qdii_etf --agent codex prepare-research-data --force
+# Feature/event/prediction research consumes the immutable snapshot without secrets;
+# its successful completion starts the existing A-share decision services.
+ExecStartPost=/bin/systemctl start --no-block stock-analyze-research.service
 StandardOutput=append:/opt/stock-analyze/logs/market-data.log
 StandardError=append:/opt/stock-analyze/logs/market-data.err

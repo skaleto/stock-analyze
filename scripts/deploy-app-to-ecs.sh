@@ -34,6 +34,7 @@ rsync -az --relative \
   ./archive/direct-overseas/ \
   ./tests/ \
   ./frontend/dashboard/ \
+  ./requirements.txt \
   ./configs/competition_a_share.yaml \
   ./configs/competition_cn_qdii_etf.yaml \
   ./configs/strategy_competition.json \
@@ -73,6 +74,9 @@ for unit in \
   stock-analyze-codex-cn-qdii-etf-weekly.timer \
   stock-analyze-qdii-research.service \
   stock-analyze-qdii-research.timer \
+  stock-analyze-research.service \
+  stock-analyze-model-training.service \
+  stock-analyze-model-training.timer \
   stock-analyze-aggregate-dashboard.service \
   stock-analyze-daily-summary.service \
   stock-analyze-daily-summary.timer \
@@ -87,6 +91,7 @@ printf '%s\n' "$deploy_version" >"$app_dir/DEPLOY_VERSION"
 
 cd "$app_dir"
 export PATH="/opt/stock-analyze/venv/bin:$PATH"
+python -m pip install -r requirements.txt
 python -m unittest \
   tests.test_run_ledger \
   tests.test_markets_cn_qdii_etf_provider \
@@ -117,6 +122,13 @@ python -m unittest \
   tests.test_workflow_summary_systemd \
   tests.test_operator_workflow_docs \
   tests.test_check_ecs_timers \
+  tests.test_research_storage \
+  tests.test_research_technical_features \
+  tests.test_research_pipeline \
+  tests.test_research_strategy_ensemble \
+  tests.test_dashboard_predictions \
+  tests.test_prediction_notifications \
+  tests.test_prediction_systemd \
   tests.test_deploy_app_script
 
 systemctl daemon-reload
@@ -138,6 +150,7 @@ for timer in \
   stock-analyze-codex-cn-qdii-etf-daily.timer \
   stock-analyze-codex-cn-qdii-etf-weekly.timer \
   stock-analyze-qdii-research.timer \
+  stock-analyze-model-training.timer \
   stock-analyze-weekly-summary.timer \
   stock-analyze-monthly-summary.timer; do
   stamp="/var/lib/systemd/timers/stamp-$timer"
@@ -153,6 +166,7 @@ systemctl enable --now stock-analyze-qdii-research.timer
 systemctl enable --now stock-analyze-daily-summary.timer
 systemctl enable --now stock-analyze-weekly-summary.timer
 systemctl enable --now stock-analyze-monthly-summary.timer
+systemctl enable --now stock-analyze-model-training.timer
 systemctl restart stock-analyze-dashboard.service
 systemctl is-active --quiet stock-analyze-dashboard.service
 systemctl is-active --quiet stock-analyze-claude-cn-qdii-etf-daily.timer
@@ -163,6 +177,7 @@ systemctl is-active --quiet stock-analyze-qdii-research.timer
 systemctl is-active --quiet stock-analyze-daily-summary.timer
 systemctl is-active --quiet stock-analyze-weekly-summary.timer
 systemctl is-active --quiet stock-analyze-monthly-summary.timer
+systemctl is-active --quiet stock-analyze-model-training.timer
 REMOTE
 
 echo "Deployed $DEPLOY_VERSION to $REMOTE_HOST:$REMOTE_PATH"

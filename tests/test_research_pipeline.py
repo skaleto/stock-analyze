@@ -82,6 +82,24 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertTrue(raw_exists)
         self.assertEqual(float(snapshot.loc[snapshot["trade_date"] == "20260710", "pe_ttm"].iloc[-1]), 12.0)
 
+    def test_a_share_source_collection_limits_financial_deep_fetch(self):
+        class FakeProvider:
+            pro = object()
+
+            def _safe_pro_call(self, label, call):
+                return call()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline = ResearchPipeline(Path(tmp), market="a_share", agent="codex", as_of="2026-07-10")
+            empty = SourceCollection(frames={}, health=pd.DataFrame())
+            with (
+                patch("stock_analyze.markets.a_share.data_provider.make_provider", return_value=FakeProvider()),
+                patch("stock_analyze.markets.a_share.market_data.collect_research_sources", return_value=empty) as collect,
+            ):
+                pipeline._collect_sources([f"{index:06d}" for index in range(100)])
+
+        self.assertEqual(len(collect.call_args.kwargs["codes"]), 40)
+
 
 if __name__ == "__main__":
     unittest.main()

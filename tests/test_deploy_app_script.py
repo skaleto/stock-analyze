@@ -31,6 +31,7 @@ class DeployAppScriptTests(unittest.TestCase):
             "systemctl enable --now stock-analyze-daily-summary.timer",
             "systemctl enable --now stock-analyze-weekly-summary.timer",
             "systemctl enable --now stock-analyze-monthly-summary.timer",
+            "systemctl enable --now stock-analyze-model-training.timer",
             "systemctl restart stock-analyze-dashboard.service",
         ]
         for token in required:
@@ -58,6 +59,11 @@ class DeployAppScriptTests(unittest.TestCase):
         self.assertIn("tests.test_workflow_summary_systemd", script)
         self.assertIn("tests.test_operator_workflow_docs", script)
         self.assertIn("tests.test_check_ecs_timers", script)
+        self.assertIn("tests.test_prediction_systemd", script)
+        self.assertIn("tests.test_prediction_notifications", script)
+        self.assertIn("pip install -r requirements.txt", script)
+        self.assertIn("stock-analyze-research.service", script)
+        self.assertIn("stock-analyze-model-training.service", script)
         self.assertIn("./archive/direct-overseas/", script)
         self.assertIn("./.claude/", script)
         self.assertIn("./docs/", script)

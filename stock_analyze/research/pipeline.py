@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 from ..utils import write_text_atomic
-from .activation import ModelRegistry
+from .activation import ModelRegistry, ShadowCycleTracker
 from .event_study import build_event_study
 from .events import detect_events
 from .labels import build_forward_labels
@@ -151,10 +151,21 @@ class ResearchPipeline:
                 frames={},
                 health=pd.DataFrame([{"source": "tushare", "failed": True, "error": "source_unavailable"}]),
             )
+
+        class SafeProProxy:
+            def __getattr__(self, endpoint: str):
+                def call(**kwargs):
+                    return provider._safe_pro_call(
+                        f"research_{endpoint}",
+                        lambda: getattr(provider.pro, endpoint)(**kwargs),
+                    )
+
+                return call
+
         return collect_research_sources(
-            provider.pro,
+            SafeProProxy(),
             as_of=self.as_of,
-            codes=[ts_code_for_stock(code) for code in codes],
+            codes=[ts_code_for_stock(code) for code in codes[:40]],
         )
 
     def _artifact_path(self, name: str) -> Path:
@@ -277,6 +288,14 @@ class ResearchPipeline:
             destination = self.repo_root / "data" / self.market / self.agent / "predictions" / f"{self.run_key}.parquet"
             self.store.write_parquet_atomic(destination, pd.DataFrame(rows))
             health = {"status": "complete", "predictions": len(rows), "artifact": str(artifact), "active_status": status}
+            if status == "shadow":
+                cycle = ShadowCycleTracker(self._model_root(horizon) / "shadow_cycles.json").record(
+                    bundle.model_version,
+                    self.as_of,
+                    {"predictions": len(rows), "calibration_quality": bundle.metrics.get("calibration_quality")},
+                )
+                health["shadow_cycles"] = cycle["count"]
+                health["shadow_cycles_remaining"] = cycle["remaining"]
         except Exception as exc:  # noqa: BLE001 - trading path remains unchanged
             health = {"status": "fallback", "predictions": 0, "error": str(exc)[:240]}
         write_text_atomic(health_path, json.dumps(health, ensure_ascii=False, indent=2), encoding="utf-8")

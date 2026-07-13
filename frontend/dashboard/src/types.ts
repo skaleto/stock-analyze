@@ -370,6 +370,10 @@ export type ModelHealth = {
     sample_support?: number;
     metrics?: Record<string, number>;
     split_dates?: Record<string, string>;
+    status?: string;
+    is_champion?: boolean;
+    shadow_cycles?: number;
+    shadow_cycles_remaining?: number;
   }[];
 };
 
