@@ -1,4 +1,5 @@
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -69,6 +70,18 @@ class ResearchLabelsTest(unittest.TestCase):
             store.write_label_snapshot("a_share", "2026-07-10", labels)
             loaded = store.read_label_snapshot("a_share", "2026-07-10")
         self.assertEqual(loaded.iloc[0]["code"], "000001")
+
+    def test_large_label_frame_is_vectorized(self):
+        rows = 2500
+        dates = pd.date_range("2016-01-01", periods=rows, freq="B").strftime("%Y%m%d")
+        prices = pd.DataFrame({"code": ["000001"] * rows, "trade_date": dates, "close": np.linspace(10.0, 30.0, rows)})
+
+        started = time.perf_counter()
+        labels = build_forward_labels(prices)
+        elapsed = time.perf_counter() - started
+
+        self.assertGreater(len(labels), 9000)
+        self.assertLess(elapsed, 0.25, f"label generation took {elapsed:.2f}s")
 
 
 if __name__ == "__main__":

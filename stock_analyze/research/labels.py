@@ -52,7 +52,7 @@ def build_forward_labels(
     if label_end is not None:
         available = available.loc[available["trade_date"] <= _date_key(label_end)]
 
-    benchmark_returns: dict[tuple[str, int], float] = {}
+    benchmark_returns: dict[int, dict[str, float]] = {}
     if benchmark is not None and not benchmark.empty:
         benchmark_frame = benchmark.copy()
         benchmark_frame["trade_date"] = benchmark_frame["trade_date"].astype("string").map(_date_key)
@@ -62,41 +62,63 @@ def build_forward_labels(
         benchmark_frame = benchmark_frame.sort_values("trade_date").drop_duplicates("trade_date", keep="last")
         for horizon in requested_horizons:
             returns = benchmark_frame["close"].shift(-horizon) / benchmark_frame["close"] - 1.0
-            benchmark_returns.update(
-                {(date, horizon): float(value) for date, value in zip(benchmark_frame["trade_date"], returns) if pd.notna(value)}
-            )
+            benchmark_returns[horizon] = {
+                str(date): float(value)
+                for date, value in zip(benchmark_frame["trade_date"], returns)
+                if pd.notna(value)
+            }
 
-    rows: list[dict[str, object]] = []
+    parts: list[pd.DataFrame] = []
     for code, group in available.sort_values(["code", "trade_date"]).groupby("code", sort=False):
         group = group.reset_index(drop=True)
         daily_returns = group["close"].pct_change(fill_method=None)
         trailing_sigma = daily_returns.rolling(20, min_periods=5).std()
-        for index, current in group.iterrows():
-            for horizon in requested_horizons:
-                future_index = index + horizon
-                if future_index >= len(group):
-                    continue
-                future = group.iloc[future_index]
-                absolute_return = float(future["close"] / current["close"] - 1.0)
-                benchmark_return = benchmark_returns.get((str(current["trade_date"]), horizon))
-                excess_return = absolute_return - benchmark_return if benchmark_return is not None else absolute_return
-                sigma = float(trailing_sigma.iloc[index]) if pd.notna(trailing_sigma.iloc[index]) else 0.0
-                threshold = max(float(round_trip_cost), 0.25 * sigma * math.sqrt(horizon))
-                label = "up" if excess_return > threshold else "down" if excess_return < -threshold else "flat"
-                path = group.iloc[index + 1 : future_index + 1]["close"] / float(current["close"]) - 1.0
-                rows.append(
-                    {
-                        "code": str(code),
-                        "trade_date": str(current["trade_date"]),
-                        "horizon": horizon,
-                        "label_end_date": str(future["trade_date"]),
-                        "absolute_return": absolute_return,
-                        "benchmark_return": benchmark_return,
-                        "excess_return": excess_return,
-                        "threshold": threshold,
-                        "label": label,
-                        "max_favorable_excursion": float(path.max()) if not path.empty else np.nan,
-                        "max_adverse_excursion": float(path.min()) if not path.empty else np.nan,
-                    }
-                )
-    return pd.DataFrame(rows)
+        close = group["close"]
+        dates = group["trade_date"].astype(str)
+        for horizon in requested_horizons:
+            future_close = close.shift(-horizon)
+            future_date = dates.shift(-horizon)
+            absolute_return = future_close / close - 1.0
+            if benchmark is not None and not benchmark.empty:
+                benchmark_return = dates.map(benchmark_returns.get(horizon, {})).astype(float)
+                excess_return = absolute_return - benchmark_return
+            else:
+                benchmark_return = pd.Series(np.nan, index=group.index, dtype=float)
+                excess_return = absolute_return
+            threshold = pd.Series(
+                np.maximum(
+                    float(round_trip_cost),
+                    0.25 * trailing_sigma.fillna(0.0).to_numpy(dtype=float) * math.sqrt(horizon),
+                ),
+                index=group.index,
+            )
+            labels = np.select(
+                [excess_return > threshold, excess_return < -threshold],
+                ["up", "down"],
+                default="flat",
+            )
+            shifted = close.shift(-1)
+            future_max = shifted.iloc[::-1].rolling(horizon, min_periods=horizon).max().iloc[::-1]
+            future_min = shifted.iloc[::-1].rolling(horizon, min_periods=horizon).min().iloc[::-1]
+            part = pd.DataFrame(
+                {
+                    "code": str(code),
+                    "trade_date": dates,
+                    "horizon": horizon,
+                    "label_end_date": future_date,
+                    "absolute_return": absolute_return,
+                    "benchmark_return": benchmark_return,
+                    "excess_return": excess_return,
+                    "threshold": threshold,
+                    "label": labels,
+                    "max_favorable_excursion": future_max / close - 1.0,
+                    "max_adverse_excursion": future_min / close - 1.0,
+                }
+            )
+            parts.append(part.loc[future_close.notna()])
+    if not parts:
+        return pd.DataFrame()
+    return pd.concat(parts, ignore_index=True).sort_values(
+        ["code", "trade_date", "horizon"],
+        kind="stable",
+    ).reset_index(drop=True)
