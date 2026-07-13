@@ -71,6 +71,8 @@ export default function InstrumentDrawer({
   const displayEntries = useMemo(() => visibleRowEntries(row)
     .filter(([key]) => !["code", "name", "exposure_group", "theme"].includes(key)), [row]);
   const instrument = detail?.instrument;
+  const preferredPrediction = detail?.predictions?.find((prediction) => prediction.horizon === 5) ?? detail?.predictions?.[0];
+  const latestPredictionEvent = detail?.event_evidence?.[Math.max(0, (detail.event_evidence?.length ?? 1) - 1)];
   const dialogName = row.code ? "证券详情" : `${title}明细`;
   return (
     <>
@@ -101,6 +103,22 @@ export default function InstrumentDrawer({
                 trades={detail.related_trades}
                 strategyLabel={strategyLabel}
               />
+            </section>
+          ) : null}
+          {preferredPrediction ? (
+            <section className="drawer-prediction">
+              <div className="drawer-section-title"><Layers3 size={15} aria-hidden="true" /><h3>{preferredPrediction.horizon}日概率预测</h3><span>{preferredPrediction.active_status === "active" ? "已激活" : "研究中"}</span></div>
+              <div className="drawer-probability-grid">
+                <div><span>上涨</span><strong>{formatPercent(preferredPrediction.p_up)}</strong></div>
+                <div><span>震荡</span><strong>{formatPercent(preferredPrediction.p_flat)}</strong></div>
+                <div><span>下跌</span><strong>{formatPercent(preferredPrediction.p_down)}</strong></div>
+                <div><span>可信度</span><strong>{formatPercent(preferredPrediction.confidence)}</strong></div>
+              </div>
+              <div className="drawer-evidence-grid">
+                <div><span>支持证据</span>{preferredPrediction.reasons?.map((reason) => <p key={reason}>{reason}</p>)}</div>
+                <div><span>失效条件</span>{preferredPrediction.invalidation?.map((reason) => <p key={reason}>{reason}</p>)}</div>
+              </div>
+              {latestPredictionEvent ? <div className="drawer-event-strip">最近事件 · {String(latestPredictionEvent.event ?? "-")}</div> : null}
             </section>
           ) : null}
           {detail?.underlying ? (

@@ -17,6 +17,9 @@ import CompetitionPanel from "./CompetitionPanel";
 import EtfResearchPanel from "./EtfResearchPanel";
 import { PerformanceChart } from "./FinancialCharts";
 import InstrumentDrawer from "./InstrumentDrawer";
+import PredictionPanel from "./PredictionPanel";
+import AlertCenter from "./AlertCenter";
+import ModelHealthPanel from "./ModelHealthPanel";
 import { PortfolioSection, RuntimeHistory, StrategyBrief, TradeTimeline } from "./PortfolioViews";
 import { accountLabel, formatFieldValue, formatMoney, formatPercent, sideLabel } from "./finance";
 import type {
@@ -376,6 +379,14 @@ export default function App() {
           <MetricTile label="市场基准" value={formatPercent(benchmarkReturn)} helper={benchmarkReturn == null ? `${benchmarkLabel}等待首次行情` : benchmarkLabel} icon={Gauge} tone={(benchmarkReturn ?? 0) >= 0 ? "positive" : "negative"} />
           <MetricTile label={positions.length ? "持仓证券" : "计划证券"} value={String(holdingCount)} helper={positions.length ? `${activeDetail?.positions.summary.market_value_display || "-"} 已配置` : `${rawOrders.length} 笔等待成交`} icon={CircleDollarSign} />
         </section>
+
+        <div className="prediction-workbench">
+          <PredictionPanel summary={activeDetail?.prediction_summary} />
+          <div className="prediction-side-stack">
+            <AlertCenter alerts={activeDetail?.alerts} />
+            <ModelHealthPanel health={activeDetail?.model_health} regimes={activeDetail?.regimes} sources={activeDetail?.source_health} />
+          </div>
+        </div>
 
         <section className="performance-section terminal-section" role="region" aria-label="净值与基准">
           <header className="section-heading">
