@@ -44,6 +44,51 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertEqual(status, "miss")
         self.assertNotEqual(first.etag, second.etag)
 
+    def test_generated_at_does_not_invalidate_semantic_etag(self) -> None:
+        now = [100.0]
+        cache = DashboardResponseCache(ttl_seconds=15, clock=lambda: now[0])
+        first, _ = cache.get_or_build(
+            "key",
+            lambda: {"generated_at": "2026-07-13T10:00:00", "value": 1},
+        )
+        now[0] = 116.0
+        second, _ = cache.get_or_build(
+            "key",
+            lambda: {"generated_at": "2026-07-13T10:01:00", "value": 1},
+        )
+
+        self.assertNotEqual(first.identity, second.identity)
+        self.assertEqual(first.etag, second.etag)
+
+    def test_cache_ttl_starts_after_slow_build_finishes(self) -> None:
+        now = [100.0]
+        calls = []
+        cache = DashboardResponseCache(ttl_seconds=15, clock=lambda: now[0])
+
+        def slow_builder():
+            calls.append("build")
+            now[0] = 120.0
+            return {"value": 1}
+
+        first, _ = cache.get_or_build("key", slow_builder)
+        now[0] = 121.0
+        second, status = cache.get_or_build(
+            "key", lambda: calls.append("rebuild") or {"value": 2}
+        )
+
+        self.assertIs(first, second)
+        self.assertEqual(status, "hit")
+        self.assertEqual(calls, ["build"])
+
+    def test_cache_evicts_old_entries_and_releases_key_locks(self) -> None:
+        cache = DashboardResponseCache(ttl_seconds=15, max_entries=2)
+        cache.get_or_build("one", lambda: {"value": 1})
+        cache.get_or_build("two", lambda: {"value": 2})
+        cache.get_or_build("three", lambda: {"value": 3})
+
+        self.assertEqual(list(cache._entries), ["two", "three"])
+        self.assertEqual(cache._key_locks, {})
+
     def test_response_uses_gzip_and_cache_headers(self) -> None:
         cache = DashboardResponseCache(ttl_seconds=15)
         entry, cache_status = cache.get_or_build(
@@ -86,6 +131,22 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertNotIn("Content-Encoding", response.headers)
         self.assertEqual(response.headers["Content-Length"], "0")
 
+    def test_weak_or_listed_etag_returns_304(self) -> None:
+        cache = DashboardResponseCache(ttl_seconds=15)
+        entry, _ = cache.get_or_build("overview", lambda: {"ok": True})
+
+        for condition in (f'"other", W/{entry.etag}', "*"):
+            with self.subTest(condition=condition):
+                response = build_http_response(
+                    entry,
+                    accept_encoding="gzip",
+                    if_none_match=condition,
+                    cache_status="hit",
+                    request_id="request-list",
+                    elapsed_ms=0.2,
+                )
+                self.assertEqual(response.status, 304)
+
     def test_different_cache_keys_build_concurrently(self) -> None:
         cache = DashboardResponseCache(ttl_seconds=15)
         slow_started = threading.Event()
@@ -106,6 +167,37 @@ class DashboardHttpTests(unittest.TestCase):
         thread.join(timeout=0.5)
 
         self.assertLess(elapsed, 0.1)
+
+    def test_same_cache_key_builds_only_once_concurrently(self) -> None:
+        cache = DashboardResponseCache(ttl_seconds=15)
+        build_started = threading.Event()
+        release_build = threading.Event()
+        calls = []
+        results = []
+
+        def builder():
+            calls.append("build")
+            build_started.set()
+            release_build.wait(timeout=0.5)
+            return {"resource": "shared"}
+
+        first = threading.Thread(
+            target=lambda: results.append(cache.get_or_build("shared", builder))
+        )
+        second = threading.Thread(
+            target=lambda: results.append(cache.get_or_build("shared", builder))
+        )
+        first.start()
+        self.assertTrue(build_started.wait(timeout=0.1))
+        second.start()
+        release_build.set()
+        first.join(timeout=0.5)
+        second.join(timeout=0.5)
+
+        self.assertEqual(calls, ["build"])
+        self.assertEqual(sorted(status for _, status in results), ["hit", "miss"])
+        self.assertIs(results[0][0], results[1][0])
+        self.assertEqual(cache._key_locks, {})
 
     def test_gzip_quality_value_is_respected(self) -> None:
         cache = DashboardResponseCache(ttl_seconds=15)

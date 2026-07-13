@@ -459,6 +459,22 @@ describe("Dashboard app", () => {
     expect(screen.getAllByText("A股").length).toBeGreaterThan(0);
   });
 
+  it("renders settled resources while predictions are still pending", async () => {
+    const pendingPredictions = deferred<Response>();
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("summary")) return Promise.resolve(jsonResponse(summaryPayload));
+      if (url.includes("predictions")) return pendingPredictions.promise;
+      return Promise.resolve(jsonResponse(resourcePayload(url)));
+    }));
+
+    render(<App />);
+
+    expect((await screen.findAllByText("513100.SH")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("run-weekly").length).toBeGreaterThan(0);
+    expect(screen.getByRole("region", { name: "持仓组合" })).toBeInTheDocument();
+  });
+
   it("isolates a failed portfolio resource after the market changes", async () => {
     vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
       const url = String(input);

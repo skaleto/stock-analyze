@@ -253,6 +253,21 @@ class DashboardResourceApiTests(unittest.TestCase):
         self.assertNotIn("strategy_id", order)
         self.assertNotIn("warnings", activity)
 
+    def test_research_does_not_depend_on_trade_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_repo(root)
+            trades_path = root / "data" / "cn_qdii_etf" / "codex" / "trades.csv"
+            trades_path.write_text("broken\nvalue\n", encoding="utf-8")
+
+            payload = build_dashboard_research_data(
+                repo_root=root,
+                market="cn_qdii_etf",
+                agent="codex",
+            )
+
+        self.assertEqual(payload["lookthrough"]["source"], "positions")
+
 
 if __name__ == "__main__":
     unittest.main()
