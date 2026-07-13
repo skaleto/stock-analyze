@@ -30,6 +30,7 @@ from .data_provider import DASHBOARD_HISTORY_DAYS, DataProvider, INDEX_CODES, ma
 from ...run_ledger import RunLedger
 from .strategy import preselect_universe
 from ...utils import ensure_dirs, parse_date, write_text_atomic
+from ...research.source_features import SourceCollection, collect_source_calls
 
 
 # Names that indicate a critical failure: if these come up empty the whole
@@ -43,6 +44,45 @@ OPTIONAL_EMPTY_METHODS = {"dividend_yield"}
 # The happy path (data already published) incurs zero extra delay.
 SPOT_EMPTY_RETRY_MAX = 3
 SPOT_EMPTY_RETRY_SLEEP_S = 60.0
+
+
+def collect_research_sources(
+    pro: Any,
+    *,
+    as_of: str,
+    codes: Iterable[str] = (),
+    observed_at: str | None = None,
+) -> SourceCollection:
+    """Fetch the permission-verified research endpoints into normalized frames."""
+
+    as_of_key = str(as_of).replace("-", "")[:8]
+    end = pd.Timestamp(as_of_key)
+    start_date = (end - pd.Timedelta(days=370)).strftime("%Y%m%d")
+    start_month = (end - pd.DateOffset(months=18)).strftime("%Y%m")
+    end_month = end.strftime("%Y%m")
+    observed = observed_at or datetime.now().astimezone().isoformat(timespec="seconds")
+    code_list = [str(code) for code in codes]
+
+    calls: dict[str, list[Any]] = {
+        "daily_basic": [lambda: pro.daily_basic(trade_date=as_of_key)],
+        "moneyflow": [lambda: pro.moneyflow(trade_date=as_of_key)],
+        "margin": [lambda: pro.margin(trade_date=as_of_key)],
+        "margin_detail": [lambda: pro.margin_detail(trade_date=as_of_key)],
+        "hsgt_top10": [lambda: pro.hsgt_top10(trade_date=as_of_key)],
+        "index_classify": [lambda: pro.index_classify(level="L1", src="SW2021")],
+        "index_member_all": [lambda: pro.index_member_all()],
+        "cn_pmi": [lambda: pro.cn_pmi(start_m=start_month, end_m=end_month)],
+        "cn_m": [lambda: pro.cn_m(start_m=start_month, end_m=end_month)],
+        "cn_cpi": [lambda: pro.cn_cpi(start_m=start_month, end_m=end_month)],
+        "cn_ppi": [lambda: pro.cn_ppi(start_m=start_month, end_m=end_month)],
+        "shibor": [lambda: pro.shibor(start_date=start_date, end_date=as_of_key)],
+        "shibor_lpr": [lambda: pro.shibor_lpr(start_date=start_date, end_date=as_of_key)],
+        "us_tycr": [lambda: pro.us_tycr(start_date=start_date, end_date=as_of_key)],
+    }
+    for endpoint in ("fina_indicator", "income", "balancesheet", "cashflow"):
+        calls[endpoint] = [lambda endpoint=endpoint, code=code: getattr(pro, endpoint)(ts_code=code, end_date=as_of_key) for code in code_list]
+    calls["fina_mainbz"] = [lambda code=code: pro.fina_mainbz(ts_code=code, type="P", end_date=as_of_key) for code in code_list]
+    return collect_source_calls(calls, observed_at=observed)
 
 
 def _acquire_spot_with_retry(
