@@ -366,6 +366,32 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertTrue(raw_exists)
         self.assertEqual(float(snapshot.loc[snapshot["trade_date"] == "20260710", "pe_ttm"].iloc[-1]), 12.0)
 
+    def test_offline_force_prepare_reuses_persisted_raw_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_history(root)
+            raw = root / "data" / "research" / "raw" / "a_share" / "20260710"
+            raw.mkdir(parents=True)
+            pd.DataFrame([{
+                "ts_code": "000001.SZ", "ann_date": "20260425", "end_date": "20260331",
+                "roe": 10.0, "grossprofit_margin": 30.0, "roic": 8.0,
+                "netprofit_margin": 12.0, "debt_to_assets": 40.0, "assets_turn": 0.8,
+                "q_sales_yoy": 15.0, "netprofit_yoy": 18.0, "q_op_qoq": 3.0,
+            }]).to_parquet(raw / "fina_indicator.parquet", index=False)
+            pd.DataFrame([{
+                "ts_code": "000001.SZ", "l1_name": "银行", "l2_name": "股份行",
+                "in_date": "20000101", "out_date": None,
+            }]).to_parquet(raw / "index_member_all.parquet", index=False)
+            pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10", offline=True)
+
+            result = pipeline.prepare_data(force=True)
+            snapshot = pipeline.store.read_feature_snapshot("a_share", "2026-07-10")
+            latest = snapshot.sort_values("trade_date").iloc[-1]
+
+        self.assertEqual(result["sources"], 2)
+        self.assertAlmostEqual(float(latest["roe"]), 10.0)
+        self.assertEqual(latest["industry"], "银行")
+
     def test_a_share_source_collection_limits_financial_deep_fetch(self):
         class FakeProvider:
             pro = object()
