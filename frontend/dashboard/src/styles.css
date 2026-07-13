@@ -593,8 +593,22 @@ a:hover { text-decoration: underline; }
 .indicator-toggle input { width: 12px; height: 12px; margin: 0; accent-color: var(--accent); }
 .indicator-toggle i { width: 13px; height: 2px; display: inline-block; }
 .indicator-toggle .indicator-volume { height: 5px; background: #64748b; }
+.indicator-toggle .indicator-macd { height: 2px; border-top: 2px solid #facc15; border-bottom: 2px solid #60a5fa; }
 .indicator-toggle:has(input:not(:checked)) { color: var(--faint); }
 .indicator-toggle:has(input:not(:checked)) i { opacity: 0.35; }
+.technical-analysis {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 3px 0 8px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.technical-analysis > div { min-width: 0; display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: 8px; padding: 8px 10px; }
+.technical-analysis > div + div { border-left: 1px solid var(--line); }
+.technical-analysis span { color: var(--faint); font-size: 9px; }
+.technical-analysis strong { color: var(--text); font-size: 10px; font-weight: 600; }
+.technical-analysis small { min-width: 0; overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .chart-readout, .ohlc-readout {
   min-height: 28px;
   display: flex;
@@ -608,6 +622,11 @@ a:hover { text-decoration: underline; }
 .chart-readout b, .ohlc-readout b { color: var(--text); font-weight: 600; }
 .chart-canvas { width: 100%; height: 270px; }
 .candle-canvas { height: 340px; }
+.macd-panel { margin-top: 6px; border-top: 1px solid var(--line); }
+.macd-readout { min-height: 28px; display: flex; align-items: center; gap: 16px; color: var(--muted); font-family: "SF Mono", "JetBrains Mono", Menlo, monospace; font-size: 10px; }
+.macd-readout strong { color: var(--text); font-weight: 600; }
+.macd-readout b { color: var(--text); font-weight: 500; }
+.macd-canvas { width: 100%; height: 156px; }
 .chart-empty, .terminal-empty {
   min-height: 110px;
   display: grid;
@@ -909,6 +928,8 @@ a:hover { text-decoration: underline; }
   .section-stat { min-width: 0; text-align: left; }
   .performance-section, .target-orders { padding: 12px 10px 6px; }
   .chart-toolbar { align-items: flex-start; flex-direction: column; }
+  .technical-analysis { grid-template-columns: 1fr; }
+  .technical-analysis > div + div { border-top: 1px solid var(--line); border-left: 0; }
   .chart-readout { gap: 8px; overflow-x: auto; white-space: nowrap; }
   .security-row { grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
   .security-pnl { grid-column: 1 / -1; justify-content: flex-start; }
