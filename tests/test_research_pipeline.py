@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -8,6 +9,7 @@ import pandas as pd
 
 from stock_analyze.research.pipeline import ResearchPipeline
 from stock_analyze.research.source_features import SourceCollection
+from stock_analyze.research.schemas import PredictionRecord
 
 
 class ResearchPipelineTest(unittest.TestCase):
@@ -57,6 +59,33 @@ class ResearchPipelineTest(unittest.TestCase):
 
             self.assertEqual(result["status"], "fallback")
             self.assertTrue(Path(result["health_path"]).exists())
+
+    def test_prediction_writes_all_four_horizons_atomically(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10", offline=True)
+            pipeline.store.write_feature_snapshot(
+                "a_share",
+                "2026-07-10",
+                pd.DataFrame([{"code": "000001", "trade_date": "20260710", "factor": 1.0}]),
+            )
+            bundles = [SimpleNamespace(horizon=value, model_version=f"m{value}", metrics={}) for value in (3, 5, 10, 20)]
+
+            def prediction(bundle, features, **kwargs):
+                del features
+                return [PredictionRecord(code="000001", as_of="2026-07-10", horizon=bundle.horizon, p_up=0.5, p_flat=0.3, p_down=0.2)]
+
+            with (
+                patch.object(pipeline, "_resolve_model", return_value=(Path("model.joblib"), "research")),
+                patch("stock_analyze.research.pipeline.load_model_bundle", side_effect=bundles) as load,
+                patch("stock_analyze.research.pipeline.generate_predictions", side_effect=prediction),
+            ):
+                result = pipeline.predict()
+            output = pd.read_parquet(root / "data" / "a_share" / "codex" / "predictions" / "20260710.parquet")
+
+        self.assertEqual(load.call_count, 4)
+        self.assertEqual(set(output["horizon"]), {3, 5, 10, 20})
+        self.assertEqual(result["predictions"], 4)
 
     def test_online_prepare_persists_normalized_source_frames(self):
         with tempfile.TemporaryDirectory() as tmp:
