@@ -394,6 +394,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print the summary without sending or marking it delivered.",
     )
 
+    for command, help_text in (
+        ("prepare-research-data", "Build immutable feature snapshots from market caches."),
+        ("run-prediction-research", "Build labels, events, regimes, and event studies."),
+        ("train-prediction-models", "Train and register calibrated challenger models."),
+        ("predict", "Generate research or active prediction records."),
+    ):
+        research = sub.add_parser(command, help=help_text)
+        research.add_argument("--offline", action="store_true", help="Use local market caches only.")
+        research.add_argument("--repo-root", type=Path, default=Path("."))
+        research.add_argument("--force", action="store_true", help="Rebuild an existing feature snapshot.")
+
     return parser
 
 
@@ -614,6 +625,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "notify-workflow-summary":
         ensure_dirs(args.logs_dir)
         return _command_notify_workflow_summary(args)
+    if args.command in {
+        "prepare-research-data",
+        "run-prediction-research",
+        "train-prediction-models",
+        "predict",
+    }:
+        ensure_dirs(args.logs_dir)
+        return _command_research_workflow(args)
 
     try:
         config, data_dir, reports_dir, cache_dir, market = _resolve_runtime(args)
@@ -706,6 +725,32 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         provider.persist_health()
     return 0
+
+
+def _command_research_workflow(args: argparse.Namespace) -> int:
+    from .research.pipeline import ResearchPipeline
+
+    pipeline = ResearchPipeline(
+        args.repo_root,
+        market=args.market,
+        agent=args.agent or "codex",
+        as_of=args.as_of,
+        offline=bool(args.offline),
+    )
+    try:
+        if args.command == "prepare-research-data":
+            result = pipeline.prepare_data(force=bool(args.force))
+        elif args.command == "run-prediction-research":
+            result = pipeline.run_research()
+        elif args.command == "train-prediction-models":
+            result = pipeline.train_models()
+        else:
+            result = pipeline.predict()
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("status") not in {"failed"} else 2
 
 
 def _command_competition_init() -> int:
