@@ -1191,31 +1191,57 @@ def _read_regime_summary(root: Path, market: str) -> dict[str, Any]:
 
 def _read_model_health(root: Path, market: str) -> dict[str, Any]:
     model_root = root / "data" / "research" / "models" / market
-    metadata_files = sorted(model_root.glob("*/*.metadata.json")) if model_root.exists() else []
-    if not metadata_files:
+    horizon_dirs = sorted(
+        (path for path in model_root.iterdir() if path.is_dir()),
+        key=lambda path: int(path.name) if path.name.isdigit() else 10_000,
+    ) if model_root.exists() else []
+    if not horizon_dirs:
         return {"status": "unavailable", "models": []}
     models: list[dict[str, Any]] = []
-    for path in metadata_files:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise DashboardDataError("model_metadata") from exc
-        registry_path = path.parent / "registry.json"
-        cycle_path = path.parent / "shadow_cycles.json"
+    for horizon_dir in horizon_dirs:
+        metadata_files = sorted(horizon_dir.glob("*.metadata.json"))
+        if not metadata_files:
+            continue
+        metadata_by_version: dict[str, dict[str, Any]] = {}
+        for path in metadata_files:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise DashboardDataError("model_metadata") from exc
+            metadata_by_version[str(payload.get("model_version") or "")] = payload
+        registry_path = horizon_dir / "registry.json"
+        cycle_path = horizon_dir / "shadow_cycles.json"
         try:
             registry = json.loads(registry_path.read_text(encoding="utf-8")) if registry_path.exists() else {}
             cycles = json.loads(cycle_path.read_text(encoding="utf-8")) if cycle_path.exists() else {}
         except (OSError, json.JSONDecodeError) as exc:
             raise DashboardDataError("model_registry") from exc
-        version = str(payload.get("model_version") or "")
-        model_state = (registry.get("models") or {}).get(version) or {}
+        registry_models = registry.get("models") or {}
+        champion = str(registry.get("champion_model_version") or "")
+        if champion in metadata_by_version and champion in registry_models:
+            version = champion
+        else:
+            registered = [
+                (key, value)
+                for key, value in registry_models.items()
+                if key in metadata_by_version and value.get("registered_at")
+            ]
+            if registered:
+                version = max(registered, key=lambda item: str(item[1]["registered_at"]))[0]
+            else:
+                version = next(
+                    (key for key in reversed(registry_models) if key in metadata_by_version),
+                    next(reversed(metadata_by_version)),
+                )
+        payload = metadata_by_version[version]
+        model_state = registry_models.get(version) or {}
         model_cycles = ((cycles.get("models") or {}).get(version) or {}).get("cycles") or []
         payload["status"] = model_state.get("status", "research")
-        payload["is_champion"] = registry.get("champion_model_version") == version
+        payload["is_champion"] = champion == version
         payload["shadow_cycles"] = len(model_cycles)
         payload["shadow_cycles_remaining"] = max(0, 4 - len(model_cycles))
         models.append(payload)
-    return {"status": "available", "models": models}
+    return {"status": "available" if models else "unavailable", "models": models}
 
 
 def _read_research_source_health(root: Path, market: str) -> list[dict[str, Any]]:
