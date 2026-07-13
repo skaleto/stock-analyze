@@ -248,11 +248,12 @@ class ResearchPipeline:
                             code = str(order.get("code") or "").split(".")[0]
                             if code:
                                 priority.append(code)
-        prioritized = list(dict.fromkeys(code for code in priority if code in available))
         financials = self._load_persisted_source_frames().get("fina_indicator", pd.DataFrame())
+        prioritized: list[str] = []
         if not financials.empty and "ts_code" in financials.columns:
             financial_codes = financials["ts_code"].dropna().astype(str).str.split(".").str[0]
             prioritized.extend(code for code in financial_codes if code in available and code not in prioritized)
+        prioritized.extend(code for code in priority if code in available and code not in prioritized)
         remaining = sorted(
             available.difference(prioritized),
             key=lambda code: hashlib.sha256(f"a-share-research-v1|{code}".encode("utf-8")).hexdigest(),
