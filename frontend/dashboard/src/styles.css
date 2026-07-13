@@ -526,6 +526,7 @@ a:hover { text-decoration: underline; }
 .model-score small { color: var(--faint); font-size: 7px; white-space: nowrap; }
 .model-score > div { grid-column: 1 / -1; height: 2px; background: var(--panel-3); }
 .model-score i { display: block; height: 100%; background: #8b94a3; }
+.model-gate-note { padding: 7px 10px; border-bottom: 1px solid var(--line); color: var(--warning); font-size: 8px; line-height: 1.45; }
 .model-context-line { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px; color: var(--muted); font-size: 9px; }
 .model-context-line strong { margin-left: 4px; color: var(--text); font-family: "SF Mono", Menlo, monospace; }
 .model-context-line .warning { color: var(--warning); }

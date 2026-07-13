@@ -17,7 +17,7 @@ import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import log_loss
+from sklearn.metrics import log_loss, roc_auc_score
 from sklearn.preprocessing import StandardScaler
 
 from ..utils import write_text_atomic
@@ -86,7 +86,7 @@ class ModelBundle:
     boosting_model: HistGradientBoostingClassifier
     boosting_calibrator: MultiClassCalibrator
     use_boosting: bool
-    metrics: dict[str, float]
+    metrics: dict[str, float | int | bool]
     split_dates: dict[str, str]
     sample_support: int
     calibration_method: str
@@ -158,6 +158,117 @@ def _multiclass_brier(probabilities: np.ndarray, labels: np.ndarray, classes: tu
     return float(np.mean(np.sum((probabilities - expected) ** 2, axis=1)))
 
 
+def _spearman(left: pd.Series, right: pd.Series) -> float | None:
+    aligned = pd.concat(
+        [pd.to_numeric(left, errors="coerce"), pd.to_numeric(right, errors="coerce")],
+        axis=1,
+    ).dropna()
+    if len(aligned) < 3 or aligned.iloc[:, 0].nunique() < 2 or aligned.iloc[:, 1].nunique() < 2:
+        return None
+    value = aligned.iloc[:, 0].corr(aligned.iloc[:, 1], method="spearman")
+    return float(value) if pd.notna(value) else None
+
+
+def _activation_metrics(
+    *,
+    train_y: np.ndarray,
+    validation: pd.DataFrame,
+    validation_y: np.ndarray,
+    ensemble: np.ndarray,
+    logistic_probabilities: np.ndarray,
+    boosting_probabilities: np.ndarray,
+    feature_columns: tuple[str, ...],
+    point_in_time_audit: bool,
+) -> dict[str, float | int | bool]:
+    class_index = {name: index for index, name in enumerate(CLASS_ORDER)}
+    score = ensemble[:, class_index["up"]] - ensemble[:, class_index["down"]]
+    logistic_score = logistic_probabilities[:, class_index["up"]] - logistic_probabilities[:, class_index["down"]]
+    boosting_score = boosting_probabilities[:, class_index["up"]] - boosting_probabilities[:, class_index["down"]]
+    evaluation = pd.DataFrame(
+        {
+            "trade_date": validation["trade_date"].astype(str).to_numpy(),
+            "code": validation.get("code", pd.Series(validation.index.astype(str), index=validation.index)).astype(str).to_numpy(),
+            "score": score,
+            "logistic_score": logistic_score,
+            "boosting_score": boosting_score,
+            "excess_return": pd.to_numeric(validation["excess_return"], errors="coerce").to_numpy(),
+        }
+    ).dropna(subset=["excess_return"])
+    daily_ics = [
+        value
+        for _, group in evaluation.groupby("trade_date", sort=True)
+        if (value := _spearman(group["score"], group["excess_return"])) is not None
+    ]
+    if not daily_ics:
+        fallback_ic = _spearman(evaluation["score"], evaluation["excess_return"])
+        daily_ics = [fallback_ic] if fallback_ic is not None else []
+    rank_ic = float(np.mean(daily_ics)) if daily_ics else 0.0
+    ic_std = float(np.std(daily_ics, ddof=1)) if len(daily_ics) > 1 else 0.0
+    icir = rank_ic / ic_std if ic_std > 1e-12 else 0.0
+
+    train_frequencies = np.array([(train_y == name).mean() for name in CLASS_ORDER], dtype=float)
+    baseline = np.tile(train_frequencies, (len(validation_y), 1))
+    brier = _multiclass_brier(ensemble, validation_y, CLASS_ORDER)
+    baseline_brier = _multiclass_brier(baseline, validation_y, CLASS_ORDER)
+    brier_improvement = (baseline_brier - brier) / baseline_brier if baseline_brier > 0 else 0.0
+    predicted_index = np.argmax(ensemble, axis=1)
+    predicted_labels = np.array(CLASS_ORDER, dtype=object)[predicted_index]
+    high_confidence = np.max(ensemble, axis=1) >= 0.55
+    high_hit = float(np.mean(predicted_labels[high_confidence] == validation_y[high_confidence])) if high_confidence.any() else 0.0
+    unconditional_hit = max(float(np.mean(validation_y == name)) for name in CLASS_ORDER)
+    hit_rate_uplift = high_hit - unconditional_hit
+    try:
+        auc = float(roc_auc_score(validation_y, ensemble, labels=list(CLASS_ORDER), multi_class="ovr", average="macro"))
+    except ValueError:
+        auc = 0.0
+    if not np.isfinite(auc):
+        auc = 0.0
+
+    gross_returns: list[float] = []
+    turnovers: list[float] = []
+    previous: set[str] | None = None
+    for _, group in evaluation.groupby("trade_date", sort=True):
+        count = max(1, int(np.ceil(len(group) * 0.20)))
+        selected = group.nlargest(count, "score")
+        gross_returns.append(float(selected["excess_return"].mean() - group["excess_return"].mean()))
+        current = set(selected["code"])
+        turnovers.append(0.0 if previous is None else 1.0 - len(current & previous) / max(1, len(current | previous)))
+        previous = current
+    net_daily = np.asarray(gross_returns, dtype=float) - np.asarray(turnovers, dtype=float) * 0.0015
+    net_excess_return = float(np.mean(net_daily) * 252.0) if len(net_daily) else 0.0
+    if len(net_daily):
+        curve = np.cumprod(1.0 + np.clip(net_daily, -0.99, None))
+        drawdowns = curve / np.maximum.accumulate(curve) - 1.0
+        max_drawdown = abs(float(np.min(drawdowns)))
+    else:
+        max_drawdown = 1.0
+    annual_turnover = float(np.mean(turnovers) * 252.0) if turnovers else 1_000_000_000.0
+    stability_values = [
+        value
+        for _, group in evaluation.groupby("trade_date", sort=True)
+        if (value := _spearman(group["logistic_score"], group["boosting_score"])) is not None
+    ]
+    if not stability_values:
+        fallback_stability = _spearman(evaluation["logistic_score"], evaluation["boosting_score"])
+        stability_values = [fallback_stability] if fallback_stability is not None else []
+    ablation_stability = float(np.clip((np.mean(stability_values) + 1.0) / 2.0, 0.0, 1.0)) if stability_values else 0.0
+    feature_coverage = float(validation.loc[:, feature_columns].notna().mean().mean()) if feature_columns else 0.0
+    return {
+        "feature_coverage": feature_coverage,
+        "point_in_time_audit": bool(point_in_time_audit),
+        "oos_predictions": int(len(validation_y)),
+        "rank_ic": rank_ic,
+        "icir": float(icir),
+        "brier_improvement": float(brier_improvement),
+        "hit_rate_uplift": float(hit_rate_uplift),
+        "auc": auc,
+        "net_excess_return": net_excess_return,
+        "max_drawdown": max_drawdown,
+        "annual_turnover": annual_turnover,
+        "ablation_stability": ablation_stability,
+    }
+
+
 def train_model_bundle(
     dataset: pd.DataFrame,
     *,
@@ -222,6 +333,21 @@ def train_model_bundle(
     ensemble = (logistic_probabilities + boosting_probabilities) / 2.0 if use_boosting else logistic_probabilities
     ensemble_loss = float(log_loss(validation_y, ensemble, labels=list(CLASS_ORDER)))
     agreement = float(1.0 - np.mean(np.abs(logistic_probabilities - boosting_probabilities)) / 2.0)
+    point_in_time_audit = bool(
+        str(train["label_end_date"].max()) < calibration_start
+        and str(calibration["label_end_date"].max()) < validation_start
+        and (validation["label_end_date"].astype(str) >= validation["trade_date"].astype(str)).all()
+    )
+    activation_metrics = _activation_metrics(
+        train_y=train_y,
+        validation=validation,
+        validation_y=validation_y,
+        ensemble=ensemble,
+        logistic_probabilities=logistic_probabilities,
+        boosting_probabilities=boosting_probabilities,
+        feature_columns=columns,
+        point_in_time_audit=point_in_time_audit,
+    )
 
     returns = pd.to_numeric(train["excess_return"], errors="coerce")
     return_stats: dict[str, dict[str, float]] = {}
@@ -258,6 +384,7 @@ def train_model_bundle(
             "boosting_log_loss": boosting_loss,
             "model_agreement": agreement,
             "calibration_quality": float(np.clip(1.0 - ensemble_loss / np.log(3.0), 0.0, 1.0)),
+            **activation_metrics,
         },
         split_dates={
             "train_start": str(train.iloc[0]["trade_date"]),

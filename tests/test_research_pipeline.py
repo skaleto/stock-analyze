@@ -14,6 +14,23 @@ from stock_analyze.research.schemas import PredictionRecord
 
 
 class ResearchPipelineTest(unittest.TestCase):
+    @staticmethod
+    def _passing_gate_metrics() -> dict:
+        return {
+            "feature_coverage": 0.97,
+            "point_in_time_audit": True,
+            "oos_predictions": 500,
+            "rank_ic": 0.04,
+            "icir": 0.55,
+            "brier_improvement": 0.06,
+            "hit_rate_uplift": 0.06,
+            "auc": 0.59,
+            "net_excess_return": 0.03,
+            "max_drawdown": 0.12,
+            "annual_turnover": 4.0,
+            "ablation_stability": 0.82,
+        }
+
     def _write_history(self, root: Path, rows: int = 140, code: str = "000001") -> None:
         cache = root / "data" / "shared" / "cache"
         cache.mkdir(parents=True, exist_ok=True)
@@ -106,6 +123,131 @@ class ResearchPipelineTest(unittest.TestCase):
 
         self.assertEqual(artifact.name, "newer.joblib")
         self.assertEqual(status, "research")
+
+    def test_resolve_model_prefers_shadow_over_newer_failed_research(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10")
+            model_root = root / "data" / "research" / "models" / "a_share" / "5"
+            model_root.mkdir(parents=True)
+            (model_root / "registry.json").write_text(json.dumps({
+                "champion_model_version": None,
+                "models": {
+                    "shadow-v1": {
+                        "status": "shadow", "artifact": str(model_root / "shadow.joblib"),
+                        "registered_at": "2026-06-01T00:00:00+00:00",
+                    },
+                    "failed-v2": {
+                        "status": "research", "artifact": str(model_root / "failed.joblib"),
+                        "registered_at": "2026-07-01T00:00:00+00:00",
+                    },
+                },
+            }), encoding="utf-8")
+
+            artifact, status = pipeline._resolve_model(5)
+
+        self.assertEqual(artifact.name, "shadow.joblib")
+        self.assertEqual(status, "shadow")
+
+    def test_training_records_research_to_shadow_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10")
+            pipeline.store.write_feature_snapshot(
+                "a_share", "2026-07-10", pd.DataFrame([{"code": "000001", "trade_date": "20260710", "factor": 1.0}])
+            )
+            pipeline.store.write_label_snapshot(
+                "a_share", "2026-07-10", pd.DataFrame([{"code": "000001", "trade_date": "20260710", "horizon": 3, "label": "up"}])
+            )
+
+            def bundle(*_args, horizon, **_kwargs):
+                return SimpleNamespace(horizon=horizon, model_version=f"m{horizon}", metrics=self._passing_gate_metrics())
+
+            with (
+                patch("stock_analyze.research.pipeline.train_model_bundle", side_effect=bundle),
+                patch("stock_analyze.research.pipeline.save_model_bundle"),
+            ):
+                result = pipeline.train_models()
+            registry = json.loads((root / "data" / "research" / "models" / "a_share" / "3" / "registry.json").read_text())
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(registry["models"]["m3"]["status"], "shadow")
+        self.assertTrue(registry["models"]["m3"]["gate_history"][-1]["passed"])
+
+    def test_fourth_shadow_prediction_cycle_promotes_model_for_next_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10", offline=True)
+            pipeline.store.write_feature_snapshot(
+                "a_share", "2026-07-10", pd.DataFrame([{"code": "000001", "trade_date": "20260710", "factor": 1.0}])
+            )
+            model_root = root / "data" / "research" / "models" / "a_share" / "5"
+            model_root.mkdir(parents=True)
+            (model_root / "registry.json").write_text(json.dumps({
+                "champion_model_version": None,
+                "models": {"m5": {"status": "shadow", "artifact": str(model_root / "model.joblib"), "gate_history": []}},
+            }), encoding="utf-8")
+            from stock_analyze.research.activation import ShadowCycleTracker
+            tracker = ShadowCycleTracker(model_root / "shadow_cycles.json")
+            for as_of in ("2026-06-12", "2026-06-19", "2026-06-26"):
+                tracker.record("m5", as_of, {"predictions": 1})
+            model = SimpleNamespace(horizon=5, model_version="m5", metrics=self._passing_gate_metrics())
+
+            def prediction(*_args, **_kwargs):
+                return [PredictionRecord(code="000001", as_of="2026-07-10", horizon=5, p_up=0.5, p_flat=0.3, p_down=0.2)]
+
+            with (
+                patch("stock_analyze.research.pipeline.load_model_bundle", return_value=model),
+                patch("stock_analyze.research.pipeline.generate_predictions", side_effect=prediction),
+            ):
+                pipeline.predict(horizon=5)
+            registry = json.loads((model_root / "registry.json").read_text())
+
+        self.assertEqual(registry["champion_model_version"], "m5")
+        self.assertEqual(registry["models"]["m5"]["status"], "active")
+
+    def test_shadow_challenger_runs_alongside_existing_champion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10", offline=True)
+            pipeline.store.write_feature_snapshot(
+                "a_share", "2026-07-10", pd.DataFrame([{"code": "000001", "trade_date": "20260710", "factor": 1.0}])
+            )
+            model_root = root / "data" / "research" / "models" / "a_share" / "5"
+            model_root.mkdir(parents=True)
+            (model_root / "registry.json").write_text(json.dumps({
+                "champion_model_version": "champion",
+                "models": {
+                    "champion": {"status": "active", "artifact": str(model_root / "champion.joblib"), "gate_history": []},
+                    "challenger": {"status": "shadow", "artifact": str(model_root / "challenger.joblib"), "gate_history": []},
+                },
+            }), encoding="utf-8")
+            bundles = {
+                "champion.joblib": SimpleNamespace(horizon=5, model_version="champion", metrics=self._passing_gate_metrics()),
+                "challenger.joblib": SimpleNamespace(horizon=5, model_version="challenger", metrics=self._passing_gate_metrics()),
+            }
+
+            def load(path):
+                return bundles[Path(path).name]
+
+            def prediction(bundle, *_args, **_kwargs):
+                return [PredictionRecord(
+                    code="000001", as_of="2026-07-10", horizon=5, p_up=0.5, p_flat=0.3, p_down=0.2,
+                    model_version=bundle.model_version,
+                )]
+
+            with (
+                patch("stock_analyze.research.pipeline.load_model_bundle", side_effect=load),
+                patch("stock_analyze.research.pipeline.generate_predictions", side_effect=prediction),
+            ):
+                pipeline.predict(horizon=5)
+            main = pd.read_parquet(root / "data" / "a_share" / "codex" / "predictions" / "20260710.parquet")
+            shadow = pd.read_parquet(root / "data" / "research" / "shadow_predictions" / "a_share" / "5" / "challenger" / "20260710.parquet")
+            cycles = json.loads((model_root / "shadow_cycles.json").read_text())
+
+        self.assertEqual(main.iloc[0]["model_version"], "champion")
+        self.assertEqual(shadow.iloc[0]["model_version"], "challenger")
+        self.assertEqual(len(cycles["models"]["challenger"]["cycles"]), 1)
 
     def test_online_prepare_persists_normalized_source_frames(self):
         with tempfile.TemporaryDirectory() as tmp:

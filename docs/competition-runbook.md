@@ -169,6 +169,9 @@ python3 -m stock_analyze --market <market> --agent <agent> predict --offline
 模型按 `research -> shadow -> active` 单向晋级。月度训练只注册 challenger；
 覆盖率、IC/ICIR、概率校准、命中率提升、净超额、回撤、换手、消融稳定性和连续
 四个自然周影子证据全部通过后才允许替换 champion。同一周重复运行只计一个周期。
+训练完成后自动执行 `research -> shadow` 门禁；进入 shadow 后由每日预测保存独立
+影子产物并按自然周累计，第四个有效影子周后自动执行 `shadow -> active` 门禁。
+任一证据未通过时保持原状态和原 champion，并把原因写入 registry 与 Dashboard。
 
 ## 6. ECS 调度
 
@@ -180,7 +183,7 @@ A 股继续使用共享行情缓存和触发器。工作日 daily worker 负责�
 - `stock-analyze-monthly-review.timer`
 - `stock-analyze-{claude,codex}-{daily,weekly}.service`
 - `stock-analyze-research.service`：共享行情成功后离线生成特征、事件、状态和预测，再启动 A 股 daily worker。
-- `stock-analyze-model-training.timer`：每月 1 日 02:30 训练 challenger，不自动晋级。
+- `stock-analyze-model-training.timer`：每月 1 日 02:30 训练 challenger 并自动评估研究门禁，不绕过门禁晋级。
 
 QDII 两套策略都有独立定时器：
 

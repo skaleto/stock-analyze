@@ -372,6 +372,9 @@ export type ModelHealth = {
     split_dates?: Record<string, string>;
     status?: string;
     is_champion?: boolean;
+    gate_passed?: boolean | null;
+    gate_reasons?: string[];
+    gate_target?: string;
     shadow_cycles?: number;
     shadow_cycles_remaining?: number;
   }[];

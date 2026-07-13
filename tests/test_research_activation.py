@@ -1,11 +1,13 @@
 import unittest
 import tempfile
+import math
 from pathlib import Path
 
 from stock_analyze.research.activation import (
     ActivationEvidence,
     ModelRegistry,
     ShadowCycleTracker,
+    activation_evidence_from_metrics,
     evaluate_activation,
     transition_status,
 )
@@ -13,13 +15,15 @@ from stock_analyze.research.activation import (
 
 def passing_evidence(**overrides) -> ActivationEvidence:
     values = {
-        "coverage": 0.92,
+        "coverage": 0.97,
+        "point_in_time_audit": True,
+        "oos_predictions": 500,
         "rank_ic": 0.04,
         "icir": 0.55,
-        "brier_improvement": 0.03,
+        "brier_improvement": 0.06,
         "hit_rate_uplift": 0.06,
         "auc": 0.59,
-        "net_excess_return": 0.08,
+        "net_excess_return": 0.03,
         "max_drawdown": 0.12,
         "annual_turnover": 4.0,
         "ablation_stability": 0.82,
@@ -51,6 +55,46 @@ class ResearchActivationTest(unittest.TestCase):
         self.assertIn("max_drawdown", report.reasons)
         self.assertEqual(transition_status("shadow", "active", report), "shadow")
         self.assertEqual(report.metrics["coverage"], 0.4)
+
+    def test_research_gate_requires_point_in_time_audit_and_oos_support(self):
+        report = evaluate_activation(
+            passing_evidence(point_in_time_audit=False, oos_predictions=199),
+            current_status="research",
+            target_status="shadow",
+        )
+
+        self.assertFalse(report.passed)
+        self.assertIn("point_in_time_audit", report.reasons)
+        self.assertIn("oos_predictions", report.reasons)
+
+    def test_metrics_are_converted_to_activation_evidence(self):
+        evidence = activation_evidence_from_metrics(
+            {
+                "feature_coverage": 0.97,
+                "point_in_time_audit": True,
+                "oos_predictions": 500,
+                "rank_ic": 0.04,
+                "icir": 0.55,
+                "brier_improvement": 0.06,
+                "hit_rate_uplift": 0.06,
+                "auc": 0.59,
+                "net_excess_return": 0.03,
+                "max_drawdown": 0.12,
+                "annual_turnover": 4.0,
+                "ablation_stability": 0.82,
+            },
+            shadow_cycles=3,
+        )
+
+        self.assertEqual(evidence.shadow_cycles, 3)
+        self.assertEqual(evidence.oos_predictions, 500)
+        self.assertTrue(evidence.point_in_time_audit)
+
+    def test_non_finite_metrics_fail_closed(self):
+        evidence = activation_evidence_from_metrics({"auc": math.nan, "annual_turnover": math.inf})
+
+        self.assertEqual(evidence.auc, 0.0)
+        self.assertEqual(evidence.annual_turnover, 1_000_000_000.0)
 
     def test_rejects_invalid_status_transition(self):
         with self.assertRaisesRegex(ValueError, "activation_transition"):

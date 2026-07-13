@@ -88,7 +88,11 @@ class DashboardPredictionsTest(unittest.TestCase):
                 json.dumps({
                     "models": {
                         "f999": {"status": "research", "artifact": str(model_root / "older.joblib")},
-                        "a111": {"status": "research", "artifact": str(model_root / "newer.joblib")},
+                        "a111": {
+                            "status": "research",
+                            "artifact": str(model_root / "newer.joblib"),
+                            "gate_history": [{"passed": False, "reasons": ["auc", "brier_improvement"]}],
+                        },
                     }
                 }),
                 encoding="utf-8",
@@ -100,6 +104,36 @@ class DashboardPredictionsTest(unittest.TestCase):
         self.assertEqual(len(models), 1)
         self.assertEqual(models[0]["model_version"], "a111")
         self.assertEqual(models[0]["metrics"]["log_loss"], 1.0)
+        self.assertEqual(models[0]["gate_reasons"], ["auc", "brier_improvement"])
+
+    def test_model_health_prefers_shadow_over_newer_failed_research(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            model_root = root / "data" / "research" / "models" / "cn_qdii_etf" / "5"
+            model_root.mkdir(parents=True)
+            for version in ("shadow-v1", "failed-v2"):
+                (model_root / f"{version}.metadata.json").write_text(
+                    json.dumps({"model_version": version, "horizon": 5, "metrics": {"log_loss": 1.0}}),
+                    encoding="utf-8",
+                )
+            (model_root / "registry.json").write_text(json.dumps({
+                "champion_model_version": None,
+                "models": {
+                    "shadow-v1": {
+                        "status": "shadow", "artifact": str(model_root / "shadow-v1.joblib"),
+                        "registered_at": "2026-06-01T00:00:00+00:00",
+                    },
+                    "failed-v2": {
+                        "status": "research", "artifact": str(model_root / "failed-v2.joblib"),
+                        "registered_at": "2026-07-01T00:00:00+00:00",
+                    },
+                },
+            }), encoding="utf-8")
+
+            payload = build_dashboard_detail_data(repo_root=root, market="cn_qdii_etf", agent="codex")
+
+        self.assertEqual(payload["model_health"]["models"][0]["model_version"], "shadow-v1")
 
     def test_corrupt_prediction_file_raises_dashboard_data_error(self):
         with tempfile.TemporaryDirectory() as tmp:

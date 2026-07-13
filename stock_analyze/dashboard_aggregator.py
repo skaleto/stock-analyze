@@ -46,6 +46,7 @@ from .markets.cn_qdii_etf.lookthrough import (
     build_portfolio_lookthrough,
     profile_for_index,
 )
+from .research.activation import select_registry_model
 from .strategy_comparison import build_strategy_comparison
 from .strategy_registry import PAIR_SLOTS, StrategyRegistryInvalid, load_strategy_registry
 from .utils import (
@@ -1218,26 +1219,18 @@ def _read_model_health(root: Path, market: str) -> dict[str, Any]:
             raise DashboardDataError("model_registry") from exc
         registry_models = registry.get("models") or {}
         champion = str(registry.get("champion_model_version") or "")
-        if champion in metadata_by_version and champion in registry_models:
-            version = champion
-        else:
-            registered = [
-                (key, value)
-                for key, value in registry_models.items()
-                if key in metadata_by_version and value.get("registered_at")
-            ]
-            if registered:
-                version = max(registered, key=lambda item: str(item[1]["registered_at"]))[0]
-            else:
-                version = next(
-                    (key for key in reversed(registry_models) if key in metadata_by_version),
-                    next(reversed(metadata_by_version)),
-                )
+        selected = select_registry_model(registry, available_versions=set(metadata_by_version))
+        version = selected[0] if selected is not None else next(reversed(metadata_by_version))
         payload = metadata_by_version[version]
         model_state = registry_models.get(version) or {}
+        gate_history = model_state.get("gate_history") or []
+        latest_gate = gate_history[-1] if gate_history else {}
         model_cycles = ((cycles.get("models") or {}).get(version) or {}).get("cycles") or []
         payload["status"] = model_state.get("status", "research")
         payload["is_champion"] = champion == version
+        payload["gate_passed"] = latest_gate.get("passed")
+        payload["gate_reasons"] = latest_gate.get("reasons") or []
+        payload["gate_target"] = latest_gate.get("target_status")
         payload["shadow_cycles"] = len(model_cycles)
         payload["shadow_cycles_remaining"] = max(0, 4 - len(model_cycles))
         models.append(payload)
