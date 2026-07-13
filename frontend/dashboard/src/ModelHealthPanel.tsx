@@ -16,6 +16,7 @@ export default function ModelHealthPanel({ health, regimes, sources = [] }: { he
         <div><dt>样本数</dt><dd>{latest?.sample_support ?? "-"}</dd></div>
       </dl>
       <div className="model-state-line"><span>市场状态</span><strong>{String(regimes?.current?.composite_regime ?? "暂无")}</strong></div>
+      <div className="model-state-line"><span>影子观察周期</span><strong>{latest?.shadow_cycles ?? 0}/4{latest?.shadow_cycles_remaining ? `，还差 ${latest.shadow_cycles_remaining}` : ""}</strong></div>
       <div className="model-state-line"><span>未接入文本源</span><strong className={unavailable ? "warning" : ""}>{unavailable}</strong></div>
       {health?.status !== "available" ? <div className="model-note"><CircleAlert size={14} aria-hidden="true" />模型尚未完成训练或晋级</div> : null}
     </section>

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from ..utils import write_text_atomic
@@ -115,3 +115,33 @@ class ModelRegistry:
             state["champion_model_version"] = model_version
         self._write(state)
         return state
+
+
+class ShadowCycleTracker:
+    def __init__(self, path: str | Path, required_cycles: int = 4) -> None:
+        self.path = Path(path)
+        self.required_cycles = required_cycles
+
+    def _read(self) -> dict:
+        try:
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"version": 1, "models": {}}
+
+    def record(self, model_version: str, as_of: str, metrics: dict) -> dict:
+        state = self._read()
+        model = state.setdefault("models", {}).setdefault(model_version, {"cycles": []})
+        day = date.fromisoformat(str(as_of)[:10])
+        iso_year, iso_week, _ = day.isocalendar()
+        week = f"{iso_year}-W{iso_week:02d}"
+        cycles = model.setdefault("cycles", [])
+        existing = next((cycle for cycle in cycles if cycle.get("week") == week), None)
+        row = {"week": week, "as_of": day.isoformat(), "metrics": metrics}
+        if existing is None:
+            cycles.append(row)
+        else:
+            existing.update(row)
+        cycles.sort(key=lambda cycle: str(cycle.get("week") or ""))
+        write_text_atomic(self.path, json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        count = len(cycles)
+        return {"count": count, "remaining": max(0, self.required_cycles - count), "cycles": cycles}

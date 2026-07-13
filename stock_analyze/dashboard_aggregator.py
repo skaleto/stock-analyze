@@ -1200,6 +1200,20 @@ def _read_model_health(root: Path, market: str) -> dict[str, Any]:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise DashboardDataError("model_metadata") from exc
+        registry_path = path.parent / "registry.json"
+        cycle_path = path.parent / "shadow_cycles.json"
+        try:
+            registry = json.loads(registry_path.read_text(encoding="utf-8")) if registry_path.exists() else {}
+            cycles = json.loads(cycle_path.read_text(encoding="utf-8")) if cycle_path.exists() else {}
+        except (OSError, json.JSONDecodeError) as exc:
+            raise DashboardDataError("model_registry") from exc
+        version = str(payload.get("model_version") or "")
+        model_state = (registry.get("models") or {}).get(version) or {}
+        model_cycles = ((cycles.get("models") or {}).get(version) or {}).get("cycles") or []
+        payload["status"] = model_state.get("status", "research")
+        payload["is_champion"] = registry.get("champion_model_version") == version
+        payload["shadow_cycles"] = len(model_cycles)
+        payload["shadow_cycles_remaining"] = max(0, 4 - len(model_cycles))
         models.append(payload)
     return {"status": "available", "models": models}
 

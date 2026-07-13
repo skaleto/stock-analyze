@@ -5,6 +5,7 @@ from pathlib import Path
 from stock_analyze.research.activation import (
     ActivationEvidence,
     ModelRegistry,
+    ShadowCycleTracker,
     evaluate_activation,
     transition_status,
 )
@@ -69,6 +70,18 @@ class ResearchActivationTest(unittest.TestCase):
         self.assertEqual(state["champion_model_version"], "champion-v1")
         self.assertEqual(state["models"]["challenger-v2"]["status"], "shadow")
         self.assertEqual(state["models"]["challenger-v2"]["gate_history"][0]["reasons"], ["coverage"])
+
+    def test_shadow_cycles_are_idempotent_per_calendar_week(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tracker = ShadowCycleTracker(Path(tmp) / "shadow_cycles.json")
+            first = tracker.record("model-v2", "2026-07-13", {"brier": 0.2})
+            repeated = tracker.record("model-v2", "2026-07-15", {"brier": 0.19})
+            next_week = tracker.record("model-v2", "2026-07-20", {"brier": 0.18})
+
+        self.assertEqual(first["count"], 1)
+        self.assertEqual(repeated["count"], 1)
+        self.assertEqual(next_week["count"], 2)
+        self.assertEqual(next_week["remaining"], 2)
 
 
 if __name__ == "__main__":

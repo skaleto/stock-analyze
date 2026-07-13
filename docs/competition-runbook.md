@@ -149,6 +149,27 @@ Dashboard 的“跨境 ETF 研究工作台”包含候选、全球影子、风�
 动态页签。任何范围晋级前仍需满足三年数据、95% 风险字段覆盖、无前视、回测门槛
 和连续四周影子运行。
 
+### 概率预测研究
+
+成熟预测链分成四个可独立重跑的阶段：
+
+```bash
+python3 -m stock_analyze --market <market> --agent codex prepare-research-data --offline
+python3 -m stock_analyze --market <market> --agent codex run-prediction-research --offline
+python3 -m stock_analyze --market <market> --agent codex train-prediction-models --offline
+python3 -m stock_analyze --market <market> --agent <agent> predict --offline
+```
+
+系统从点时快照生成 3/5/10/20 日标签、技术与量价事件、市场状态、校准概率和
+独立可信度。新闻、公告和政策接口在当前权限下显示 `source_unavailable`，不会用
+零值或中性值伪造信号。研究预测默认不参与排序；只有模型注册表为 `active`、可信度
+不低于 70%、未触发失效条件的记录才能影响纸面策略，且仍受原交易成本、行业、
+单标的权重、手数与下一交易日执行规则约束。
+
+模型按 `research -> shadow -> active` 单向晋级。月度训练只注册 challenger；
+覆盖率、IC/ICIR、概率校准、命中率提升、净超额、回撤、换手、消融稳定性和连续
+四个自然周影子证据全部通过后才允许替换 champion。同一周重复运行只计一个周期。
+
 ## 6. ECS 调度
 
 A 股继续使用共享行情缓存和触发器。工作日 daily worker 负责成交、估值和下一
@@ -158,6 +179,8 @@ A 股继续使用共享行情缓存和触发器。工作日 daily worker 负责�
 - `stock-analyze-weekly-trigger.timer`
 - `stock-analyze-monthly-review.timer`
 - `stock-analyze-{claude,codex}-{daily,weekly}.service`
+- `stock-analyze-research.service`：共享行情成功后离线生成特征、事件、状态和预测，再启动 A 股 daily worker。
+- `stock-analyze-model-training.timer`：每月 1 日 02:30 训练 challenger，不自动晋级。
 
 QDII 两套策略都有独立定时器：
 
@@ -173,7 +196,8 @@ QDII 两套策略都有独立定时器：
 
 单个 agent service 的 `OnSuccess` 只刷新 Dashboard，不再发送消息。失败仍通过
 `stock-analyze-pipeline-failure@.service` 立即告警。摘要发送使用 cadence/target
-幂等账本，重启服务不会重复推送同一条。
+幂等账本，重启服务不会重复推送同一条。每日摘要只增加新的可信度不低于 70% 的
+实质性上行/下行变化；相同模型、标的、期限、方向和概率档位不会重复提醒。
 
 检查定时器、最近失败和服务/账本一致性：
 
@@ -232,7 +256,9 @@ python3 -m stock_analyze serve-dashboard --host 127.0.0.1 --port 8765
 日收益相关性。样本不足时展示“数据积累中”，不使用伪造的零值。
 
 进入单策略工作台后可查看时间线、分组持仓、目标订单、策略因子、周报与标的 K 线；
-K 线和净值图均支持鼠标十字线读取具体数值。
+K 线和净值图均支持鼠标十字线读取具体数值。概率工作台按 3/5/10/20 日切换，
+分别展示上涨/震荡/下跌概率、可信度、预期超额、证据、失效条件、预警、市场状态、
+模型校准和影子周期；标的抽屉仍以 K 线为第一视觉，预测和历史事件证据位于其后。
 
 ## 9. 故障定位
 

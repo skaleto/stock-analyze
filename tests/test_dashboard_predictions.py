@@ -55,6 +55,21 @@ class DashboardPredictionsTest(unittest.TestCase):
         self.assertEqual(payload["prediction_summary"]["status"], "unavailable")
         self.assertEqual(payload["model_health"]["status"], "unavailable")
 
+    def test_model_health_exposes_shadow_cycles_remaining(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            model_root = root / "data" / "research" / "models" / "cn_qdii_etf" / "5"
+            model_root.mkdir(parents=True)
+            (model_root / "model.metadata.json").write_text(json.dumps({"model_version": "m1", "horizon": 5, "metrics": {"brier_score": 0.2}}), encoding="utf-8")
+            (model_root / "registry.json").write_text(json.dumps({"champion_model_version": "old", "models": {"m1": {"status": "shadow"}}}), encoding="utf-8")
+            (model_root / "shadow_cycles.json").write_text(json.dumps({"models": {"m1": {"cycles": [{"week": "2026-W28"}, {"week": "2026-W29"}]}}}), encoding="utf-8")
+
+            payload = build_dashboard_detail_data(repo_root=root, market="cn_qdii_etf", agent="codex")
+
+        self.assertEqual(payload["model_health"]["models"][0]["status"], "shadow")
+        self.assertEqual(payload["model_health"]["models"][0]["shadow_cycles_remaining"], 2)
+
     def test_corrupt_prediction_file_raises_dashboard_data_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

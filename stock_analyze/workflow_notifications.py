@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 import urllib.error
 from dataclasses import dataclass
@@ -331,6 +332,82 @@ def _qdii_research_alerts(repo_root: Path, today_d: date) -> list[str]:
     return alerts
 
 
+def collect_prediction_notifications(
+    repo_root: Path,
+    target: str,
+    *,
+    seen_alert_ids: set[str] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Return stable IDs and concise lines for new material prediction changes."""
+
+    seen = seen_alert_ids or set()
+    alert_ids: list[str] = []
+    lines: list[str] = []
+    target_key = target.replace("-", "")
+    for market in competition.MARKETS:
+        for agent_id in AGENT_IDS:
+            directory = repo_root / "data" / market / agent_id / "predictions"
+            files = [path for path in sorted(directory.glob("*.parquet")) if path.stem <= target_key] if directory.exists() else []
+            if not files:
+                continue
+            try:
+                frame = pd.read_parquet(files[-1])
+            except Exception:  # noqa: BLE001 - failures are reported by pipeline health
+                continue
+            for row in frame.to_dict(orient="records"):
+                confidence = float(row.get("confidence") or 0.0)
+                p_up = float(row.get("p_up") or 0.0)
+                p_down = float(row.get("p_down") or 0.0)
+                if confidence < 0.70 or max(p_up, p_down) < 0.60:
+                    continue
+                direction = "上行" if p_up >= p_down else "下行"
+                probability = max(p_up, p_down)
+                bucket = round(probability / 0.05) * 0.05
+                raw_id = "|".join(
+                    [
+                        market,
+                        agent_id,
+                        str(row.get("code") or ""),
+                        str(row.get("horizon") or ""),
+                        direction,
+                        str(row.get("model_version") or ""),
+                        f"{bucket:.2f}",
+                    ]
+                )
+                alert_id = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()[:20]
+                if alert_id in seen or alert_id in alert_ids:
+                    continue
+                alert_ids.append(alert_id)
+                active = " · 已激活" if str(row.get("active_status") or "") == "active" else " · 研究中"
+                lines.append(
+                    f"{MARKET_LABELS.get(market, market)} / {_display_name(repo_root, agent_id)} / "
+                    f"{row.get('code')}：{row.get('horizon')}日{direction} {probability:.0%}，"
+                    f"可信度 {confidence:.0%}{active}"
+                )
+    return alert_ids, lines
+
+
+def _model_research_lines(repo_root: Path) -> list[str]:
+    lines: list[str] = []
+    for market in competition.MARKETS:
+        root = repo_root / "data" / "research" / "models" / market
+        metadata = sorted(root.glob("*/*.metadata.json")) if root.exists() else []
+        if not metadata:
+            continue
+        try:
+            payload = json.loads(metadata[-1].read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            lines.append(f"{MARKET_LABELS.get(market, market)}：模型元数据不可读")
+            continue
+        metrics = payload.get("metrics") or {}
+        lines.append(
+            f"{MARKET_LABELS.get(market, market)}：{payload.get('horizon', '-')}日模型，"
+            f"Brier {float(metrics.get('brier_score', 0.0)):.3f}，"
+            f"LogLoss {float(metrics.get('log_loss', 0.0)):.3f}，状态 challenger"
+        )
+    return lines
+
+
 def build_workflow_summary(
     cadence: Cadence,
     repo_root: Path | None = None,
@@ -364,11 +441,23 @@ def build_workflow_summary(
             )
             lines[-1] += f"，待执行订单 {pending}"
             lines.extend(["", "策略总览:", *_strategy_lines(repo_root, on_or_before=target)])
+            ledger = _read_delivery_ledger(repo_root)
+            seen_alert_ids = set(ledger.get("alert_ids") or [])
+            _, prediction_lines = collect_prediction_notifications(
+                repo_root,
+                target,
+                seen_alert_ids=seen_alert_ids,
+            )
+            if prediction_lines:
+                lines.extend(["", "新增预测提醒:", *prediction_lines])
         lines.extend(["", "任务运行:", *_task_lines(results, repo_root)])
         if cadence == "weekly":
             research_alerts = _qdii_research_alerts(repo_root, today_d)
             if research_alerts:
                 lines.extend(["", "研究异常:", *research_alerts])
+            model_lines = _model_research_lines(repo_root)
+            if model_lines:
+                lines.extend(["", "模型研究:", *model_lines])
             lines.extend(
                 [
                     "",
@@ -465,13 +554,16 @@ def _read_delivery_ledger(repo_root: Path) -> dict[str, Any]:
     return payload
 
 
-def _mark_sent(repo_root: Path, key: str) -> None:
+def _mark_sent(repo_root: Path, key: str, *, alert_ids: list[str] | None = None) -> None:
     path = repo_root / LEDGER_RELATIVE_PATH
     payload = _read_delivery_ledger(repo_root)
     payload["version"] = 1
     payload.setdefault("sent", {})[key] = {
         "sent_at": datetime.now().astimezone().isoformat(timespec="seconds")
     }
+    if alert_ids:
+        existing = list(payload.get("alert_ids") or [])
+        payload["alert_ids"] = list(dict.fromkeys([*existing, *alert_ids]))[-1000:]
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -518,7 +610,8 @@ def cli_send_workflow_summary(
         except (urllib.error.URLError, LarkAPIError) as text_exc:
             print(f"Lark workflow push failed: {text_exc}", file=sys.stderr)
             return 1
-    _mark_sent(repo_root, key)
+    alert_ids = collect_prediction_notifications(repo_root, target)[0] if cadence == "daily" else []
+    _mark_sent(repo_root, key, alert_ids=alert_ids)
     print(f"workflow notification sent: {key}")
     return 0
 
@@ -529,5 +622,6 @@ __all__ = [
     "build_workflow_summary_card",
     "cli_send_workflow_summary",
     "collect_task_results",
+    "collect_prediction_notifications",
     "default_target",
 ]
