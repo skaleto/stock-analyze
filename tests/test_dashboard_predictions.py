@@ -70,6 +70,37 @@ class DashboardPredictionsTest(unittest.TestCase):
         self.assertEqual(payload["model_health"]["models"][0]["status"], "shadow")
         self.assertEqual(payload["model_health"]["models"][0]["shadow_cycles_remaining"], 2)
 
+    def test_model_health_hides_superseded_research_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            model_root = root / "data" / "research" / "models" / "cn_qdii_etf" / "3"
+            model_root.mkdir(parents=True)
+            (model_root / "older.metadata.json").write_text(
+                json.dumps({"model_version": "f999", "horizon": 3, "metrics": {"log_loss": 1.2}}),
+                encoding="utf-8",
+            )
+            (model_root / "newer.metadata.json").write_text(
+                json.dumps({"model_version": "a111", "horizon": 3, "metrics": {"log_loss": 1.0}}),
+                encoding="utf-8",
+            )
+            (model_root / "registry.json").write_text(
+                json.dumps({
+                    "models": {
+                        "f999": {"status": "research", "artifact": str(model_root / "older.joblib")},
+                        "a111": {"status": "research", "artifact": str(model_root / "newer.joblib")},
+                    }
+                }),
+                encoding="utf-8",
+            )
+
+            payload = build_dashboard_detail_data(repo_root=root, market="cn_qdii_etf", agent="codex")
+
+        models = payload["model_health"]["models"]
+        self.assertEqual(len(models), 1)
+        self.assertEqual(models[0]["model_version"], "a111")
+        self.assertEqual(models[0]["metrics"]["log_loss"], 1.0)
+
     def test_corrupt_prediction_file_raises_dashboard_data_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
