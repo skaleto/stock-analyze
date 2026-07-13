@@ -135,6 +135,22 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(len(first), 10)
         self.assertGreater(max(int(code) for code in first), 50)
 
+    def test_a_share_cache_selection_prefers_three_year_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_history(root, rows=80, code="000001")
+            cache = root / "data" / "shared" / "cache"
+            (cache / "history_000001_20260710_220.csv").write_text(
+                (cache / "history_000001_20260710_1098.csv").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10")
+
+            selected = pipeline._history_files()
+
+        self.assertEqual(len(selected), 1)
+        self.assertTrue(selected[0].name.endswith("_1098.csv"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -58,12 +58,24 @@ class ResearchPipeline:
     def _history_files(self) -> list[Path]:
         pattern = "fund_daily_*.csv" if self.market == "cn_qdii_etf" else "history_*.csv"
         candidates = sorted(self._cache_dir().glob(pattern))
-        latest_by_code: dict[str, Path] = {}
+        latest_by_code: dict[str, tuple[tuple[int, str], Path]] = {}
         for path in candidates:
-            match = re.search(r"(?:fund_daily|history)_(\d{6})", path.name)
-            if match:
-                latest_by_code[match.group(1)] = path
-        return sorted(latest_by_code.values())
+            if self.market == "a_share":
+                match = re.fullmatch(r"history_(\d{6})_(\d{8})_(\d+)\.csv", path.name)
+                if not match or match.group(2) > self.run_key:
+                    continue
+                code = match.group(1)
+                score = (int(match.group(3)), match.group(2))
+            else:
+                match = re.fullmatch(r"fund_daily_(\d{6})_[A-Z]+_(\d{8})\.csv", path.name)
+                if not match or match.group(2) > self.run_key:
+                    continue
+                code = match.group(1)
+                score = (0, match.group(2))
+            current = latest_by_code.get(code)
+            if current is None or score > current[0]:
+                latest_by_code[code] = (score, path)
+        return sorted(item[1] for item in latest_by_code.values())
 
     @staticmethod
     def _normalize_history(path: Path) -> pd.DataFrame:
