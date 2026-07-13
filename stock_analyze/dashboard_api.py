@@ -147,23 +147,18 @@ def build_dashboard_performance_data(
     )
 
 
-def build_dashboard_portfolio_data(
-    *,
-    repo_root: str | Path | None = None,
+def _read_portfolio_exposure(
+    root: Path,
+    paths: agg.DashboardAgentPaths,
     market: str,
-    agent: str,
-    limit: int = DEFAULT_ROW_LIMIT,
-) -> dict[str, Any]:
-    """Return current holdings, pending orders, trades, and their timeline."""
-
-    root, paths = _context(repo_root, market, agent)
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     names = agg._read_fund_name_lookup(root, market)
-    orders_all = enrich_rows(
+    orders = enrich_rows(
         market,
         agg._flatten_pending_orders(paths.data_dir, name_lookup=names),
         repo_root=root,
     )
-    positions_all = enrich_rows(
+    positions = enrich_rows(
         market,
         agg._limited_csv_rows(
             paths.data_dir / "positions.csv",
@@ -193,6 +188,23 @@ def build_dashboard_portfolio_data(
         ),
         repo_root=root,
     )
+    return (
+        _project_rows(orders, _ORDER_ROW_FIELDS, order=True),
+        _project_rows(positions, _POSITION_ROW_FIELDS),
+    )
+
+
+def build_dashboard_portfolio_data(
+    *,
+    repo_root: str | Path | None = None,
+    market: str,
+    agent: str,
+    limit: int = DEFAULT_ROW_LIMIT,
+) -> dict[str, Any]:
+    """Return current holdings, pending orders, trades, and their timeline."""
+
+    root, paths = _context(repo_root, market, agent)
+    orders_all, positions_all = _read_portfolio_exposure(root, paths, market)
     trades_all = enrich_rows(
         market,
         agg._limited_csv_rows(
@@ -215,8 +227,6 @@ def build_dashboard_portfolio_data(
         ),
         repo_root=root,
     )
-    orders_all = _project_rows(orders_all, _ORDER_ROW_FIELDS, order=True)
-    positions_all = _project_rows(positions_all, _POSITION_ROW_FIELDS)
     trades_all = _project_rows(trades_all, _TRADE_ROW_FIELDS)
     activity_all = build_activity(trades_all, orders_all)
     positions = positions_all[-limit:] if limit > 0 else positions_all
@@ -287,12 +297,11 @@ def build_dashboard_predictions_data(
 
 def _lookthrough(
     market: str,
-    portfolio: dict[str, Any],
+    positions: list[dict[str, Any]],
+    orders: list[dict[str, Any]],
 ) -> dict[str, Any]:
     if market != "cn_qdii_etf":
         return {}
-    positions = portfolio["positions"]["rows"]
-    orders = portfolio["orders"]["rows"]
     source = "positions" if positions else "planned_orders"
     rows = positions or [row for row in orders if str(row.get("side") or "").lower() == "buy"]
     return build_portfolio_lookthrough(rows, source=source)
@@ -316,17 +325,12 @@ def build_dashboard_research_data(
                 "research": {},
             }
         )
-    portfolio = build_dashboard_portfolio_data(
-        repo_root=root,
-        market=market,
-        agent=agent,
-        limit=0,
-    )
+    orders, positions = _read_portfolio_exposure(root, paths, market)
     return agg._json_safe(
         {
             **_base(market, agent),
             "selection": agg._read_selection_snapshot(paths.data_dir),
-            "lookthrough": _lookthrough(market, portfolio),
+            "lookthrough": _lookthrough(market, positions, orders),
             "research": agg._read_qdii_research(root, agent),
         }
     )
@@ -386,19 +390,27 @@ def build_dashboard_comparison_input_data(
 ) -> dict[str, Any]:
     """Build only fields consumed by ``build_strategy_comparison``."""
 
-    overview = build_dashboard_overview_data(repo_root=repo_root, market=market, agent=agent)
-    performance = build_dashboard_performance_data(repo_root=repo_root, market=market, agent=agent)
+    root, paths = _context(repo_root, market, agent)
+    try:
+        strategy = build_strategy_profile(paths.config_path, repo_root=root)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise agg.DashboardDataError("strategy_overlay") from exc
+    nav = agg._read_nav_detail(paths.data_dir, market)
     portfolio = build_dashboard_portfolio_data(
-        repo_root=repo_root,
+        repo_root=root,
         market=market,
         agent=agent,
         limit=0,
     )
     return {
-        "strategy": overview["strategy"],
-        "nav": performance["nav"],
+        "strategy": strategy,
+        "nav": nav,
         "positions": portfolio["positions"],
         "orders": portfolio["orders"],
         "trades": portfolio["trades"],
-        "lookthrough": _lookthrough(market, portfolio),
+        "lookthrough": _lookthrough(
+            market,
+            portfolio["positions"]["rows"],
+            portfolio["orders"]["rows"],
+        ),
     }

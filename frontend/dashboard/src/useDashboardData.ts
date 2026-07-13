@@ -117,54 +117,52 @@ export function useDashboardData(market: string, agent: string) {
       errors: {},
     }));
 
+    const settle = (name: ResourceName, result: PromiseSettledResult<unknown>, primary: boolean) => {
+      if (requestId !== requestIdRef.current || controller.signal.aborted) return;
+      setSnapshot((current) => {
+        if (current.key !== key) return current;
+        const resources = { ...current.resources };
+        const errors = { ...current.errors };
+        if (result.status === "fulfilled") {
+          resources[name] = result.value as never;
+          delete errors[name];
+        } else {
+          delete resources[name];
+          errors[name] = reasonMessage(result.reason);
+        }
+        return { key, resources, errors };
+      });
+      if (primary) {
+        setLoadingKey((current) => current === key ? null : current);
+      }
+    };
+    const request = async (
+      name: ResourceName,
+      resource: Promise<unknown>,
+      primary: boolean,
+    ) => {
+      try {
+        settle(name, { status: "fulfilled", value: await resource }, primary);
+      } catch (reason) {
+        settle(name, { status: "rejected", reason }, primary);
+      }
+    };
+
     const primary: [ResourceName, Promise<unknown>][] = [
       ["overview", fetchOverview(market, agent, controller.signal)],
       ["performance", fetchPerformance(market, agent, controller.signal)],
       ["portfolio", fetchPortfolio(market, agent, controller.signal)],
       ["predictions", fetchPredictions(market, agent, controller.signal)],
     ];
-    const primaryResults = await Promise.allSettled(primary.map(([, request]) => request));
-    if (requestId !== requestIdRef.current || controller.signal.aborted) return;
-    setSnapshot((current) => {
-      if (current.key !== key) return current;
-      const resources = { ...current.resources };
-      const errors = { ...current.errors };
-      primaryResults.forEach((result, index) => {
-        const name = primary[index][0];
-        if (result.status === "fulfilled") {
-          resources[name] = result.value as never;
-          delete errors[name];
-        } else {
-          delete resources[name];
-          errors[name] = reasonMessage(result.reason);
-        }
-      });
-      return { key, resources, errors };
-    });
-    setLoadingKey(null);
+    const primaryTasks = primary.map(([name, resource]) => request(name, resource, true));
 
+    await Promise.resolve();
     const deferred: [ResourceName, Promise<unknown>][] = [
       ["research", fetchResearch(market, agent, controller.signal)],
       ["operations", fetchOperations(market, agent, controller.signal)],
     ];
-    const deferredResults = await Promise.allSettled(deferred.map(([, request]) => request));
-    if (requestId !== requestIdRef.current || controller.signal.aborted) return;
-    setSnapshot((current) => {
-      if (current.key !== key) return current;
-      const resources = { ...current.resources };
-      const errors = { ...current.errors };
-      deferredResults.forEach((result, index) => {
-        const name = deferred[index][0];
-        if (result.status === "fulfilled") {
-          resources[name] = result.value as never;
-          delete errors[name];
-        } else {
-          delete resources[name];
-          errors[name] = reasonMessage(result.reason);
-        }
-      });
-      return { key, resources, errors };
-    });
+    const deferredTasks = deferred.map(([name, resource]) => request(name, resource, false));
+    await Promise.all([...primaryTasks, ...deferredTasks]);
   }, [agent, key, market]);
 
   useEffect(() => {
