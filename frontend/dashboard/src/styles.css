@@ -1054,7 +1054,7 @@ a:hover { text-decoration: underline; }
   .security-pnl { grid-column: 1 / -1; justify-content: flex-start; }
   .timeline-day { grid-template-columns: 62px minmax(0, 1fr); }
   .factor-grid, .research-metrics > div:last-child, .record-fields dl { grid-template-columns: 1fr; }
-  .instrument-drawer { width: 100vw; }
+  .instrument-drawer { right: 0; left: 0; width: auto; max-width: none; }
   .instrument-head { min-height: 78px; padding: 11px 13px; }
   .instrument-head h2 { font-size: 18px; }
   .instrument-body { padding: 12px 12px 36px; }
