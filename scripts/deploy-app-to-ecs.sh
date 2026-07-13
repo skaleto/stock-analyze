@@ -64,6 +64,7 @@ deploy_version="$2"
 unit_dir="$app_dir/deploy/systemd"
 
 for unit in \
+  stock-analyze-market-data.service \
   stock-analyze-claude-cn-qdii-etf-daily.service \
   stock-analyze-claude-cn-qdii-etf-daily.timer \
   stock-analyze-claude-cn-qdii-etf-weekly.service \

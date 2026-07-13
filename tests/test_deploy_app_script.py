@@ -63,6 +63,7 @@ class DeployAppScriptTests(unittest.TestCase):
         self.assertIn("tests.test_prediction_notifications", script)
         self.assertIn("pip install -r requirements.txt", script)
         self.assertIn("stock-analyze-research.service", script)
+        self.assertIn("stock-analyze-market-data.service", script)
         self.assertIn("stock-analyze-model-training.service", script)
         self.assertIn("./archive/direct-overseas/", script)
         self.assertIn("./.claude/", script)
