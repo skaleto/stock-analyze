@@ -12,6 +12,7 @@ import pandas as pd
 
 from ...factor_pipeline import process_factors
 from .data_provider import CNQDIETFProvider
+from ...research.strategy_ensemble import load_and_attach_predictions
 
 
 logger = logging.getLogger(__name__)
@@ -251,6 +252,16 @@ def build_signals(
                 scored["insufficient_factor_coverage"].fillna(False).astype(bool).sum()
             )
             scored = scored.loc[~scored["insufficient_factor_coverage"]].copy()
+        agent_id = str(config.get("agent_id") or "codex")
+        scored = load_and_attach_predictions(
+            scored,
+            repo_root=repo_root or ".",
+            market="cn_qdii_etf",
+            agent=agent_id,
+            as_of=as_of,
+            profile="trend" if agent_id == "codex" else "defensive",
+        )
+        scored = scored.sort_values("score", ascending=False).reset_index(drop=True)
         metadata_by_code = {
             str(row["code"]): row
             for row in eligible.to_dict(orient="records")
