@@ -327,42 +327,62 @@ class ResearchPipeline:
                 return Path(metadata["artifact"]), str(metadata.get("status", "research"))
         return model_root / "missing.joblib", "research"
 
-    def predict(self, *, horizon: int = 5) -> dict[str, Any]:
+    def predict(self, *, horizon: int | None = None) -> dict[str, Any]:
         health_path = self.research_root / "prediction_health" / self.market / f"{self.run_key}-{self.agent}.json"
         try:
-            artifact, status = self._resolve_model(horizon)
-            bundle = load_model_bundle(artifact)
             features = self.store.read_feature_snapshot(self.market, self.as_of)
             latest = features.sort_values("trade_date").groupby("code", as_index=False).tail(1)
-            records = generate_predictions(
-                bundle,
-                latest,
-                as_of=self.as_of,
-                horizon=horizon,
-                regime="unknown",
-                data_quality=1.0,
-                regime_stability=0.5,
-                feature_snapshot_id=f"{self.market}-{self.run_key}",
-                active_status=status if status == "active" else "inactive",
-            )
-            rows = []
-            for record in records:
-                row = asdict(record)
-                row["reasons"] = json.dumps(row["reasons"], ensure_ascii=False)
-                row["invalidation"] = json.dumps(row["invalidation"], ensure_ascii=False)
-                row["metadata"] = json.dumps(row["metadata"], ensure_ascii=False)
-                rows.append(row)
+            rows: list[dict[str, Any]] = []
+            artifacts: dict[str, str] = {}
+            statuses: dict[str, str] = {}
+            failures: list[dict[str, Any]] = []
+            cycle_counts: dict[str, int] = {}
+            target_horizons = (horizon,) if horizon is not None else (3, 5, 10, 20)
+            for target_horizon in target_horizons:
+                try:
+                    artifact, status = self._resolve_model(target_horizon)
+                    bundle = load_model_bundle(artifact)
+                    records = generate_predictions(
+                        bundle,
+                        latest,
+                        as_of=self.as_of,
+                        horizon=target_horizon,
+                        regime="unknown",
+                        data_quality=1.0,
+                        regime_stability=0.5,
+                        feature_snapshot_id=f"{self.market}-{self.run_key}",
+                        active_status=status if status == "active" else "inactive",
+                    )
+                    artifacts[str(target_horizon)] = str(artifact)
+                    statuses[str(target_horizon)] = status
+                    for record in records:
+                        row = asdict(record)
+                        row["reasons"] = json.dumps(row["reasons"], ensure_ascii=False)
+                        row["invalidation"] = json.dumps(row["invalidation"], ensure_ascii=False)
+                        row["metadata"] = json.dumps(row["metadata"], ensure_ascii=False)
+                        rows.append(row)
+                    if status == "shadow":
+                        cycle = ShadowCycleTracker(self._model_root(target_horizon) / "shadow_cycles.json").record(
+                            bundle.model_version,
+                            self.as_of,
+                            {"predictions": len(records), "calibration_quality": bundle.metrics.get("calibration_quality")},
+                        )
+                        cycle_counts[str(target_horizon)] = cycle["count"]
+                except Exception as exc:  # noqa: BLE001 - preserve successful horizons
+                    failures.append({"horizon": target_horizon, "error": str(exc)[:240]})
+            if not rows:
+                raise RuntimeError(f"prediction_models_unavailable:{failures}")
             destination = self.repo_root / "data" / self.market / self.agent / "predictions" / f"{self.run_key}.parquet"
             self.store.write_parquet_atomic(destination, pd.DataFrame(rows))
-            health = {"status": "complete", "predictions": len(rows), "artifact": str(artifact), "active_status": status}
-            if status == "shadow":
-                cycle = ShadowCycleTracker(self._model_root(horizon) / "shadow_cycles.json").record(
-                    bundle.model_version,
-                    self.as_of,
-                    {"predictions": len(rows), "calibration_quality": bundle.metrics.get("calibration_quality")},
-                )
-                health["shadow_cycles"] = cycle["count"]
-                health["shadow_cycles_remaining"] = cycle["remaining"]
+            health = {
+                "status": "partial" if failures else "complete",
+                "predictions": len(rows),
+                "horizons": sorted(int(value) for value in artifacts),
+                "artifacts": artifacts,
+                "active_status": statuses,
+                "failures": failures,
+                "shadow_cycles": cycle_counts,
+            }
         except Exception as exc:  # noqa: BLE001 - trading path remains unchanged
             health = {"status": "fallback", "predictions": 0, "error": str(exc)[:240]}
         write_text_atomic(health_path, json.dumps(health, ensure_ascii=False, indent=2), encoding="utf-8")
