@@ -47,6 +47,25 @@ class ResearchStore:
         frame = pd.read_parquet(self.feature_snapshot_path(market, as_of))
         return self._normalize_identifiers(frame)
 
+    def label_snapshot_path(self, market: str, as_of: str) -> Path:
+        safe_date = str(as_of).replace("-", "")
+        return self.root / "labels" / market / f"{safe_date}.parquet"
+
+    def write_label_snapshot(
+        self,
+        market: str,
+        as_of: str,
+        frame: pd.DataFrame,
+    ) -> Path:
+        return self.write_parquet_atomic(
+            self.label_snapshot_path(market, as_of),
+            self._normalize_identifiers(frame),
+        )
+
+    def read_label_snapshot(self, market: str, as_of: str) -> pd.DataFrame:
+        frame = pd.read_parquet(self.label_snapshot_path(market, as_of))
+        return self._normalize_identifiers(frame)
+
     def write_parquet_atomic(self, path: str | Path, frame: pd.DataFrame) -> Path:
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
