@@ -17,6 +17,7 @@ from ...factor_pipeline import (
     process_factors,
 )
 from ...utils import now_iso, parse_date, safe_float
+from ...research.strategy_ensemble import load_and_attach_predictions
 
 
 @dataclass
@@ -256,6 +257,15 @@ def build_signals(
     if scored.empty:
         raise RuntimeError(f"No candidates left after factor coverage filtering for {scope}")
 
+    agent_id = str(config.get("agent_id") or "codex")
+    scored = load_and_attach_predictions(
+        scored,
+        repo_root=repo_root or _resolve_default_repo_root(),
+        market="a_share",
+        agent=agent_id,
+        as_of=as_of or _date_cls.today().isoformat(),
+        profile="trend" if agent_id == "codex" else "defensive",
+    )
     scored = scored.sort_values("score", ascending=False).reset_index(drop=True)
     initial_selected = scored.head(int(account.get("top_n", 10))).copy()
     initial_selected["account_id"] = account["id"]
