@@ -14,7 +14,13 @@ import numpy as np
 import pandas as pd
 
 from ..utils import write_text_atomic
-from .activation import ModelRegistry, ShadowCycleTracker
+from .activation import (
+    ModelRegistry,
+    ShadowCycleTracker,
+    activation_evidence_from_metrics,
+    evaluate_activation,
+    select_registry_model,
+)
 from .event_study import build_event_study
 from .events import detect_events
 from .labels import build_forward_labels
@@ -301,14 +307,29 @@ class ResearchPipeline:
                 save_model_bundle(bundle, artifact)
                 registry = ModelRegistry(self._model_root(horizon) / "registry.json")
                 state = registry._read()
-                state.setdefault("models", {})[bundle.model_version] = {
-                    "status": "research",
-                    "artifact": str(artifact),
-                    "registered_at": datetime.now(timezone.utc).isoformat(),
-                    "gate_history": [],
-                }
+                model = state.setdefault("models", {}).setdefault(
+                    bundle.model_version,
+                    {"status": "research", "gate_history": []},
+                )
+                model["artifact"] = str(artifact)
+                model.setdefault("registered_at", datetime.now(timezone.utc).isoformat())
                 registry._write(state)
-                trained.append({"horizon": horizon, "model_version": bundle.model_version, "artifact": str(artifact)})
+                gate = None
+                if model.get("status", "research") == "research":
+                    gate = evaluate_activation(
+                        activation_evidence_from_metrics(bundle.metrics),
+                        current_status="research",
+                        target_status="shadow",
+                    )
+                    state = registry.record_gate(bundle.model_version, gate)
+                trained.append({
+                    "horizon": horizon,
+                    "model_version": bundle.model_version,
+                    "artifact": str(artifact),
+                    "status": state["models"][bundle.model_version]["status"],
+                    "gate_passed": gate.passed if gate is not None else None,
+                    "gate_reasons": list(gate.reasons) if gate is not None else [],
+                })
             except Exception as exc:  # noqa: BLE001 - one horizon must not erase others
                 failures.append({"horizon": horizon, "error": str(exc)[:200]})
         return {"status": "complete" if trained else "failed", "trained": trained, "failures": failures}
@@ -318,16 +339,9 @@ class ResearchPipeline:
         registry_path = model_root / "registry.json"
         if registry_path.exists():
             state = json.loads(registry_path.read_text(encoding="utf-8"))
-            champion = state.get("champion_model_version")
-            models = state.get("models") or {}
-            if champion and champion in models:
-                return Path(models[champion]["artifact"]), "active"
-            registered = [item for item in models.items() if item[1].get("registered_at")]
-            if registered:
-                version, metadata = max(registered, key=lambda item: str(item[1]["registered_at"]))
-                return Path(metadata["artifact"]), str(metadata.get("status", "research"))
-            if models:
-                version, metadata = next(reversed(models.items()))
+            selected = select_registry_model(state)
+            if selected is not None:
+                _, metadata = selected
                 return Path(metadata["artifact"]), str(metadata.get("status", "research"))
         return model_root / "missing.joblib", "research"
 
@@ -359,19 +373,13 @@ class ResearchPipeline:
                     )
                     artifacts[str(target_horizon)] = str(artifact)
                     statuses[str(target_horizon)] = status
-                    for record in records:
-                        row = asdict(record)
-                        row["reasons"] = json.dumps(row["reasons"], ensure_ascii=False)
-                        row["invalidation"] = json.dumps(row["invalidation"], ensure_ascii=False)
-                        row["metadata"] = json.dumps(row["metadata"], ensure_ascii=False)
-                        rows.append(row)
-                    if status == "shadow":
-                        cycle = ShadowCycleTracker(self._model_root(target_horizon) / "shadow_cycles.json").record(
-                            bundle.model_version,
-                            self.as_of,
-                            {"predictions": len(records), "calibration_quality": bundle.metrics.get("calibration_quality")},
-                        )
+                    rows.extend(self._prediction_rows(records))
+                    if status == "shadow" and self.agent == "codex":
+                        cycle = self._advance_shadow_cycle(target_horizon, bundle, len(records))
                         cycle_counts[str(target_horizon)] = cycle["count"]
+                        statuses[str(target_horizon)] = cycle["status"]
+                    if self.agent == "codex":
+                        self._run_shadow_challengers(target_horizon, latest, exclude_version=bundle.model_version)
                 except Exception as exc:  # noqa: BLE001 - preserve successful horizons
                     failures.append({"horizon": target_horizon, "error": str(exc)[:240]})
             if not rows:
@@ -391,3 +399,68 @@ class ResearchPipeline:
             health = {"status": "fallback", "predictions": 0, "error": str(exc)[:240]}
         write_text_atomic(health_path, json.dumps(health, ensure_ascii=False, indent=2), encoding="utf-8")
         return {**health, "health_path": str(health_path)}
+
+    @staticmethod
+    def _prediction_rows(records: list) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for record in records:
+            row = asdict(record)
+            row["reasons"] = json.dumps(row["reasons"], ensure_ascii=False)
+            row["invalidation"] = json.dumps(row["invalidation"], ensure_ascii=False)
+            row["metadata"] = json.dumps(row["metadata"], ensure_ascii=False)
+            rows.append(row)
+        return rows
+
+    def _advance_shadow_cycle(self, horizon: int, bundle: Any, prediction_count: int) -> dict[str, Any]:
+        model_root = self._model_root(horizon)
+        cycle = ShadowCycleTracker(model_root / "shadow_cycles.json").record(
+            bundle.model_version,
+            self.as_of,
+            {"predictions": prediction_count, "calibration_quality": bundle.metrics.get("calibration_quality")},
+        )
+        registry = ModelRegistry(model_root / "registry.json")
+        state = registry._read()
+        status = str(((state.get("models") or {}).get(bundle.model_version) or {}).get("status", "shadow"))
+        if cycle["is_new_cycle"] and status == "shadow":
+            report = evaluate_activation(
+                activation_evidence_from_metrics(bundle.metrics, shadow_cycles=cycle["count"]),
+                current_status="shadow",
+                target_status="active",
+            )
+            state = registry.record_gate(bundle.model_version, report)
+            status = str(state["models"][bundle.model_version]["status"])
+        return {**cycle, "status": status}
+
+    def _run_shadow_challengers(self, horizon: int, features: pd.DataFrame, *, exclude_version: str) -> None:
+        model_root = self._model_root(horizon)
+        registry_path = model_root / "registry.json"
+        if not registry_path.exists():
+            return
+        state = json.loads(registry_path.read_text(encoding="utf-8"))
+        candidates = [
+            (version, metadata)
+            for version, metadata in (state.get("models") or {}).items()
+            if version != exclude_version and metadata.get("status") == "shadow"
+        ]
+        if not candidates:
+            return
+        registered = [item for item in candidates if item[1].get("registered_at")]
+        version, metadata = (
+            max(registered, key=lambda item: str(item[1]["registered_at"]))
+            if registered else candidates[-1]
+        )
+        bundle = load_model_bundle(Path(metadata["artifact"]))
+        records = generate_predictions(
+            bundle,
+            features,
+            as_of=self.as_of,
+            horizon=horizon,
+            regime="unknown",
+            data_quality=1.0,
+            regime_stability=0.5,
+            feature_snapshot_id=f"{self.market}-{self.run_key}",
+            active_status="inactive",
+        )
+        destination = self.research_root / "shadow_predictions" / self.market / str(horizon) / version / f"{self.run_key}.parquet"
+        self.store.write_parquet_atomic(destination, pd.DataFrame(self._prediction_rows(records)))
+        self._advance_shadow_cycle(horizon, bundle, len(records))

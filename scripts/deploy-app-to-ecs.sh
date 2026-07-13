@@ -125,6 +125,8 @@ python -m unittest \
   tests.test_check_ecs_timers \
   tests.test_research_storage \
   tests.test_research_technical_features \
+  tests.test_research_activation \
+  tests.test_research_models \
   tests.test_research_pipeline \
   tests.test_research_strategy_ensemble \
   tests.test_dashboard_predictions \

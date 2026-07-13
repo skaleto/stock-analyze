@@ -62,6 +62,13 @@ class OperatorWorkflowDocsTests(unittest.TestCase):
         self.assertIn("不自动修改", combined)
         self.assertIn("top_n", combined)
 
+    def test_prediction_promotion_is_documented_as_automatic_but_gated(self) -> None:
+        runbook = Path("docs/competition-runbook.md").read_text(encoding="utf-8")
+
+        self.assertIn("训练完成后自动执行 `research -> shadow` 门禁", runbook)
+        self.assertIn("第四个有效影子周后自动执行 `shadow -> active` 门禁", runbook)
+        self.assertIn("未通过时保持原状态", runbook)
+
 
 if __name__ == "__main__":
     unittest.main()

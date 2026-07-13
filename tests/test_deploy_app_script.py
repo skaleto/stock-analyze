@@ -61,6 +61,8 @@ class DeployAppScriptTests(unittest.TestCase):
         self.assertIn("tests.test_check_ecs_timers", script)
         self.assertIn("tests.test_prediction_systemd", script)
         self.assertIn("tests.test_prediction_notifications", script)
+        self.assertIn("tests.test_research_activation", script)
+        self.assertIn("tests.test_research_models", script)
         self.assertIn("pip install -r requirements.txt", script)
         self.assertIn("stock-analyze-research.service", script)
         self.assertIn("stock-analyze-market-data.service", script)

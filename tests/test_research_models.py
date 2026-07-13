@@ -64,6 +64,20 @@ class ResearchModelsTest(unittest.TestCase):
         self.assertLess(first.split_dates["train_end"], first.split_dates["calibration_start"])
         self.assertLess(first.split_dates["calibration_end"], first.split_dates["validation_start"])
         self.assertIn("log_loss", first.metrics)
+        self.assertTrue({
+            "feature_coverage",
+            "point_in_time_audit",
+            "oos_predictions",
+            "rank_ic",
+            "icir",
+            "brier_improvement",
+            "hit_rate_uplift",
+            "auc",
+            "net_excess_return",
+            "max_drawdown",
+            "annual_turnover",
+            "ablation_stability",
+        }.issubset(first.metrics))
         self.assertIn(first.calibration_method, {"sigmoid", "isotonic"})
 
     def test_model_artifact_has_auditable_metadata(self):

@@ -13,6 +13,7 @@ describe("ModelHealthPanel", () => {
             model_version: `m${horizon}`,
             status: "research",
             metrics: { log_loss: 1.05 + horizon / 1000, brier_score: 0.64, calibration_quality: 0.02 },
+            gate_reasons: ["auc", "brier_improvement"],
             shadow_cycles: 0,
             shadow_cycles_remaining: 4,
           })),
@@ -31,5 +32,6 @@ describe("ModelHealthPanel", () => {
     for (const horizon of [3, 5, 10, 20]) expect(screen.getByText(`${horizon}日`)).toBeInTheDocument();
     expect(screen.getAllByText("0/4")).toHaveLength(4);
     expect(screen.getByText("未接入文本源 3")).toBeInTheDocument();
+    expect(screen.getByText("待补证据：区分能力、概率校准")).toBeInTheDocument();
   });
 });
