@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import html
+import hashlib
 import math
 from dataclasses import dataclass
 from datetime import datetime
@@ -1086,6 +1087,10 @@ def build_dashboard_detail_data(
     else:
         lookthrough = {}
     research = _read_qdii_research(root, agent) if market == "cn_qdii_etf" else {}
+    prediction_summary = _read_prediction_summary(root, market, agent)
+    regimes = _read_regime_summary(root, market)
+    model_health = _read_model_health(root, market)
+    source_health = _read_research_source_health(root, market)
     payload = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "market": market,
@@ -1096,6 +1101,11 @@ def build_dashboard_detail_data(
         "selection": selection,
         "lookthrough": lookthrough,
         "research": research,
+        "prediction_summary": prediction_summary,
+        "regimes": regimes,
+        "alerts": _prediction_alerts(prediction_summary),
+        "model_health": model_health,
+        "source_health": source_health,
         "nav": _read_nav_detail(paths.data_dir, market),
         "activity": {"summary": {"total": len(activity)}, "rows": activity[:limit]},
         "orders": {
@@ -1123,6 +1133,119 @@ def build_dashboard_detail_data(
         },
     }
     return _json_safe(payload)
+
+
+def _decode_json_list(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return [value]
+    return [str(item) for item in parsed] if isinstance(parsed, list) else [str(parsed)]
+
+
+def _read_prediction_summary(root: Path, market: str, agent: str) -> dict[str, Any]:
+    directory = root / "data" / market / agent / "predictions"
+    files = sorted(directory.glob("*.parquet")) if directory.exists() else []
+    if not files:
+        return {"status": "unavailable", "as_of": None, "horizons": [], "rows": []}
+    try:
+        frame = pd.read_parquet(files[-1])
+    except Exception as exc:  # noqa: BLE001
+        raise DashboardDataError("prediction_artifact") from exc
+    required = {"code", "horizon", "p_up", "p_flat", "p_down", "confidence"}
+    if required.difference(frame.columns):
+        raise DashboardDataError("prediction_artifact_schema")
+    names = _read_fund_name_lookup(root, market) if market == "cn_qdii_etf" else {}
+    rows: list[dict[str, Any]] = []
+    for raw in frame.to_dict(orient="records"):
+        code = str(raw.get("code") or "").split(".", 1)[0]
+        if code.isdigit():
+            code = code.zfill(6)
+        row = dict(raw)
+        row["code"] = code
+        row["name"] = names.get(code, code)
+        row["reasons"] = _decode_json_list(row.get("reasons"))
+        row["invalidation"] = _decode_json_list(row.get("invalidation"))
+        rows.append(row)
+    horizons = sorted({int(value) for value in frame["horizon"].dropna().tolist()})
+    as_of = next((str(row.get("as_of")) for row in reversed(rows) if row.get("as_of")), files[-1].stem)
+    return {"status": "available", "as_of": as_of, "horizons": horizons, "rows": rows}
+
+
+def _read_regime_summary(root: Path, market: str) -> dict[str, Any]:
+    directory = root / "data" / "research" / "regimes" / market
+    files = sorted(directory.glob("*.parquet")) if directory.exists() else []
+    if not files:
+        return {"status": "unavailable", "current": None, "history": []}
+    try:
+        frame = pd.read_parquet(files[-1])
+    except Exception as exc:  # noqa: BLE001
+        raise DashboardDataError("regime_artifact") from exc
+    rows = frame.tail(90).to_dict(orient="records")
+    return {"status": "available", "current": rows[-1] if rows else None, "history": rows}
+
+
+def _read_model_health(root: Path, market: str) -> dict[str, Any]:
+    model_root = root / "data" / "research" / "models" / market
+    metadata_files = sorted(model_root.glob("*/*.metadata.json")) if model_root.exists() else []
+    if not metadata_files:
+        return {"status": "unavailable", "models": []}
+    models: list[dict[str, Any]] = []
+    for path in metadata_files:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise DashboardDataError("model_metadata") from exc
+        models.append(payload)
+    return {"status": "available", "models": models}
+
+
+def _read_research_source_health(root: Path, market: str) -> list[dict[str, Any]]:
+    rows = [
+        {"source": source, "status": "source_unavailable", "rows": 0}
+        for source in ("news", "announcement", "policy")
+    ]
+    raw_root = root / "data" / "research" / "raw" / market
+    health_files = sorted(raw_root.glob("*/source_health.parquet")) if raw_root.exists() else []
+    if health_files:
+        try:
+            source_rows = pd.read_parquet(health_files[-1]).to_dict(orient="records")
+        except Exception as exc:  # noqa: BLE001
+            raise DashboardDataError("source_health_artifact") from exc
+        rows.extend(source_rows)
+    return rows
+
+
+def _prediction_alerts(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    alerts: list[dict[str, Any]] = []
+    if summary.get("status") != "available":
+        return alerts
+    for row in summary.get("rows") or []:
+        confidence = safe_float(row.get("confidence")) or 0.0
+        p_up = safe_float(row.get("p_up")) or 0.0
+        p_down = safe_float(row.get("p_down")) or 0.0
+        if confidence < 0.70 or max(p_up, p_down) < 0.55:
+            continue
+        alert_type = "opportunity" if p_up >= p_down else "downside"
+        probability = p_up if alert_type == "opportunity" else p_down
+        title = f"{row.get('name') or row.get('code')} {'上行机会' if alert_type == 'opportunity' else '下行风险'}"
+        raw_id = f"{summary.get('as_of')}|{row.get('code')}|{row.get('horizon')}|{alert_type}"
+        alerts.append(
+            {
+                "id": hashlib.sha256(raw_id.encode("utf-8")).hexdigest()[:16],
+                "type": alert_type,
+                "severity": "high" if confidence >= 0.80 else "medium",
+                "title": title,
+                "detail": f"{row.get('horizon')}日概率 {probability:.1%} · 可信度 {confidence:.1%}",
+                "code": row.get("code"),
+                "horizon": row.get("horizon"),
+            }
+        )
+    return alerts
 
 
 def build_dashboard_instrument_data(
@@ -1188,6 +1311,11 @@ def build_dashboard_instrument_data(
         if market == "cn_qdii_etf"
         else None
     )
+    prediction_summary = _read_prediction_summary(root, market, agent)
+    predictions = [
+        row for row in prediction_summary.get("rows") or []
+        if str(row.get("code") or "").split(".", 1)[0].zfill(6) == digits
+    ]
     return _json_safe(
         {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -1199,9 +1327,27 @@ def build_dashboard_instrument_data(
             "candles": candles,
             "metrics": metrics,
             "related_trades": list(reversed(related[-50:])),
+            "predictions": predictions,
+            "event_evidence": _read_instrument_event_evidence(root, market, digits),
+            "source_health": _read_research_source_health(root, market),
             "warning": warning,
         }
     )
+
+
+def _read_instrument_event_evidence(root: Path, market: str, code: str) -> list[dict[str, Any]]:
+    directory = root / "data" / "research" / "events" / market
+    files = sorted(directory.glob("*.parquet")) if directory.exists() else []
+    if not files:
+        return []
+    try:
+        frame = pd.read_parquet(files[-1])
+    except Exception as exc:  # noqa: BLE001
+        raise DashboardDataError("event_artifact") from exc
+    if "code" not in frame.columns:
+        raise DashboardDataError("event_artifact_schema")
+    normalized = frame["code"].astype(str).str.split(".").str[0].str.zfill(6)
+    return frame.loc[normalized == code].tail(30).to_dict(orient="records")
 
 
 def _instrument_name(root: Path, market: str, code: str) -> str:

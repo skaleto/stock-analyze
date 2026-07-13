@@ -322,6 +322,65 @@ export type InstrumentMetric = {
   format: "percent" | "money" | "number" | string;
 };
 
+export type PredictionRow = {
+  as_of?: string;
+  code: string;
+  name?: string;
+  horizon: number;
+  p_up: number;
+  p_flat: number;
+  p_down: number;
+  confidence: number;
+  expected_absolute_return?: number | null;
+  expected_excess_return?: number | null;
+  return_q10?: number | null;
+  return_q50?: number | null;
+  return_q90?: number | null;
+  regime?: string;
+  reasons?: string[];
+  invalidation?: string[];
+  model_version?: string;
+  active_status?: string;
+};
+
+export type PredictionSummary = {
+  status: "available" | "unavailable" | string;
+  as_of?: string | null;
+  horizons: number[];
+  rows: PredictionRow[];
+};
+
+export type PredictionAlert = {
+  id: string;
+  type: "opportunity" | "downside" | "data" | "model";
+  severity: "high" | "medium" | "low";
+  title: string;
+  detail: string;
+  code?: string;
+  horizon?: number;
+};
+
+export type ModelHealth = {
+  status: "available" | "unavailable" | string;
+  models: {
+    model_version?: string;
+    horizon?: number;
+    calibration_method?: string;
+    use_boosting?: boolean;
+    sample_support?: number;
+    metrics?: Record<string, number>;
+    split_dates?: Record<string, string>;
+  }[];
+};
+
+export type RegimeSummary = {
+  status: "available" | "unavailable" | string;
+  current?: Record<string, unknown> | null;
+  history?: Record<string, unknown>[];
+};
+
+export type SourceHealth = { source: string; status: string; rows?: number; failed?: boolean; error?: string };
+
 export type InstrumentDetail = {
   generated_at: string;
   market: string;
@@ -338,6 +397,9 @@ export type InstrumentDetail = {
   candles: Candle[];
   metrics: InstrumentMetric[];
   related_trades: OrderRow[];
+  predictions?: PredictionRow[];
+  event_evidence?: Record<string, unknown>[];
+  source_health?: SourceHealth[];
   warning?: string | null;
 };
 
@@ -351,6 +413,11 @@ export type DashboardDetail = {
   selection?: SelectionSnapshot;
   lookthrough?: PortfolioLookthrough | Record<string, never>;
   research?: QDIIResearch;
+  prediction_summary?: PredictionSummary;
+  regimes?: RegimeSummary;
+  alerts?: PredictionAlert[];
+  model_health?: ModelHealth;
+  source_health?: SourceHealth[];
   nav: {
     latest: NavPoint | null;
     series: NavPoint[];
