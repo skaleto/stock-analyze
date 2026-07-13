@@ -347,6 +347,7 @@ export type PredictionSummary = {
   status: "available" | "unavailable" | string;
   as_of?: string | null;
   horizons: number[];
+  total?: number;
   rows: PredictionRow[];
 };
 
@@ -459,3 +460,35 @@ export type DashboardDetail = {
     markdown: string;
   };
 };
+
+export type DashboardOverview = {
+  generated_at: string;
+  market: string;
+  market_label: string;
+  currency: string;
+  agent: string;
+  strategy: StrategyProfile;
+  latest_nav: NavPoint | null;
+};
+
+export type DashboardPerformance = Pick<DashboardDetail, "generated_at" | "market" | "agent" | "nav">;
+
+export type DashboardPortfolio = Pick<
+  DashboardDetail,
+  "generated_at" | "market" | "agent" | "activity" | "orders" | "positions" | "trades"
+>;
+
+export type DashboardPredictions = Pick<
+  DashboardDetail,
+  "generated_at" | "market" | "agent" | "prediction_summary" | "alerts" | "regimes" | "model_health" | "source_health"
+>;
+
+export type DashboardResearch = Pick<
+  DashboardDetail,
+  "generated_at" | "market" | "agent" | "selection" | "lookthrough" | "research"
+>;
+
+export type DashboardOperations = Pick<
+  DashboardDetail,
+  "generated_at" | "market" | "agent" | "runs" | "weekly_report"
+>;

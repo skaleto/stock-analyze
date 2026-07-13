@@ -96,6 +96,15 @@ class DashboardRoutesTableTests(unittest.TestCase):
         self.assertTrue(_is_dashboard_api_path("/api/dashboard/summary.json"))
         self.assertTrue(_is_dashboard_api_path("/api/dashboard.json"))
         self.assertTrue(_is_dashboard_api_path("/api/dashboard/instrument.json"))
+        for resource in (
+            "overview",
+            "performance",
+            "portfolio",
+            "predictions",
+            "research",
+            "operations",
+        ):
+            self.assertTrue(_is_dashboard_api_path(f"/api/dashboard/{resource}.json"))
         self.assertFalse(_is_dashboard_api_path("/pro.html"))
 
 
@@ -143,6 +152,9 @@ class HandlerRewriteTests(unittest.TestCase):
         import http.server
 
         self.assertTrue(issubclass(_DashboardRequestHandler, http.server.SimpleHTTPRequestHandler))
+
+    def test_handler_uses_persistent_http_connections(self) -> None:
+        self.assertEqual(_DashboardRequestHandler.protocol_version, "HTTP/1.1")
 
     def _serve_api(self, root: Path, query: str) -> tuple[int, dict]:
         reports = root / "reports"
