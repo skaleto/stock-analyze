@@ -150,6 +150,7 @@ class ResearchPipeline:
             raise FileNotFoundError(f"research_history_cache_empty:{self._cache_dir()}")
         featured = pd.concat(feature_parts, ignore_index=True)
         source_count = 0
+        source_frames: dict[str, pd.DataFrame] = {}
         if not self.offline:
             available_codes = sorted(featured["code"].dropna().astype(str).unique())
             source_codes = [
@@ -157,6 +158,7 @@ class ResearchPipeline:
                 *[code for code in available_codes if code not in full_history_codes],
             ]
             sources = self._collect_sources(source_codes)
+            source_frames = sources.frames
             raw_root = self.research_root / "raw" / self.market / self.run_key
             for name, frame in sources.frames.items():
                 if frame.empty:
@@ -165,20 +167,24 @@ class ResearchPipeline:
                 source_count += 1
             if not sources.health.empty:
                 self.store.write_parquet_atomic(raw_root / "source_health.parquet", sources.health)
+        else:
+            source_frames = self._load_persisted_source_frames()
+            source_count = sum(not frame.empty for frame in source_frames.values())
+        if source_frames:
             if self.market == "a_share":
-                fundamental_history = build_fundamental_history(sources.frames)
+                fundamental_history = build_fundamental_history(source_frames)
                 featured = attach_point_in_time_features(featured, fundamental_history)
                 featured = attach_industry_membership(
                     featured,
-                    sources.frames.get("index_member_all", pd.DataFrame()),
+                    source_frames.get("index_member_all", pd.DataFrame()),
                 )
             else:
-                featured = attach_qdii_point_in_time_features(featured, sources.frames)
+                featured = attach_qdii_point_in_time_features(featured, source_frames)
             regime_sources = self._load_regime_source_frames()
-            regime_sources.update(sources.frames)
+            regime_sources.update(source_frames)
             market_context = build_regime_components(regime_sources, featured["trade_date"])
             featured = featured.merge(market_context, on="trade_date", how="left")
-            source_features = build_source_features(sources.frames)
+            source_features = build_source_features(source_frames)
             if not source_features.empty:
                 source_features = source_features.set_index("code")
                 latest_indices = featured.sort_values("trade_date").groupby("code").tail(1).index
@@ -278,6 +284,23 @@ class ResearchPipeline:
             as_of=self.as_of,
             codes=[ts_code_for_stock(code) for code in codes[:40]],
         )
+
+    def _load_persisted_source_frames(self) -> dict[str, pd.DataFrame]:
+        market_root = self.research_root / "raw" / self.market
+        if not market_root.exists():
+            return {}
+        runs = sorted(
+            path for path in market_root.iterdir()
+            if path.is_dir() and path.name.isdigit() and path.name <= self.run_key
+        )
+        if not runs:
+            return {}
+        frames: dict[str, pd.DataFrame] = {}
+        for path in runs[-1].glob("*.parquet"):
+            if path.stem == "source_health":
+                continue
+            frames[path.stem] = pd.read_parquet(path)
+        return frames
 
     def _artifact_path(self, name: str) -> Path:
         return self.research_root / name / self.market / f"{self.run_key}.parquet"
