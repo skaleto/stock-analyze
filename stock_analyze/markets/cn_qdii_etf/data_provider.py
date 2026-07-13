@@ -36,6 +36,7 @@ from .universe import (
 from ..a_share.data_provider import CacheMiss, TushareTokenMissing
 from ..a_share.data_provider.base import TUSHARE_TOKEN_ENV
 from ...utils import read_json, write_dataframe_csv_atomic, write_json
+from ...research.source_features import SourceCollection, collect_source_calls
 
 
 MAX_NAV_AGE_DAYS = 7
@@ -178,6 +179,29 @@ class CNQDIETFProvider:
         if self._pro_client is None:
             self._pro_client = self._build_pro_client(self._token)
         return self._pro_client
+
+    def collect_research_sources(
+        self,
+        codes: list[str],
+        *,
+        observed_at: str | None = None,
+    ) -> SourceCollection:
+        """Collect fund, global-index, and FX frames used by QDII research."""
+
+        as_of_key = _yyyymmdd(self.as_of)
+        end = datetime.strptime(as_of_key, "%Y%m%d").date()
+        start_key = (end - timedelta(days=370)).strftime("%Y%m%d")
+        observed = observed_at or datetime.now().astimezone().isoformat(timespec="seconds")
+        calls = {
+            "fund_nav": [lambda code=normalize_ts_code(code): self._fund_nav(code, as_of_key) for code in codes],
+            "fund_share": [lambda code=normalize_ts_code(code): self._fund_share(code, as_of_key) for code in codes],
+            "index_global": [
+                lambda code=code: self.pro.index_global(ts_code=code, start_date=start_key, end_date=as_of_key)
+                for code in ("SPX", "IXIC", "HSI")
+            ],
+            "fx_daily": [lambda: self.pro.fx_daily(ts_code="USDCNH.FXCM", start_date=start_key, end_date=as_of_key)],
+        }
+        return collect_source_calls(calls, observed_at=observed)
 
     def _build_pro_client(self, token: str | None):
         resolved = token or os.environ.get(TUSHARE_TOKEN_ENV)
