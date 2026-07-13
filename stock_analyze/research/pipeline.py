@@ -6,7 +6,7 @@ import json
 import hashlib
 import re
 from dataclasses import asdict
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -304,6 +304,7 @@ class ResearchPipeline:
                 state.setdefault("models", {})[bundle.model_version] = {
                     "status": "research",
                     "artifact": str(artifact),
+                    "registered_at": datetime.now(timezone.utc).isoformat(),
                     "gate_history": [],
                 }
                 registry._write(state)
@@ -321,9 +322,12 @@ class ResearchPipeline:
             models = state.get("models") or {}
             if champion and champion in models:
                 return Path(models[champion]["artifact"]), "active"
-            candidates = sorted(models.items(), key=lambda item: item[0])
-            if candidates:
-                version, metadata = candidates[-1]
+            registered = [item for item in models.items() if item[1].get("registered_at")]
+            if registered:
+                version, metadata = max(registered, key=lambda item: str(item[1]["registered_at"]))
+                return Path(metadata["artifact"]), str(metadata.get("status", "research"))
+            if models:
+                version, metadata = next(reversed(models.items()))
                 return Path(metadata["artifact"]), str(metadata.get("status", "research"))
         return model_root / "missing.joblib", "research"
 

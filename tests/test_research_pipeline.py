@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -86,6 +87,25 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(load.call_count, 4)
         self.assertEqual(set(output["horizon"]), {3, 5, 10, 20})
         self.assertEqual(result["predictions"], 4)
+
+    def test_resolve_model_prefers_latest_registration_not_hash_sort(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10")
+            model_root = root / "data" / "research" / "models" / "a_share" / "3"
+            model_root.mkdir(parents=True)
+            registry = {
+                "models": {
+                    "f999": {"status": "research", "artifact": str(model_root / "older.joblib")},
+                    "a111": {"status": "research", "artifact": str(model_root / "newer.joblib")},
+                }
+            }
+            (model_root / "registry.json").write_text(json.dumps(registry), encoding="utf-8")
+
+            artifact, status = pipeline._resolve_model(3)
+
+        self.assertEqual(artifact.name, "newer.joblib")
+        self.assertEqual(status, "research")
 
     def test_online_prepare_persists_normalized_source_frames(self):
         with tempfile.TemporaryDirectory() as tmp:
