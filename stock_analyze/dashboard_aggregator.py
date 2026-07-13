@@ -1192,10 +1192,12 @@ def _read_regime_summary(root: Path, market: str) -> dict[str, Any]:
         return {"status": "available", "current": rows[-1] if rows else None, "history": rows, "industries": []}
     market_frame = frame.loc[frame["scope"].eq("market")].sort_values("trade_date")
     industry_frame = frame.loc[frame["scope"].astype("string").str.startswith("industry:")]
-    industries = (
-        industry_frame.sort_values("trade_date").groupby("scope", as_index=False, sort=True).tail(1).head(6).to_dict(orient="records")
-        if not industry_frame.empty else []
-    )
+    if not industry_frame.empty:
+        industry_latest = industry_frame.sort_values("trade_date").groupby("scope", as_index=False, sort=True).tail(1)
+        industry_latest["_size"] = pd.to_numeric(industry_latest.get("instruments"), errors="coerce").fillna(0.0)
+        industries = industry_latest.sort_values(["_size", "scope"], ascending=[False, True]).drop(columns="_size").head(6).to_dict(orient="records")
+    else:
+        industries = []
     history = market_frame.tail(90).to_dict(orient="records")
     return {
         "status": "available",
