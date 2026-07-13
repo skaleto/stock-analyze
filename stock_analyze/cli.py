@@ -5,6 +5,8 @@ import http.server
 import json
 import socketserver
 import sys
+import time
+import uuid
 from datetime import date
 from functools import partial
 from pathlib import Path
@@ -1539,10 +1541,23 @@ def _is_dashboard_api_path(path: str) -> bool:
         "/api/dashboard.json",
         "/api/dashboard/detail.json",
         "/api/dashboard/instrument.json",
+        "/api/dashboard/overview.json",
+        "/api/dashboard/performance.json",
+        "/api/dashboard/portfolio.json",
+        "/api/dashboard/predictions.json",
+        "/api/dashboard/research.json",
+        "/api/dashboard/operations.json",
     }
 
 
 def _dashboard_api_error_response(exc: Exception) -> tuple[int, dict[str, str]]:
+    from .dashboard_http import InvalidDashboardQuery
+
+    if isinstance(exc, InvalidDashboardQuery):
+        return 400, {
+            "error": "invalid_query",
+            "message": str(exc),
+        }
     if isinstance(exc, competition.UnknownMarket):
         return 400, {
             "error": "unknown_market",
@@ -1587,6 +1602,11 @@ class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
     unchanged.
     """
 
+    from .dashboard_http import DashboardResponseCache
+
+    protocol_version = "HTTP/1.1"
+    _response_cache = DashboardResponseCache(ttl_seconds=15)
+
     def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
         # Strip query / fragment for routing decisions; preserve them when
         # rewriting so deep links keep their parameters.
@@ -1600,46 +1620,128 @@ class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
         super().do_GET()
 
     def _serve_dashboard_api(self, path: str, query: str) -> None:
+        from .dashboard_http import InvalidDashboardQuery, build_http_response
+
         repo_root = Path(self.directory).resolve().parent
+        request_started = time.perf_counter()
+        headers = getattr(self, "headers", {})
+        request_id = headers.get("X-Request-ID") or uuid.uuid4().hex[:16]
         try:
-            if path in {"/api/dashboard/summary.json", "/api/dashboard.json"}:
-                from .dashboard_aggregator import build_dashboard_summary_data
+            params = parse_qs(query, keep_blank_values=False)
+            canonical_path = (
+                "/api/dashboard/summary.json"
+                if path == "/api/dashboard.json"
+                else path
+            )
+            cache_key = json.dumps(
+                {
+                    "root": str(repo_root),
+                    "path": canonical_path,
+                    "query": sorted((key, tuple(values)) for key, values in params.items()),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
 
-                payload = build_dashboard_summary_data(repo_root=repo_root, markets=list(competition.MARKETS))
-            elif path == "/api/dashboard/detail.json":
-                from .dashboard_aggregator import build_dashboard_detail_data
+            def build_payload() -> dict:
+                if canonical_path == "/api/dashboard/summary.json":
+                    from .dashboard_aggregator import build_dashboard_summary_data
 
-                params = parse_qs(query, keep_blank_values=False)
+                    return build_dashboard_summary_data(
+                        repo_root=repo_root,
+                        markets=list(competition.MARKETS),
+                    )
                 market = (params.get("market") or ["a_share"])[0]
                 agent = (params.get("agent") or ["codex"])[0]
-                payload = build_dashboard_detail_data(repo_root=repo_root, market=market, agent=agent)
-            else:
-                from .dashboard_aggregator import build_dashboard_instrument_data
+                if canonical_path == "/api/dashboard/detail.json":
+                    from .dashboard_aggregator import build_dashboard_detail_data
 
-                params = parse_qs(query, keep_blank_values=False)
-                market = (params.get("market") or ["a_share"])[0]
-                agent = (params.get("agent") or ["codex"])[0]
-                code = (params.get("code") or [""])[0]
-                payload = build_dashboard_instrument_data(
-                    repo_root=repo_root,
-                    market=market,
-                    agent=agent,
-                    code=code,
+                    return build_dashboard_detail_data(
+                        repo_root=repo_root,
+                        market=market,
+                        agent=agent,
+                    )
+                if canonical_path == "/api/dashboard/instrument.json":
+                    from .dashboard_aggregator import build_dashboard_instrument_data
+
+                    code = (params.get("code") or [""])[0]
+                    return build_dashboard_instrument_data(
+                        repo_root=repo_root,
+                        market=market,
+                        agent=agent,
+                        code=code,
+                    )
+                from .dashboard_api import (
+                    build_dashboard_operations_data,
+                    build_dashboard_overview_data,
+                    build_dashboard_performance_data,
+                    build_dashboard_portfolio_data,
+                    build_dashboard_predictions_data,
+                    build_dashboard_research_data,
                 )
-            raw = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
-            self.send_response(200)
+
+                builders = {
+                    "/api/dashboard/overview.json": build_dashboard_overview_data,
+                    "/api/dashboard/performance.json": build_dashboard_performance_data,
+                    "/api/dashboard/portfolio.json": build_dashboard_portfolio_data,
+                    "/api/dashboard/research.json": build_dashboard_research_data,
+                    "/api/dashboard/operations.json": build_dashboard_operations_data,
+                }
+                if canonical_path == "/api/dashboard/predictions.json":
+                    raw_limit = (params.get("limit_per_horizon") or ["12"])[0]
+                    try:
+                        limit = int(raw_limit)
+                    except ValueError as exc:
+                        raise InvalidDashboardQuery(
+                            "limit_per_horizon must be an integer"
+                        ) from exc
+                    return build_dashboard_predictions_data(
+                        repo_root=repo_root,
+                        market=market,
+                        agent=agent,
+                        limit_per_horizon=limit,
+                    )
+                builder = builders[canonical_path]
+                return builder(repo_root=repo_root, market=market, agent=agent)
+
+            entry, cache_status = self._response_cache.get_or_build(
+                cache_key,
+                build_payload,
+            )
+            elapsed_ms = (time.perf_counter() - request_started) * 1000.0
+            response = build_http_response(
+                entry,
+                accept_encoding=headers.get("Accept-Encoding", ""),
+                if_none_match=headers.get("If-None-Match"),
+                cache_status=cache_status,
+                request_id=request_id,
+                elapsed_ms=elapsed_ms,
+            )
+            self.send_response(response.status)
+            for name, value in response.headers.items():
+                self.send_header(name, value)
+            self.end_headers()
+            if response.body:
+                self.wfile.write(response.body)
+            return
         except Exception as exc:  # noqa: BLE001
             status, error_payload = _dashboard_api_error_response(exc)
             raw = json.dumps(
                 error_payload,
                 ensure_ascii=False,
+                separators=(",", ":"),
             ).encode("utf-8")
             self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("X-Request-ID", request_id)
+            self.send_header(
+                "Server-Timing",
+                f"app;dur={(time.perf_counter() - request_started) * 1000.0:.1f}",
+            )
+            self.end_headers()
+            self.wfile.write(raw)
 
 
 class _DashboardHTTPServer(socketserver.ThreadingTCPServer):

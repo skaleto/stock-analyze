@@ -1149,7 +1149,14 @@ def _decode_json_list(value: Any) -> list[str]:
     return [str(item) for item in parsed] if isinstance(parsed, list) else [str(parsed)]
 
 
-def _read_prediction_summary(root: Path, market: str, agent: str) -> dict[str, Any]:
+def _read_prediction_summary(
+    root: Path,
+    market: str,
+    agent: str,
+    *,
+    code: str | None = None,
+    limit_per_horizon: int | None = None,
+) -> dict[str, Any]:
     directory = root / "data" / market / agent / "predictions"
     files = sorted(directory.glob("*.parquet")) if directory.exists() else []
     if not files:
@@ -1161,6 +1168,23 @@ def _read_prediction_summary(root: Path, market: str, agent: str) -> dict[str, A
     required = {"code", "horizon", "p_up", "p_flat", "p_down", "confidence"}
     if required.difference(frame.columns):
         raise DashboardDataError("prediction_artifact_schema")
+    if code:
+        digits = str(code).split(".", 1)[0].zfill(6)
+        frame = frame.loc[
+            frame["code"].astype("string").str.split(".").str[0].str.zfill(6).eq(digits)
+        ]
+    total = int(len(frame))
+    horizons = sorted({int(value) for value in frame["horizon"].dropna().tolist()})
+    if limit_per_horizon is not None and not frame.empty:
+        frame = frame.assign(
+            _dashboard_confidence=pd.to_numeric(frame["confidence"], errors="coerce").fillna(-1.0)
+        )
+        frame = (
+            frame.sort_values(["horizon", "_dashboard_confidence"], ascending=[True, False])
+            .groupby("horizon", sort=True, as_index=False)
+            .head(limit_per_horizon)
+            .drop(columns="_dashboard_confidence")
+        )
     names = _read_fund_name_lookup(root, market) if market == "cn_qdii_etf" else {}
     rows: list[dict[str, Any]] = []
     for raw in frame.to_dict(orient="records"):
@@ -1173,9 +1197,14 @@ def _read_prediction_summary(root: Path, market: str, agent: str) -> dict[str, A
         row["reasons"] = _decode_json_list(row.get("reasons"))
         row["invalidation"] = _decode_json_list(row.get("invalidation"))
         rows.append(row)
-    horizons = sorted({int(value) for value in frame["horizon"].dropna().tolist()})
     as_of = next((str(row.get("as_of")) for row in reversed(rows) if row.get("as_of")), files[-1].stem)
-    return {"status": "available", "as_of": as_of, "horizons": horizons, "rows": rows}
+    return {
+        "status": "available",
+        "as_of": as_of,
+        "horizons": horizons,
+        "total": total,
+        "rows": rows,
+    }
 
 
 def _read_regime_summary(root: Path, market: str) -> dict[str, Any]:
@@ -1359,7 +1388,7 @@ def build_dashboard_instrument_data(
         if market == "cn_qdii_etf"
         else None
     )
-    prediction_summary = _read_prediction_summary(root, market, agent)
+    prediction_summary = _read_prediction_summary(root, market, agent, code=digits)
     predictions = [
         row for row in prediction_summary.get("rows") or []
         if str(row.get("code") or "").split(".", 1)[0].zfill(6) == digits
@@ -1504,15 +1533,16 @@ def build_dashboard_summary_data(
                 },
             },
         }
+    from .dashboard_api import build_dashboard_comparison_input_data
+
     market_payloads: list[dict[str, Any]] = []
     for market in selected_markets:
         agent_paths = paths_by_market.get(market, {})
         details = {
-            agent: build_dashboard_detail_data(
+            agent: build_dashboard_comparison_input_data(
                 repo_root=root,
                 market=market,
                 agent=agent,
-                limit=100_000,
             )
             for agent in selected_agents
             if agent in agent_paths

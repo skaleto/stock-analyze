@@ -265,6 +265,7 @@ const aShareDetail = {
   market_label: "A股",
   nav: {
     ...detailPayload.nav,
+    benchmark_label: "沪深300",
     latest: {
       ...detailPayload.nav.latest,
       benchmark_code: "000300.SH"
@@ -292,6 +293,59 @@ function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), { status });
 }
 
+function resourcePayload(url: string, detail = detailPayload): unknown {
+  if (url.includes("/overview.json")) return {
+    generated_at: detail.generated_at,
+    market: detail.market,
+    market_label: detail.market_label,
+    currency: detail.currency,
+    agent: detail.agent,
+    strategy: detail.strategy,
+    latest_nav: detail.nav.latest,
+  };
+  if (url.includes("/performance.json")) return {
+    generated_at: detail.generated_at,
+    market: detail.market,
+    agent: detail.agent,
+    nav: detail.nav,
+  };
+  if (url.includes("/portfolio.json")) return {
+    generated_at: detail.generated_at,
+    market: detail.market,
+    agent: detail.agent,
+    activity: detail.activity,
+    orders: detail.orders,
+    positions: detail.positions,
+    trades: detail.trades,
+  };
+  if (url.includes("/predictions.json")) return {
+    generated_at: detail.generated_at,
+    market: detail.market,
+    agent: detail.agent,
+    prediction_summary: { status: "unavailable", horizons: [], rows: [] },
+    alerts: [],
+    regimes: { status: "unavailable", history: [], industries: [] },
+    model_health: { status: "unavailable", models: [] },
+    source_health: [],
+  };
+  if (url.includes("/research.json")) return {
+    generated_at: detail.generated_at,
+    market: detail.market,
+    agent: detail.agent,
+    selection: detail.selection,
+    lookthrough: detail.lookthrough,
+    research: {},
+  };
+  if (url.includes("/operations.json")) return {
+    generated_at: detail.generated_at,
+    market: detail.market,
+    agent: detail.agent,
+    runs: detail.runs,
+    weekly_report: detail.weekly_report,
+  };
+  throw new Error(`unexpected resource url: ${url}`);
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => {
@@ -305,19 +359,17 @@ afterEach(() => {
 });
 
 describe("Dashboard app", () => {
-  it("loads summary and detail data for the selected market agent pair", async () => {
-    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+  it("loads independent dashboard resources without the legacy detail endpoint", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("/api/dashboard/summary.json")) {
         return Promise.resolve(new Response(JSON.stringify(summaryPayload), { status: 200 }));
       }
-      if (url.includes("/api/dashboard/detail.json")) {
-        return Promise.resolve(new Response(JSON.stringify(detailPayload), { status: 200 }));
-      }
       if (url.includes("/api/dashboard/instrument.json")) {
         return Promise.resolve(jsonResponse(instrumentPayload));
       }
-      return Promise.reject(new Error(`unexpected url: ${url}`));
+      expect(init?.cache).toBe("no-cache");
+      return Promise.resolve(jsonResponse(resourcePayload(url)));
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -348,6 +400,10 @@ describe("Dashboard app", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "刷新 dashboard" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/dashboard/summary.json", expect.anything()));
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/detail.json"))).toBe(false);
+    for (const resource of ["overview", "performance", "portfolio", "predictions", "research", "operations"]) {
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes(`/${resource}.json`))).toBe(true);
+    }
   });
 
   it("opens an order row with Enter and closes the dialog with Escape", async () => {
@@ -355,7 +411,7 @@ describe("Dashboard app", () => {
       const url = String(input);
       if (url.includes("summary")) return Promise.resolve(jsonResponse(summaryPayload));
       if (url.includes("instrument")) return Promise.resolve(jsonResponse(instrumentPayload));
-      return Promise.resolve(jsonResponse(detailPayload));
+      return Promise.resolve(jsonResponse(resourcePayload(url)));
     }));
     const user = userEvent.setup();
     render(<App />);
@@ -377,13 +433,14 @@ describe("Dashboard app", () => {
     await waitFor(() => expect(row).toHaveFocus());
   });
 
-  it("ignores an older detail response after the market changes", async () => {
-    const oldDetail = deferred<Response>();
+  it("ignores an older resource response after the market changes", async () => {
+    const oldPortfolio = deferred<Response>();
     vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("summary")) return Promise.resolve(jsonResponse(multiMarketSummary));
-      if (url.includes("market=cn_qdii_etf")) return oldDetail.promise;
-      if (url.includes("market=a_share")) return Promise.resolve(jsonResponse(aShareDetail));
+      if (url.includes("market=cn_qdii_etf") && url.includes("portfolio")) return oldPortfolio.promise;
+      if (url.includes("market=cn_qdii_etf")) return Promise.resolve(jsonResponse(resourcePayload(url)));
+      if (url.includes("market=a_share")) return Promise.resolve(jsonResponse(resourcePayload(url, aShareDetail)));
       return Promise.reject(new Error(`unexpected url: ${url}`));
     }));
     const user = userEvent.setup();
@@ -393,8 +450,8 @@ describe("Dashboard app", () => {
     expect((await screen.findAllByText("平安银行")).length).toBeGreaterThan(0);
 
     await act(async () => {
-      oldDetail.resolve(jsonResponse(detailPayload));
-      await oldDetail.promise;
+      oldPortfolio.resolve(jsonResponse(resourcePayload("/portfolio.json", detailPayload)));
+      await oldPortfolio.promise;
       await Promise.resolve();
     });
     expect(screen.queryAllByText("纳指ETF")).toHaveLength(0);
@@ -402,17 +459,18 @@ describe("Dashboard app", () => {
     expect(screen.getAllByText("A股").length).toBeGreaterThan(0);
   });
 
-  it("clears old detail when the new selection fails", async () => {
+  it("isolates a failed portfolio resource after the market changes", async () => {
     vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("summary")) return Promise.resolve(jsonResponse(multiMarketSummary));
-      if (url.includes("market=cn_qdii_etf")) return Promise.resolve(jsonResponse(detailPayload));
-      if (url.includes("market=a_share")) {
+      if (url.includes("market=cn_qdii_etf")) return Promise.resolve(jsonResponse(resourcePayload(url)));
+      if (url.includes("market=a_share") && url.includes("portfolio")) {
         return Promise.resolve(jsonResponse({
           error: "dashboard_data_invalid",
           message: "Dashboard data source is unreadable: positions"
         }, 500));
       }
+      if (url.includes("market=a_share")) return Promise.resolve(jsonResponse(resourcePayload(url, aShareDetail)));
       return Promise.reject(new Error(`unexpected url: ${url}`));
     }));
     const user = userEvent.setup();
@@ -421,14 +479,15 @@ describe("Dashboard app", () => {
     expect((await screen.findAllByText("纳指ETF")).length).toBeGreaterThan(0);
     await user.click(screen.getByRole("button", { name: "A股" }));
 
-    expect(await screen.findByText("Dashboard data source is unreadable: positions")).toBeInTheDocument();
+    expect(await screen.findByText(/持仓交易：Dashboard data source is unreadable: positions/)).toBeInTheDocument();
     expect(screen.queryAllByText("纳指ETF")).toHaveLength(0);
+    expect(screen.getByText("净值图 · 沪深300")).toBeInTheDocument();
   });
 
-  it("keeps a summary error when a concurrent detail refresh succeeds", async () => {
-    const refreshedDetail = deferred<Response>();
+  it("keeps a summary error when a concurrent resource refresh succeeds", async () => {
+    const refreshedPortfolio = deferred<Response>();
     let summaryCalls = 0;
-    let detailCalls = 0;
+    let portfolioCalls = 0;
     vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("summary")) {
@@ -439,9 +498,11 @@ describe("Dashboard app", () => {
           message: "Summary refresh failed"
         }, 500));
       }
-      detailCalls += 1;
-      if (detailCalls === 1) return Promise.resolve(jsonResponse(detailPayload));
-      return refreshedDetail.promise;
+      if (url.includes("portfolio")) {
+        portfolioCalls += 1;
+        if (portfolioCalls > 1) return refreshedPortfolio.promise;
+      }
+      return Promise.resolve(jsonResponse(resourcePayload(url)));
     }));
     const user = userEvent.setup();
     render(<App />);
@@ -451,8 +512,8 @@ describe("Dashboard app", () => {
     expect(await screen.findByText("Summary refresh failed")).toBeInTheDocument();
 
     await act(async () => {
-      refreshedDetail.resolve(jsonResponse(detailPayload));
-      await refreshedDetail.promise;
+      refreshedPortfolio.resolve(jsonResponse(resourcePayload("/portfolio.json", detailPayload)));
+      await refreshedPortfolio.promise;
       await Promise.resolve();
     });
 

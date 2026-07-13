@@ -12,7 +12,7 @@ import {
   ShieldAlert,
   WalletCards,
 } from "lucide-react";
-import { fetchDetail, fetchSummary } from "./api";
+import { fetchSummary } from "./api";
 import CompetitionPanel from "./CompetitionPanel";
 import EtfResearchPanel from "./EtfResearchPanel";
 import { PerformanceChart } from "./FinancialCharts";
@@ -21,9 +21,9 @@ import PredictionPanel from "./PredictionPanel";
 import AlertCenter from "./AlertCenter";
 import ModelHealthPanel from "./ModelHealthPanel";
 import { PortfolioSection, RuntimeHistory, StrategyBrief, TradeTimeline } from "./PortfolioViews";
+import { useDashboardData } from "./useDashboardData";
 import { accountLabel, formatFieldValue, formatMoney, formatPercent, sideLabel } from "./finance";
 import type {
-  DashboardDetail,
   DashboardSummary,
   MarketSummary,
   OrderRow,
@@ -161,23 +161,24 @@ const emptyStrategy = (agent: string): StrategyProfile => ({
 
 export default function App() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
-  const [detail, setDetail] = useState<DashboardDetail | null>(null);
   const [selectedMarket, setSelectedMarket] = useState(preferredMarket);
   const [selectedAgent, setSelectedAgent] = useState(preferredAgent);
   const [loading, setLoading] = useState(true);
-  const [detailLoading, setDetailLoading] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
-  const [detailError, setDetailError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [selectedRow, setSelectedRow] = useState<OrderRow | null>(null);
   const [selectedRowTitle, setSelectedRowTitle] = useState("明细");
   const [autoRefresh, setAutoRefresh] = useState(true);
   const selectionRef = useRef({ market: selectedMarket, agent: selectedAgent });
   const summaryAbortRef = useRef<AbortController | null>(null);
-  const detailAbortRef = useRef<AbortController | null>(null);
   const summaryRequestIdRef = useRef(0);
-  const detailRequestIdRef = useRef(0);
   const drawerTriggerRef = useRef<HTMLElement | null>(null);
+  const {
+    detail,
+    error: detailError,
+    loading: detailLoading,
+    reload: loadDetail,
+  } = useDashboardData(selectedMarket, selectedAgent);
 
   useEffect(() => {
     selectionRef.current = { market: selectedMarket, agent: selectedAgent };
@@ -202,28 +203,6 @@ export default function App() {
     }
   }, []);
 
-  const loadDetail = useCallback(async (market: string, agent: string) => {
-    detailAbortRef.current?.abort();
-    const controller = new AbortController();
-    detailAbortRef.current = controller;
-    const requestId = ++detailRequestIdRef.current;
-    setDetailLoading(true);
-    setDetail((current) => current?.market === market && current?.agent === agent ? current : null);
-    try {
-      const payload = await fetchDetail(market, agent, controller.signal);
-      if (requestId !== detailRequestIdRef.current) return;
-      setDetail(payload);
-      setDetailError(null);
-    } catch (reason) {
-      if (requestId !== detailRequestIdRef.current) return;
-      if (reason instanceof Error && reason.name === "AbortError") return;
-      setDetail(null);
-      setDetailError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      if (requestId === detailRequestIdRef.current) setDetailLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     setLoading(true);
     loadSummary()
@@ -231,20 +210,17 @@ export default function App() {
       .finally(() => setLoading(false));
   }, [loadSummary]);
 
-  useEffect(() => { void loadDetail(selectedMarket, selectedAgent); }, [loadDetail, selectedMarket, selectedAgent]);
-
   useEffect(() => {
     if (!autoRefresh) return undefined;
     const timer = window.setInterval(() => {
       loadSummary().catch((reason: Error) => { if (reason.name !== "AbortError") setSummaryError(reason.message); });
-      void loadDetail(selectedMarket, selectedAgent);
+      void loadDetail();
     }, 60_000);
     return () => window.clearInterval(timer);
-  }, [autoRefresh, loadDetail, loadSummary, selectedAgent, selectedMarket]);
+  }, [autoRefresh, loadDetail, loadSummary]);
 
   useEffect(() => () => {
     summaryAbortRef.current?.abort();
-    detailAbortRef.current?.abort();
   }, []);
 
   const selectedMarketSummary = marketFromSummary(summary, selectedMarket);
@@ -257,9 +233,8 @@ export default function App() {
   const refresh = async () => {
     setLoading(true);
     setSummaryError(null);
-    setDetailError(null);
     try {
-      await Promise.all([loadSummary(), loadDetail(selectedMarket, selectedAgent)]);
+      await Promise.all([loadSummary(), loadDetail()]);
     } catch (reason) {
       if (!(reason instanceof Error) || reason.name !== "AbortError") setSummaryError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -268,12 +243,8 @@ export default function App() {
   };
 
   const changeSelection = (market: string, agent: string) => {
-    detailAbortRef.current?.abort();
-    detailRequestIdRef.current += 1;
     selectionRef.current = { market, agent };
-    setDetail(null);
     setSelectedRow(null);
-    setDetailError(null);
     setSelectedMarket(market);
     setSelectedAgent(agent);
   };
