@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchSystemOverview } from "./api";
+import { fetchModelResearch, fetchSystemOverview } from "./api";
 
 function unavailableIntelligence() {
   return {
@@ -124,6 +124,46 @@ async function currentBuilderPayload(): Promise<unknown> {
   return JSON.parse(output);
 }
 
+async function currentModelResearchBuilderPayload(): Promise<unknown> {
+  // Node types are intentionally not a production dashboard dependency.
+  // @ts-expect-error Vitest executes this integration fixture in Node.
+  const { execFileSync } = await import("node:child_process");
+  const script = [
+    "import json",
+    "from pathlib import Path",
+    "from stock_analyze.dashboard_workspace_api import build_dashboard_model_research_data",
+    "payload = build_dashboard_model_research_data(repo_root=Path.cwd(), market='a_share')",
+    "print(json.dumps(payload, ensure_ascii=False))",
+  ].join("; ");
+  const output = execFileSync("python3", ["-c", script], {
+    cwd: "../..",
+    encoding: "utf-8",
+    maxBuffer: 1_000_000,
+  });
+  return JSON.parse(output);
+}
+
+function validResearchModel(index: number) {
+  return {
+    modelVersion: `A20-V${String(index).padStart(3, "0")}`,
+    horizon: index,
+    algorithmFamily: "boosting_ensemble",
+    trainedAt: null,
+    registeredAt: null,
+    sampleSupport: 100,
+    featureColumns: [],
+    artifactRef: null,
+    artifactStatus: "missing",
+    gatePassed: false,
+    gateReasons: [],
+    shadowCycles: 0,
+    shadowCyclesRemaining: 12,
+    isChampion: false,
+    candidateFeatureCount: 0,
+    metrics: {},
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -241,5 +281,195 @@ describe("fetchSystemOverview", () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(partial))));
 
     await expect(fetchSystemOverview()).resolves.toEqual(partial);
+  });
+});
+
+describe("fetchModelResearch", () => {
+  it("accepts the current real builder payload", async () => {
+    const payload = await currentModelResearchBuilderPayload();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(payload))));
+
+    await expect(fetchModelResearch("a_share")).resolves.toEqual(payload);
+  });
+
+  it("rejects a payload larger than 250KB by its UTF-8 byte length", async () => {
+    const payload = {
+      ...(await currentModelResearchBuilderPayload() as Record<string, unknown>),
+      ignored: "中".repeat(84_000),
+    };
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(payload))));
+
+    await expect(fetchModelResearch("a_share")).rejects.toThrow(
+      "Model research response exceeds 250000 bytes",
+    );
+  });
+
+  it("rejects model research lists beyond their initial-response bounds", async () => {
+    const base = await currentModelResearchBuilderPayload() as any;
+    const cases: Array<{
+      path: string;
+      mutate: (payload: any) => void;
+    }> = [
+      {
+        path: "errors exceeds 20",
+        mutate: (payload) => {
+          payload.errors = Array.from(
+            { length: 21 },
+            (_, index) => ({ resource: `resource-${index}`, reason: "unavailable" }),
+          );
+        },
+      },
+      {
+        path: "stages exceeds 20",
+        mutate: (payload) => {
+          payload.stages = Array.from(
+            { length: 21 },
+            (_, index) => ({
+              key: `stage-${index}`,
+              label: `阶段 ${index}`,
+              status: "success",
+              primary: "完成",
+              secondary: "有证据",
+            }),
+          );
+        },
+      },
+      {
+        path: "dataPreparation.sources exceeds 20",
+        mutate: (payload) => {
+          payload.dataPreparation.sources = Array.from(
+            { length: 21 },
+            (_, index) => ({
+              source: `source-${index}`,
+              status: "available",
+              rows: index,
+              failed: false,
+            }),
+          );
+        },
+      },
+      {
+        path: "dataPreparation.selectedFeatures exceeds 20",
+        mutate: (payload) => {
+          payload.dataPreparation.selectedFeatures = Array.from(
+            { length: 21 },
+            (_, index) => `feature-${index}`,
+          );
+        },
+      },
+      {
+        path: "dataPreparation.unclassifiedFeatures exceeds 20",
+        mutate: (payload) => {
+          payload.dataPreparation.unclassifiedFeatures = Array.from(
+            { length: 21 },
+            (_, index) => `unclassified-${index}`,
+          );
+        },
+      },
+      {
+        path: "dataPreparation.gaps exceeds 20",
+        mutate: (payload) => {
+          payload.dataPreparation.gaps = Array.from(
+            { length: 21 },
+            (_, index) => `gap-${index}`,
+          );
+        },
+      },
+      {
+        path: "training.models exceeds 20",
+        mutate: (payload) => {
+          payload.training.models = Array.from(
+            { length: 21 },
+            (_, index) => validResearchModel(index),
+          );
+        },
+      },
+      {
+        path: "validation.models exceeds 20",
+        mutate: (payload) => {
+          payload.validation.models = Array.from(
+            { length: 21 },
+            (_, index) => validResearchModel(index),
+          );
+        },
+      },
+      {
+        path: "training.models[0].featureColumns exceeds 20",
+        mutate: (payload) => {
+          payload.training.models = [validResearchModel(1)];
+          payload.training.models[0].featureColumns = Array.from(
+            { length: 21 },
+            (_, index) => `feature-${index}`,
+          );
+        },
+      },
+      {
+        path: "training.models[0].gateReasons exceeds 20",
+        mutate: (payload) => {
+          payload.training.models = [validResearchModel(1)];
+          payload.training.models[0].gateReasons = Array.from(
+            { length: 21 },
+            (_, index) => `reason-${index}`,
+          );
+        },
+      },
+      {
+        path: "adoption.champions exceeds 20",
+        mutate: (payload) => {
+          payload.adoption.champions = Array.from(
+            { length: 21 },
+            (_, index) => ({
+              modelVersion: `A20-V${index}`,
+              horizon: index,
+              activatedAt: null,
+              artifactRef: null,
+            }),
+          );
+        },
+      },
+      {
+        path: "adoption.rollbackCandidates exceeds 5",
+        mutate: (payload) => {
+          payload.adoption.rollbackCandidates = Array.from(
+            { length: 6 },
+            (_, index) => ({
+              modelVersion: `A20-V${index}`,
+              displayVersion: `A20-V${index}`,
+              outcome: "retired",
+              endedAt: null,
+            }),
+          );
+        },
+      },
+      {
+        path: "adoption.strategyUsage exceeds 20",
+        mutate: (payload) => {
+          payload.adoption.strategyUsage = Array.from(
+            { length: 21 },
+            (_, index) => ({
+              agent: `agent-${index}`,
+              strategy_label: `策略 ${index}`,
+              as_of: null,
+              status: "active",
+              applied_candidates: 0,
+              candidate_coverage: 0,
+              model_versions: {},
+              fallback_reason: "",
+              accounts: 1,
+            }),
+          );
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const payload = structuredClone(base);
+      testCase.mutate(payload);
+      vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(payload))));
+
+      await expect(fetchModelResearch("a_share")).rejects.toThrow(
+        `Invalid model research response: ${testCase.path}`,
+      );
+    }
   });
 });

@@ -88,6 +88,11 @@ AVAILABLE_FACTORS_BY_MARKET: dict[str, set[str]] = {
         "low_volatility_60", "dividend_yield",
         *SENTIMENT_FACTORS,
     },
+    "cn_qdii_etf": {
+        # ETF-native factors derived from Tushare fund_daily/fund_nav.
+        "momentum_20", "momentum_60", "low_volatility_60",
+        "avg_amount_20", "discount_premium",
+    },
 }
 
 # Backwards-compat alias for code paths that still reference the old
