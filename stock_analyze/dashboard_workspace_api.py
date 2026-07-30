@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import math
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 from . import competition
 from . import dashboard_aggregator as agg
 from .dashboard_api import _latest_strategy_model_usage
-from .research.feature_registry import INTELLIGENCE_FEATURES
+from .research.feature_registry import DEFAULT_REGISTRY, INTELLIGENCE_FEATURES
 
 
 MAX_TABLE_ROWS = 20
@@ -18,6 +19,10 @@ MAX_ROLLBACK_ROWS = 5
 MAX_FEATURE_ROWS = 20
 MAX_MODEL_FEATURES = 20
 MAX_TEXT_LENGTH = 1_000
+MAX_DIAGNOSTIC_DEPTH = 4
+MAX_DIAGNOSTIC_ITEMS = 8
+MAX_DIAGNOSTIC_NODES = 128
+MAX_DIAGNOSTIC_TEXT = 32_000
 MODEL_METRIC_KEYS = (
     "rank_ic",
     "mean_rank_ic",
@@ -62,6 +67,61 @@ def _rows(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, (list, tuple)):
         return []
     return [row for row in value if isinstance(row, dict)]
+
+
+def _iso_timestamp(value: Any) -> Any:
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        try:
+            normalized = isoformat()
+        except (TypeError, ValueError, OverflowError):
+            return value
+        if isinstance(normalized, str):
+            return normalized
+    return value
+
+
+def _bounded_diagnostics(value: Any) -> Any:
+    budget = {"nodes": MAX_DIAGNOSTIC_NODES, "text": MAX_DIAGNOSTIC_TEXT}
+
+    def sanitize(item: Any, depth: int) -> Any:
+        if budget["nodes"] <= 0:
+            return None
+        budget["nodes"] -= 1
+        if depth >= MAX_DIAGNOSTIC_DEPTH:
+            return None
+        if isinstance(item, dict):
+            result: dict[str, Any] = {}
+            for key, child in list(item.items())[:MAX_DIAGNOSTIC_ITEMS]:
+                if budget["nodes"] <= 0:
+                    break
+                result[_text(key, limit=128)] = sanitize(child, depth + 1)
+            return result
+        if isinstance(item, (list, tuple, set)):
+            values = (
+                sorted(item, key=str)
+                if isinstance(item, set)
+                else list(item)
+            )
+            return [
+                sanitize(child, depth + 1)
+                for child in values[:MAX_DIAGNOSTIC_ITEMS]
+                if budget["nodes"] > 0
+            ]
+        if isinstance(item, float) and not math.isfinite(item):
+            return None
+        if item is None or isinstance(item, (bool, int, float)):
+            return item
+        timestamp = _iso_timestamp(item)
+        text = _text(timestamp, limit=min(MAX_TEXT_LENGTH, budget["text"]))
+        budget["text"] -= len(text)
+        return text
+
+    return sanitize(value, 0)
 
 
 def _algorithm_family(model: dict[str, Any]) -> str:
@@ -169,9 +229,11 @@ def _model_rows(root: Path, market: str) -> list[dict[str, Any]]:
                 "horizon": horizon,
                 "algorithmFamily": _algorithm_family(raw),
                 "trainedAt": (
-                    raw.get("trained_at")
-                    or raw.get("created_at")
-                    or registry_record.get("registered_at")
+                    _iso_timestamp(
+                        raw.get("trained_at")
+                        or raw.get("created_at")
+                        or registry_record.get("registered_at")
+                    )
                 ),
                 "sampleSupport": _integer(raw.get("sample_support")),
                 "featureColumns": all_features[:MAX_MODEL_FEATURES],
@@ -215,7 +277,7 @@ def _source_rows(value: Any) -> list[dict[str, Any]]:
                 "status": _text(row.get("status"), limit=128),
                 "rows": _integer(row.get("rows")),
                 "failed": bool(row.get("failed")),
-                "as_of": row.get("as_of"),
+                "as_of": _iso_timestamp(row.get("as_of")),
                 "error": _text(
                     row.get("error") or row.get("error_summary"),
                     limit=MAX_TEXT_LENGTH,
@@ -230,7 +292,7 @@ def _usage_rows(
     value: Any,
     *,
     market: str,
-    champion_versions: set[str],
+    champion_models: set[tuple[int, str]],
 ) -> list[dict[str, Any]]:
     bounded: list[dict[str, Any]] = []
     for row in _rows(value):
@@ -241,7 +303,11 @@ def _usage_rows(
         evidenced_versions = {
             _text(horizon, limit=32): _text(version, limit=256)
             for horizon, version in versions.items()
-            if _text(version, limit=256) in champion_versions
+            if (
+                _integer(horizon),
+                _text(version, limit=256),
+            )
+            in champion_models
         }
         if not evidenced_versions:
             continue
@@ -253,7 +319,7 @@ def _usage_rows(
                     row.get("strategy_label") or row.get("agent"),
                     limit=256,
                 ),
-                "as_of": row.get("as_of"),
+                "as_of": _iso_timestamp(row.get("as_of")),
                 "status": "active",
                 "applied_candidates": _integer(row.get("applied_candidates")),
                 "candidate_coverage": row.get("candidate_coverage") or 0.0,
@@ -283,7 +349,15 @@ def _candidate(value: Any) -> dict[str, Any]:
         "shadow_cycles_remaining",
         "horizon",
     )
-    return {key: raw.get(key) for key in keys if key in raw}
+    return {
+        key: (
+            _iso_timestamp(raw.get(key))
+            if key in {"selected_at", "registered_at"}
+            else raw.get(key)
+        )
+        for key in keys
+        if key in raw
+    }
 
 
 def build_dashboard_model_research_data(
@@ -304,18 +378,25 @@ def build_dashboard_model_research_data(
             for feature in model.pop("_allFeatureColumns")
         }
     )
+    registry_names = {item.name for item in DEFAULT_REGISTRY}
     intelligence_names = {item.name for item in INTELLIGENCE_FEATURES}
     intelligence_features = sorted(set(selected_features) & intelligence_names)
+    structured_features = sorted(
+        set(selected_features) & (registry_names - intelligence_names)
+    )
+    unclassified_features = sorted(set(selected_features) - registry_names)
     raw_source_health = agg._read_research_source_health(root, market)
     source_health = _source_rows(raw_source_health)
     iteration = _mapping(agg._read_model_iteration_status(root, market))
-    champion_versions = {
-        row["modelVersion"] for row in all_models if row["isChampion"]
+    champion_models = {
+        (row["horizon"], row["modelVersion"])
+        for row in all_models
+        if row["isChampion"]
     }
     usage = _usage_rows(
         _latest_strategy_model_usage(root),
         market=market,
-        champion_versions=champion_versions,
+        champion_models=champion_models,
     )
     champions = [
         {
@@ -335,7 +416,7 @@ def build_dashboard_model_research_data(
                 limit=256,
             ),
             "outcome": _text(row.get("outcome"), limit=128),
-            "endedAt": row.get("ended_at"),
+            "endedAt": _iso_timestamp(row.get("ended_at")),
         }
         for row in reversed(_rows(iteration.get("version_history")))
         if row.get("model_version")
@@ -414,10 +495,10 @@ def build_dashboard_model_research_data(
             "sources": source_health,
             "candidateFeatureCount": candidate_count,
             "selectedFeatureCount": len(selected_features),
-            "structuredFeatureCount": (
-                len(selected_features) - len(intelligence_features)
-            ),
+            "structuredFeatureCount": len(structured_features),
             "intelligenceFeatureCount": len(intelligence_features),
+            "unclassifiedFeatureCount": len(unclassified_features),
+            "unclassifiedFeatures": unclassified_features[:MAX_FEATURE_ROWS],
             "selectedFeatures": selected_features[:MAX_FEATURE_ROWS],
             "pointInTimeAudit": point_in_time_status,
             "gaps": [
@@ -436,7 +517,7 @@ def build_dashboard_model_research_data(
         "simulation": {
             "status": _text(iteration.get("status"), limit=128) or "unavailable",
             "candidate": candidate or None,
-            "predictionAsOf": iteration.get("prediction_as_of"),
+            "predictionAsOf": _iso_timestamp(iteration.get("prediction_as_of")),
             "predictionStatus": (
                 "available" if iteration.get("prediction_as_of") else "missing"
             ),
@@ -452,8 +533,12 @@ def build_dashboard_model_research_data(
                 "cashReason": (
                     _text(iteration.get("cash_reason"), limit=256) or None
                 ),
-                "diagnostics": _mapping(iteration.get("decision_diagnostics"))
-                or None,
+                "diagnostics": (
+                    _bounded_diagnostics(
+                        _mapping(iteration.get("decision_diagnostics"))
+                    )
+                    or None
+                ),
             },
         },
         "adoption": {
