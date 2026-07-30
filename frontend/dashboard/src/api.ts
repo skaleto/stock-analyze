@@ -17,6 +17,7 @@ import type {
 import type {
   DataIntelligenceData,
   ModelResearchData,
+  OperationsCenterData,
 } from "./workspaceTypes";
 
 const workspaceStatuses = new Set([
@@ -1177,4 +1178,442 @@ export function fetchDataIntelligence(
     signal,
     DATA_INTELLIGENCE_RESPONSE_LIMIT,
   ).then(validateDataIntelligence);
+}
+
+const OPERATIONS_RESPONSE_LIMIT = 250_000;
+const OPERATIONS_LIST_LIMIT = 20;
+const OPERATIONS_TEXT_LIMIT = 200;
+const OPERATIONS_SCOPES = new Set([
+  "all",
+  "a_share",
+  "cn_qdii_etf",
+  "exceptions",
+]);
+const OPERATIONS_MAIN_KEYS = new Set([
+  "intelligence",
+  "market_snapshot",
+  "research",
+  "simulation",
+  "publish",
+]);
+const OPERATIONS_BACKGROUND_KEYS = new Set([
+  "artifact_backfill",
+  "reconcile",
+  "semantic",
+]);
+const OPERATIONS_SCHEDULE_UNITS: Record<string, Set<string>> = {
+  daily: new Set([
+    "stock-analyze-daily-summary.timer",
+    "stock-analyze-ifind-source-audit.timer",
+    "stock-analyze-intelligence-artifact-backfill.timer",
+    "stock-analyze-intelligence-reconcile.timer",
+    "stock-analyze-intelligence-semantic.timer",
+    "stock-analyze-intelligence.timer",
+    "stock-analyze-market-data.timer",
+  ]),
+  weekly: new Set([
+    "stock-analyze-claude-cn-qdii-etf-weekly.timer",
+    "stock-analyze-codex-cn-qdii-etf-weekly.timer",
+    "stock-analyze-qdii-research.timer",
+    "stock-analyze-weekly-summary.timer",
+    "stock-analyze-weekly-trigger.timer",
+  ]),
+  monthly: new Set([
+    "stock-analyze-model-training.timer",
+    "stock-analyze-monthly-review.timer",
+    "stock-analyze-monthly-summary.timer",
+  ]),
+};
+const OPERATIONS_WORKSPACE_STATUSES = new Set([
+  "success",
+  "running",
+  "waiting_schedule",
+  "waiting_upstream",
+  "failed",
+  "skipped",
+  "research",
+  "empty",
+  "unavailable",
+]);
+
+function operationsError(path: string): never {
+  throw new Error(`Invalid operations center response: ${path}`);
+}
+
+function operationsObject(
+  value: unknown,
+  path: string,
+): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    operationsError(path);
+  }
+  return value as Record<string, unknown>;
+}
+
+function operationsArray(value: unknown, path: string): unknown[] {
+  if (!Array.isArray(value) || value.length > OPERATIONS_LIST_LIMIT) {
+    operationsError(path);
+  }
+  return value;
+}
+
+function operationsString(
+  value: unknown,
+  path: string,
+  max = OPERATIONS_TEXT_LIMIT,
+): string {
+  if (typeof value !== "string" || value.length > max) {
+    operationsError(path);
+  }
+  return value;
+}
+
+function operationsOptionalString(value: unknown, path: string): void {
+  if (value !== undefined && value !== null) {
+    operationsString(value, path);
+  }
+}
+
+function operationsNumber(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    operationsError(path);
+  }
+  return value;
+}
+
+function operationsStatus(value: unknown, path: string): string {
+  const status = operationsString(value, path, 40);
+  if (!OPERATIONS_WORKSPACE_STATUSES.has(status)) operationsError(path);
+  return status;
+}
+
+function operationsUniqueRows(
+  value: unknown,
+  path: string,
+  keyName: string,
+): Record<string, unknown>[] {
+  const seen = new Set<string>();
+  return operationsArray(value, path).map((item, index) => {
+    const rowPath = `${path}[${index}]`;
+    const row = operationsObject(item, rowPath);
+    const key = operationsString(row[keyName], `${rowPath}.${keyName}`);
+    if (seen.has(key)) operationsError(`${rowPath}.${keyName} duplicate key`);
+    seen.add(key);
+    return row;
+  });
+}
+
+function operationsExactKeys(
+  rows: Record<string, unknown>[],
+  expected: Set<string>,
+  path: string,
+  keyName: string,
+  allowSubset: boolean,
+): void {
+  const actual = new Set(rows.map((row) => String(row[keyName])));
+  for (const key of actual) {
+    if (!expected.has(key)) operationsError(`${path} unknown key ${key}`);
+  }
+  if (!allowSubset) {
+    for (const key of expected) {
+      if (!actual.has(key)) operationsError(`${path} missing key ${key}`);
+    }
+  }
+}
+
+function validateOperationsUnit(
+  value: unknown,
+  path: string,
+): void {
+  const unit = operationsObject(value, path);
+  operationsString(unit.unit, `${path}.unit`);
+  const status = operationsStatus(unit.status, `${path}.status`);
+  operationsOptionalString(unit.loadState, `${path}.loadState`);
+  operationsOptionalString(unit.activeState, `${path}.activeState`);
+  operationsOptionalString(unit.subState, `${path}.subState`);
+  operationsOptionalString(unit.result, `${path}.result`);
+  operationsOptionalString(unit.startedAt, `${path}.startedAt`);
+  operationsOptionalString(unit.finishedAt, `${path}.finishedAt`);
+  operationsOptionalString(unit.reason, `${path}.reason`);
+  if (
+    unit.exitStatus !== undefined
+    && unit.exitStatus !== null
+    && (typeof unit.exitStatus !== "number"
+      || !Number.isInteger(unit.exitStatus))
+  ) {
+    operationsError(`${path}.exitStatus`);
+  }
+  if (
+    (unit.loadState === "not-found" || unit.loadState === "masked")
+    && status !== "unavailable"
+  ) {
+    operationsError(`${path}.status`);
+  }
+}
+
+function validateOperationsBacklog(
+  value: unknown,
+  path: string,
+): void {
+  const backlog = operationsObject(value, path);
+  for (const [key, count] of Object.entries(backlog)) {
+    if (!["download", "parse", "semantic", "total"].includes(key)) {
+      operationsError(`${path}.${key}`);
+    }
+    operationsNumber(count, `${path}.${key}`);
+  }
+}
+
+function validateOperationsCenter(value: unknown): OperationsCenterData {
+  const data = operationsObject(value, "root");
+  operationsString(data.generated_at, "generated_at");
+  const scope = operationsString(data.scope, "scope");
+  if (!OPERATIONS_SCOPES.has(scope)) operationsError("scope");
+  const truncated = data.truncated === true;
+  if (data.truncated !== undefined && typeof data.truncated !== "boolean") {
+    operationsError("truncated");
+  }
+  operationsOptionalString(data.truncationReason, "truncationReason");
+  if (truncated && data.truncationReason !== "serialized_size_limit") {
+    operationsError("truncationReason");
+  }
+
+  const runtime = operationsObject(data.runtime, "runtime");
+  const runtimeStatus = operationsString(runtime.status, "runtime.status");
+  if (!["available", "unavailable"].includes(runtimeStatus)) {
+    operationsError("runtime.status");
+  }
+  if (
+    runtimeStatus === "available"
+    && (!Object.prototype.hasOwnProperty.call(runtime, "lastKnownAt")
+      || !Object.prototype.hasOwnProperty.call(runtime, "reason"))
+  ) {
+    operationsError("runtime available fields");
+  }
+  operationsOptionalString(runtime.lastKnownAt, "runtime.lastKnownAt");
+  operationsOptionalString(runtime.reason, "runtime.reason");
+
+  const freshness = operationsObject(data.dailyFreshness, "dailyFreshness");
+  operationsString(freshness.asOfDate, "dailyFreshness.asOfDate");
+  const freshnessStatus = operationsString(
+    freshness.status,
+    "dailyFreshness.status",
+  );
+  if (
+    freshnessStatus !== "waiting"
+    && !OPERATIONS_WORKSPACE_STATUSES.has(freshnessStatus)
+  ) {
+    operationsError("dailyFreshness.status");
+  }
+
+  const chain = operationsUniqueRows(data.mainChain, "mainChain", "key");
+  operationsExactKeys(
+    chain,
+    OPERATIONS_MAIN_KEYS,
+    "mainChain",
+    "key",
+    truncated || scope === "exceptions",
+  );
+  for (const [index, row] of chain.entries()) {
+    const path = `mainChain[${index}]`;
+    operationsString(row.label, `${path}.label`);
+    operationsStatus(row.status, `${path}.status`);
+    operationsString(row.primary, `${path}.primary`);
+    operationsString(row.secondary, `${path}.secondary`);
+    const units = operationsUniqueRows(row.units, `${path}.units`, "unit");
+    units.forEach((unit, unitIndex) => (
+      validateOperationsUnit(unit, `${path}.units[${unitIndex}]`)
+    ));
+    const crossMarket = operationsUniqueRows(
+      row.crossMarketUnits,
+      `${path}.crossMarketUnits`,
+      "unit",
+    );
+    crossMarket.forEach((unit, unitIndex) => (
+      validateOperationsUnit(
+        unit,
+        `${path}.crossMarketUnits[${unitIndex}]`,
+      )
+    ));
+  }
+
+  const background = operationsObject(data.background, "background");
+  const backgroundStatus = operationsString(
+    background.status,
+    "background.status",
+  );
+  if (!["available", "unavailable"].includes(backgroundStatus)) {
+    operationsError("background.status");
+  }
+  operationsOptionalString(
+    background.snapshotGeneratedAt,
+    "background.snapshotGeneratedAt",
+  );
+  validateOperationsBacklog(background.backlog, "background.backlog");
+  const artifacts = operationsObject(
+    background.artifactWorkers,
+    "background.artifactWorkers",
+  );
+  if (!["available", "unavailable"].includes(
+    operationsString(artifacts.status, "background.artifactWorkers.status"),
+  )) {
+    operationsError("background.artifactWorkers.status");
+  }
+  operationsNumber(
+    artifacts.activeLeases,
+    "background.artifactWorkers.activeLeases",
+  );
+  operationsOptionalString(
+    artifacts.latestFinishedAt,
+    "background.artifactWorkers.latestFinishedAt",
+  );
+
+  const workers = operationsUniqueRows(
+    data.backgroundWorkers,
+    "backgroundWorkers",
+    "key",
+  );
+  operationsExactKeys(
+    workers,
+    OPERATIONS_BACKGROUND_KEYS,
+    "backgroundWorkers",
+    "key",
+    truncated || scope === "exceptions" || runtimeStatus === "unavailable",
+  );
+  for (const [index, worker] of workers.entries()) {
+    const path = `backgroundWorkers[${index}]`;
+    operationsString(worker.label, `${path}.label`);
+    operationsStatus(worker.status, `${path}.status`);
+    operationsString(worker.serviceUnit, `${path}.serviceUnit`);
+    operationsString(worker.timerUnit, `${path}.timerUnit`);
+    operationsOptionalString(worker.loadState, `${path}.loadState`);
+    operationsOptionalString(worker.lastResult, `${path}.lastResult`);
+    operationsOptionalString(worker.startedAt, `${path}.startedAt`);
+    operationsOptionalString(worker.finishedAt, `${path}.finishedAt`);
+    operationsOptionalString(worker.nextTriggerAt, `${path}.nextTriggerAt`);
+    if (worker.backlog !== undefined && worker.backlog !== null) {
+      validateOperationsBacklog(worker.backlog, `${path}.backlog`);
+    }
+  }
+
+  const schedules = operationsObject(data.schedules, "schedules");
+  const cadenceKeys = Object.keys(schedules);
+  if (
+    cadenceKeys.length !== 3
+    || cadenceKeys.some((key) => !["daily", "weekly", "monthly"].includes(key))
+  ) {
+    operationsError("schedules");
+  }
+  for (const cadence of ["daily", "weekly", "monthly"]) {
+    const rows = operationsUniqueRows(
+      schedules[cadence],
+      `schedules.${cadence}`,
+      "unit",
+    );
+    operationsExactKeys(
+      rows,
+      OPERATIONS_SCHEDULE_UNITS[cadence],
+      `schedules.${cadence}`,
+      "unit",
+      truncated,
+    );
+    for (const [index, row] of rows.entries()) {
+      const path = `schedules.${cadence}[${index}]`;
+      operationsString(row.label, `${path}.label`);
+      if (!["active", "inactive", "unavailable"].includes(
+        operationsString(row.status, `${path}.status`),
+      )) {
+        operationsError(`${path}.status`);
+      }
+      operationsOptionalString(row.loadState, `${path}.loadState`);
+      operationsOptionalString(row.lastTriggerAt, `${path}.lastTriggerAt`);
+      operationsOptionalString(row.nextTriggerAt, `${path}.nextTriggerAt`);
+      if (row.automation !== "automatic") {
+        operationsError(`${path}.automation`);
+      }
+    }
+  }
+
+  const recentRuns = operationsUniqueRows(
+    data.recentRuns,
+    "recentRuns",
+    "runId",
+  );
+  for (const [index, row] of recentRuns.entries()) {
+    const path = `recentRuns[${index}]`;
+    for (const key of [
+      "market",
+      "strategyKey",
+      "strategyLabel",
+      "command",
+      "status",
+      "startedAt",
+      "finishedAt",
+      "errorSummary",
+    ]) {
+      operationsString(row[key], `${path}.${key}`);
+    }
+    operationsOptionalString(row.asOf, `${path}.asOf`);
+    operationsNumber(row.durationMs, `${path}.durationMs`);
+  }
+
+  const disk = operationsObject(data.disk, "disk");
+  if (!["available", "unavailable"].includes(
+    operationsString(disk.status, "disk.status"),
+  )) {
+    operationsError("disk.status");
+  }
+  for (const key of ["usedRatio", "totalBytes", "freeBytes"]) {
+    if (disk[key] !== undefined && disk[key] !== null) {
+      operationsNumber(disk[key], `disk.${key}`);
+    }
+  }
+
+  const interventions = operationsUniqueRows(
+    data.interventions,
+    "interventions",
+    "key",
+  );
+  for (const [index, row] of interventions.entries()) {
+    const path = `interventions[${index}]`;
+    operationsString(row.severity, `${path}.severity`);
+    operationsString(row.title, `${path}.title`);
+    operationsString(row.evidence, `${path}.evidence`);
+  }
+  return data as unknown as OperationsCenterData;
+}
+
+async function fetchOperationsPayload(
+  url: string,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const response = await fetch(url, { cache: "no-cache", signal });
+  if (!response.ok) {
+    throw new Error(
+      `${response.status} ${response.statusText}`.trim()
+      || "Operations center request failed",
+    );
+  }
+  const body = await response.text();
+  if (new TextEncoder().encode(body).byteLength > OPERATIONS_RESPONSE_LIMIT) {
+    throw new Error(
+      `Operations center response exceeds ${OPERATIONS_RESPONSE_LIMIT} bytes`,
+    );
+  }
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    throw new Error("Invalid operations center response: JSON");
+  }
+}
+
+export function fetchOperationsCenter(
+  scope: string,
+  signal?: AbortSignal,
+): Promise<OperationsCenterData> {
+  const params = new URLSearchParams({ scope });
+  return fetchOperationsPayload(
+    `/api/dashboard/operations-center.json?${params.toString()}`,
+    signal,
+  ).then(validateOperationsCenter);
 }
