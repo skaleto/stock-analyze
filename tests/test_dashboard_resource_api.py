@@ -28,8 +28,213 @@ from stock_analyze.dashboard_api import (
     build_dashboard_system_overview_data,
 )
 from stock_analyze.dashboard_http import DashboardResourceNotFound
-from stock_analyze.intelligence.store import IntelligenceStore
 from stock_analyze.research.lineage import ResearchLineageStore
+
+
+def _intelligence_fixture_connection(root: Path) -> sqlite3.Connection:
+    database = (
+        root
+        / "data"
+        / "shared"
+        / "intelligence"
+        / "intelligence.sqlite3"
+    )
+    database.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(database)
+    connection.row_factory = sqlite3.Row
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            published_at TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            effective_at TEXT NOT NULL,
+            revised_at TEXT,
+            revision_of TEXT,
+            source_url TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            raw_path TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'collected',
+            queue_priority INTEGER NOT NULL DEFAULT 0,
+            live_observed INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS ingestion_runs (
+            run_id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL,
+            cursor_in TEXT,
+            cursor_out TEXT,
+            fetched INTEGER NOT NULL DEFAULT 0,
+            inserted INTEGER NOT NULL DEFAULT 0,
+            error TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS source_cursors (
+            source TEXT PRIMARY KEY,
+            cursor TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS events (
+            event_id TEXT PRIMARY KEY,
+            document_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            direction REAL NOT NULL,
+            strength REAL NOT NULL,
+            confidence REAL NOT NULL,
+            novelty REAL NOT NULL,
+            horizon_days INTEGER NOT NULL,
+            published_at TEXT NOT NULL,
+            effective_at TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            extraction_method TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS event_entities (
+            event_id TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            entity_name TEXT NOT NULL DEFAULT '',
+            industry TEXT NOT NULL DEFAULT '',
+            confidence REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS document_security_links (
+            document_id INTEGER NOT NULL,
+            ts_code TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            provenance TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS document_artifacts (
+            artifact_id TEXT PRIMARY KEY,
+            document_id INTEGER NOT NULL,
+            artifact_type TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            storage_uri TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            byte_size INTEGER NOT NULL,
+            parser_version TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
+            error TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS document_chunks (
+            chunk_id TEXT PRIMARY KEY,
+            document_id INTEGER NOT NULL,
+            artifact_id TEXT NOT NULL,
+            sequence_no INTEGER NOT NULL,
+            page_number INTEGER NOT NULL,
+            section TEXT NOT NULL DEFAULT '',
+            bbox_json TEXT NOT NULL,
+            text TEXT NOT NULL,
+            text_hash TEXT NOT NULL,
+            ocr_used INTEGER NOT NULL DEFAULT 0,
+            ocr_confidence REAL,
+            parser_version TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS semantic_runs (
+            run_id TEXT PRIMARY KEY,
+            document_id INTEGER NOT NULL,
+            artifact_hash TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            taxonomy_version TEXT NOT NULL,
+            parser_version TEXT NOT NULL,
+            input_hash TEXT NOT NULL,
+            output_hash TEXT,
+            output_uri TEXT,
+            status TEXT NOT NULL,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            latency_ms INTEGER,
+            cost_microunits INTEGER,
+            error TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL,
+            finished_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS event_candidates (
+            candidate_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            document_id INTEGER NOT NULL,
+            event_index INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            lifecycle TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            validation_status TEXT NOT NULL,
+            validation_errors_json TEXT NOT NULL DEFAULT '[]',
+            canonical_event_id TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS event_evidence (
+            candidate_id TEXT NOT NULL,
+            document_id INTEGER NOT NULL,
+            evidence_id TEXT NOT NULL,
+            chunk_id TEXT NOT NULL,
+            page_number INTEGER NOT NULL,
+            start_char INTEGER NOT NULL,
+            end_char INTEGER NOT NULL,
+            quote TEXT NOT NULL,
+            normalized_quote_hash TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS event_facts (
+            event_id TEXT NOT NULL,
+            fact_name TEXT NOT NULL,
+            ordinal INTEGER NOT NULL DEFAULT 0,
+            raw_value TEXT,
+            numeric_value TEXT,
+            text_value TEXT,
+            unit TEXT,
+            currency TEXT,
+            period TEXT,
+            evidence_ids_json TEXT NOT NULL,
+            provenance TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS event_scores (
+            event_id TEXT PRIMARY KEY,
+            relevance REAL NOT NULL,
+            novelty REAL NOT NULL,
+            materiality REAL,
+            certainty REAL NOT NULL,
+            source_credibility REAL NOT NULL,
+            direction REAL NOT NULL,
+            confidence REAL NOT NULL,
+            scoring_version TEXT NOT NULL,
+            inputs_json TEXT NOT NULL,
+            scored_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS artifact_worker_jobs (
+            job_id TEXT PRIMARY KEY,
+            worker_id TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            lease_until TEXT NOT NULL,
+            finished_at TEXT,
+            manifest_hash TEXT NOT NULL DEFAULT '',
+            result_hash TEXT NOT NULL DEFAULT '',
+            counts_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS artifact_worker_items (
+            job_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            document_id INTEGER NOT NULL,
+            input_hash TEXT NOT NULL,
+            status TEXT NOT NULL,
+            error TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+    return connection
 
 
 def _seed_repo(root: Path) -> None:
@@ -165,10 +370,9 @@ def _seed_repo(root: Path) -> None:
 
 
 def _seed_intelligence(root: Path) -> None:
-    store = IntelligenceStore(root / "data" / "shared" / "intelligence")
     published_at = "2026-07-20T08:00:00+00:00"
     seen_at = "2026-07-20T08:05:00+00:00"
-    with store.connect() as connection:
+    with _intelligence_fixture_connection(root) as connection:
         connection.execute(
             """
             INSERT INTO ingestion_runs(
@@ -1296,10 +1500,7 @@ class DashboardResourceApiTests(unittest.TestCase):
             root = Path(tmp)
             _seed_repo(root)
             _seed_intelligence(root)
-            store = IntelligenceStore(
-                root / "data" / "shared" / "intelligence"
-            )
-            with store.connect() as connection:
+            with _intelligence_fixture_connection(root) as connection:
                 document_id = int(
                     connection.execute(
                         "SELECT id FROM documents ORDER BY id LIMIT 1"
