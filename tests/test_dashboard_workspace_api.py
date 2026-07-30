@@ -10,9 +10,17 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
 
+import pandas as pd
+
 from stock_analyze import competition
 from stock_analyze.dashboard_workspace_api import (
+    FORMAL_FACTOR_SOURCES,
+    build_dashboard_data_intelligence_data,
     build_dashboard_model_research_data,
+)
+from stock_analyze.overlay_guard import (
+    AVAILABLE_FACTORS_BY_MARKET,
+    SENTIMENT_FACTORS,
 )
 
 
@@ -59,6 +67,65 @@ def _iteration(**overrides: object) -> dict:
         "selected_count": 0,
         "cash_only": True,
         "cash_reason": "probability_gate_not_met",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _intelligence(**overrides: object) -> dict:
+    payload = {
+        "pipeline": {
+            "status": "available",
+            "documents": 584598,
+            "stages": {
+                "catalogued": 584598,
+                "pdfReady": 23243,
+                "parsed": 6888,
+                "semanticCompleted": 35,
+                "canonicalEvents": 12,
+            },
+            "backlog": {
+                "download": 561355,
+                "parse": 16355,
+                "semantic": 6853,
+                "total": 584563,
+            },
+            "sources": [],
+            "artifactWorkers": {"status": "available"},
+        },
+        "extraction": {
+            "status": "available",
+            "semanticRuns": {"succeeded": 35},
+            "decisions": {
+                "canonical": 12,
+                "no_event": 20,
+                "quarantined": 2,
+                "failed": 1,
+            },
+            "latestBatch": None,
+            "contract": {"profileId": "a-share-announcement-v1"},
+        },
+        "factorSupply": {
+            "status": "available",
+            "suppliedFactors": 23,
+            "modelEligible": False,
+            "modelEligibleFactors": [],
+            "factors": [],
+        },
+        "modelImpact": {
+            "status": "available",
+            "adopted": False,
+            "activeFactors": [],
+            "iterationFactors": [],
+            "reason": "no_factor_passed_gate",
+        },
+        "decisions": {
+            "canonical": 12,
+            "no_event": 20,
+            "quarantined": 2,
+            "failed": 1,
+        },
+        "rowsByDecision": {"canonical": [{"raw": "never expose"}]},
     }
     payload.update(overrides)
     return payload
@@ -850,6 +917,476 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         bounded_usage = payload["adoption"]["strategyUsage"][0]
         self.assertEqual(bounded_usage["candidate_coverage"], 0.0)
         self.assertLessEqual(len(bounded_usage["fallback_reason"]), 1_000)
+
+    def test_data_intelligence_usage_requires_explicit_consumption_evidence(
+        self,
+    ) -> None:
+        profiles = {
+            "defensive": {
+                "label": "稳健防守",
+                "factors": ["roe", "low_volatility_60"],
+            },
+            "trend": {
+                "label": "趋势进攻",
+                "factors": ["momentum_20"],
+            },
+        }
+        model_health = {
+            "status": "available",
+            "models": [
+                {
+                    "model_version": "SHARED-V005",
+                    "horizon": 5,
+                    "feature_columns": ["event_negative_decay_5d"],
+                    "metrics": {"point_in_time_audit": False},
+                },
+                {
+                    "model_version": "SHARED-V005",
+                    "horizon": 20,
+                    "feature_columns": [
+                        "momentum_20",
+                        "event_net_strength_5d",
+                    ],
+                    "metrics": {"point_in_time_audit": True},
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot_root = root / "data" / "research" / "features" / "a_share"
+            snapshot_root.mkdir(parents=True)
+            pd.DataFrame({"trade_date": ["20230711"]}).to_parquet(
+                snapshot_root / "20230712.parquet",
+                index=False,
+            )
+            pd.DataFrame({"trade_date": ["20260729"]}).to_parquet(
+                snapshot_root / "20260729.parquet",
+                index=False,
+            )
+            with mock.patch(
+                "stock_analyze.dashboard_workspace_api._public_strategy_profiles",
+                return_value=profiles,
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+                return_value=model_health,
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+                return_value={
+                    "candidate": {
+                        "model_version": "SHARED-V005",
+                        "horizon": 20,
+                    },
+                    "selected_count": 0,
+                    "trades_executed": 0,
+                },
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+                return_value=_intelligence(),
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+                return_value=[],
+            ):
+                payload = build_dashboard_data_intelligence_data(
+                    repo_root=root,
+                    market="a_share",
+                )
+
+        usage = {row["consumerKey"]: row for row in payload["usageMatrix"]}
+        self.assertEqual(set(usage), {
+            "defensive",
+            "trend",
+            "research_model",
+            "candidate_simulation",
+        })
+        self.assertEqual(usage["defensive"]["traditionalFactors"]["count"], 2)
+        self.assertEqual(usage["defensive"]["intelligenceFactors"]["count"], 0)
+        self.assertEqual(
+            usage["defensive"]["intelligenceFactors"]["status"],
+            "not_used",
+        )
+        self.assertEqual(usage["research_model"]["intelligenceFactors"]["count"], 2)
+        self.assertEqual(
+            usage["research_model"]["intelligenceFactors"]["evidence"],
+            [
+                "model_feature_manifest:5:SHARED-V005",
+                "model_feature_manifest:20:SHARED-V005",
+            ],
+        )
+        self.assertEqual(
+            usage["candidate_simulation"]["intelligenceFactors"]["features"],
+            ["event_net_strength_5d"],
+        )
+        self.assertEqual(
+            usage["candidate_simulation"]["intelligenceFactors"]["evidence"],
+            ["candidate_registry:20:SHARED-V005"],
+        )
+        self.assertEqual(payload["structured"]["coverage"]["rangeStart"], "20230711")
+        self.assertEqual(payload["structured"]["coverage"]["rangeEnd"], "20260729")
+        self.assertEqual(
+            payload["structured"]["coverage"]["latestTradeDate"],
+            "20260729",
+        )
+        adjusted = next(
+            row
+            for row in payload["structured"]["sources"]
+            if row["source"] == "adjusted_ohlcv"
+        )
+        self.assertEqual(adjusted["selectedModelFeatureCount"], 1)
+        self.assertEqual(adjusted["activeStrategyFactorCount"], 2)
+        self.assertIn("研究模型 SHARED-V005 (20日)", adjusted["useLocations"])
+        self.assertEqual(
+            payload["structured"]["quality"]["pointInTimeAuditedModels"],
+            1,
+        )
+        self.assertEqual(payload["intelligence"]["pipeline"]["documents"], 584598)
+        self.assertNotIn("rowsByDecision", payload["intelligence"])
+
+    def test_active_decision_lineage_is_horizon_aware_for_formal_model_use(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch(
+                "stock_analyze.dashboard_workspace_api._public_strategy_profiles",
+                return_value={
+                    "defensive": {"label": "稳健防守", "factors": []},
+                    "trend": {"label": "趋势进攻", "factors": []},
+                },
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+                return_value={
+                    "models": [
+                        {
+                            "model_version": "SAME",
+                            "horizon": 5,
+                            "feature_columns": ["event_negative_decay_5d"],
+                        },
+                        {
+                            "model_version": "SAME",
+                            "horizon": 20,
+                            "feature_columns": [
+                                "momentum_20",
+                                "event_net_strength_5d",
+                            ],
+                        },
+                    ]
+                },
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+                return_value={},
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+                return_value=_intelligence(),
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+                return_value=[
+                    {
+                        "market": "a_share",
+                        "agent": "claude",
+                        "status": "active",
+                        "model_versions": {"20": "SAME"},
+                    }
+                ],
+            ):
+                payload = build_dashboard_data_intelligence_data(
+                    repo_root=Path(tmp),
+                    market="a_share",
+                )
+
+        defensive = payload["usageMatrix"][0]
+        self.assertEqual(
+            defensive["intelligenceFactors"]["features"],
+            ["event_net_strength_5d"],
+        )
+        self.assertEqual(
+            defensive["intelligenceFactors"]["evidence"],
+            ["decision_lineage:20:SAME"],
+        )
+        self.assertEqual(
+            defensive["structuredData"]["evidence"],
+            ["decision_lineage:20:SAME"],
+        )
+
+    def test_latest_rule_only_lineage_supersedes_older_active_model_use(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch(
+                "stock_analyze.dashboard_workspace_api._public_strategy_profiles",
+                return_value={
+                    "defensive": {"label": "稳健防守", "factors": []},
+                    "trend": {"label": "趋势进攻", "factors": []},
+                },
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+                return_value={
+                    "models": [
+                        {
+                            "model_version": "SAME",
+                            "horizon": 20,
+                            "feature_columns": ["event_net_strength_5d"],
+                        }
+                    ]
+                },
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+                return_value={},
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+                return_value=_intelligence(),
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+                return_value=[
+                    {
+                        "market": "a_share",
+                        "agent": "claude",
+                        "as_of": "2026-07-28",
+                        "status": "active",
+                        "model_versions": {"20": "SAME"},
+                    },
+                    {
+                        "market": "a_share",
+                        "agent": "claude",
+                        "as_of": "2026-07-29",
+                        "status": "rule_only",
+                        "model_versions": {},
+                    },
+                ],
+            ):
+                payload = build_dashboard_data_intelligence_data(
+                    repo_root=Path(tmp),
+                    market="a_share",
+                )
+
+        defensive = payload["usageMatrix"][0]
+        self.assertEqual(
+            defensive["intelligenceFactors"]["status"],
+            "not_used",
+        )
+        self.assertEqual(defensive["impact"], "本期规则驱动")
+
+    def test_formal_factor_sources_cover_every_non_sentiment_overlay_factor(
+        self,
+    ) -> None:
+        for market in ("a_share", "cn_qdii_etf"):
+            with self.subTest(market=market):
+                expected = (
+                    set(AVAILABLE_FACTORS_BY_MARKET[market])
+                    - set(SENTIMENT_FACTORS)
+                )
+                mapped = set().union(*FORMAL_FACTOR_SOURCES[market].values())
+                self.assertEqual(mapped, expected)
+
+    def test_data_intelligence_empty_partial_and_unknown_market_states(self) -> None:
+        with self.assertRaises(competition.UnknownMarket):
+            build_dashboard_data_intelligence_data(
+                repo_root=Path("/tmp"),
+                market="unknown",
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            feature_root = (
+                root / "data" / "research" / "features" / "cn_qdii_etf"
+            )
+            feature_root.mkdir(parents=True)
+            (feature_root / "20260729.parquet").write_bytes(b"not parquet")
+            with mock.patch(
+                "stock_analyze.dashboard_workspace_api._public_strategy_profiles",
+                return_value={
+                    "defensive": {"label": "稳健防守", "factors": []},
+                    "trend": {"label": "趋势进攻", "factors": []},
+                },
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+                return_value={"status": "unavailable", "models": []},
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+                return_value={},
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+                return_value=_intelligence(
+                    pipeline={
+                        "status": "unavailable",
+                        "documents": 0,
+                        "stages": {},
+                        "backlog": {},
+                        "sources": [],
+                        "artifactWorkers": {},
+                    },
+                    factorSupply={
+                        "status": "unavailable",
+                        "suppliedFactors": 0,
+                        "modelEligible": False,
+                        "modelEligibleFactors": [],
+                        "factors": [],
+                    },
+                ),
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+                return_value=[],
+            ):
+                payload = build_dashboard_data_intelligence_data(
+                    repo_root=root,
+                    market="cn_qdii_etf",
+                )
+
+        coverage = payload["structured"]["coverage"]
+        self.assertEqual(coverage["status"], "partial")
+        self.assertEqual(coverage["rangeStart"], "20260729")
+        self.assertEqual(coverage["rangeEnd"], "20260729")
+        self.assertEqual(coverage["latestTradeDate"], "20260729")
+        self.assertEqual(len(payload["usageMatrix"]), 4)
+        self.assertTrue(
+            all(
+                cell["status"] == "not_used"
+                for row in payload["usageMatrix"]
+                for cell in (
+                    row["structuredData"],
+                    row["traditionalFactors"],
+                    row["intelligenceFactors"],
+                )
+            )
+        )
+
+    def test_structured_coverage_reads_only_boundary_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            feature_root = root / "data" / "research" / "features" / "a_share"
+            feature_root.mkdir(parents=True)
+            for day in range(1, 26):
+                (feature_root / f"202601{day:02d}.parquet").write_bytes(b"x")
+
+            def read_boundary(path: Path, **_kwargs: object) -> pd.DataFrame:
+                trade_date = (
+                    "20230711"
+                    if Path(path).stem == "20260101"
+                    else "20260729"
+                )
+                return pd.DataFrame({"trade_date": [trade_date]})
+
+            with mock.patch(
+                "stock_analyze.dashboard_workspace_api.pd.read_parquet",
+                side_effect=read_boundary,
+            ) as reader, mock.patch(
+                "stock_analyze.dashboard_workspace_api._public_strategy_profiles",
+                return_value={
+                    "defensive": {"label": "稳健防守", "factors": []},
+                    "trend": {"label": "趋势进攻", "factors": []},
+                },
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+                return_value={"models": []},
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+                return_value={},
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+                return_value=_intelligence(),
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+                return_value=[],
+            ):
+                payload = build_dashboard_data_intelligence_data(
+                    repo_root=root,
+                    market="a_share",
+                )
+
+        self.assertEqual(reader.call_count, 2)
+        self.assertEqual(
+            payload["structured"]["coverage"]["rangeStart"],
+            "20230711",
+        )
+        self.assertEqual(
+            payload["structured"]["coverage"]["rangeEnd"],
+            "20260729",
+        )
+
+    def test_data_intelligence_payload_is_sanitized_bounded_and_deterministic(
+        self,
+    ) -> None:
+        oversized = "x" * 300_000
+        intelligence = _intelligence()
+        intelligence["pipeline"]["sources"] = [
+            {"source": f"source-{index}", "raw_prose": oversized}
+            for index in range(40)
+        ]
+        intelligence["factorSupply"]["factors"] = [
+            {"name": f"factor-{index}", "detail": oversized}
+            for index in range(40)
+        ]
+        intelligence["extraction"]["latestBatch"] = {
+            "notes": oversized,
+            "items": list(range(40)),
+        }
+        models = [
+            {
+                "model_version": f"V{index}",
+                "horizon": 20,
+                "feature_columns": [f"feature-{part}-{oversized}" for part in range(40)],
+                "metrics": {"point_in_time_audit": index % 2 == 0},
+            }
+            for index in range(25)
+        ]
+        patches = (
+            mock.patch(
+                "stock_analyze.dashboard_workspace_api._public_strategy_profiles",
+                return_value={
+                    "defensive": {"label": oversized, "factors": []},
+                    "trend": {"label": oversized, "factors": []},
+                },
+            ),
+            mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+                return_value={"models": models},
+            ),
+            mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+                return_value={},
+            ),
+            mock.patch(
+                "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+                return_value=intelligence,
+            ),
+            mock.patch(
+                "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+                return_value=[],
+            ),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with patches[0], patches[1], patches[2], patches[3], patches[4]:
+                first = build_dashboard_data_intelligence_data(
+                    repo_root=Path(tmp),
+                    market="a_share",
+                )
+            with patches[0], patches[1], patches[2], patches[3], patches[4]:
+                second = build_dashboard_data_intelligence_data(
+                    repo_root=Path(tmp),
+                    market="a_share",
+                )
+
+        def assert_bounded(value: object) -> None:
+            if isinstance(value, list):
+                self.assertLessEqual(len(value), 20)
+                for item in value:
+                    assert_bounded(item)
+            elif isinstance(value, dict):
+                self.assertNotIn("rowsByDecision", value)
+                self.assertNotIn("raw_prose", value)
+                for item in value.values():
+                    assert_bounded(item)
+            elif isinstance(value, str):
+                self.assertLessEqual(len(value), 1_000)
+
+        assert_bounded(first)
+        first_generated = first.pop("generated_at")
+        second_generated = second.pop("generated_at")
+        self.assertIsInstance(first_generated, str)
+        self.assertIsInstance(second_generated, str)
+        self.assertEqual(first, second)
+        self.assertLess(
+            len(json.dumps(first, ensure_ascii=False).encode("utf-8")),
+            250_000,
+        )
 
 
 if __name__ == "__main__":

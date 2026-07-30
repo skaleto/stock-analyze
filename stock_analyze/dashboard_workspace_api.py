@@ -8,9 +8,15 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from . import competition
 from . import dashboard_aggregator as agg
-from .dashboard_api import _latest_strategy_model_usage
+from .dashboard_api import (
+    _latest_strategy_model_usage,
+    build_dashboard_intelligence_data,
+)
+from .overlay_guard import AVAILABLE_FACTORS_BY_MARKET, SENTIMENT_FACTORS
 from .research.feature_registry import DEFAULT_REGISTRY, INTELLIGENCE_FEATURES
 
 
@@ -35,6 +41,36 @@ MODEL_METRIC_KEYS = (
     "net_excess_return",
     "turnover",
 )
+PUBLIC_STRATEGIES = (
+    ("defensive", "claude", "稳健防守"),
+    ("trend", "codex", "趋势进攻"),
+)
+FORMAL_FACTOR_SOURCES = {
+    "a_share": {
+        "tushare_daily_basic": {"pe", "pb"},
+        "tushare_fina_indicator_announced": {
+            "roe",
+            "gross_margin",
+            "debt_ratio",
+            "net_profit_growth",
+        },
+        "adjusted_ohlcv": {
+            "momentum_20",
+            "momentum_60",
+            "low_volatility_60",
+        },
+        "tushare_dividend": {"dividend_yield"},
+    },
+    "cn_qdii_etf": {
+        "fund_daily_adjusted_ohlcv": {
+            "momentum_20",
+            "momentum_60",
+            "low_volatility_60",
+            "avg_amount_20",
+        },
+        "fund_nav": {"discount_premium"},
+    },
+}
 
 
 def _generated_at() -> str:
@@ -549,6 +585,309 @@ def _enforce_serialized_size(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _public_strategy_profiles(
+    root: Path,
+    market: str,
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for public_key, agent, fallback_label in PUBLIC_STRATEGIES:
+        paths = agg._resolve_dashboard_paths(market, agent, root)
+        try:
+            profile = agg._dashboard_strategy_profile(
+                paths,
+                root=root,
+                market=market,
+                agent=agent,
+            )
+        except (OSError, TypeError, ValueError, agg.DashboardDataError):
+            profile = {}
+        factors = sorted(
+            {
+                _text(item.get("key"), limit=128)
+                for item in _rows(profile.get("factors"))
+                if item.get("key")
+            }
+        )
+        result[public_key] = {
+            "label": _text(
+                profile.get("agent_label") or fallback_label,
+                limit=256,
+            ),
+            "factors": factors,
+        }
+    return result
+
+
+def _model_feature_evidence(
+    root: Path,
+    market: str,
+) -> tuple[dict[tuple[int, str], set[str]], dict[str, Any]]:
+    health = _mapping(agg._read_model_health(root, market))
+    manifests: dict[tuple[int, str], set[str]] = {}
+    audit_by_model: dict[tuple[int, str], bool] = {}
+    for row in _rows(health.get("models")):
+        horizon = _integer(row.get("horizon"))
+        version = _text(row.get("model_version"), limit=256).strip()
+        if horizon <= 0 or not version:
+            continue
+        identity = (horizon, version)
+        manifests.setdefault(identity, set()).update(
+            _text(value, limit=128)
+            for value in (row.get("feature_columns") or [])
+            if value
+        )
+        metrics = _mapping(row.get("metrics"))
+        audit_by_model[identity] = (
+            audit_by_model.get(identity, False)
+            or metrics.get("point_in_time_audit") is True
+        )
+    audited = sum(audit_by_model.values())
+    model_count = len(manifests)
+    return manifests, {
+        "status": "available" if manifests else "unavailable",
+        "modelCount": model_count,
+        "pointInTimeAuditedModels": audited,
+        "pointInTimeFailedModels": max(0, model_count - audited),
+        "missingRateStatus": "not_recorded",
+        "outlierStatus": "not_recorded",
+    }
+
+
+def _normalize_trade_dates(values: Any) -> list[str]:
+    try:
+        series = pd.Series(values, dtype="string")
+    except (TypeError, ValueError):
+        return []
+    normalized = (
+        series.dropna()
+        .str.replace("-", "", regex=False)
+        .str.replace("/", "", regex=False)
+        .str[:8]
+    )
+    return sorted(
+        {
+            value
+            for value in normalized.tolist()
+            if isinstance(value, str)
+            and len(value) == 8
+            and value.isdigit()
+        }
+    )
+
+
+def _structured_snapshot_coverage(root: Path, market: str) -> dict[str, Any]:
+    feature_root = root / "data" / "research" / "features" / market
+    paths = sorted(feature_root.glob("[0-9]" * 8 + ".parquet"))
+    if not paths:
+        return {
+            "status": "not_recorded",
+            "rangeStart": None,
+            "rangeEnd": None,
+            "latestTradeDate": None,
+            "latestSnapshot": None,
+            "snapshotCount": 0,
+            "inspectedSnapshots": 0,
+            "readableSnapshots": 0,
+        }
+
+    filename_dates = [
+        path.stem
+        for path in paths
+        if len(path.stem) == 8 and path.stem.isdigit()
+    ]
+    boundary_paths = [paths[0]]
+    if paths[-1] != paths[0]:
+        boundary_paths.append(paths[-1])
+    content_dates: list[str] = []
+    readable = 0
+    for path in boundary_paths:
+        try:
+            frame = pd.read_parquet(path, columns=["trade_date"])
+            dates = _normalize_trade_dates(frame["trade_date"])
+        except (FileNotFoundError, KeyError, OSError, TypeError, ValueError):
+            continue
+        readable += 1
+        content_dates.extend(dates)
+
+    observed_dates = sorted(set(filename_dates) | set(content_dates))
+    latest = paths[-1]
+    try:
+        artifact = str(latest.relative_to(root))
+    except ValueError:
+        artifact = latest.name
+    complete = readable == len(boundary_paths) and bool(content_dates)
+    return {
+        "status": "available" if complete else "partial",
+        "rangeStart": observed_dates[0] if observed_dates else None,
+        "rangeEnd": observed_dates[-1] if observed_dates else None,
+        "latestTradeDate": observed_dates[-1] if observed_dates else None,
+        "latestSnapshot": _text(artifact, limit=MAX_TEXT_LENGTH),
+        "snapshotCount": len(paths),
+        "inspectedSnapshots": len(boundary_paths),
+        "readableSnapshots": readable,
+    }
+
+
+def _manifest_label(identity: tuple[int, str]) -> str:
+    horizon, version = identity
+    return f"研究模型 {_text(version, limit=256)} ({horizon}日)"
+
+
+def _manifest_evidence(prefix: str, identity: tuple[int, str]) -> str:
+    horizon, version = identity
+    return f"{prefix}:{horizon}:{_text(version, limit=256)}"
+
+
+def _usage_cell(
+    features: set[str],
+    eligible: set[str],
+    evidence: list[str],
+    *,
+    observing: bool = False,
+) -> dict[str, Any]:
+    used = sorted(features & eligible)
+    bounded_evidence = list(
+        dict.fromkeys(
+            _text(value, limit=MAX_TEXT_LENGTH)
+            for value in evidence
+            if value
+        )
+    )[:MAX_TABLE_ROWS]
+    return {
+        "status": "used" if used else "observing" if observing else "not_used",
+        "count": len(used),
+        "features": used[:MAX_FEATURE_ROWS],
+        "evidence": bounded_evidence if used or observing else [],
+    }
+
+
+def _active_lineage_models(
+    root: Path,
+    market: str,
+    manifests: dict[tuple[int, str], set[str]],
+) -> dict[str, set[tuple[int, str]]]:
+    by_agent: dict[str, set[tuple[int, str]]] = {}
+    latest_by_agent: dict[str, dict[str, Any]] = {}
+    for row in _rows(_latest_strategy_model_usage(root)):
+        if row.get("market") != market:
+            continue
+        agent = _text(row.get("agent"), limit=128)
+        if not agent:
+            continue
+        previous = latest_by_agent.get(agent)
+        if previous is None or _text(
+            row.get("as_of"), limit=256
+        ) >= _text(previous.get("as_of"), limit=256):
+            latest_by_agent[agent] = row
+    for agent, row in latest_by_agent.items():
+        if row.get("status") != "active":
+            continue
+        identities: set[tuple[int, str]] = set()
+        for raw_horizon, raw_version in _mapping(
+            row.get("model_versions")
+        ).items():
+            identity = (
+                _integer(raw_horizon),
+                _text(raw_version, limit=256),
+            )
+            if identity in manifests:
+                identities.add(identity)
+        by_agent[agent] = identities
+    return by_agent
+
+
+_RESOURCE_OMIT_KEYS = frozenset(
+    {
+        "rowsByDecision",
+        "raw",
+        "rawText",
+        "raw_text",
+        "rawProse",
+        "raw_prose",
+        "prose",
+        "content",
+        "body",
+    }
+)
+
+
+def _bounded_resource(value: Any) -> Any:
+    budget = {"nodes": 512, "text": 80_000}
+
+    def sanitize(item: Any, depth: int) -> Any:
+        if budget["nodes"] <= 0 or depth >= 8:
+            return None
+        budget["nodes"] -= 1
+        if isinstance(item, dict):
+            result: dict[str, Any] = {}
+            for raw_key in sorted(item, key=str):
+                key = _text(raw_key, limit=128)
+                if key in _RESOURCE_OMIT_KEYS or len(result) >= MAX_TABLE_ROWS:
+                    continue
+                result[key] = sanitize(item[raw_key], depth + 1)
+            return result
+        if isinstance(item, (list, tuple, set)):
+            values = (
+                sorted(item, key=lambda child: str(child))
+                if isinstance(item, set)
+                else list(item)
+            )
+            return [
+                sanitize(child, depth + 1)
+                for child in values[:MAX_TABLE_ROWS]
+                if budget["nodes"] > 0
+            ]
+        if item is None or isinstance(item, (bool, int, float)):
+            return _scalar(item)
+        available = min(MAX_TEXT_LENGTH, max(0, budget["text"]))
+        text = _text(_iso_timestamp(item), limit=available)
+        budget["text"] -= len(text)
+        return text
+
+    return sanitize(value, 0)
+
+
+def _bounded_intelligence_lane(intelligence: dict[str, Any]) -> dict[str, Any]:
+    return _bounded_resource(
+        {
+            "pipeline": _mapping(intelligence.get("pipeline")),
+            "extraction": _mapping(intelligence.get("extraction")),
+            "factorSupply": _mapping(intelligence.get("factorSupply")),
+            "modelImpact": _mapping(intelligence.get("modelImpact")),
+            "decisions": _mapping(intelligence.get("decisions")),
+        }
+    )
+
+
+def _enforce_data_intelligence_size(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    payload["truncated"] = False
+    payload["truncationReason"] = None
+    if _serialized_size(payload) < MAX_SERIALIZED_BYTES:
+        return payload
+    payload["truncated"] = True
+    payload["truncationReason"] = "serialized_size_limit"
+    payload["intelligence"]["extraction"]["latestBatch"] = None
+    payload["intelligence"]["pipeline"]["sources"] = []
+    payload["intelligence"]["factorSupply"]["factors"] = []
+    payload["structured"]["selectedFeatures"] = []
+    payload["structured"]["researchFeatureNamespace"]["selectedFeatures"] = []
+    for row in payload["structured"]["sources"]:
+        row["useLocations"] = []
+    for row in payload["usageMatrix"]:
+        for key in (
+            "structuredData",
+            "traditionalFactors",
+            "intelligenceFactors",
+        ):
+            row[key]["features"] = []
+            row[key]["evidence"] = []
+    if _serialized_size(payload) >= MAX_SERIALIZED_BYTES:
+        raise ValueError("dashboard_data_intelligence_payload_exceeds_size_limit")
+    return payload
+
+
 def build_dashboard_model_research_data(
     *,
     repo_root: str | Path | None = None,
@@ -742,3 +1081,404 @@ def build_dashboard_model_research_data(
     }
     safe_payload = agg._json_safe(payload)
     return _enforce_serialized_size(safe_payload)
+
+
+def build_dashboard_data_intelligence_data(
+    *,
+    repo_root: str | Path | None = None,
+    market: str,
+) -> dict[str, Any]:
+    """Build bounded structured-data and intelligence supply evidence."""
+
+    _check_market(market)
+    root = _root(repo_root)
+    profiles = _public_strategy_profiles(root, market)
+    manifests, quality = _model_feature_evidence(root, market)
+    coverage = _structured_snapshot_coverage(root, market)
+    all_model_features = {
+        feature for features in manifests.values() for feature in features
+    }
+    intelligence_names = {
+        item.name for item in INTELLIGENCE_FEATURES
+    } | set(SENTIMENT_FACTORS)
+    research_traditional_names = {
+        item.name
+        for item in DEFAULT_REGISTRY
+        if market in item.markets and item.family != "market_intelligence"
+    }
+    formal_traditional_names = (
+        set(AVAILABLE_FACTORS_BY_MARKET.get(market, set()))
+        - set(SENTIMENT_FACTORS)
+    )
+    active_formal_factors = {
+        factor
+        for profile in profiles.values()
+        for factor in profile.get("factors", [])
+        if factor in formal_traditional_names
+    }
+    selected_research_traditional = (
+        all_model_features & research_traditional_names
+    )
+
+    source_groups: dict[str, dict[str, Any]] = {}
+    for definition in DEFAULT_REGISTRY:
+        if (
+            market not in definition.markets
+            or definition.family == "market_intelligence"
+        ):
+            continue
+        row = source_groups.setdefault(
+            definition.source,
+            {
+                "source": definition.source,
+                "researchFeatureCount": 0,
+                "selectedModelFeatureCount": 0,
+                "strategyFactorCount": 0,
+                "activeStrategyFactorCount": 0,
+                "status": "declared",
+                "useLocations": [],
+            },
+        )
+        row["researchFeatureCount"] += 1
+        if definition.name in all_model_features:
+            row["selectedModelFeatureCount"] += 1
+            row["status"] = "used"
+            row["useLocations"].extend(
+                _manifest_label(identity)
+                for identity, features in manifests.items()
+                if definition.name in features
+            )
+    for source, factor_names in FORMAL_FACTOR_SOURCES.get(market, {}).items():
+        row = source_groups.setdefault(
+            source,
+            {
+                "source": source,
+                "researchFeatureCount": 0,
+                "selectedModelFeatureCount": 0,
+                "strategyFactorCount": 0,
+                "activeStrategyFactorCount": 0,
+                "status": "declared",
+                "useLocations": [],
+            },
+        )
+        row["strategyFactorCount"] += len(factor_names)
+        active_names = {
+            factor
+            for profile in profiles.values()
+            for factor in profile.get("factors", [])
+            if factor in factor_names
+        }
+        row["activeStrategyFactorCount"] += len(active_names)
+        if active_names:
+            row["status"] = "used"
+        row["useLocations"].extend(
+            _text(profile.get("label"), limit=256)
+            for profile in profiles.values()
+            if set(profile.get("factors", [])) & factor_names
+        )
+    for row in source_groups.values():
+        row["useLocations"] = sorted(set(row["useLocations"]))[:MAX_TABLE_ROWS]
+
+    family_groups: dict[str, dict[str, Any]] = {}
+    for definition in DEFAULT_REGISTRY:
+        if (
+            market not in definition.markets
+            or definition.family == "market_intelligence"
+        ):
+            continue
+        row = family_groups.setdefault(
+            definition.family,
+            {
+                "family": definition.family,
+                "definedFeatureCount": 0,
+                "selectedFeatureCount": 0,
+            },
+        )
+        row["definedFeatureCount"] += 1
+        row["selectedFeatureCount"] += int(
+            definition.name in all_model_features
+        )
+
+    intelligence = _mapping(
+        build_dashboard_intelligence_data(
+            repo_root=root,
+            market=market,
+            agent="codex",
+            limit=1,
+        )
+    )
+    factor_supply = _mapping(intelligence.get("factorSupply"))
+    iteration = _mapping(agg._read_model_iteration_status(root, market))
+    candidate = _mapping(iteration.get("candidate"))
+    candidate_identity = (
+        _integer(candidate.get("horizon")),
+        _text(candidate.get("model_version"), limit=256),
+    )
+    candidate_registered = candidate_identity in manifests
+    candidate_features = (
+        set(manifests[candidate_identity]) if candidate_registered else set()
+    )
+    candidate_evidence = (
+        [_manifest_evidence("candidate_registry", candidate_identity)]
+        if candidate_registered
+        else []
+    )
+    active_lineage = _active_lineage_models(root, market, manifests)
+
+    usage_matrix: list[dict[str, Any]] = []
+    for public_key, agent, fallback_label in PUBLIC_STRATEGIES:
+        profile = profiles.get(public_key) or {
+            "label": fallback_label,
+            "factors": [],
+        }
+        overlay_factors = set(profile.get("factors", []))
+        applied_identities = active_lineage.get(agent, set())
+        applied_features = {
+            feature
+            for identity in applied_identities
+            for feature in manifests.get(identity, set())
+        }
+        lineage_evidence = [
+            _manifest_evidence("decision_lineage", identity)
+            for identity in sorted(applied_identities)
+        ]
+        traditional_names = (
+            formal_traditional_names | research_traditional_names
+        )
+        traditional_evidence = [
+            *(
+                ["strategy_overlay"]
+                if overlay_factors & traditional_names
+                else []
+            ),
+            *(
+                lineage_evidence
+                if applied_features & traditional_names
+                else []
+            ),
+        ]
+        intelligence_evidence = [
+            *(
+                ["strategy_overlay"]
+                if overlay_factors & intelligence_names
+                else []
+            ),
+            *(
+                lineage_evidence
+                if applied_features & intelligence_names
+                else []
+            ),
+        ]
+        usage_matrix.append(
+            {
+                "consumerKey": public_key,
+                "consumerLabel": _text(
+                    profile.get("label") or fallback_label,
+                    limit=256,
+                ),
+                "structuredData": _usage_cell(
+                    overlay_factors | applied_features,
+                    traditional_names,
+                    traditional_evidence,
+                ),
+                "traditionalFactors": _usage_cell(
+                    overlay_factors | applied_features,
+                    traditional_names,
+                    traditional_evidence,
+                ),
+                "intelligenceFactors": _usage_cell(
+                    overlay_factors | applied_features,
+                    intelligence_names,
+                    intelligence_evidence,
+                ),
+                "impact": (
+                    f"正式决策采用 {len(applied_identities)} 个模型版本"
+                    if applied_identities
+                    else "本期规则驱动"
+                ),
+            }
+        )
+
+    manifest_evidence = [
+        _manifest_evidence("model_feature_manifest", identity)
+        for identity in sorted(manifests)
+    ]
+    intelligence_manifest_evidence = [
+        _manifest_evidence("model_feature_manifest", identity)
+        for identity, features in sorted(manifests.items())
+        if features & intelligence_names
+    ]
+    usage_matrix.extend(
+        [
+            {
+                "consumerKey": "research_model",
+                "consumerLabel": "研究模型",
+                "structuredData": _usage_cell(
+                    all_model_features,
+                    research_traditional_names,
+                    manifest_evidence,
+                ),
+                "traditionalFactors": _usage_cell(
+                    all_model_features,
+                    research_traditional_names,
+                    manifest_evidence,
+                ),
+                "intelligenceFactors": _usage_cell(
+                    all_model_features,
+                    intelligence_names,
+                    intelligence_manifest_evidence,
+                    observing=bool(factor_supply.get("suppliedFactors")),
+                ),
+                "impact": (
+                    f"{len(all_model_features)} 个训练特征，"
+                    f"{len(all_model_features & intelligence_names)} 个来自情报"
+                ),
+            },
+            {
+                "consumerKey": "candidate_simulation",
+                "consumerLabel": "候选模拟账户",
+                "structuredData": _usage_cell(
+                    candidate_features,
+                    research_traditional_names,
+                    candidate_evidence,
+                ),
+                "traditionalFactors": _usage_cell(
+                    candidate_features,
+                    research_traditional_names,
+                    candidate_evidence,
+                ),
+                "intelligenceFactors": _usage_cell(
+                    candidate_features,
+                    intelligence_names,
+                    candidate_evidence,
+                ),
+                "impact": (
+                    f"本期 {_integer(iteration.get('selected_count'))} 个入选，"
+                    f"{_integer(iteration.get('trades_executed'))} 笔成交"
+                ),
+            },
+        ]
+    )
+
+    structured_stages = [
+        {
+            "key": "sources",
+            "label": "行情与财务",
+            "status": (
+                "success"
+                if any(
+                    row["status"] == "used" for row in source_groups.values()
+                )
+                else "research"
+            ),
+            "primary": f"{len(source_groups)} 个数据源",
+            "secondary": (
+                f"{sum(row['selectedModelFeatureCount'] for row in source_groups.values())}"
+                " 个模型特征 · "
+                f"{sum(row['activeStrategyFactorCount'] for row in source_groups.values())}"
+                " 个策略因子"
+            ),
+        },
+        {
+            "key": "quality",
+            "label": "清洗与质量",
+            "status": "success" if manifests else "unavailable",
+            "primary": (
+                f"{quality['pointInTimeAuditedModels']} / "
+                f"{quality['modelCount']} 个模型通过点时审计"
+            ),
+            "secondary": "点时证据来自模型元数据",
+        },
+        {
+            "key": "traditional",
+            "label": "传统量化因子",
+            "status": (
+                "success"
+                if active_formal_factors or selected_research_traditional
+                else "research"
+            ),
+            "primary": (
+                f"{len(active_formal_factors)} 个正式策略 · "
+                f"{len(selected_research_traditional)} 个研究模型"
+            ),
+            "secondary": (
+                f"{len(formal_traditional_names)} 个策略可用 · "
+                f"{len(research_traditional_names)} 个研究定义"
+            ),
+        },
+    ]
+    pipeline = _mapping(intelligence.get("pipeline"))
+    pipeline_stages = _mapping(pipeline.get("stages"))
+    backlog = _mapping(pipeline.get("backlog"))
+    decisions = _mapping(intelligence.get("decisions"))
+    intelligence_stages = [
+        {
+            "key": "documents",
+            "label": "公告与政策",
+            "status": "success" if _integer(pipeline.get("documents")) else "empty",
+            "primary": f"{_integer(pipeline.get('documents'))} 篇目录",
+            "secondary": f"{len(_rows(pipeline.get('sources')))} 个来源",
+        },
+        {
+            "key": "artifacts",
+            "label": "下载与解析",
+            "status": "running" if _integer(backlog.get("total")) else "success",
+            "primary": f"{_integer(pipeline_stages.get('parsed'))} 篇已解析",
+            "secondary": f"{_integer(backlog.get('total'))} 篇积压",
+        },
+        {
+            "key": "semantic",
+            "label": "语义事件",
+            "status": (
+                "success"
+                if _integer(pipeline_stages.get("semanticCompleted"))
+                else "research"
+            ),
+            "primary": (
+                f"{_integer(pipeline_stages.get('canonicalEvents'))} 个标准事件"
+            ),
+            "secondary": f"{_integer(decisions.get('failed'))} 个失败",
+        },
+        {
+            "key": "intelligence_factors",
+            "label": "情报因子",
+            "status": "success" if factor_supply.get("modelEligible") else "research",
+            "primary": f"{_integer(factor_supply.get('suppliedFactors'))} 个已计算",
+            "secondary": (
+                f"{len(factor_supply.get('modelEligibleFactors') or [])} 个可入模"
+            ),
+        },
+    ]
+    payload = {
+        "generated_at": _generated_at(),
+        "market": market,
+        "market_label": agg.MARKET_LABELS.get(market, market),
+        "structured": {
+            "stages": structured_stages,
+            "sources": sorted(
+                source_groups.values(), key=lambda row: row["source"]
+            )[:MAX_TABLE_ROWS],
+            "coverage": coverage,
+            "factorGroups": sorted(
+                family_groups.values(), key=lambda row: row["family"]
+            )[:MAX_TABLE_ROWS],
+            "selectedFeatures": sorted(selected_research_traditional)[
+                :MAX_FEATURE_ROWS
+            ],
+            "researchFeatureNamespace": {
+                "selectedFeatures": sorted(all_model_features)[
+                    :MAX_FEATURE_ROWS
+                ],
+                "definedFeatureCount": len(research_traditional_names),
+            },
+            "quality": quality,
+        },
+        "intelligence": {
+            "stages": intelligence_stages,
+            **_mapping(_bounded_intelligence_lane(intelligence)),
+        },
+        "usageMatrix": usage_matrix,
+    }
+    return _enforce_data_intelligence_size(
+        agg._json_safe(payload)
+    )
