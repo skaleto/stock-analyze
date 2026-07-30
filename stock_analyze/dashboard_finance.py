@@ -12,6 +12,9 @@ import pandas as pd
 from .strategy_registry import StrategyRegistryInvalid, strategy_display_name
 
 
+TUSHARE_AMOUNT_TO_YUAN = 1_000.0
+
+
 ACCOUNT_LABELS = {
     "hs300": "沪深300账户",
     "zz500": "中证500账户",
@@ -429,8 +432,6 @@ def read_instrument_history(
     for column in ("open", "high", "low", "close", "volume", "amount"):
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     if market == "cn_qdii_etf":
-        from .markets.cn_qdii_etf.data_provider import TUSHARE_AMOUNT_TO_YUAN
-
         frame["amount"] = frame["amount"] * TUSHARE_AMOUNT_TO_YUAN
     date_text = frame["date"].astype(str).str.replace("-", "", regex=False).str[:8]
     frame["date"] = (
