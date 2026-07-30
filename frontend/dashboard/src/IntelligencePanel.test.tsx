@@ -354,7 +354,7 @@ describe("IntelligencePanel", () => {
     await user.click(screen.getByRole("button", { name: /晨星科技/ }));
     const dialog = await screen.findByRole("dialog", { name: "决策详情" });
     expect(within(dialog).getByText("股份回购")).toBeInTheDocument();
-    expect(within(dialog).getByText("已公告")).toBeInTheDocument();
+    expect(within(dialog).getByText("已公告")).toHaveAttribute("title", "已公告");
     expect(within(dialog).getByText("600001.SH")).toBeInTheDocument();
     expect(within(dialog).getByText("上涨倾向 70%")).toBeInTheDocument();
     expect(within(dialog).getByText("80%")).toBeInTheDocument();
@@ -477,6 +477,19 @@ describe("IntelligencePanel", () => {
     expect(await within(dialog).findByText("海川科技")).toBeInTheDocument();
     expect(within(dialog).getByText("未知状态")).toBeInTheDocument();
     expect(within(dialog).queryByText("future_lifecycle")).not.toBeInTheDocument();
+    expect(within(dialog).getByText("未知状态")).toHaveAttribute(
+      "title",
+      "未知状态",
+    );
+    const accessibleMetadata = Array.from(
+      document.querySelectorAll("[title], [aria-label]"),
+    ).map((element) => [
+      element.getAttribute("title"),
+      element.getAttribute("aria-label"),
+    ].filter(Boolean).join(" ")).join(" ");
+    expect(accessibleMetadata).not.toMatch(
+      /\b(?:announced|available|complete|partial|observing|observe|active|stale|unavailable|future_lifecycle)\b/,
+    );
     await user.click(within(dialog).getByRole("button", {
       name: "查看文档处理记录",
     }));

@@ -389,6 +389,37 @@ describe("DataIntelligencePage", () => {
     expect(screen.getByText("公告目录")).toBeInTheDocument();
     expect(screen.getAllByText("0").length).toBeGreaterThan(0);
     expect(screen.getByText("状态不可用")).toBeInTheDocument();
+    expect(screen.getByText("内容超过安全展示上限，已安全截断")).toBeInTheDocument();
+    expect(screen.queryByText("serialized_size_limit")).not.toBeInTheDocument();
+  });
+
+  it("keeps explicitly available sections strict when the lane is truncated", async () => {
+    const payload = responsePayload() as unknown as Record<string, unknown>;
+    payload.truncated = true;
+    const intelligence = payload.intelligence as Record<string, unknown>;
+    intelligence.truncated = true;
+    intelligence.pipeline = {
+      ...(intelligence.pipeline as Record<string, unknown>),
+      status: "available",
+      documents: "malformed",
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(payload));
+
+    await expect(fetchDataIntelligence("a_share")).rejects.toThrow(
+      "Invalid data intelligence response: intelligence.pipeline.documents",
+    );
+  });
+
+  it("uses a safe Chinese fallback for unknown truncation reasons", async () => {
+    const payload = responsePayload();
+    payload.truncated = true;
+    payload.truncationReason = "future_truncation_code";
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(payload));
+
+    render(<DataIntelligencePage market="a_share" refreshToken={0} />);
+
+    expect(await screen.findByText("内容过多，已安全截断")).toBeInTheDocument();
+    expect(screen.queryByText("future_truncation_code")).not.toBeInTheDocument();
   });
 
   it("renders operational states and recommendations in Chinese", async () => {
