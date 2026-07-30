@@ -1,3 +1,4 @@
+import type { ReactElement } from "react";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -26,6 +27,15 @@ const stages = [
   },
 ];
 
+function expectRenderError(ui: ReactElement, message: string) {
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(() => render(ui)).toThrowError(message);
+  } finally {
+    consoleError.mockRestore();
+  }
+}
+
 describe("StageFlow", () => {
   it("selects a numbered stage and exposes the active stage", async () => {
     const onSelect = vi.fn();
@@ -41,10 +51,10 @@ describe("StageFlow", () => {
 
     const flow = screen.getByRole("group", { name: "模型研究进度" });
     const dataStage = within(flow).getByRole("button", {
-      name: /数据准备 6 个来源/,
+      name: /数据准备 成功 6 个来源 72 个特征/,
     });
     const trainingStage = within(flow).getByRole("button", {
-      name: /模型训练 4 个版本/,
+      name: /模型训练 研究中 4 个版本 最近训练 07-30/,
     });
     expect(dataStage).toHaveAttribute("aria-pressed", "false");
     expect(trainingStage).toHaveAttribute("aria-pressed", "true");
@@ -69,12 +79,27 @@ describe("StageFlow", () => {
     );
 
     const trainingStage = screen.getByRole("button", {
-      name: /模型训练 4 个版本/,
+      name: /模型训练 研究中 4 个版本 最近训练 07-30/,
     });
     expect(within(trainingStage).getByText("研究中")).toHaveClass(
       "status-research",
     );
     expect(within(trainingStage).queryByText("失败")).not.toBeInTheDocument();
+  });
+
+  it("rejects duplicate stage keys", () => {
+    expectRenderError(
+      <StageFlow
+        ariaLabel="模型研究进度"
+        selectedKey="data"
+        onSelect={vi.fn()}
+        stages={[
+          ...stages,
+          { ...stages[0], label: "重复的数据准备" },
+        ]}
+      />,
+      'StageFlow received duplicate stage key "data".',
+    );
   });
 });
 
@@ -138,6 +163,50 @@ describe("DetailPanel", () => {
     ).not.toBeInTheDocument();
     expect(screen.getByText("暂无数据")).toBeInTheDocument();
   });
+
+  it("normalizes explicit-zone timestamps to Asia/Shanghai", () => {
+    const { rerender } = render(
+      <DetailPanel
+        title="模型训练"
+        status="running"
+        updatedAt="2026-07-30T09:30:00Z"
+      >
+        <p>训练详情</p>
+      </DetailPanel>,
+    );
+    expect(screen.getByText("2026-07-30 17:30:00")).toHaveAttribute(
+      "datetime",
+      "2026-07-30T09:30:00Z",
+    );
+
+    rerender(
+      <DetailPanel
+        title="模型训练"
+        status="running"
+        updatedAt="2026-07-30T18:30:00+09:00"
+      >
+        <p>训练详情</p>
+      </DetailPanel>,
+    );
+    expect(screen.getByText("2026-07-30 17:30:00")).toHaveAttribute(
+      "datetime",
+      "2026-07-30T18:30:00+09:00",
+    );
+  });
+
+  it("shows malformed timestamp text unchanged", () => {
+    render(
+      <DetailPanel
+        title="模型训练"
+        status="running"
+        updatedAt="brokenTtimestamp"
+      >
+        <p>训练详情</p>
+      </DetailPanel>,
+    );
+
+    expect(screen.getByText("brokenTtimestamp")).toBeInTheDocument();
+  });
 });
 
 describe("BoundedTable", () => {
@@ -180,5 +249,44 @@ describe("BoundedTable", () => {
     expect(within(table).getAllByRole("row")).toHaveLength(2);
     expect(within(table).getByRole("cell", { name: "暂无记录" }))
       .toHaveAttribute("colspan", "2");
+  });
+
+  it("rejects an empty column definition", () => {
+    expectRenderError(
+      <BoundedTable<number>
+        rows={[]}
+        columns={[]}
+        rowKey={(row) => String(row)}
+        emptyLabel="暂无记录"
+      />,
+      "BoundedTable requires at least one column.",
+    );
+  });
+
+  it("rejects duplicate column keys", () => {
+    expectRenderError(
+      <BoundedTable
+        rows={[1]}
+        columns={[
+          ...columns,
+          { key: "index", label: "重复序号", render: String },
+        ]}
+        rowKey={(row) => String(row)}
+        emptyLabel="暂无记录"
+      />,
+      'BoundedTable received duplicate column key "index".',
+    );
+  });
+
+  it("rejects duplicate row keys within the rendered bound", () => {
+    expectRenderError(
+      <BoundedTable
+        rows={[1, 2]}
+        columns={columns}
+        rowKey={() => "same-row"}
+        emptyLabel="暂无记录"
+      />,
+      'BoundedTable received duplicate row key "same-row".',
+    );
   });
 });
