@@ -129,6 +129,130 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             250_000,
         )
 
+    def test_simulation_account_is_bounded_iteration_status_evidence(self) -> None:
+        long_text = "x" * 2_000
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._build(
+                Path(tmp),
+                models={"status": "available", "models": [_model()]},
+                iteration=_iteration(
+                    account_id=f"shadow-{long_text}",
+                    portfolio_label=f"独立模拟账户-{long_text}",
+                    label="不可覆盖 portfolio_label",
+                    isolation=f"完全隔离-{long_text}",
+                    nav_rows=17,
+                    portfolio_path=f"data/model_shadow/{long_text}",
+                ),
+            )
+
+        account = payload["simulation"]["account"]
+        self.assertEqual(account["accountId"][:7], "shadow-")
+        self.assertTrue(account["accountLabel"].startswith("独立模拟账户-"))
+        self.assertEqual(account["isolation"][:5], "完全隔离-")
+        self.assertEqual(account["navRows"], 17)
+        self.assertEqual(account["portfolioRef"][:18], "data/model_shadow/")
+        self.assertTrue(
+            all(
+                len(account[key]) <= 1_000
+                for key in (
+                    "accountId",
+                    "accountLabel",
+                    "isolation",
+                    "portfolioRef",
+                )
+            )
+        )
+
+    def test_registry_dates_and_active_gate_evidence_remain_distinct(self) -> None:
+        model = _model(champion=True)
+        model.pop("trained_at")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_root = root / "data" / "research" / "models" / "a_share" / "20"
+            model_root.mkdir(parents=True)
+            artifact = model_root / "run-A20-V005.joblib"
+            artifact.write_bytes(b"model")
+            (model_root / "registry.json").write_text(
+                json.dumps(
+                    {
+                        "champion_model_version": "A20-V005",
+                        "models": {
+                            "A20-V005": {
+                                "status": "active",
+                                "artifact": str(artifact),
+                                "registered_at": "2026-07-30T08:30:00+08:00",
+                                "gate_history": [
+                                    {
+                                        "passed": True,
+                                        "target_status": "active",
+                                        "evaluated_at": "2026-07-30T09:00:00+08:00",
+                                    },
+                                    {
+                                        "passed": True,
+                                        "target_status": "shadow",
+                                        "evaluated_at": "2026-07-30T10:00:00+08:00",
+                                    },
+                                    {
+                                        "passed": True,
+                                        "target_status": "active",
+                                        "evaluated_at": "2026-07-30T11:00:00+08:00",
+                                    },
+                                ],
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = self._build(
+                root,
+                models={"status": "available", "models": [model]},
+            )
+
+        registered = payload["training"]["models"][0]
+        champion = payload["adoption"]["champions"][0]
+        self.assertIsNone(registered["trainedAt"])
+        self.assertEqual(
+            registered["registeredAt"],
+            "2026-07-30T08:30:00+08:00",
+        )
+        self.assertEqual(
+            champion["activatedAt"],
+            "2026-07-30T11:00:00+08:00",
+        )
+
+    def test_champion_without_active_gate_has_no_activation_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_root = root / "data" / "research" / "models" / "a_share" / "20"
+            model_root.mkdir(parents=True)
+            artifact = model_root / "run-A20-V005.joblib"
+            artifact.write_bytes(b"model")
+            (model_root / "registry.json").write_text(
+                json.dumps(
+                    {
+                        "champion_model_version": "A20-V005",
+                        "models": {
+                            "A20-V005": {
+                                "status": "active",
+                                "artifact": str(artifact),
+                                "registered_at": "2026-07-30T08:30:00+08:00",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = self._build(
+                root,
+                models={
+                    "status": "available",
+                    "models": [_model(champion=True)],
+                },
+            )
+
+        self.assertIsNone(payload["adoption"]["champions"][0]["activatedAt"])
+
     def test_unknown_market_is_rejected(self) -> None:
         with self.assertRaises(competition.UnknownMarket):
             build_dashboard_model_research_data(

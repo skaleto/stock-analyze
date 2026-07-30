@@ -36,6 +36,7 @@ export type ModelResearchModel = {
   horizon: number;
   algorithmFamily: string;
   trainedAt?: string | null;
+  registeredAt?: string | null;
   sampleSupport: number;
   featureColumns: string[];
   artifactRef?: string | null;
@@ -48,6 +49,26 @@ export type ModelResearchModel = {
   pointInTimeAudit?: boolean | null;
   candidateFeatureCount: number;
   metrics: Record<string, number | string | boolean | null>;
+};
+
+export type ModelResearchCandidate = {
+  model_version?: string;
+  display_version?: string;
+  status?: string;
+  status_label?: string;
+  selected_at?: string | null;
+  registered_at?: string | null;
+  shadow_cycles?: number;
+  shadow_cycles_remaining?: number;
+  horizon?: number | string | null;
+};
+
+export type ModelResearchSimulationAccount = {
+  accountId: string;
+  accountLabel: string;
+  isolation: string;
+  navRows: number;
+  portfolioRef: string;
 };
 
 export type ModelResearchData = {
@@ -83,7 +104,8 @@ export type ModelResearchData = {
   };
   simulation: {
     status: string;
-    candidate: Record<string, unknown> | null;
+    candidate: ModelResearchCandidate | null;
+    account: ModelResearchSimulationAccount | null;
     predictionAsOf?: string | null;
     predictionStatus: string;
     cyclesCompleted: number;
@@ -103,7 +125,7 @@ export type ModelResearchData = {
     champions: {
       modelVersion: string;
       horizon: number;
-      trainedAt?: string | null;
+      activatedAt?: string | null;
       artifactRef?: string | null;
     }[];
     rollbackCandidates: {

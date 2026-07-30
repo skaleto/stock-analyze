@@ -67,6 +67,7 @@ const payload = {
         horizon: 20,
         algorithmFamily: "boosting_ensemble",
         trainedAt: "2026-07-29T23:00:00",
+        registeredAt: "2026-07-30T08:30:00+08:00",
         sampleSupport: 4200,
         featureColumns: ["momentum_20"],
         artifactRef: "data/research/models/a_share/20/run-A20-V005.joblib",
@@ -91,6 +92,7 @@ const payload = {
         horizon: 20,
         algorithmFamily: "boosting_ensemble",
         trainedAt: "2026-07-29T23:00:00",
+        registeredAt: "2026-07-30T08:30:00+08:00",
         sampleSupport: 4200,
         featureColumns: ["momentum_20"],
         artifactRef: "data/research/models/a_share/20/run-A20-V005.joblib",
@@ -108,7 +110,24 @@ const payload = {
   },
   simulation: {
     status: "available",
-    candidate: { display_version: "A20-V005" },
+    candidate: {
+      model_version: "A20-V005",
+      display_version: "A20-V005",
+      status: "shadow",
+      status_label: "影子观察",
+      selected_at: "2026-07-29T23:30:00",
+      registered_at: "2026-07-30T08:30:00+08:00",
+      shadow_cycles: 0,
+      shadow_cycles_remaining: 12,
+      horizon: 20,
+    },
+    account: {
+      accountId: "model-shadow-a-share",
+      accountLabel: "模型独立模拟账户",
+      isolation: "完全隔离，不计入双策略竞赛",
+      navRows: 14,
+      portfolioRef: "data/model_shadow/a_share/state.json",
+    },
     predictionAsOf: null,
     predictionStatus: "missing",
     cyclesCompleted: 0,
@@ -188,6 +207,87 @@ describe("ModelResearchPage", () => {
     expect(screen.getByText(/上涨概率未达到入选门槛/)).toHaveTextContent(
       "probability_gate_not_met",
     );
+  });
+
+  it("shows training time, artifact status, and artifact reference separately", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(payload)));
+    const user = userEvent.setup();
+    render(<ModelResearchPage market="a_share" refreshToken={0} />);
+
+    await screen.findByText("A20-V005");
+    await user.click(screen.getByRole("button", { name: /模型训练/ }));
+    const detail = screen.getByRole("region", { name: "模型训练详情" });
+
+    expect(within(detail).getByRole("columnheader", { name: "训练时间" }))
+      .toBeInTheDocument();
+    expect(within(detail).getByRole("columnheader", { name: "产物状态" }))
+      .toBeInTheDocument();
+    expect(within(detail).getByRole("columnheader", { name: "产物引用" }))
+      .toBeInTheDocument();
+    expect(within(detail).getByText("2026-07-29T23:00:00"))
+      .toBeInTheDocument();
+    expect(within(detail).getByText("available")).toBeInTheDocument();
+    expect(
+      within(detail).getByText(
+        "data/research/models/a_share/20/run-A20-V005.joblib",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows independent simulation account and execution evidence", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(payload)));
+    const user = userEvent.setup();
+    render(<ModelResearchPage market="a_share" refreshToken={0} />);
+
+    await screen.findByText("A20-V005");
+    await user.click(screen.getByRole("button", { name: /模拟运行/ }));
+    const detail = screen.getByRole("region", { name: "模拟运行详情" });
+
+    expect(within(detail).getByText("模型独立模拟账户")).toBeInTheDocument();
+    expect(within(detail).getByText("model-shadow-a-share")).toBeInTheDocument();
+    expect(
+      within(detail).getByText("完全隔离，不计入双策略竞赛"),
+    ).toBeInTheDocument();
+    expect(within(detail).getByText("成交 0 笔")).toBeInTheDocument();
+    expect(within(detail).getByText("待执行 0 笔")).toBeInTheDocument();
+  });
+
+  it("shows bounded Champion adoption evidence by model and horizon", async () => {
+    const championPayload = {
+      ...payload,
+      adoption: {
+        ...payload.adoption,
+        champions: [
+          {
+            modelVersion: "A20-V004",
+            horizon: 20,
+            activatedAt: "2026-07-28T10:00:00+08:00",
+            artifactRef: "data/research/models/a_share/20/run-A20-V004.joblib",
+          },
+        ],
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse(championPayload)),
+    );
+    const user = userEvent.setup();
+    render(<ModelResearchPage market="a_share" refreshToken={0} />);
+
+    await screen.findByText("0 个 Champion");
+    await user.click(screen.getByRole("button", { name: /正式采用/ }));
+    const detail = screen.getByRole("region", { name: "正式采用详情" });
+
+    expect(within(detail).getByText("A20-V004")).toBeInTheDocument();
+    expect(within(detail).getByText("20 日")).toBeInTheDocument();
+    expect(
+      within(detail).getByText("2026-07-28T10:00:00+08:00"),
+    ).toBeInTheDocument();
+    expect(
+      within(detail).getByText(
+        "data/research/models/a_share/20/run-A20-V004.joblib",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("states rule-driven adoption without a Champion and shows strategy evidence", async () => {
