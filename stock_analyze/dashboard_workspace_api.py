@@ -230,6 +230,38 @@ def _champion_activated_at(registry_record: dict[str, Any]) -> Any:
     return None
 
 
+def _evidence_time(value: Any) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return float("-inf")
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except (ValueError, OSError):
+        return float("-inf")
+
+
+def _model_evidence_rank(row: dict[str, Any]) -> tuple[Any, ...]:
+    completeness = sum(
+        (
+            row.get("registryStatus") == "available",
+            row.get("artifactStatus") == "available",
+            bool(row.get("artifactRef")),
+        )
+    )
+    deterministic = json.dumps(
+        row,
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+    )
+    return (
+        _evidence_time(row.get("registeredAt")),
+        _evidence_time(row.get("trainedAt")),
+        completeness,
+        deterministic,
+    )
+
+
 def _model_rows(root: Path, market: str) -> list[dict[str, Any]]:
     health = _mapping(agg._read_model_health(root, market))
     rows: list[dict[str, Any]] = []
@@ -317,9 +349,9 @@ def _model_rows(root: Path, market: str) -> list[dict[str, Any]]:
     for row in rows:
         key = (row["horizon"], row["modelVersion"])
         current = deduplicated.get(key)
-        if current is None or json.dumps(
-            row, sort_keys=True, ensure_ascii=False, default=str
-        ) < json.dumps(current, sort_keys=True, ensure_ascii=False, default=str):
+        if current is None or _model_evidence_rank(row) > _model_evidence_rank(
+            current
+        ):
             deduplicated[key] = row
     return [deduplicated[key] for key in sorted(deduplicated)]
 
@@ -395,9 +427,15 @@ def _usage_rows(
             "accounts": _integer(row.get("accounts")),
         }
         current = by_agent.get(agent)
-        if current is None or json.dumps(
-            evidence, sort_keys=True, ensure_ascii=False
-        ) < json.dumps(current, sort_keys=True, ensure_ascii=False):
+        evidence_rank = (
+            _evidence_time(evidence["as_of"]),
+            json.dumps(evidence, sort_keys=True, ensure_ascii=False),
+        )
+        current_rank = (
+            _evidence_time(current["as_of"]),
+            json.dumps(current, sort_keys=True, ensure_ascii=False),
+        ) if current is not None else None
+        if current_rank is None or evidence_rank > current_rank:
             by_agent[agent] = evidence
     return [by_agent[agent] for agent in sorted(by_agent)][:MAX_TABLE_ROWS]
 

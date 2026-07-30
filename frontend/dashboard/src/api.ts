@@ -73,6 +73,17 @@ function stringArray(value: unknown, path: string): void {
   });
 }
 
+function rejectDuplicateIdentity(
+  seen: Set<string>,
+  identity: unknown[],
+  path: string,
+  fields: string,
+): void {
+  const key = JSON.stringify(identity);
+  if (seen.has(key)) modelResearchError(`${path} duplicate ${fields}`);
+  seen.add(key);
+}
+
 function validateModel(value: unknown, path: string): void {
   const model = objectAt(value, path);
   stringAt(model.modelVersion, `${path}.modelVersion`);
@@ -99,10 +110,12 @@ function validateModelResearch(value: unknown): ModelResearchData {
   stringAt(data.market, "market");
   stringAt(data.market_label, "market_label");
 
+  const stageKeys = new Set<string>();
   arrayAt(data.stages, "stages").forEach((item, index) => {
     const path = `stages[${index}]`;
     const stage = objectAt(item, path);
-    stringAt(stage.key, `${path}.key`);
+    const key = stringAt(stage.key, `${path}.key`);
+    rejectDuplicateIdentity(stageKeys, [key], `${path}.key`, "key");
     stringAt(stage.label, `${path}.label`);
     const status = stringAt(stage.status, `${path}.status`);
     if (!workspaceStatuses.has(status)) modelResearchError(`${path}.status`);
@@ -111,6 +124,7 @@ function validateModelResearch(value: unknown): ModelResearchData {
   });
 
   const preparation = objectAt(data.dataPreparation, "dataPreparation");
+  const sourceIdentities = new Set<string>();
   arrayAt(preparation.sources, "dataPreparation.sources").forEach(
     (item, index) => {
       const path = `dataPreparation.sources[${index}]`;
@@ -123,6 +137,18 @@ function validateModelResearch(value: unknown): ModelResearchData {
       }
       optionalString(source.as_of, `${path}.as_of`);
       optionalString(source.error, `${path}.error`);
+      rejectDuplicateIdentity(
+        sourceIdentities,
+        [
+          source.source,
+          source.status,
+          source.rows ?? "",
+          source.as_of ?? "",
+          source.error ?? "",
+        ],
+        path,
+        "source,status,rows,as_of,error",
+      );
     },
   );
   [
@@ -146,14 +172,32 @@ function validateModelResearch(value: unknown): ModelResearchData {
   stringAt(preparation.pointInTimeAudit, "dataPreparation.pointInTimeAudit");
 
   const training = objectAt(data.training, "training");
+  const trainingIdentities = new Set<string>();
   arrayAt(training.models, "training.models").forEach((model, index) => {
-    validateModel(model, `training.models[${index}]`);
+    const path = `training.models[${index}]`;
+    validateModel(model, path);
+    const row = model as Record<string, unknown>;
+    rejectDuplicateIdentity(
+      trainingIdentities,
+      [row.horizon, row.modelVersion],
+      path,
+      "horizon,modelVersion",
+    );
   });
   const validation = objectAt(data.validation, "validation");
   numberAt(validation.passed, "validation.passed");
   numberAt(validation.total, "validation.total");
+  const validationIdentities = new Set<string>();
   arrayAt(validation.models, "validation.models").forEach((model, index) => {
-    validateModel(model, `validation.models[${index}]`);
+    const path = `validation.models[${index}]`;
+    validateModel(model, path);
+    const row = model as Record<string, unknown>;
+    rejectDuplicateIdentity(
+      validationIdentities,
+      [row.horizon, row.modelVersion],
+      path,
+      "horizon,modelVersion",
+    );
   });
 
   const simulation = objectAt(data.simulation, "simulation");
@@ -187,6 +231,7 @@ function validateModelResearch(value: unknown): ModelResearchData {
   optionalString(decision.cashReason, "simulation.decision.cashReason");
 
   const adoption = objectAt(data.adoption, "adoption");
+  const championIdentities = new Set<string>();
   arrayAt(adoption.champions, "adoption.champions").forEach((item, index) => {
     const path = `adoption.champions[${index}]`;
     const champion = objectAt(item, path);
@@ -194,6 +239,12 @@ function validateModelResearch(value: unknown): ModelResearchData {
     numberAt(champion.horizon, `${path}.horizon`);
     optionalString(champion.activatedAt, `${path}.activatedAt`);
     optionalString(champion.artifactRef, `${path}.artifactRef`);
+    rejectDuplicateIdentity(
+      championIdentities,
+      [champion.horizon, champion.modelVersion],
+      path,
+      "horizon,modelVersion",
+    );
   });
   arrayAt(adoption.rollbackCandidates, "adoption.rollbackCandidates").forEach(
     (item, index) => {
@@ -202,6 +253,7 @@ function validateModelResearch(value: unknown): ModelResearchData {
       stringAt(rollback.displayVersion, `${path}.displayVersion`);
     },
   );
+  const strategyAgents = new Set<string>();
   arrayAt(adoption.strategyUsage, "adoption.strategyUsage").forEach(
     (item, index) => {
       const path = `adoption.strategyUsage[${index}]`;
@@ -216,6 +268,12 @@ function validateModelResearch(value: unknown): ModelResearchData {
         stringAt(version, `${path}.model_versions.${key}`);
       });
       stringAt(usage.fallback_reason, `${path}.fallback_reason`);
+      rejectDuplicateIdentity(
+        strategyAgents,
+        [usage.agent],
+        path,
+        "agent",
+      );
     },
   );
   return data as unknown as ModelResearchData;

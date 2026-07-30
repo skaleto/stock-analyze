@@ -632,8 +632,12 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
     def test_deduplicates_models_by_horizon_and_version_deterministically(self) -> None:
         first = _model()
         first["trained_at"] = "2026-07-30T01:00:00"
+        first["sample_support"] = 4300
+        first["algorithm_family"] = "z-latest-evidence"
         second = _model()
         second["trained_at"] = "2026-07-29T23:00:00"
+        second["sample_support"] = 9999
+        second["algorithm_family"] = "a-lexically-preferred"
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -651,6 +655,11 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             forward["training"]["models"],
             reverse["training"]["models"],
         )
+        self.assertEqual(
+            forward["training"]["models"][0]["trainedAt"],
+            "2026-07-30T01:00:00",
+        )
+        self.assertEqual(forward["training"]["models"][0]["sampleSupport"], 4300)
         self.assertEqual(forward["validation"]["total"], 1)
 
     def test_deduplicates_only_identical_source_evidence_rows(self) -> None:
@@ -681,13 +690,18 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         )
 
     def test_deduplicates_strategy_usage_by_public_agent_identity(self) -> None:
-        usage = {
+        latest_usage = {
             "market": "a_share",
             "agent": "codex",
             "strategy_label": "Codex public account",
             "as_of": "2026-07-30",
             "status": "active",
             "model_versions": {"20": "A20-V005"},
+        }
+        older_usage = {
+            **latest_usage,
+            "strategy_label": "Lexically earlier but stale",
+            "as_of": "2026-07-29",
         }
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -713,13 +727,26 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             payload = self._build(
                 root,
                 models={"status": "available", "models": [model]},
-                usage=[usage, dict(usage)],
+                usage=[latest_usage, older_usage],
+            )
+            reversed_payload = self._build(
+                root,
+                models={"status": "available", "models": [model]},
+                usage=[older_usage, latest_usage],
             )
 
         self.assertEqual(len(payload["adoption"]["strategyUsage"]), 1)
         self.assertEqual(
             payload["adoption"]["strategyUsage"][0]["agent"],
             "codex",
+        )
+        self.assertEqual(
+            payload["adoption"]["strategyUsage"][0]["as_of"],
+            "2026-07-30",
+        )
+        self.assertEqual(
+            payload["adoption"]["strategyUsage"],
+            reversed_payload["adoption"]["strategyUsage"],
         )
 
     def test_adversarial_scalars_are_sanitized_and_final_payload_is_pruned(self) -> None:

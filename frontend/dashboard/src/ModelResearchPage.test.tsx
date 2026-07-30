@@ -333,6 +333,40 @@ describe("ModelResearchPage", () => {
     );
   });
 
+  it("rejects duplicate stage identities from a successful response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({
+        ...payload,
+        stages: [...payload.stages, { ...payload.stages[0] }],
+      })),
+    );
+
+    render(<ModelResearchPage market="a_share" refreshToken={0} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Invalid model research response: stages[5].key duplicate",
+    );
+  });
+
+  it("rejects duplicate model table rows from a successful response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({
+        ...payload,
+        training: {
+          models: [...payload.training.models, { ...payload.training.models[0] }],
+        },
+      })),
+    );
+
+    render(<ModelResearchPage market="a_share" refreshToken={0} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Invalid model research response: training.models[1] duplicate horizon,modelVersion",
+    );
+  });
+
   it("rejects a successful response with missing core sections", async () => {
     const { training: _training, ...missingTraining } = payload;
     vi.stubGlobal(
