@@ -15,6 +15,8 @@ import pandas as pd
 from stock_analyze import competition
 from stock_analyze.dashboard_workspace_api import (
     FORMAL_FACTOR_SOURCES,
+    _bounded_intelligence_lane,
+    _structured_snapshot_coverage,
     build_dashboard_data_intelligence_data,
     build_dashboard_model_research_data,
 )
@@ -1288,6 +1290,72 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         )
         self.assertEqual(defensive["impact"], "本期规则驱动")
 
+    def test_active_lineage_survives_a_missing_feature_manifest(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch(
+                "stock_analyze.dashboard_workspace_api._public_strategy_profiles",
+                return_value={
+                    "defensive": {"label": "稳健防守", "factors": []},
+                    "trend": {"label": "趋势进攻", "factors": []},
+                },
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+                return_value={"models": []},
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+                return_value={},
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+                return_value=_intelligence(),
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+                return_value=[
+                    {
+                        "market": "a_share",
+                        "agent": "claude",
+                        "as_of": "2026-07-30",
+                        "status": "active",
+                        "model_versions": {"20": "RETIRED-MANIFEST"},
+                    }
+                ],
+            ):
+                payload = build_dashboard_data_intelligence_data(
+                    repo_root=Path(tmp),
+                    market="a_share",
+                )
+
+        defensive = payload["usageMatrix"][0]
+        self.assertEqual(defensive["impact"], "正式决策采用 1 个模型版本")
+        self.assertEqual(
+            defensive["modelAdoption"],
+            {
+                "status": "active",
+                "modelCount": 1,
+                "resolvableManifestCount": 0,
+                "missingManifestCount": 1,
+                "models": [
+                    {
+                        "horizon": 20,
+                        "modelVersion": "RETIRED-MANIFEST",
+                        "manifestStatus": "unavailable",
+                        "evidence": "decision_lineage:20:RETIRED-MANIFEST",
+                        "missingManifestEvidence": (
+                            "missing_manifest:20:RETIRED-MANIFEST"
+                        ),
+                    }
+                ],
+            },
+        )
+        traditional = defensive["traditionalFactors"]
+        self.assertEqual(traditional["researchStatus"], "unavailable")
+        self.assertEqual(
+            traditional["missingManifestEvidence"],
+            ["missing_manifest:20:RETIRED-MANIFEST"],
+        )
+        self.assertEqual(traditional["researchCount"], 0)
+
     def test_formal_factor_sources_cover_every_non_sentiment_overlay_factor(
         self,
     ) -> None:
@@ -1299,6 +1367,27 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
                 )
                 mapped = set().union(*FORMAL_FACTOR_SOURCES[market].values())
                 self.assertEqual(mapped, expected)
+        self.assertEqual(
+            FORMAL_FACTOR_SOURCES["a_share"],
+            {
+                "tushare_daily_basic": {
+                    "pe",
+                    "pb",
+                    "dividend_yield",
+                },
+                "tushare_fina_indicator_announced": {
+                    "roe",
+                    "gross_margin",
+                    "debt_ratio",
+                    "net_profit_growth",
+                },
+                "adjusted_ohlcv": {
+                    "momentum_20",
+                    "momentum_60",
+                    "low_volatility_60",
+                },
+            },
+        )
 
     def test_data_intelligence_empty_partial_and_unknown_market_states(self) -> None:
         with self.assertRaises(competition.UnknownMarket):
@@ -1356,9 +1445,10 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
 
         coverage = payload["structured"]["coverage"]
         self.assertEqual(coverage["status"], "partial")
-        self.assertEqual(coverage["rangeStart"], "20260729")
-        self.assertEqual(coverage["rangeEnd"], "20260729")
-        self.assertEqual(coverage["latestTradeDate"], "20260729")
+        self.assertEqual(coverage["snapshotAsOf"], "20260729")
+        self.assertIsNone(coverage["rangeStart"])
+        self.assertIsNone(coverage["rangeEnd"])
+        self.assertIsNone(coverage["latestTradeDate"])
         self.assertEqual(len(payload["usageMatrix"]), 4)
         self.assertTrue(
             all(
@@ -1424,6 +1514,119 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             payload["structured"]["coverage"]["rangeEnd"],
             "20260729",
         )
+        self.assertEqual(
+            payload["structured"]["coverage"]["snapshotAsOf"],
+            "20260125",
+        )
+
+    def test_structured_coverage_reports_partial_readable_boundary_honestly(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            feature_root = root / "data" / "research" / "features" / "a_share"
+            feature_root.mkdir(parents=True)
+            first = feature_root / "20260101.parquet"
+            latest = feature_root / "20260125.parquet"
+            first.write_bytes(b"x")
+            latest.write_bytes(b"x")
+
+            def read_boundary(path: Path, **_kwargs: object) -> pd.DataFrame:
+                if Path(path) == latest:
+                    raise OSError("broken latest snapshot")
+                return pd.DataFrame({"trade_date": ["20230711"]})
+
+            with mock.patch(
+                "stock_analyze.dashboard_workspace_api.pd.read_parquet",
+                side_effect=read_boundary,
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api._public_strategy_profiles",
+                return_value={
+                    "defensive": {"label": "稳健防守", "factors": []},
+                    "trend": {"label": "趋势进攻", "factors": []},
+                },
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+                return_value={"models": []},
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+                return_value={},
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+                return_value=_intelligence(),
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+                return_value=[],
+            ):
+                payload = build_dashboard_data_intelligence_data(
+                    repo_root=root,
+                    market="a_share",
+                )
+
+        coverage = payload["structured"]["coverage"]
+        self.assertEqual(coverage["status"], "partial")
+        self.assertEqual(coverage["snapshotAsOf"], "20260125")
+        self.assertEqual(coverage["rangeStart"], "20230711")
+        self.assertEqual(coverage["rangeEnd"], "20230711")
+        self.assertEqual(coverage["latestTradeDate"], "20230711")
+        self.assertEqual(coverage["datedSnapshots"], 1)
+
+    def test_empty_snapshot_has_as_of_but_no_trade_date_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot = (
+                root
+                / "data"
+                / "research"
+                / "features"
+                / "a_share"
+                / "20260729.parquet"
+            )
+            snapshot.parent.mkdir(parents=True)
+            pd.DataFrame({"trade_date": []}).to_parquet(snapshot, index=False)
+
+            coverage = _structured_snapshot_coverage(root, "a_share")
+
+        self.assertEqual(coverage["status"], "partial")
+        self.assertEqual(coverage["snapshotAsOf"], "20260729")
+        self.assertIsNone(coverage["rangeStart"])
+        self.assertIsNone(coverage["rangeEnd"])
+        self.assertIsNone(coverage["latestTradeDate"])
+        self.assertEqual(coverage["readableSnapshots"], 1)
+        self.assertEqual(coverage["datedSnapshots"], 0)
+
+    def test_bounded_intelligence_lane_preserves_required_object_types(
+        self,
+    ) -> None:
+        wide = {
+            key: {
+                f"column-{index:02d}": {
+                    f"nested-{nested:02d}": list(range(40))
+                    for nested in range(40)
+                }
+                for index in range(40)
+            }
+            for key in (
+                "pipeline",
+                "extraction",
+                "factorSupply",
+                "modelImpact",
+                "decisions",
+            )
+        }
+
+        lane = _bounded_intelligence_lane(wide)
+
+        for key in (
+            "pipeline",
+            "extraction",
+            "factorSupply",
+            "modelImpact",
+            "decisions",
+        ):
+            self.assertIsInstance(lane[key], dict)
+        self.assertTrue(lane["truncated"])
+        self.assertIn("node_budget_exhausted", lane["truncationReasons"])
 
     def test_data_intelligence_payload_is_sanitized_bounded_and_deterministic(
         self,
