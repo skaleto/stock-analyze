@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchModelResearch } from "./api";
 import { StageFlow } from "./StageFlow";
 import {
@@ -123,14 +123,35 @@ export function ModelResearchPage({
     loader,
   );
   const [selected, setSelected] = useState("data");
+  const refreshState = useRef({
+    mounted: false,
+    market,
+    token: refreshToken,
+  });
 
   useEffect(() => {
     setSelected("data");
   }, [market]);
 
   useEffect(() => {
-    if (refreshToken > 0) resource.refresh();
-  }, [refreshToken, resource.refresh]);
+    const previous = refreshState.current;
+    if (!previous.mounted) {
+      refreshState.current = {
+        mounted: true,
+        market,
+        token: refreshToken,
+      };
+      return;
+    }
+    const marketChanged = previous.market !== market;
+    const tokenChanged = previous.token !== refreshToken;
+    refreshState.current = {
+      mounted: true,
+      market,
+      token: refreshToken,
+    };
+    if (!marketChanged && tokenChanged) resource.refresh();
+  }, [market, refreshToken, resource.refresh]);
 
   if (resource.loading && !resource.data) {
     return (
