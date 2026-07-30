@@ -63,6 +63,12 @@ const systemIterationStatuses = new Set([
   "candidate",
   "pending",
 ]);
+const systemLifecycleStatuses = new Set([
+  "research",
+  "shadow",
+  "active",
+  "retired",
+]);
 const systemErrorContracts = {
   market_summary_read_unavailable: {
     section: "markets",
@@ -146,6 +152,18 @@ function systemNumber(value: unknown, path: string): number {
 
 function systemOptionalNumber(value: unknown, path: string): void {
   if (value !== undefined && value !== null) systemNumber(value, path);
+}
+
+function systemInteger(
+  value: unknown,
+  path: string,
+  maximum = Number.MAX_SAFE_INTEGER,
+): number {
+  const number = systemNumber(value, path);
+  if (!Number.isInteger(number) || number < 0 || number > maximum) {
+    systemOverviewError(path);
+  }
+  return number;
 }
 
 function systemBoolean(value: unknown, path: string): boolean {
@@ -312,6 +330,9 @@ function validateSystemMarket(value: unknown, path: string): string {
 }
 
 const iterationKeys = [
+  "schema_version",
+  "market",
+  "account_id",
   "status",
   "label",
   "portfolio_label",
@@ -324,6 +345,7 @@ const iterationKeys = [
   "model_version",
   "display_version",
   "model_versions",
+  "decision_key",
   "decision_changed",
   "candidate_rows",
   "eligible_rows",
@@ -335,18 +357,31 @@ const iterationKeys = [
   "decision_diagnostics",
   "trades_executed",
   "pending_orders",
+  "nav_rows",
+  "selected",
+  "run_id",
   "updated_at",
+  "lifecycle_status",
+  "lifecycle_status_label",
+  "champion_model_version",
+  "shadow_cycles",
+  "shadow_cycles_remaining",
+  "prediction_path",
+  "portfolio_path",
   "candidate",
   "champion",
   "version_history",
 ] as const;
 
-function validateSystemModelVersion(value: unknown, path: string): void {
+function validateSystemModelVersion(
+  value: unknown,
+  path: string,
+  expectedMarket: string,
+): void {
   if (value === null) return;
   const version = systemKeys(
     value,
     path,
-    [],
     [
       "market",
       "horizon",
@@ -358,16 +393,36 @@ function validateSystemModelVersion(value: unknown, path: string): void {
       "shadow_cycles",
       "shadow_cycles_remaining",
       "registered_at",
+      "artifact",
+    ],
+    [
+      "market",
+      "horizon",
+      "model_version",
+      "display_version",
+      "status",
+      "status_label",
+      "champion_model_version",
+      "shadow_cycles",
+      "shadow_cycles_remaining",
+      "registered_at",
+      "artifact",
       "selected_at",
       "outcome",
       "ended_at",
     ],
   );
+  const market = systemString(version.market, `${path}.market`);
+  if (market !== expectedMarket || !systemMarkets.has(market)) {
+    systemOverviewError(`${path}.market`);
+  }
+  const status = systemString(version.status, `${path}.status`);
+  if (!systemLifecycleStatuses.has(status)) {
+    systemOverviewError(`${path}.status`);
+  }
   [
-    "market",
     "model_version",
     "display_version",
-    "status",
     "status_label",
     "champion_model_version",
     "registered_at",
@@ -376,17 +431,140 @@ function validateSystemModelVersion(value: unknown, path: string): void {
     "ended_at",
   ].forEach((key) => systemOptionalString(version[key], `${path}.${key}`));
   ["horizon", "shadow_cycles", "shadow_cycles_remaining"].forEach(
-    (key) => systemOptionalNumber(version[key], `${path}.${key}`),
+    (key) => systemInteger(version[key], `${path}.${key}`),
   );
+  systemOptionalString(version.artifact, `${path}.artifact`);
 }
 
-function validateSystemIteration(value: unknown, path: string): void {
+function validateSystemSelected(value: unknown, path: string): void {
+  systemArray(value, path, 100).forEach((item, index) => {
+    const itemPath = `${path}[${index}]`;
+    const selected = systemKeys(
+      item,
+      itemPath,
+      [
+        "code",
+        "name",
+        "score",
+        "target_weight",
+        "confidence",
+        "p_up",
+        "p_down",
+        "expected_excess_return",
+        "model_version",
+        "reason",
+      ],
+      [
+        "code",
+        "name",
+        "score",
+        "target_weight",
+        "confidence",
+        "p_up",
+        "p_down",
+        "expected_excess_return",
+        "model_version",
+        "reason",
+      ],
+    );
+    ["code", "name", "model_version", "reason"].forEach((key) => (
+      systemOptionalString(selected[key], `${itemPath}.${key}`)
+    ));
+    [
+      "score",
+      "target_weight",
+      "confidence",
+      "p_up",
+      "p_down",
+      "expected_excess_return",
+    ].forEach((key) => (
+      systemOptionalNumber(selected[key], `${itemPath}.${key}`)
+    ));
+  });
+}
+
+function validateSystemDecisionDiagnostics(
+  value: unknown,
+  path: string,
+): void {
+  const diagnostics = systemKeys(
+    value,
+    path,
+    ["outcome", "summary", "regime", "funnel", "near_misses"],
+    ["outcome", "summary", "regime", "funnel", "near_misses"],
+  );
+  const outcome = systemString(diagnostics.outcome, `${path}.outcome`);
+  if (outcome !== "cash" && outcome !== "selected") {
+    systemOverviewError(`${path}.outcome`);
+  }
+  systemString(diagnostics.summary, `${path}.summary`);
+  systemString(diagnostics.regime, `${path}.regime`);
+  systemArray(diagnostics.funnel, `${path}.funnel`, 20)
+    .forEach((item, index) => {
+      const itemPath = `${path}.funnel[${index}]`;
+      const stage = systemKeys(
+        item,
+        itemPath,
+        ["key", "label", "count"],
+        ["key", "label", "count"],
+      );
+      systemString(stage.key, `${itemPath}.key`);
+      systemString(stage.label, `${itemPath}.label`);
+      systemInteger(stage.count, `${itemPath}.count`);
+    });
+  systemArray(diagnostics.near_misses, `${path}.near_misses`, 50)
+    .forEach((item, index) => {
+      const itemPath = `${path}.near_misses[${index}]`;
+      const nearMiss = systemKeys(
+        item,
+        itemPath,
+        [
+          "code",
+          "confidence",
+          "p_up",
+          "p_down",
+          "expected_excess_return",
+          "failed_rules",
+        ],
+        [
+          "code",
+          "name",
+          "confidence",
+          "p_up",
+          "p_down",
+          "expected_excess_return",
+          "failed_rules",
+        ],
+      );
+      systemString(nearMiss.code, `${itemPath}.code`);
+      systemOptionalString(nearMiss.name, `${itemPath}.name`);
+      [
+        "confidence",
+        "p_up",
+        "p_down",
+        "expected_excess_return",
+      ].forEach((key) => (
+        systemNumber(nearMiss[key], `${itemPath}.${key}`)
+      ));
+      systemArray(nearMiss.failed_rules, `${itemPath}.failed_rules`, 20)
+        .forEach((rule, ruleIndex) => (
+          systemString(rule, `${itemPath}.failed_rules[${ruleIndex}]`)
+        ));
+    });
+}
+
+function validateSystemIteration(
+  value: unknown,
+  path: string,
+  expectedMarket: string,
+): void {
   const iteration = systemKeys(value, path, ["status"], iterationKeys);
   const status = systemString(iteration.status, `${path}.status`);
   if (!systemIterationStatuses.has(status)) {
     systemOverviewError(`${path}.status`);
   }
   for (const key of [
+    "account_id",
     "label",
     "portfolio_label",
     "isolation",
@@ -396,47 +574,116 @@ function validateSystemIteration(value: unknown, path: string): void {
     "prediction_as_of",
     "model_version",
     "display_version",
+    "decision_key",
     "cash_reason",
+    "run_id",
     "updated_at",
+    "lifecycle_status_label",
+    "champion_model_version",
+    "prediction_path",
+    "portfolio_path",
   ]) {
     systemOptionalString(iteration[key], `${path}.${key}`);
   }
+  if (
+    iteration.account_id !== undefined
+    && iteration.account_id !== "model_shadow"
+  ) {
+    systemOverviewError(`${path}.account_id`);
+  }
+  if (iteration.market !== undefined) {
+    const market = systemString(iteration.market, `${path}.market`);
+    if (market !== expectedMarket || !systemMarkets.has(market)) {
+      systemOverviewError(`${path}.market`);
+    }
+  }
+  if (iteration.lifecycle_status !== undefined) {
+    const lifecycleStatus = systemString(
+      iteration.lifecycle_status,
+      `${path}.lifecycle_status`,
+    );
+    if (!systemLifecycleStatuses.has(lifecycleStatus)) {
+      systemOverviewError(`${path}.lifecycle_status`);
+    }
+  }
   for (const key of [
+    "schema_version",
     "horizon",
     "candidate_rows",
     "eligible_rows",
     "selected_count",
     "invalidated_rows",
-    "minimum_confidence",
     "trades_executed",
     "pending_orders",
+    "nav_rows",
+    "shadow_cycles",
+    "shadow_cycles_remaining",
   ]) {
-    systemOptionalNumber(iteration[key], `${path}.${key}`);
+    if (iteration[key] !== undefined) {
+      systemInteger(
+        iteration[key],
+        `${path}.${key}`,
+        key === "schema_version" ? 10 : Number.MAX_SAFE_INTEGER,
+      );
+    }
   }
+  systemOptionalNumber(
+    iteration.minimum_confidence,
+    `${path}.minimum_confidence`,
+  );
   for (const key of ["decision_changed", "cash_only"]) {
     if (iteration[key] !== undefined) {
       systemBoolean(iteration[key], `${path}.${key}`);
     }
   }
   if (iteration.model_versions !== undefined) {
+    const seenVersions = new Set<string>();
     systemArray(iteration.model_versions, `${path}.model_versions`, 20)
-      .forEach((item, index) => (
-        systemString(item, `${path}.model_versions[${index}]`)
-      ));
+      .forEach((item, index) => {
+        const version = systemString(
+          item,
+          `${path}.model_versions[${index}]`,
+        );
+        if (seenVersions.has(version)) {
+          systemOverviewError(`${path}.model_versions[${index}] duplicate`);
+        }
+        seenVersions.add(version);
+      });
   }
-  validateSystemModelVersion(iteration.candidate, `${path}.candidate`);
-  validateSystemModelVersion(iteration.champion, `${path}.champion`);
+  if (iteration.selected !== undefined) {
+    validateSystemSelected(iteration.selected, `${path}.selected`);
+    if (
+      iteration.selected_count !== undefined
+      && (iteration.selected as unknown[]).length !== iteration.selected_count
+    ) {
+      systemOverviewError(`${path}.selected_count`);
+    }
+  }
+  validateSystemModelVersion(
+    iteration.candidate,
+    `${path}.candidate`,
+    expectedMarket,
+  );
+  validateSystemModelVersion(
+    iteration.champion,
+    `${path}.champion`,
+    expectedMarket,
+  );
   if (iteration.version_history !== undefined) {
     systemArray(iteration.version_history, `${path}.version_history`, 50)
       .forEach((item, index) => (
-        validateSystemModelVersion(item, `${path}.version_history[${index}]`)
+        validateSystemModelVersion(
+          item,
+          `${path}.version_history[${index}]`,
+          expectedMarket,
+        )
       ));
   }
   if (
     iteration.decision_diagnostics !== undefined
     && iteration.decision_diagnostics !== null
   ) {
-    systemObject(
+    validateSystemDecisionDiagnostics(
       iteration.decision_diagnostics,
       `${path}.decision_diagnostics`,
     );
@@ -835,7 +1082,7 @@ function validateSystemOverview(value: unknown): SystemOverviewData {
     }
     seenModels.add(market);
     systemString(model.market_label, `${path}.market_label`);
-    validateSystemIteration(model.iteration, `${path}.iteration`);
+    validateSystemIteration(model.iteration, `${path}.iteration`, market);
   });
   const seenUsage = new Set<string>();
   systemArray(data.strategy_model_usage, "strategy_model_usage", 4)
