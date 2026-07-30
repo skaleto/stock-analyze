@@ -105,12 +105,80 @@ function jsonResponse(value: unknown): Response {
   });
 }
 
+async function currentBuilderPayload(): Promise<unknown> {
+  // Node types are intentionally not a production dashboard dependency.
+  // @ts-expect-error Vitest executes this integration fixture in Node.
+  const { execFileSync } = await import("node:child_process");
+  const script = [
+    "import json",
+    "from pathlib import Path",
+    "from stock_analyze.dashboard_api import build_dashboard_system_overview_data",
+    "payload = build_dashboard_system_overview_data(repo_root=Path.cwd())",
+    "print(json.dumps(payload, ensure_ascii=False))",
+  ].join("; ");
+  const output = execFileSync("python3", ["-c", script], {
+    cwd: "../..",
+    encoding: "utf-8",
+    maxBuffer: 1_000_000,
+  });
+  return JSON.parse(output);
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
 describe("fetchSystemOverview", () => {
+  it("accepts the current real builder payload", async () => {
+    const payload = await currentBuilderPayload();
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(payload))));
+
+    await expect(fetchSystemOverview()).resolves.toEqual(payload);
+  });
+
+  it("strictly validates the real nested iteration contract and bounds", async () => {
+    const payload = structuredClone(await currentBuilderPayload()) as any;
+    payload.models[0].iteration.candidate.artifact = "models/a20-v001.json";
+    const invalidArtifact = structuredClone(payload);
+    invalidArtifact.models[0].iteration.candidate.artifact = 42;
+    const unknownCandidateField = structuredClone(payload);
+    unknownCandidateField.models[0].iteration.candidate.debug = "leak";
+    const oversizedSelection = structuredClone(payload);
+    oversizedSelection.models[0].iteration.selected = Array.from(
+      { length: 101 },
+      () => ({
+        code: "000001.SZ",
+        name: "样本",
+        score: 0.5,
+        target_weight: 0.01,
+        confidence: 0.7,
+        p_up: 0.6,
+        p_down: 0.4,
+        expected_excess_return: 0.02,
+        model_version: "A20-V001",
+        reason: "测试",
+      }),
+    );
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(payload))
+      .mockResolvedValueOnce(jsonResponse(invalidArtifact))
+      .mockResolvedValueOnce(jsonResponse(unknownCandidateField))
+      .mockResolvedValueOnce(jsonResponse(oversizedSelection));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchSystemOverview()).resolves.toEqual(payload);
+    await expect(fetchSystemOverview()).rejects.toThrow(
+      "models[0].iteration.candidate.artifact",
+    );
+    await expect(fetchSystemOverview()).rejects.toThrow(
+      "models[0].iteration.candidate.debug",
+    );
+    await expect(fetchSystemOverview()).rejects.toThrow(
+      "models[0].iteration.selected",
+    );
+  });
+
   it("rejects an empty object instead of trusting a type assertion", async () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse({}))));
 
