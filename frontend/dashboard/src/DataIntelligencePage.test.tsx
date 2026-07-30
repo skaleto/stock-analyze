@@ -393,6 +393,21 @@ describe("DataIntelligencePage", () => {
     expect(screen.queryByText("serialized_size_limit")).not.toBeInTheDocument();
   });
 
+  it("shows a partial-status banner without hiding the structured lane", async () => {
+    const value = responsePayload();
+    value.errors = [{ resource: "intelligence", reason: "unavailable" }];
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(value));
+
+    render(<DataIntelligencePage market="a_share" refreshToken={0} />);
+
+    expect(await screen.findByText(/部分状态不可用/)).toHaveTextContent(
+      "intelligence",
+    );
+    expect(screen.getByRole("heading", { name: "结构化数据" }))
+      .toBeInTheDocument();
+    expect(screen.getByText("adjusted_ohlcv")).toBeInTheDocument();
+  });
+
   it("keeps explicitly available sections strict when the lane is truncated", async () => {
     const payload = responsePayload() as unknown as Record<string, unknown>;
     payload.truncated = true;

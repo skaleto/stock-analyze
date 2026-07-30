@@ -483,6 +483,20 @@ describe("OperationsPage", () => {
     expect(screen.getByText("最近完成")).toBeInTheDocument();
   });
 
+  it("shows a partial-status banner without hiding the valid task chain", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(payload({
+      errors: [{ resource: "intelligence", reason: "unavailable" }],
+    })));
+
+    render(<OperationsPage scope="a_share" refreshToken={0} />);
+
+    expect(await screen.findByText(/部分状态不可用/)).toHaveTextContent(
+      "intelligence",
+    );
+    expect(screen.getByRole("heading", { name: "今日主任务链" }))
+      .toBeInTheDocument();
+  });
+
   it("uses accessible daily, weekly, and monthly schedule tabs", async () => {
     const user = userEvent.setup();
     render(<OperationsPage scope="a_share" refreshToken={0} />);

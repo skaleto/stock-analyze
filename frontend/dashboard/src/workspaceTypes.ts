@@ -25,6 +25,11 @@ export type WorkspaceMetric = {
   tone?: "default" | "positive" | "negative" | "warning";
 };
 
+export type WorkspacePartialError = {
+  resource: string;
+  reason: string;
+};
+
 export type BoundedColumn<T> = {
   key: string;
   label: string;
@@ -73,6 +78,7 @@ export type ModelResearchSimulationAccount = {
 
 export type ModelResearchData = {
   generated_at: string;
+  errors?: WorkspacePartialError[];
   market: string;
   market_label: string;
   truncated?: boolean;
@@ -172,6 +178,7 @@ export type UsageEvidenceCell = {
 
 export type DataIntelligenceData = {
   generated_at: string;
+  errors?: WorkspacePartialError[];
   market: string;
   market_label: string;
   truncated?: boolean;
@@ -318,6 +325,7 @@ export type OperationsSchedule = {
 
 export type OperationsCenterData = {
   generated_at: string;
+  errors?: WorkspacePartialError[];
   scope: "all" | "a_share" | "cn_qdii_etf" | "exceptions";
   truncated?: boolean;
   truncationReason?: "serialized_size_limit" | string | null;

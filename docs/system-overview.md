@@ -1,685 +1,248 @@
-# Stock Analyze · 系统总览
+# Stock Analyze 系统架构与运行全景
 
-> 一篇看完就懂的入口文档。读完这一份就大致知道：项目在干什么、由哪些模块组成、数据怎么流、两个 agent 怎么协作、dashboard 在哪儿看什么、自己什么时候要动手。
+更新日期：2026-07-30
 
----
+Stock Analyze 是一套面向 A 股（`a_share`）与境内跨境 ETF（`cn_qdii_etf`）的研究、纸面交易和策略竞赛系统。它持续收集市场与公开信息，把证据加工成可审计的决策，再用两套正式策略和独立的模型迭代链路检验效果。
 
-## 1. 这是什么
+> **先记住三个结论：**系统不会连接真实券商；日常数据、预测、模拟下单和通知均自动运行；人工只需在周度复盘和月度策略演化收到提醒后，让 LLM 完成判断与配置演进。
 
-**Stock Analyze** 是一个 A 股**纸面（paper trading）多因子策略系统**，专门用来：
+## 读懂系统只需要三件事
 
-- 用公开数据（Tushare Pro 主源 / Baostock 兜底）每周生成 A 股选股信号。
-- 在"下一交易日开盘价 + 滑点 + 佣金 + 印花税"的保守口径下**模拟成交**，更新模拟净值。
-- 让 **Claude 与 Codex 两个 agent**在完全相同的市场条件、启动资金、交易成本下**各跑各的策略**，每月对比成绩，刺激彼此优化。
-- 把所有过程在一个本地 dashboard 上可视化。
-
-**它不是**：
-
-- 不接券商，不下真单。所有"成交"都是模拟。
-- 不构成投资建议。
-- 不调任何 LLM API。Agent 思考全部在你自己的开发机上用 Claude Code / Codex CLI 完成。
-
----
-
-## 2. 整体架构
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│ ECS (Linux + systemd)                                        │
-│  · Mon-Fri 17:25 prepare-market-data（共享数据拉取）         │
-│      → ExecStartPost 触发两 agent daily 并行（--offline）    │
-│  · Sat 10:00 weekly-trigger（复用周五 cache）                │
-│      → ExecStartPost 触发两 agent weekly 并行（--offline）   │
-│  · 每月 1 号跑 monthly-review + dashboard                    │
-│  · 不调 LLM API；只产数据 + 输出"待 agent 看的任务包"        │
-└──────────────────────────────────────────────────────────────┘
-                            │
-                            │  scripts/sync-from-ecs.sh (rsync)
-                            ▼
-┌──────────────────────────────────────────────────────────────┐
-│ 本地开发机                                                    │
-│  · 周六上午：sync → 在 Claude Code 跑 /weekly-review claude  │
-│             同时在 Codex CLI 让 codex 跑 weekly review       │
-│             → agent 写笔记到 data/<agent>/notes/             │
-│             → scripts/sync-to-ecs.sh 推回并刷新 dashboard    │
-│  · 月度同上 + /monthly-strategy <agent> 直接演化 overlay      │
-│  · sync-to-ecs 推回 evolution 产物并刷新 dashboard            │
-└──────────────────────────────────────────────────────────────┘
-                            │
-                            │  git push origin main
-                            ▼
-                  ┌─────────────────────┐
-                  │ GitHub (origin/main)│
-                  └─────────────────────┘
-                            ↑
-                            │  git pull / rsync (ECS 更新代码)
-                            │
-                          ECS 用已应用 overlay 跑下一周期
-```
-
-三方角色：
-
-| 谁 | 干什么 | 安全边界 |
+| 系统交易什么 | 谁在做决策 | 人什么时候介入 |
 | --- | --- | --- |
-| **ECS** | 自动跑数、出 dashboard/briefings；不跑 LLM 裁判或策略应用 | systemd timer + sync 后置命令 |
-| **本地 Claude Code** | claude 视角周度分析与月度 overlay 演化 | 周度写 `data/claude/notes/`；月度写自己的 yaml + evolution 产物 |
-| **本地 Codex CLI** | codex 视角周度分析与月度 overlay 演化 | 周度写 `data/codex/notes/`；月度写自己的 yaml + evolution 产物 |
-| **你（人）** | 查看 dashboard、处理异常、决定是否回滚或暂停 | 唯一能改 `configs/competition_a_share.yaml`（按市场分文件）的角色 |
+| **A 股**与**境内跨境 ETF**。境外股票市场不再作为可交易账户，只保留必要的指数和宏观参考数据。 | **稳健防守**与**趋势进攻**独立竞赛；模型在研究链路中迭代，只有通过验收的 Active 版本才可进入正式策略。 | 平日无需盯任务。周末查看复盘提醒，月初查看演化提醒；异常只接收汇总告警。 |
 
----
+## 1. 系统如何运转
 
-## 3. 目录结构
+系统不是一组相互独立的脚本，而是一条从数据事实到策略决策、再到可观测结果的闭环。Dashboard 只是观察入口，不是数据源；飞书只负责摘要和行动提醒，不承载运行状态。
 
-```
-configs/
-  competition_a_share.yaml  # A 股共享基线：账户、成本、调仓日、起跑日（锁字段集合）
-  competition_hk.yaml       # 港股共享基线（同结构）
-  competition_us.yaml       # 美股共享基线（同结构）
-  strategy_v1.yaml          # 老的单 agent 入口（兼容保留）
-  preset_quality_low_vol.yaml # 备用 preset 演示
-  agents/
-    claude_a_share.yaml     # claude A 股策略 overlay（因子/控制/过滤）；另有 _hk / _us
-    codex_a_share.yaml      # codex A 股策略 overlay；另有 _hk / _us
-
-stock_analyze/              # Python 包
-  cli.py                    # 所有 CLI 子命令入口
-  competition.py            # baseline + overlay 加载与锁字段校验
-  config.py                 # 单 agent 配置加载与 v1→v2 迁移
-  data_provider.py          # Tushare/Baostock 数据接口 + 缓存 + 降级
-  strategy.py               # 信号生成主流程
-  factor_pipeline.py        # winsorize → z-score → 行业中性化 → 加权
-  portfolio_controls.py     # 行业上限、持仓缓冲、max_holding_days
-  simulator.py              # 模拟成交、NAV 更新、订单生命周期
-  performance.py            # 年化/Sharpe/Sortino/超额/IR/换手/成本
-  diagnostics.py            # 因子覆盖率 + 前向 RankIC
-  run_ledger.py             # 运行账本 + 配置快照
-  monthly_review.py         # 月度对比 review
-  dashboard_aggregator.py   # 三 tab 聚合 dashboard
-  reporting.py              # 单 agent dashboard + 周报 + 笔记 / 提案面板
-  agent_briefing.py         # 周/月任务包 markdown 生成
-  store.py                  # CSV/JSON 持久化
-
-deploy/systemd/             # systemd service / timer 单元
-docs/                       # 运维、总览、规划文档
-openspec/                   # 所有 OpenSpec change 记录
-scripts/                    # ECS↔本地 rsync 脚本
-.claude/commands/           # Claude Code slash command 模板
-tests/                      # 单元测试
-
-data/                       # 运行时产物（gitignored）
-  shared/                   # 两侧共用的 Tushare/Baostock 缓存与 data_health.json
-  competition/              # 月度对比、leaderboard、competition_metadata
-  claude/                   # claude 自己的 state/orders/positions/nav/...
-    notes/                  # agent 周/月笔记
-      briefings/            # ECS 自动生成的任务包（agent 只读）
-    evolution_log/          # agent 月度策略演化思考
-    evolution_diff/         # agent 月度策略演化结构化 diff
-    factor_runs/            # 每周因子快照
-    factor_diagnostics/     # 覆盖率 + 前向 IC 累计
-    configs/                # 历史 config_hash → 完整 config snapshot
-  codex/                    # codex 同结构
-
-reports/                    # 渲染产物（gitignored）
-  claude/                   # claude 的 dashboard.html、weekly_report.md
-  codex/                    # codex 同上
-  competition/              # 聚合 dashboard 与月度对比 markdown
+```mermaid
+flowchart TD
+    A[公开市场与官方信息] --> B[采集与质量校验]
+    B --> C[行情、基本面、资金面、事件库]
+    C --> D[特征工程与证据融合]
+    D --> E[两套正式策略]
+    D --> F[模型研究与版本迭代]
+    F -->|验收通过后激活| E
+    E --> R[联合组合优化与压力测试]
+    R --> G[纸面订单、持仓、净值]
+    G --> L[决策、订单、成交与归因账本]
+    G --> H[Dashboard 分析与下钻]
+    G --> I[飞书运行摘要与提醒]
+    H --> J[周度复盘与月度演化]
+    I --> J
+    J --> D
 ```
 
----
+### 每个交易日发生什么
 
-## 4. 数据流
+交易日晚间先补齐事实，再生成研究结论和模型预测，最后分别执行四个正式账户。这样每张订单都能追溯到当日数据、策略版本和风险约束。
 
-### 4a. 每日（周一到周五）
-
-```
-T 日 17:25 (ECS systemd timer)
-  ┌─ stock-analyze-market-data.service  ← 唯一允许打外网的进程
-  │    python3 -m stock_analyze prepare-market-data
-  │    └─ trading_calendar / spot / index_constituents / preselect
-  │       └─ ThreadPoolExecutor(5) 并发拉每只候选的 5 个接口
-  │       benchmark_close(000300) + benchmark_close(000905)
-  │       写 data/shared/cache/*.csv + market_snapshot_<date>.json
-  │    ExecStartPost (ExecStart 成功后)：
-  │       └─ systemctl start --no-block stock-analyze-claude-daily.service
-  │       └─ systemctl start --no-block stock-analyze-codex-daily.service
-  │
-  ├─ ~17:35 stock-analyze-claude-daily.service (--offline)
-  │    └─ execute_due_orders → 把 T-1 的待执行单按 T 日开盘价模拟成交
-  │       update_nav         → 按 T 日收盘价更新净值
-  │       compute_pending_forward_ic → 补算 5 日前向 RankIC
-  │       generate_dashboard → 刷 reports/claude/dashboard.html
-  │       (任何 cache miss → raise CacheMiss → service failed)
-  └─ ~17:35 stock-analyze-codex-daily.service (--offline)
-       └─ 同上，读同一份 cache，两 agent 看到字节级相同的原始数据
+```mermaid
+flowchart TD
+    A[每 30 分钟：官方资讯增量采集] --> B[18:30：行情与基础数据同步]
+    B --> C[研究快照：技术、资金、基本面、事件]
+    C --> D[特征生成与模型预测]
+    D --> E[A 股 · 稳健防守]
+    D --> F[A 股 · 趋势进攻]
+    D --> G[跨境 ETF · 稳健防守]
+    D --> H[跨境 ETF · 趋势进攻]
+    E --> I[执行到期订单、重算持仓与净值]
+    F --> I
+    G --> I
+    H --> I
+    I --> J[Dashboard 资源增量刷新]
+    I --> K[19:30：飞书每日摘要]
 ```
 
-执行规则保守：
-
-- 停牌、买入涨停、卖出跌停 → 订单保留 `pending` + 写 `unfilled_reason`。
-- T+1：当日买入今日不可卖。
-- 现金不足或可卖股不足 → 部分成交 + 残单保留。
-- 无可见行情 → 不成交。
-
-### 4b. 每周六（信号日，复用周五 cache）
-
-```
-Sat 10:00 CST (ECS systemd timer)
-  ┌─ stock-analyze-weekly-trigger.service  ← /bin/true，不再次拉数据
-  │    ExecStartPost：
-  │       └─ systemctl start --no-block stock-analyze-claude-weekly.service
-  │       └─ systemctl start --no-block stock-analyze-codex-weekly.service
-  │
-  ├─ stock-analyze-claude-weekly.service (--offline，读周五 cache)
-  │    run-weekly --offline
-  │    └─ generate_rebalance_orders
-  │         · 从 cache 取股票池（hs300 + zz500 共 ~800 只）
-  │         · 跑因子流水线（winsorize → z-score → 行业中性化 → 归一化加权）
-  │         · 应用组合控制（行业上限 / 持仓缓冲 / max_holding_days）
-  │         · 选前 50 名 × 2 账户 = 100 只目标持仓
-  │         · 对照当前持仓 diff 出买卖订单 → 写 pending_orders.json (execute_on=下周一)
-  │       update_nav
-  │       compute_pending_forward_ic
-  │       generate_weekly_report → reports/claude/weekly_report.md
-  │       generate_dashboard
-  │       build_weekly_briefing → data/claude/notes/briefings/<sat-date>-weekly.md  ← agent 待办
-  └─ stock-analyze-codex-weekly.service (--offline) 同理
-```
-
-下周一 daily 跑时，execute_due_orders 把周六生成的订单按周一开盘价成交。
-
-### 4c. 每月 1 号
-
-> 由 OpenSpec change `enable-llm-direct-strategy-evolution` 实施：referee
-> 退化为锁字段守卫，LLM 在本地直接改 yaml + 写 evolution_log，无 ECS 端 apply。
-
-```
-09:00 CST / 01:00 UTC ECS
-  competition-monthly-review --month <prev>
-    └─ compute_review(month, [claude, codex])
-       · 各 agent 年化/Sharpe/IR/换手/成本/win rate
-       · 比较：胜方、累计差、持仓重叠度 (Jaccard)、日收益相关性
-       · 共同因子驱动 / 分歧因子驱动
-    └─ write_review
-       · data/competition/monthly_reviews/<month>.json
-       · reports/competition/monthly_review_<month>.md
-       · data/competition/leaderboard.csv（upsert）
-    └─ build_monthly_briefing for each agent
-       · data/<agent>/notes/briefings/<month>-monthly.md  ← agent 月度待办
-       · 含 "对手 overlay 摘要" + "对手历史改动(近 3 个月)" 两段
-
-01:10 competition-dashboard
-  生成三 tab 聚合页 reports/competition/dashboard.html
-```
-
-ECS 端不再跑 `agent-judge-proposals` / `agent-apply-approved-proposals` —— 这两个命令已经在源码里删除。
-
-### 4d. 本地分析闭环（你 + agent CLI）
-
-```
-周六上午 / 月初
-  ./scripts/sync-from-ecs.sh --exclude-cache
-    └─ 拉 data/、configs/、reports/ 到本地
-
-  Claude Code:  /weekly-review claude   (or  /monthly-strategy claude 2026-05)
-  Codex CLI:    do weekly review for codex (or do monthly strategy for codex)
-    └─ agent 自己读 CLAUDE.md / AGENTS.md → 找最新 briefing → 写笔记/演化
-    └─ 周度只写 markdown 笔记
-    └─ 月度直接改 configs/agents/<agent>.yaml + 写 evolution_log + evolution_diff
-        + 追加 config_evolution.csv（由 evolution_writer.write_evolution 原子化执行）
-    └─ 跑 `validate-overlay --agent <agent>` 通过
-
-  ./scripts/sync-to-ecs.sh
-    └─ 推 data/<agent>/notes/、data/<agent>/evolution_log/、data/<agent>/evolution_diff/、
-       data/<agent>/config_evolution.csv、configs/agents/<agent>.yaml、_history/ 回 ECS
-    └─ 远端仅刷 dashboard，无 referee/apply 步骤
-
-ECS:
-  dashboard 显示新的演化时间线（month / from→to hash / diff 摘要 / evolution_log 链接 /
-  当月 + 次月实际收益）；新 overlay 进入下一周期的 daily/weekly 运行
-```
-
-月度策略变化的好坏由 LLM 自负——守卫只确认 schema 合法、不踩 baseline 锁字段、factor 名在白名单、weight 在 `[0, 1]`。
-
-### 4e. 每月策略演化时的 backtest gate
-
-> 由 OpenSpec change `add-historical-backtest-engine` 实施（2026-05-26 全链路上线）。
-
-月度 `evolution_writer.write_evolution` 在 commit 新 overlay 之前会自动跑一次验证窗口（2025-01 ~ 2026-04）回测，作为"灾难底线"准入门槛：
-
-```
-LLM 写完新 overlay → overlay_guard.validate（schema + 锁字段）通过
-                  → backtest.gate.validate_overlay_via_backtest(new_overlay)
-                  → engine.run_backtest 在验证窗口跑一遍
-                  → 比对 competition_a_share.yaml.backtest.floor 三个阈值:
-                       · max_drawdown <= 0.25
-                       · sharpe >= -0.5
-                       · cum_return >= -0.15
-                  → 任一 breach → 抛 BacktestFloorBreach
-                                + 写 data/<agent>/evolution_log/<YYYY-MM>-floor-breach.md
-                                + 回滚 yaml（不写入新 overlay）
-                  → 全部通过 → 正常 commit + 把指标记入 evolution_log
-```
-
-历史时间被划分为三段窗口：
-
-- **训练窗口** (2021-01 ~ 2024-12): briefing 渲染完整明细，LLM 可探索因子贡献、月度分解。
-- **验证窗口** (2025-01 ~ 2026-04): briefing **只渲染 5 个聚合数字**（累计 / 年化 / Sharpe / 最大回撤 / IR），不展示月度明细或因子分解。这是 gate 准入用的。
-- **Live OOS** (2026-05-18+): 真实竞赛，无任何回测可读。
-
-研究 CLI（不参与 gate，operator 手动跑）：
-
-```bash
-python3 -m stock_analyze backtest \
-  --agent claude --start 2024-01-01 --end 2024-12-31 \
-  --overlay configs/agents/claude.yaml \
-  --output data/claude/backtest/research-2024
-```
-
-回测一次性数据预热（约 15 分钟，~3000 次 Tushare 调用，~200MB）：
-
-```bash
-python3 -m stock_analyze prepare-backtest-data --start 2021-01-01 --end 2026-04-30
-```
-
-### 4f. LLM 市场情绪因子
-
-> broadcast 标量由 OpenSpec change `add-llm-sentiment-alpha-factor` 引入（2026-05-26 全链路上线）；其后落地行业级 per-stock 情绪因子 `<agent>_sector_sentiment`（参与横截面排序）。
-
-每周末（建议周六上午配合 weekly review）由 operator 手动跑一次"市场情绪采集"：
-
-```
-operator 打开 Claude.ai / 桌面客户端
-  → 用 stock_analyze/alt_factors/prompts/market_sentiment_v1.md 模板
-  → LLM 自带 web search 拉本周 A 股新闻 → 输出严格 JSON
-  → operator copy JSON 字段填到 CLI:
-       python3 -m stock_analyze record-sentiment \
-         --agent claude --week-end 2026-05-22 \
-         --score 0.32 --confidence 0.78 \
-         --drivers "AI 算力链回暖,央行 MLF 偏鸽" \
-         --llm-model claude-sonnet-4.5 --sources "..."
-  → 写 data/claude/alt_factors/market_sentiment.csv（每周 1 行，原子写）
-
-operator 再开 ChatGPT 同步给 codex 跑一次（写 data/codex/alt_factors/market_sentiment.csv）
-
-下一次 weekly run-weekly:
-  factor_pipeline.process_factors(broadcast_values=...) 自动 load_broadcast_factor
-  → claude_market_sentiment_1w 作为 broadcast 因子,sign × weight × value 加在每个候选股 score 上
-```
-
-**broadcast 与 per-stock 两类**：最初 MVP 的 broadcast factor（`<agent>_market_sentiment_1w`）值是跨股票常数，对横截面排名零影响（所有股票被同样数值上下平移），现仅作向后兼容保留。在此之上已落地**行业级 per-stock 情绪因子**（`<agent>_sector_sentiment`，由 `record-sector-sentiment` 写入），它按行业给每只候选股不同的情绪值，参与横截面排序（走 winsorize / z-score，但跳过行业中性化），真正影响选股。
-
-CLI：
-
-- `record-sentiment` — 新增一周 broadcast 市场情绪记录（duplicate 默认拒绝，`--force` 覆盖）
-- `record-sector-sentiment` — 新增一周行业级 per-stock 情绪记录（参与横截面排序）
-- `sentiment-log --agent <id> [--last N] [--remove <date>]` — 查看 / 删除历史记录
-
-跨 agent 隔离：`overlay_guard` 拒绝在 claude 的 overlay 里引用 `codex_market_sentiment_1w`（`OverlayCrossAgentFactor`），反之亦然。
-
----
-
-## 5. 公平基线与 overlay
-
-竞赛的公平性靠**两层配置**保证：
-
-### 5a. `configs/competition_a_share.yaml`（不可改）
-
-定义了**所有保证可比性的字段**：起跑日、初始资金 100 万、双账户各 50 万、`top_n=50`、股票池（hs300/zz500）、基准（000300/000905）、交易成本（佣金 0.03% + 印花税 0.05% + 滑点 0.05% + 单股上限 5%）。
-
-`stock_analyze/competition.py` 加载时，如果发现 agent overlay 试图覆盖以下字段会 `raise CompetitionBaselineLocked`：
-
-- `competition_id`、`start_date`
-- `initial_cash`、`accounts.*.cash`、`accounts.*.top_n`、`accounts.*.scope`、`accounts.*.benchmark`
-- `schedule.execution`、`schedule.signal_day`
-- `trading.*`（所有交易成本相关）
-
-### 5b. `configs/agents/<agent>_a_share.yaml`（agent 月度演化可改；另有 `_hk` / `_us`）
-
-每个 agent 通过月度策略演化影响以下 overlay 字段；实际写回由本地 LLM 调用 `evolution_writer.write_evolution` 执行，ECS 端不再 referee/apply：
-
-- `factors`：哪些因子、各自权重、方向 (`high` / `low`)
-- `factor_processing`：winsorize 上下分位、是否行业中性化、最小因子覆盖率
-- `portfolio_controls`：单行业上限、持仓缓冲、最大持有天数
-- `filters`：最小市值、最小成交额、必需字段、回退字段
-
-只允许出现 `agent_id`、`strategy_id`、`name`、`factors`、`factor_processing`、`portfolio_controls`、`filters` 七个顶层键；其它键直接被拒。
-
-当前两个 agent 的差异化设定：
-
-- **claude**：价值 + 质量 + 动量（PE/PB/ROE/毛利率/资产负债率/20 日动量/60 日动量），单行业 30%，持仓 buffer 50%。
-- **codex**：质量 + 低波 + 股息（ROE/毛利率/资产负债率/60 日动量/低波 60 日/股息率），单行业 25%，持仓 buffer 60%。
-
----
-
-## 6. 因子流水线（每周六跑一次）
-
-```
-原始候选池
-  ↓ 预筛（PE 正、最小成交额、最小市值、必需字段非空、ST 排除）
-~250 只候选
-  ↓ 对每个因子分别做：
-    1) winsorize 在 1% / 99% 处夹边（防止极端值主导）
-    2) z-score 标准化（让权重在同一量纲）
-    3) 行业内 demean（行业中性化；缺失行业归 "未分类" 桶）
-    4) 乘方向符号 (high → +1, low → -1)
-    5) 乘配置权重
-  ↓ 按可用因子重新归一权重（缺失因子按比例分摊给其他因子）
-  ↓ 覆盖率 < min_factor_coverage 的股票被剔除并写 insufficient_factor_coverage warning
-  ↓ 综合分 = Σ (有效因子 z-score × 方向 × 归一权重)
-  ↓ + per-stock 行业情绪因子（若 overlay 含 `<agent>_sector_sentiment`）
-     · 按行业映射给每只候选股一个情绪值，走 winsorize / z-score
-     · 但跳过行业中性化（否则行业内常数会被 demean 抹平）
-     · 参与横截面排序，真正影响选股
-  ↓ + broadcast sentiment factor（若 overlay 含 `<agent>_market_sentiment_1w`，向后兼容保留）
-     · 跳过 winsorize / z-score / 行业中性化
-     · 同一标量 sign × weight × value 加在每只候选股的 score 上（跨股票常数，不改排序）
-按综合分降序排列
-```
-
-每周这份完整明细写入 `data/<agent>/factor_runs/<run_id>.csv`，列含：原值 / winsorize 后 / z-score / neutralize / 方向 / weight / contribution。可重现：`score == sum(contribution per code)`。
-
-**广播因子（broadcast factors）**：由 `add-llm-sentiment-alpha-factor` MVP 引入。当因子名匹配 `<agent_id>_market_sentiment_1w` 时，因子值是一个标量（不是 per-stock），跳过 winsorize / z-score / 行业中性化，直接广播到所有候选股的综合分上。因其是跨股票常数（统一平移），对横截面排名零影响，现仅作向后兼容保留。
-
-**行业情绪因子（sector sentiment）**：在广播因子之上落地的 per-stock 情绪因子。当因子名匹配 `<agent_id>_sector_sentiment` 时，按行业把情绪值映射到每只候选股，走 winsorize / z-score，但**跳过行业中性化**（否则行业内常数会被 demean 抹平），参与横截面排序，真正影响选股。由 `record-sector-sentiment` 写入。
-
----
-
-## 7. 组合构建控制
-
-```
-按综合分降序遍历候选
-  ↓ 单行业上限：累计某行业权重 ≥ max_industry_weight 时跳过该股
-  ↓ 持仓缓冲：当前持有但排名落到 [top_n, top_n × (1 + hold_buffer_pct)] 区间内的保留
-  ↓ max_holding_days：持有超过该天数的强制重新评估
-凑齐 top_n=50 只 × 2 账户 = 100 只目标持仓
-  ↓ build_target_orders
-单股目标市值 = min(账户总值 / top_n, 账户总值 × max_single_weight)
-                = min(2%, 5%) × 账户总值 = 2%
-按 100 股整数倍截尾；现金不足时减档
-生成 buy / sell 订单 → 写 pending_orders.json，等下个交易日按开盘价模拟成交
-```
-
----
-
-## 8. 绩效与归因
-
-每次 `update_nav` 后由 `performance.compute_account_performance` 汇总：
-
-| 指标 | 口径 |
-| --- | --- |
-| 累计收益 | `total_value_T / total_value_0 − 1` |
-| 年化收益 | 日收益均值 × 252 |
-| 年化波动 | 日收益样本标准差 × √252 |
-| Sharpe | (年化收益 − risk_free_rate) / 年化波动 |
-| Sortino | (年化收益 − risk_free_rate) / 年化下行半标准差 |
-| 最大回撤 | NAV 序列回撤峰谷比 |
-| 最大回撤天数 | 自最高点到对应最低点的自然日数 |
-| 累计超额 | `Π(1+r_account) − Π(1+r_benchmark)` |
-| 年化超额 | 日超额均值 × 252 |
-| 跟踪误差 | 日超额标准差 × √252 |
-| 信息比率 | 年化超额 / 跟踪误差 |
-| 周换手率 | (本周 buy 名义 + sell 名义) / 周初组合市值 |
-| 成本占比 (bps) | 累计 (commission + stamp_tax + slippage) / 累计成交金额 × 10000 |
-| Win Rate | FIFO 配对的 round-trip 中 pnl > 0 的比例 |
-
-数据不足时（NAV < 2 个点）相关字段为 `null`，dashboard 显示 `-`。
-
----
-
-## 9. 因子诊断
-
-### 9a. 覆盖率
-
-每次 `run-weekly` 在 `data/<agent>/factor_diagnostics/coverage.csv` 追加每个因子的 `coverage_pct, missing_count, mean, p5, p50, p95, std`，dashboard 渲染最近 12 周的覆盖率热力图，低于阈值的格子标红。
-
-### 9b. 前向 5 日 RankIC
-
-当 NAV 历史包含某 `signal_date` 之后 ≥ 5 个交易日的实际收益时，按当时各股票的 z-score 与 T 到 T+5 实际收益做 **Spearman rank IC**（不依赖 scipy，自实现），写入 `data/<agent>/factor_diagnostics/forward_ic.csv`。不足时写 `ic_status=insufficient_history` 占位，后续到达足够历史时自动回填。
-
-Dashboard 渲染最近 12 周的 forward IC 折线，让你一眼看出哪些因子在最近样本里还有解释力、哪些已经衰减。
-
----
-
-## 10. 运行账本与配置快照
-
-```
-每次 CLI 命令进入 RunLedger.run(command):
-  · append data/<agent>/runs.csv 一行 status=running
-  · try { 实际跑命令 }
-    finally: append 一行 status=success / failed + duration_ms + error_summary
-  · 计算 config_hash = sha256(canonical_json(config))[:12]
-  · 若 data/<agent>/configs/<hash>.json 不存在，写入完整 config snapshot
-  · code_version = .git/HEAD 短 SHA（不依赖外部 git 二进制）
-```
-
-这意味着每次 dashboard 显示的任何数据都能反向追溯到：哪次运行、哪份 config、哪个 commit。出现"昨天的结果今天突然变了"时，对照 hash 就能定位是 config 改了还是数据源刷新。
-
----
-
-## 11. Dashboard 三 tab + 简化版
-
-竞赛 dashboard 一次 `competition-dashboard` 同时产出**专业版**和**简化版**两份 HTML,共享 `data/*` 输入,渲染层不同:
-
-```
-reports/competition/
-├── dashboard.html        ← 专业版 (3 tab,~270 KB)
-├── simple.html           ← 新手简化版 (~12 KB)
-└── simple/
-    ├── claude.html       ← Claude 单 agent 简化版
-    └── codex.html        ← Codex 单 agent 简化版
-```
-
-`serve-dashboard` HTTP 路由别名:
-
-```
-GET /                          → reports/competition/simple.html  (默认新手)
-GET /simple.html               → reports/competition/simple.html
-GET /simple/claude.html        → reports/competition/simple/claude.html
-GET /simple/codex.html         → reports/competition/simple/codex.html
-GET /pro.html                  → reports/competition/dashboard.html  (别名)
-GET /pro/claude.html           → reports/claude/dashboard.html
-GET /pro/codex.html            → reports/codex/dashboard.html
-GET /competition/dashboard.html → reports/competition/dashboard.html  (向后兼容)
-GET /claude/dashboard.html     → reports/claude/dashboard.html       (单 agent fragment 页)
-```
-
-### 专业版 (`dashboard.html`,3 tab)
-
-```
-┌─[ Claude ]─[ Codex ]─[ 对比 ]──────────────────────────┐
-│                                                       │
-│ Claude tab(嵌入 data/_dashboard_build/claude/fragment.html)│
-│  · 4 张账户卡片(最新资产)                              │
-│  · 净值曲线                                            │
-│  · 绩效解释 4×3 卡片矩阵(年化/Sharpe/IR/成本…)         │
-│  · 本期选股信号                                        │
-│  · 因子贡献均值                                        │
-│  · 待执行订单                                          │
-│  · 候选股价格走势                                      │
-│  · 因子诊断(覆盖率热力图 + 前向 IC 折线)               │
-│  · 当前持仓 / 近期交易 / 数据源 / 最近运行             │
-│  · 近期 agent 笔记(最近 5 篇 markdown 折叠)            │
-│  · 策略演进时间线(每月 evolution + 当月与次月实际收益) │
-│  · 历史回测 vs 真实运行(backtest 双线对比,本月引入)    │
-│  · 市场情绪面板(本周 score / confidence / drivers)     │
-│  · 本期分析任务包(最新 weekly + monthly briefing)      │
-│                                                       │
-│ Codex tab 同结构                                       │
-│                                                       │
-│ 对比 tab                                               │
-│  · 4 张卡片(双方累计 / 累计差 / 最近一月胜方)          │
-│  · 累计净值双线                                        │
-│  · 9 行横向指标对比表                                  │
-│  · 持仓重叠条(独占 / 共有 / 独占 三段宽度)             │
-│  · 滚动战绩(按月色块)                                  │
-│  · 市场情绪对比(claude vs codex 每周 score 双线)       │
-│  · 月度报告链接列表                                    │
-│  · 本周双方观察对照(两侧最新周笔记并列)                │
-└───────────────────────────────────────────────────────┘
-```
-
-CSS `:target` 切 tab,纯静态,无 JS 框架。
-
-### 简化版 (`simple.html`)
-
-面向新手,约 8 个 section,文件 ≤ 80 KB:
-
-```
-[简化版] [专业版] [策略演进]                       ← 顶部 tab bar
-👤 我的账户         总资产 / 今日 / 本月            ← Section 1
-📊 两位 AI 的成绩   Claude / Codex 各一卡片         ← Section 2
-📈 净值曲线        双线 + 沪深300 + 中证500 (SVG)   ← Section 3
-📦 Claude 持仓 Top10                              ← Section 4
-📦 Codex 持仓 Top10                               ← Section 5
-🔍 持仓重叠       两位都持有 / 仅 Claude / 仅 Codex ← Section 6
-🔄 最近 5 笔模拟成交                              ← Section 7
-🧭 本月策略调整摘要(可选,从 evolution_log 读)     ← Section 8
-```
-
-简化版**不包含**因子覆盖率、前向 IC、因子贡献明细、运行账本、数据源状态、agent 笔记内容、factor_runs/* — 这些只在专业版。
-
----
-
-## 12. Agent CLI 分析闭环
-
-详见 `CLAUDE.md`（Claude Code 入口）、`AGENTS.md`（Codex CLI 入口）。摘要：
-
-- **周度**：ECS 自动生成 `data/<agent>/notes/briefings/<date>-weekly.md` → 你 sync → agent 跑 `/weekly-review claude`（或 codex 类似指令）→ agent 自己 Read 任务包 + 写 markdown 笔记到 `data/<agent>/notes/<date>-weekly-review.md` → 你 sync 回 ECS。**周度不改 config**。
-
-- **月度**：ECS 自动生成 `data/<agent>/notes/briefings/<month>-monthly.md`（含完整月度对比 JSON 摘要 + 近 4 周笔记 + 锁字段清单）→ 你 sync → agent 跑 `/monthly-strategy claude 2026-05` → 写月度复盘、直接更新自己的 `configs/agents/<agent>.yaml`，并落 `evolution_log` / `evolution_diff` / `config_evolution.csv` → `validate-overlay` 通过 → 你 sync 回 ECS 刷 dashboard。
-
-每份 briefing 是**五段**结构：角色 / 数据快照 / 任务 / 输出契约 / 可选参考。agent 看到的就是一段固定模板，写什么、写到哪、不要碰什么完全明确。
-
-安全机制：
-
-- 锁字段清单**直接写在月度 briefing 里**，agent 提案前就知道哪些不能改。
-- slash command 体内**显式禁止**修改 `configs/`、`stock_analyze/`、`tests/`、`openspec/`、对方目录等。
-- 整个链路无 LLM API 调用；agent 是 Claude Code / Codex CLI 本身，由你触发。
-
----
-
-## 13. 关键产物清单
-
-| 文件 | 谁写 | 用途 |
+| 阶段 | 系统产物 | 失败时怎么处理 |
 | --- | --- | --- |
-| `data/<agent>/state.json` | simulator | 账户现金 + 持仓 |
-| `data/<agent>/pending_orders.json` | simulator | 待执行订单，包含 status / attempts / unfilled_reason |
-| `data/<agent>/daily_nav.csv` | simulator | 按 date+account_id upsert 的净值时间序列 |
-| `data/<agent>/trades.csv` | simulator | 模拟成交流水 |
-| `data/<agent>/positions.csv` | simulator | 当前持仓快照（含 industry、hold_since） |
-| `data/<agent>/latest_signals.csv` | simulator | 最近一期 TopN 选股表 |
-| `data/<agent>/performance_summary.json` | reporting | 全套绩效指标 |
-| `data/<agent>/runs.csv` | run_ledger | 每次 CLI 调用的账本 |
-| `data/<agent>/configs/<hash>.json` | run_ledger | 完整 config snapshot |
-| `data/<agent>/factor_runs/<run_id>.csv` | simulator | 每周因子完整明细 |
-| `data/<agent>/factor_diagnostics/coverage.csv` | simulator | 每周因子覆盖率 |
-| `data/<agent>/factor_diagnostics/forward_ic.csv` | diagnostics | 前向 5 日 RankIC 累积 |
-| `data/<agent>/notes/briefings/*.md` | ECS（agent_briefing） | agent 待办任务包 |
-| `data/<agent>/notes/*.md` | agent | 周/月分析笔记 |
-| `data/<agent>/evolution_log/<YYYY-MM>.md` | agent | 月度策略演化思考记录（LLM 直接写） |
-| `data/<agent>/evolution_diff/<YYYY-MM>.json` | evolution_writer | 月度策略演化结构化 diff |
-| `data/<agent>/config_evolution.csv` | evolution_writer | 策略演化 / 回滚审计行 |
-| `configs/agents/_history/<config_hash>.yaml` | evolution_writer | 上版 overlay 备份（每次演化前） |
-| `data/competition/competition_metadata.json` | competition-init | 起跑日 / baseline_hash |
-| `data/competition/monthly_reviews/<month>.json` | monthly_review | 机器可读对比 |
-| `data/competition/leaderboard.csv` | monthly_review | 按月滚动战绩 |
-| `data/shared/cache/*.csv` | data_provider | 公开数据缓存（两侧共用） |
-| `data/shared/data_health.json` | data_provider | 数据源健康日志 |
-| `reports/<agent>/dashboard.html` | reporting | 单 agent 仪表盘 |
-| `data/_dashboard_build/<agent>/fragment.html` | reporting | 给聚合页嵌入的片段 |
-| `reports/<agent>/weekly_report.md` | reporting | 中文周报 |
-| `reports/competition/dashboard.html` | dashboard_aggregator | 三 tab 聚合页 |
-| `reports/competition/monthly_review_<month>.md` | monthly_review | 人类可读月报 |
-| `data/shared/backtest_cache/*` | prepare-backtest-data CLI | 历史回测数据缓存（7 个 Tushare endpoint） |
-| `data/<agent>/backtest/<run_id>/daily_nav.csv` | backtest engine | 回测每日 NAV |
-| `data/<agent>/backtest/<run_id>/performance_summary.json` | backtest engine | 回测全套指标 |
-| `data/<agent>/backtest/<run_id>/report.md` | backtest engine | 回测 markdown 报告 |
-| `data/<agent>/evolution_log/<YYYY-MM>-floor-breach.md` | evolution_writer | 回测 gate breach 时的报告 |
-| `data/<agent>/alt_factors/market_sentiment.csv` | record-sentiment CLI | 每周 1 行 LLM 市场情绪记录 |
-| `stock_analyze/alt_factors/prompts/market_sentiment_v1.md` | repo | operator 每周用的 LLM prompt 模板 |
+| **事实层** | 行情、估值、财务、资金、公告和政策事件 | 保留已有数据，标记陈旧度与缺失原因，不伪造补值 |
+| **决策层** | 候选排序、上涨概率、置信度、淘汰原因、目标权重 | 覆盖不足时退回固定规则或空仓，不用不完整证据强行下单 |
+| **执行层** | 联合优化、压力测试、目标订单、成交、持仓、成本后净值 | 遵守交易日、资金、仓位、流动性、换手和暴露约束，逐层写入不可变审计账本 |
+| **观察层** | 策略对比、个股 K 线、归因、任务状态 | 接口独立失败，页面其余资源仍可先展示 |
 
-`data/` 与 `reports/` 全部 gitignored，不进版本控制。
+## 2. 策略与模型如何共同决策
 
----
+两套正式策略是平行账户，不是同一策略的两个页面筛选项。模型迭代是独立的研发通道：候选版本先在影子环境验证，达到门槛后成为 Active 版本，再被正式策略消费。正在研发的 Challenger 不会直接影响正式下单。
 
-## 14. 一周一月一年的工作节奏
+```mermaid
+flowchart TD
+    A[统一事实与特征快照] --> B[稳健防守策略]
+    A --> C[趋势进攻策略]
+    A --> D[Challenger 候选模型]
+    D --> E[训练窗、验证窗、影子模拟]
+    E --> F{收益、回撤、校准与稳定性达标？}
+    F -->|否| G[保留研究记录，继续迭代]
+    F -->|是| H[Active 模型版本]
+    H --> B
+    H --> C
+    B --> I[组合约束与纸面订单]
+    C --> I
+    I --> J[真实竞赛期 OOS 结果]
+    J --> K[周度复盘与月度策略演化]
+```
 
-| 频率 | 谁触发 | 命令 / 动作 |
+| 对象 | 核心目标 | 偏好 | 与模型的关系 |
+| --- | --- | --- | --- |
+| **稳健防守** | 控制回撤，追求较稳定的成本后收益 | 质量、估值、低波动、分散和持有缓冲 | 只读取已激活 Ranker，按 10/20 日 `40%/60%` 融合；陈旧或缺失时退回规则策略 |
+| **趋势进攻** | 捕捉趋势和拐点，接受更高换手 | 动量、量价、资金、技术交叉和事件催化 | 只读取已激活 Ranker，按 3/5 日各 `50%` 融合；陈旧或缺失时退回规则策略 |
+| **模型迭代** | 提升概率排序、校准和风险识别能力 | Champion、Challenger、版本审计、影子验证 | 研发通道本身不等于第三套正式策略 |
+
+模型按角色分别验收：Classifier 看概率校准、Brier、AUC 和命中提升；Ranker 看 Rank IC、ICIR、稳定性与统计抗过拟合证据；Portfolio 看成本后超额、回撤、换手、容量和压力损失。候选版本至少完成 12 个独立影子周期，并通过 Deflated Sharpe、PBO、时点和无幸存者偏差门禁，才可能成为 Active。模型迭代任务与四个正式账户在 systemd 层隔离，候选失败会单独告警，不会阻断规则策略继续运行。
+
+### 一次决策用了哪些证据
+
+| 证据层 | 已接入信息 | 在决策中的作用 |
 | --- | --- | --- |
-| Mon-Fri 17:25 | ECS systemd | `prepare-market-data`（pipeline）→ ExecStartPost 触发两 agent `run-daily --offline` 并行 |
-| Sat 10:00 | ECS systemd | `weekly-trigger`（占位）→ ExecStartPost 触发两 agent `run-weekly --offline` 并行（读周五 cache，自带 briefing） |
-| 周六上午 / 周末 | 你 + agent CLI | sync-from-ecs → `/weekly-review claude` + `do weekly review for codex` → sync-to-ecs |
-| 每月 1 号 09:00 CST | ECS systemd | `competition-monthly-review` + `competition-dashboard`（无 referee/apply 步骤） |
-| 每月 1-2 号 | 你 + agent CLI | sync-from-ecs → `/monthly-strategy claude` + `do monthly strategy for codex` → `validate-overlay` → sync-to-ecs |
-| 季度 | 你 | 翻 leaderboard 与 monthly reviews，决定是否调整 baseline 或新增 OpenSpec change |
-| 任意时刻 | 你 | `competition-dashboard` 刷新；`openspec list` 看变更状态 |
+| **基本面** | PE、PB、ROE、毛利率、负债率、利润增长、股息率 | 判断质量、估值与财务风险，避免只看价格形态 |
+| **技术面** | 动量、波动率、均线、成交量、MACD、量价关系 | 识别趋势、交叉、背离和可能的拐点 |
+| **资金面** | 换手率、成交额、资金流、融资融券 | 验证行情是否有真实资金承接，并约束流动性 |
+| **消息与政策** | 基金公告、国务院和发改委政策、结构化事件 | 生成催化、风险和产业链影响，不把标题直接当交易信号 |
+| **组合约束** | 单股权重、行业暴露、持仓缓冲、成本与可交易性 | 把个股分数转成可执行且可比较的组合 |
 
----
+新特征不会因为“看起来有用”就直接参与正式下单。它必须先通过时间可见性、覆盖率、稳定性和增量价值验证，再进入模型或策略。
 
-## 15. 安全边界
+## 3. 数据从哪里来
 
-| 项 | 强制方式 |
-| --- | --- |
-| 启动资金 / 账户 / 成本 / 调仓日不可改 | `competition.load()` 锁字段；overlay 试图覆盖直接 raise |
-| top_n / 股票池 / 基准 一致 | 同上 |
-| agent 不能跨写对方目录 | `CLAUDE.md` / `AGENTS.md` 行为约束 + slash command 禁止条款 |
-| agent 不能改 `stock_analyze/`、`configs/competition_a_share.yaml`（及 `_hk` / `_us`）、operating manual | 同上 |
-| 月度策略演化边界 | `overlay_guard.validate` 只校验 schema + 锁字段 + factor 白名单 + weight 范围；策略好坏 LLM 自负（人类授权 2026-05-23） |
-| 无 LLM API 依赖 | 整个 stack 没有任何 HTTP 调用到 anthropic.com / openai.com |
-| 真单 | 不可能。代码里没有任何券商 SDK 也没有任何下单链路 |
-| 敏感凭据 | `TUSHARE_TOKEN` 环境变量(注入 `/etc/stock-analyze/secrets.env`,`chmod 600 root:root`);不写入仓库、配置、日志;systemd 用 `EnvironmentFile=` 隔离权限。详见 [docs/tushare-token-setup.md](tushare-token-setup.md)。 |
+生产主链以 Tushare Pro 为核心，A 股行情故障时可由 Baostock 降级补充。公告与政策只采官方或公开来源；未获得授权的数据不会冒充已接入能力。系统会记录来源、抓取时间、发布时间和内容哈希，便于复核。
 
----
+| 来源 | 覆盖 | 用途 | 当前状态 |
+| --- | --- | --- | --- |
+| **Tushare Pro** | A 股日线、估值、资金、融资融券、财务、指数与公司公告；ETF 日线、复权、净值、份额、全球指数、汇率 | 行情、因子、组合估值、净值计算和公司事件发现 | 已接入 |
+| **Baostock** | A 股历史行情与部分基础字段 | 主源异常时的行情降级 | 已接入 |
+| **东方财富公开页** | 境内基金与 ETF 公告发现 | 发现待核验的基金事件；聚合页本身不能形成正式硬阻断 | 已接入发现层 |
+| **交易所与基金管理人公告** | ETF 停复牌、申赎限制、清盘与恢复公告 | 对聚合发现做官方确认后，驱动按申购/赎回/交易范围区分的状态机 | 接口契约已定义，适配器待确认 |
+| **中国政府网、发改委** | 宏观政策和产业政策 | 政策事件、行业影响和风险标签 | 已接入 |
+| **证监会公开页** | 监管公告 | 预留监管事件补充 | 重定向问题，暂禁用 |
+| **央行、财政部、统计局、海关** | 利率、财政、经济与贸易数据 | 宏观状态和政策事件增强 | 接口契约已定义，适配器待接入 |
+| **Tushare `anns_d` 公告** | A 股公司公告元数据及巨潮资讯原文链接 | 公司事件提取、证券关联与研究因子观察 | 已授权并接入 |
+| **Tushare 商业新闻** | 新闻与舆情 | 公司和行业情绪增强 | 当前账号未授权，保持不可用 |
+| **同花顺 iFinD、Choice、富途** | 商业行情、资讯与特色数据 | 未来增强源 | 未授权，未接入 |
 
-## 16. 限制与不在范围
+Nasdaq、标普和恒生等指数画像仅用于识别跨境 ETF 的底层暴露，不代表系统在直接交易境外股票。当前明确缺口是稳定授权新闻流、ETF 申赎清单与资金流，以及更丰富的海外利率和宏观数据；缺失特征保持缺失或低置信度，不做伪造填充。
 
-- **数据**：公开接口受网络 / 风控 / 限流影响；data_provider 已加多源降级和重试，但不保证不掉数据。
-- **financials**：Tushare `fina_indicator` 已按 `ann_date <= as_of` 做 point-in-time 可见性过滤；更完整的财报公告溯源、修订版本和多期对齐仍待后续 change。
-- **历史回测**：已上线（`add-historical-backtest-engine`，2026-05-26）。引擎复用 `simulator.py`，gate 集成到月度演化，研究 CLI 支持任意窗口。完整 `factor_pipeline` 集成已落地：当 `backtest.use_full_pipeline` 为 true（A 股基线 `competition_a_share.yaml` 即为 true）时，引擎跑 overlay 真实的 winsorize → z-score → 行业中性化 → 加权流水线；low-PE top-N 仅作旧版兜底。
-- **历史指数成分**：用当下成分倒推历史会有幸存者偏差，回测时再补。
-- **组合优化器**：未引入 CVXPY / PyPortfolioOpt。当前组合控制是规则式。
-- **告警**：没有钉钉/邮件告警，全靠你看 dashboard。
+## 4. Dashboard 能回答什么
 
----
+Dashboard 以五个稳定工作区组织观察路径，市场范围与工作区导航彼此独立。首屏只呈现当前状态，点击流程节点再查看真实数据、模型、计划与运行证据。
 
-## 17. 后续 change 路线图
+| 工作区 | 回答的问题 | 首屏接口 |
+| --- | --- | --- |
+| **决策总览** | 数据、情报、模型和正式策略是否真实连接 | `system-overview.json` |
+| **策略工作台** | 两种正式策略表现如何，当前持仓和计划是什么 | 现有拆分策略资源 |
+| **模型研究** | 接了什么数据、训练了什么、指标如何、是否模拟和采用 | `model-research.json` |
+| **数据与情报** | 传统因子和情报因子来自哪里，被谁实际使用 | `data-intelligence.json` |
+| **运行中心** | 今天跑到哪里，下次何时，是否需要人工 | `operations-center.json` |
 
-按优先级建议：
+`等待计划时间`、`等待上游`、零入选和正常历史回填不是故障。只有运行中心 `interventions` 中的项目，才表示系统无法自动恢复或已经达到人工决策门槛。单个读取段不可用时，页面显示“部分状态不可用”，其余有效流程、矩阵、计划和历史仍继续呈现。
 
-1. ✅ **已完成 — backtest factor_pipeline 集成**（`bridge-factor-pipeline-into-backtest`）：`backtest/scoring.py` 的 `score_with_overlay` 让 gate 跑 overlay 真实 factor 流水线；gate 把 overlay 合并到 baseline 后实测，`backtest.use_full_pipeline` 在 A 股基线已置 true。low-PE top-N 仅作旧版兜底。
-2. **Phase 2 sentiment Tushare 新闻包**：升级到 ¥1000/年 Tushare news endpoint + 新增 `news_volume` 因子 + 历史回填 + 回测集成。
-3. ✅ **已完成 — sentiment per-stock 颗粒度**：行业级 per-stock 情绪因子 `<agent>_sector_sentiment` 已上线（`record-sector-sentiment` 写入），走 winsorize / z-score、跳过行业中性化，真正参与横截面排序。
-4. `introduce-point-in-time-fundamentals`：按公告日生效财务因子。
-5. `add-research-factor-toolkit`：因子衰减、相关性、行业暴露归因、风格暴露归因。
-6. `migrate-run-ledger-to-sqlite`：CSV 账本 → SQLite/DuckDB，加索引、原子写、备份。
-7. `add-alerting-and-sla`：任务失败 / NAV 停更 / pending 超期 / 回撤超阈值告警。
-8. `introduce-portfolio-optimizer`：在既有约束下接 CVXPY 做加权。
+| 页面问题 | 回答方式 | 主要交互 |
+| --- | --- | --- |
+| **为什么净值涨或跌** | 分开呈现组合收益、基准收益、交易成本、个股贡献和因子归因 | 时间范围、策略、市场和归因维度切换 |
+| **哪天买了什么** | 交易时间轴与持仓变化按日期排列 | 点击日期和证券下钻 |
+| **为什么选或不选** | 展示概率、置信度、证据覆盖、风险标签和淘汰原因 | 候选排序、原因筛选、字段中文解释 |
+| **买卖点是否合理** | 三年真实 K 线，默认一个月，叠加均线、成交量、MACD 和成交标记 | 指标开关、缩放、联动十字线、悬浮详情 |
+| **任务有没有正常跑** | 按资源展示新鲜度、成功状态、失败摘要和通知情况 | 仅在运维页查看，不干扰分析主流程 |
 
-每个 change 都走 OpenSpec：proposal → design → tasks → specs，验证通过后实施。
+Dashboard 由 React 18、TypeScript、Vite、TanStack Table、TradingView Lightweight Charts 和 Lucide 构建。策略工作台继续按 `overview`、`performance`、`portfolio`、`predictions`、`research`、`operations`、`governance` 拆分资源；模型研究、数据与情报、运行中心各有独立首屏接口，配合语义 ETag、限量缓存和严格载荷上限渐进加载。`governance` 仍独立承载决策漏斗、风险压力、归因、漂移、实验和情报因子证据。
 
----
+## 5. 自动任务与人工动作
 
-## 18. 术语表
+生产环境由 systemd 统一调度，目前有 13 个 timer。任务遵循“先数据、再研究、再模型、再交易、最后通知”的依赖顺序；周度任务负责复盘材料与策略观察，日度任务负责纸面订单执行。
 
-- **agent**：参赛策略的拥有者。当前两个：`claude`（由 Claude Code 操作）、`codex`（由 Codex CLI 操作）。
-- **baseline**：`configs/competition_a_share.yaml`（按市场分文件，另有 `_hk` / `_us`）中的共享公平字段。
-- **overlay**：`configs/agents/<agent>_a_share.yaml`（另有 `_hk` / `_us`）中的 agent 自由配置。
-- **briefing**：ECS 周/月自动生成给 agent 看的 markdown 任务包，位于 `data/<agent>/notes/briefings/`。
-- **note**：agent 自己写的分析 markdown，位于 `data/<agent>/notes/`。
-- **evolution**：agent 月度策略演化记录，包含 `data/<agent>/evolution_log/`、`data/<agent>/evolution_diff/` 与 `data/<agent>/config_evolution.csv`。
-- **review**：竞赛月度对比，位于 `data/competition/monthly_reviews/`。
-- **leaderboard**：按月战绩 CSV，位于 `data/competition/leaderboard.csv`。
-- **config_hash**：当前 overlay+baseline 合并后的 12 字符 sha256；每次 config 变化都重新计算。
-- **run_id**：每次 CLI 命令调用的唯一 ID，写入 `runs.csv` 与 `factor_runs/`。
-- **forward IC**：5 日前向 Spearman rank IC，因子有效性指标。
-- **TopN**：每个账户的目标持仓数量。当前 `top_n=50`，双账户合计 100。
+```mermaid
+flowchart TD
+    R[systemd 自动调度] --> D0[每日与交易日]
+    R --> W0[每周六]
+    R --> M0[每月 1 日]
+    D0 --> D1[每 30 分钟：官方资讯采集]
+    D1 --> D2[18:30：数据、研究、模型、四账户执行]
+    D2 --> D3[正式账户与候选模型并行，互不阻断]
+    D3 --> D4[19:30：飞书每日摘要]
+    D4 --> D5[20:30：公告对账、语义验证与质量报告]
+    W0 --> W1[10:00：A 股周度材料]
+    W1 --> W2[10:15：跨境 ETF 双策略周度材料]
+    W2 --> W3[10:30：ETF 研究更新]
+    W3 --> W4[10:45：周度摘要与人工提醒]
+    M0 --> M1[02:30：模型训练与候选版本]
+    M1 --> M2[09:00：月度竞赛复盘]
+    M2 --> M3[09:30：月度摘要与演化提醒]
+```
 
----
+| 周期 | 时间 | 主要动作 | 是否需要你介入 |
+| --- | --- | --- | --- |
+| **资讯** | 每 30 分钟 | 抓取官方政策、基金公告和 A 股公司公告元数据，去重并生成结构化事件 | 否 |
+| **公告产物** | 每 2 小时 | 有界续跑 PDF 下载、版面解析、表格和 OCR 队列，不调用语义模型 | 否 |
+| **交易日主链** | 周一至周五 18:30 | 同步数据、研究、预测并执行四个纸面账户 | 否 |
+| **每日摘要** | 周一至周五 19:30 | 发送整体结果、关键异常和最多 3 条最高置信度预测 | 仅异常时查看 |
+| **公告对账** | 每天 20:30 | 对账近两日目录，处理语义、确定性校验、因子快照和质量报告 | 仅异常时查看 |
+| **周度链路** | 周六 10:00 至 10:45 | 生成周度材料、ETF 研究和汇总提醒 | 收到提醒后运行周度复盘 |
+| **月度链路** | 每月 1 日 02:30 至 09:30 | 训练候选模型、生成竞赛月报和演化提醒 | 收到提醒后运行月度策略演化 |
 
-## 进一步阅读
+人工只需要发送两类指令：
 
-- 运维细节：[docs/competition-runbook.md](competition-runbook.md)
-- 单 agent 模式（老）：[docs/forward-simulation-runbook.md](forward-simulation-runbook.md)
-- P1 方法学计划：[docs/quant-beginner-alignment-plan-2026-05-19.md](quant-beginner-alignment-plan-2026-05-19.md)
-- 早期 model gap review：[docs/quant-model-gap-review-2026-05-18.md](quant-model-gap-review-2026-05-18.md)
-- OpenSpec 变更：`openspec/changes/`
+```text
+运行 YYYY-MM-DD 周度复盘
+运行 YYYY-MM 月度策略演化
+```
+
+不需要手动触发 `run-daily` 或逐个维护 timer。系统异常时，飞书只推送一条聚合信息，包含失败阶段、影响范围和建议动作。
+
+## 6. 技术路线与数据边界
+
+| 层次 | 主要技术 | 设计目的 |
+| --- | --- | --- |
+| **数据与计算** | Python、Pandas、NumPy、scikit-learn、TA-Lib | 低频研究、特征计算、概率模型和可复现回测 |
+| **存储** | CSV、JSON、Parquet、SQLite | CSV 账户事实保持 canonical；SQLite 保存可重建的决策、成交、归因、实验与情报查询投影 |
+| **服务** | Python Dashboard API、语义 ETag、分资源缓存 | 拆分大接口，让页面逐块加载且避免重复传输 |
+| **前端** | React 18、TypeScript、Vite、TanStack、Lightweight Charts、Lucide | 动态数据、专业图表、交互下钻和统一状态管理 |
+| **运行与通知** | systemd、ECS、飞书机器人与云文档 | 稳定调度、集中日志、精简告警和长期存档 |
+
+核心责任边界：配置定义市场、账户和策略；共享数据目录保存行情与基准；策略目录保存各自订单、持仓、净值和演化记录；竞赛目录只保存允许跨策略比较的结果；报告目录是可再生成的展示产物。
+
+```text
+configs/                市场、竞赛、策略与调度配置
+data/shared/            共享行情、基准、证券主数据
+data/competition/       合规的策略对比与月度结果
+data/<market>/<id>/     两套策略的账户事实
+data/research/models/   研究模型、门禁和角色状态
+data/model_iterations/  候选版本的独立模拟组合
+data/shared/research_lineage.sqlite3  决策到归因的追加式审计投影
+data/shared/intelligence/             文档、事件、来源健康和原始证据
+reports/                可再生成的报告与 Dashboard 资源
+logs/                   任务运行和失败证据
+archive/                已退出生产的只读逻辑与数据
+```
+
+Canonical 运行路径是 `data/<market>/<strategy_id>/` 和 `reports/<market>/<strategy_id>/`。`claude`、`codex` 仅保留为底层历史兼容 ID，产品和页面统一使用“稳健防守”“趋势进攻”。
+
+## 7. 如何判断系统是否健康
+
+| 观察项 | 健康信号 | 需要关注的信号 |
+| --- | --- | --- |
+| **数据** | 交易日更新及时，字段覆盖稳定，来源和日期可追溯 | 连续陈旧、代码无名称、复权异常或主源与降级源冲突 |
+| **策略** | 两套策略持仓与因子驱动保持差异，成本后结果可解释 | 长期高度重合、频繁无效换手、收益只靠少数异常样本 |
+| **模型** | 角色门禁、12 周期、DSR/PBO、无偏样本和漂移状态同时达标，版本可回滚 | 只看准确率、验证窗反复调参、候选版本直接影响正式订单 |
+| **运维** | 13 个 timer 按依赖完成，Dashboard 新鲜，飞书消息少而完整 | 同一错误重复告警、日报缺失、接口整体阻塞或任务静默失败 |
+
+纸面交易结果用于比较策略和改进系统，不构成收益承诺。回测、影子账户和竞赛期结果必须分开阅读；短期领先也不能自动证明策略已经稳定。
+
+## 附录：近期改造脉络
+
+| 阶段 | 完成内容 | 带来的变化 |
+| --- | --- | --- |
+| **交易边界收敛** | 移除港股、美股直接模拟，建立 A 股与境内跨境 ETF 正式账户 | 系统交易范围与大陆可行路径一致，境外信息只做底层暴露参考 |
+| **双策略重构** | 将旧代理概念改造成稳健防守和趋势进攻，并增加多维对比 | 比较对象变成可解释的投资风格，不再暴露 agent 页面语义 |
+| **专业分析补齐** | 三年 K 线、均线、成交量、MACD、成交点、基准和中文字段解释 | 能沿时间和证券下钻，不再只看静态汇总表 |
+| **模型治理** | 建立 Champion、Challenger、Active、影子验证和版本门禁 | 研发模型与正式策略隔离，验收通过后才影响下单 |
+| **资讯与决策证据** | 接入官方政策和基金公告，统一基本面、技术面、资金面与事件证据 | Dashboard 能解释选中、淘汰和风险原因，而不只展示结果 |
+| **服务与运维** | 拆分 Dashboard 资源接口、优化缓存、整理 systemd 链路和飞书通知 | 页面渐进加载，任务依赖清晰，消息从流水线噪声变成摘要和行动提醒 |
+| **P0-P2 成熟化** | 角色化模型门禁、明确期限、时点 ETF 宇宙、联合优化、压力测试、统计治理、漂移隔离、全链路账本和每日归因 | 正式决策可重建、候选模型失败不拖累正式策略、研究证据不足时明确降级而非伪装可用 |
+
+本轮 P0-P2 的模块、门禁和降级契约见
+[quant-system-p0-p2-closure.md](quant-system-p0-p2-closure.md)。执行和排障从
+[system-harness.md](system-harness.md) 开始。运行状态、数据规模与模型版本以
+Dashboard 和 ECS 实时记录为准；本文负责解释系统结构和操作边界。
+
+公告子系统的日常操作见
+[公告情报运维手册](announcement-intelligence-runbook.md)。
