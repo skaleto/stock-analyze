@@ -148,7 +148,7 @@ Dashboard 由 React 18、TypeScript、Vite、TanStack Table、TradingView Lightw
 
 ## 5. 自动任务与人工动作
 
-生产环境由 systemd 统一调度，目前有 15 个 timer。任务遵循“先数据、再研究、再模型、再交易、最后通知”的依赖顺序；周度任务负责复盘材料与策略观察，日度任务负责纸面订单执行。
+当前版本定义了 15 个 systemd timer，ECS 实际启用和加载数量以运行中心的实时读数为准。任务遵循“先数据、再研究、再模型、再交易、最后通知”的依赖顺序；周度任务负责复盘材料与策略观察，日度任务负责纸面订单执行。
 
 ```mermaid
 flowchart TD
