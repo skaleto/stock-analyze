@@ -87,6 +87,17 @@ afterEach(() => {
 });
 
 describe("Dashboard app workspace integration", () => {
+  it("shows a stable route skeleton while the lazy workspace loads", async () => {
+    window.history.replaceState({}, "", "/app.html?view=system");
+
+    render(<App />);
+
+    expect(
+      screen.getByLabelText("工作区加载中"),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("决策总览页面")).toBeInTheDocument();
+  });
+
   it.each([
     ["?view=system", "决策总览页面", "/api/dashboard/system-overview.json"],
     [

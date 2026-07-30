@@ -1388,6 +1388,7 @@ def build_dashboard_system_overview_data(
     """Return the bounded research-to-strategy decision loop."""
 
     root = Path(repo_root) if repo_root else Path.cwd()
+    errors: list[dict[str, str]] = []
     try:
         summary = agg.build_dashboard_summary_data(
             repo_root=root,
@@ -1402,16 +1403,41 @@ def build_dashboard_system_overview_data(
         agg.DashboardDataError,
     ):
         markets = []
+        errors.append(
+            {
+                "code": "market_summary_read_unavailable",
+                "section": "markets",
+                "message": "市场概览暂不可用。",
+            }
+        )
     models: list[dict[str, Any]] = []
     for market in competition.MARKETS:
         try:
             status = agg._read_model_iteration_status(root, market)
-        except (OSError, TypeError, ValueError, agg.DashboardDataError):
+        except (
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            sqlite3.Error,
+            agg.DashboardDataError,
+        ):
             status = {
                 "status": "unavailable",
                 "candidate": None,
                 "champion": None,
             }
+            errors.append(
+                {
+                    "code": "model_lineage_read_unavailable",
+                    "section": "models",
+                    "market": market,
+                    "message": (
+                        f"{agg.MARKET_LABELS.get(market, market)}"
+                        "模型采用链暂不可用。"
+                    ),
+                }
+            )
         models.append(
             {
                 "market": market,
@@ -1433,6 +1459,13 @@ def build_dashboard_system_overview_data(
         ValueError,
         agg.DashboardDataError,
     ):
+        errors.append(
+            {
+                "code": "intelligence_read_unavailable",
+                "section": "intelligence",
+                "message": "情报链路暂不可用。",
+            }
+        )
         intelligence = {
             "pipeline": {
                 "status": "unavailable",
@@ -1488,12 +1521,30 @@ def build_dashboard_system_overview_data(
             },
             "rowsByDecision": {},
         }
+    try:
+        strategy_model_usage = _latest_strategy_model_usage(root)
+    except (
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        sqlite3.Error,
+        agg.DashboardDataError,
+    ):
+        strategy_model_usage = []
+        errors.append(
+            {
+                "code": "strategy_model_usage_read_unavailable",
+                "section": "strategy_model_usage",
+                "message": "策略模型采用记录暂不可用。",
+            }
+        )
     return agg._json_safe(
         {
             "generated_at": _generated_at(),
             "markets": markets,
             "models": models,
-            "strategy_model_usage": _latest_strategy_model_usage(root),
+            "strategy_model_usage": strategy_model_usage,
             "intelligence": {
                 "pipeline": intelligence["pipeline"],
                 "extraction": intelligence["extraction"],
@@ -1505,6 +1556,7 @@ def build_dashboard_system_overview_data(
                     .get("canonical", [])[:5]
                 ),
             },
+            "errors": errors,
         }
     )
 

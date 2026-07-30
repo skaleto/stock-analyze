@@ -191,6 +191,14 @@ export default function SystemOverviewPanel({
           <ShieldAlert size={18} />总览数据加载失败：{error}
         </div>
       ) : null}
+      {data?.errors.length ? (
+        <div className="system-overview-error" role="status">
+          <ShieldAlert size={18} />
+          <span>
+            {data.errors.map((item) => item.message).join("；")}
+          </span>
+        </div>
+      ) : null}
       {loading && !data ? (
         <div className="system-overview-loading" aria-label="决策总览加载中">
           <i /><i /><i /><i /><i />
