@@ -23,6 +23,8 @@ MAX_DIAGNOSTIC_DEPTH = 4
 MAX_DIAGNOSTIC_ITEMS = 8
 MAX_DIAGNOSTIC_NODES = 128
 MAX_DIAGNOSTIC_TEXT = 32_000
+MAX_SERIALIZED_BYTES = 250_000
+MAX_ABS_NUMERIC = 1_000_000_000_000_000
 MODEL_METRIC_KEYS = (
     "rank_ic",
     "mean_rank_ic",
@@ -50,13 +52,38 @@ def _check_market(market: str) -> None:
 
 def _integer(value: Any) -> int:
     try:
-        return int(value or 0)
+        normalized = int(value or 0)
     except (TypeError, ValueError, OverflowError):
         return 0
+    return normalized if abs(normalized) <= MAX_ABS_NUMERIC else 0
 
 
 def _text(value: Any, *, limit: int = MAX_TEXT_LENGTH) -> str:
     return str(value or "")[:limit]
+
+
+def _scalar(value: Any, *, text_limit: int = MAX_TEXT_LENGTH) -> Any:
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value if abs(value) <= MAX_ABS_NUMERIC else None
+    if isinstance(value, float):
+        return (
+            value
+            if math.isfinite(value) and abs(value) <= MAX_ABS_NUMERIC
+            else None
+        )
+    timestamp = _iso_timestamp(value)
+    if isinstance(timestamp, str):
+        return timestamp[:text_limit]
+    return None
+
+
+def _finite_number(value: Any, *, default: float = 0.0) -> int | float | bool:
+    sanitized = _scalar(value)
+    if isinstance(sanitized, (bool, int, float)):
+        return sanitized
+    return default
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -172,6 +199,10 @@ def _model_artifact_ref(
     registry_record: dict[str, Any],
 ) -> str | None:
     model_root = root / "data" / "research" / "models" / market / str(horizon)
+    try:
+        resolved_model_root = model_root.resolve()
+    except OSError:
+        return None
     registered = _text(registry_record.get("artifact"), limit=4_096).strip()
     candidates: list[Path] = []
     if registered:
@@ -184,9 +215,11 @@ def _model_artifact_ref(
         if not candidate.is_file():
             continue
         try:
-            return str(candidate.resolve().relative_to(root.resolve()))
+            resolved = candidate.resolve()
+            resolved.relative_to(resolved_model_root)
+            return str(resolved.relative_to(root.resolve()))
         except (OSError, ValueError):
-            return candidate.name
+            continue
     return None
 
 
@@ -229,10 +262,11 @@ def _model_rows(root: Path, market: str) -> list[dict[str, Any]]:
                 "horizon": horizon,
                 "algorithmFamily": _algorithm_family(raw),
                 "trainedAt": (
-                    _iso_timestamp(
+                    _scalar(
                         raw.get("trained_at")
                         or raw.get("created_at")
-                        or registry_record.get("registered_at")
+                        or registry_record.get("registered_at"),
+                        text_limit=256,
                     )
                 ),
                 "sampleSupport": _integer(raw.get("sample_support")),
@@ -253,13 +287,16 @@ def _model_rows(root: Path, market: str) -> list[dict[str, Any]]:
                     and registry_active
                     and artifact_ref
                 ),
-                "pointInTimeAudit": metrics.get("point_in_time_audit"),
+                "pointInTimeAudit": _scalar(
+                    metrics.get("point_in_time_audit"),
+                    text_limit=128,
+                ),
                 "candidateFeatureCount": _integer(
                     metrics.get("candidate_feature_count")
                 )
                 or len(all_features),
                 "metrics": {
-                    key: metrics.get(key)
+                    key: _scalar(metrics.get(key))
                     for key in MODEL_METRIC_KEYS
                     if key in metrics
                 },
@@ -277,7 +314,7 @@ def _source_rows(value: Any) -> list[dict[str, Any]]:
                 "status": _text(row.get("status"), limit=128),
                 "rows": _integer(row.get("rows")),
                 "failed": bool(row.get("failed")),
-                "as_of": _iso_timestamp(row.get("as_of")),
+                "as_of": _scalar(row.get("as_of"), text_limit=256),
                 "error": _text(
                     row.get("error") or row.get("error_summary"),
                     limit=MAX_TEXT_LENGTH,
@@ -319,10 +356,12 @@ def _usage_rows(
                     row.get("strategy_label") or row.get("agent"),
                     limit=256,
                 ),
-                "as_of": _iso_timestamp(row.get("as_of")),
+                "as_of": _scalar(row.get("as_of"), text_limit=256),
                 "status": "active",
                 "applied_candidates": _integer(row.get("applied_candidates")),
-                "candidate_coverage": row.get("candidate_coverage") or 0.0,
+                "candidate_coverage": _finite_number(
+                    row.get("candidate_coverage")
+                ),
                 "model_versions": evidenced_versions,
                 "fallback_reason": _text(
                     row.get("fallback_reason"),
@@ -349,15 +388,76 @@ def _candidate(value: Any) -> dict[str, Any]:
         "shadow_cycles_remaining",
         "horizon",
     )
-    return {
-        key: (
-            _iso_timestamp(raw.get(key))
-            if key in {"selected_at", "registered_at"}
-            else raw.get(key)
-        )
-        for key in keys
-        if key in raw
-    }
+    result: dict[str, Any] = {}
+    for key in keys:
+        if key not in raw:
+            continue
+        if key in {"shadow_cycles", "shadow_cycles_remaining"}:
+            result[key] = _integer(raw.get(key))
+        elif key == "horizon":
+            value = _scalar(raw.get(key), text_limit=32)
+            result[key] = (
+                value
+                if isinstance(value, (bool, int, float, str))
+                else None
+            )
+        elif key in {"selected_at", "registered_at"}:
+            result[key] = _scalar(raw.get(key), text_limit=256)
+        else:
+            result[key] = _text(raw.get(key), limit=256)
+    return result
+
+
+def _serialized_size(payload: dict[str, Any]) -> int:
+    return len(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    )
+
+
+def _enforce_serialized_size(payload: dict[str, Any]) -> dict[str, Any]:
+    payload["truncated"] = False
+    payload["truncationReason"] = None
+    if _serialized_size(payload) < MAX_SERIALIZED_BYTES:
+        return payload
+
+    payload["truncated"] = True
+    payload["truncationReason"] = "serialized_size_limit"
+
+    # Preserve the five stages and all count summaries; remove duplicated and
+    # optional detail in a fixed order until the response fits.
+    payload["validation"]["models"] = []
+    payload["simulation"]["decision"]["diagnostics"] = None
+    payload["adoption"]["rollbackCandidates"] = []
+    payload["dataPreparation"]["selectedFeatures"] = []
+    payload["dataPreparation"]["unclassifiedFeatures"] = []
+
+    models = payload["training"]["models"]
+    while len(models) > 1 and _serialized_size(payload) >= MAX_SERIALIZED_BYTES:
+        models.pop()
+    sources = payload["dataPreparation"]["sources"]
+    while sources and _serialized_size(payload) >= MAX_SERIALIZED_BYTES:
+        sources.pop()
+    usage = payload["adoption"]["strategyUsage"]
+    while len(usage) > 1 and _serialized_size(payload) >= MAX_SERIALIZED_BYTES:
+        usage.pop()
+
+    if _serialized_size(payload) >= MAX_SERIALIZED_BYTES and models:
+        models[0]["gateReasons"] = []
+        models[0]["featureColumns"] = []
+        models[0]["metrics"] = {}
+    if _serialized_size(payload) >= MAX_SERIALIZED_BYTES:
+        payload["adoption"]["strategyUsage"] = []
+        payload["adoption"]["champions"] = []
+    if _serialized_size(payload) >= MAX_SERIALIZED_BYTES:
+        payload["training"]["models"] = []
+
+    if _serialized_size(payload) >= MAX_SERIALIZED_BYTES:
+        raise ValueError("dashboard_workspace_payload_exceeds_size_limit")
+    return payload
 
 
 def build_dashboard_model_research_data(
@@ -517,7 +617,10 @@ def build_dashboard_model_research_data(
         "simulation": {
             "status": _text(iteration.get("status"), limit=128) or "unavailable",
             "candidate": candidate or None,
-            "predictionAsOf": _iso_timestamp(iteration.get("prediction_as_of")),
+            "predictionAsOf": _scalar(
+                iteration.get("prediction_as_of"),
+                text_limit=256,
+            ),
             "predictionStatus": (
                 "available" if iteration.get("prediction_as_of") else "missing"
             ),
@@ -547,4 +650,5 @@ def build_dashboard_model_research_data(
             "strategyUsage": usage,
         },
     }
-    return agg._json_safe(payload)
+    safe_payload = agg._json_safe(payload)
+    return _enforce_serialized_size(safe_payload)
