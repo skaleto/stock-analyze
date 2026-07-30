@@ -101,6 +101,57 @@ describe("StageFlow", () => {
       'StageFlow received duplicate stage key "data".',
     );
   });
+
+  it.each([3, 4, 5])(
+    "fills the available flow width with the actual %i stage count",
+    (stageCount) => {
+      const flowStages = Array.from({ length: stageCount }, (_, index) => ({
+        key: `stage-${index}`,
+        label: `阶段 ${index + 1}`,
+        status: "running" as const,
+        primary: `${index + 1} 项`,
+        secondary: "等待处理的长中文状态不会改变节点宽度",
+      }));
+      render(
+        <StageFlow
+          ariaLabel={`${stageCount} 阶段运行链`}
+          selectedKey="stage-0"
+          onSelect={vi.fn()}
+          stages={flowStages}
+        />,
+      );
+
+      const flow = screen.getByRole("group", {
+        name: `${stageCount} 阶段运行链`,
+      });
+      expect(flow).toHaveClass("stage-flow");
+      expect(flow).toHaveStyle({ "--stage-count": String(stageCount) });
+      expect(within(flow).getAllByRole("button")).toHaveLength(stageCount);
+      expect(flow.querySelectorAll(".stage-flow-item")).toHaveLength(stageCount);
+      expect(flow.querySelectorAll(".stage-link")).toHaveLength(stageCount - 1);
+    },
+  );
+
+  it("uses stable flow and node classes for responsive layout", () => {
+    render(
+      <StageFlow
+        ariaLabel="运行链"
+        selectedKey="data"
+        onSelect={vi.fn()}
+        stages={stages}
+      />,
+    );
+
+    expect(screen.getByRole("group", { name: "运行链" })).toHaveClass(
+      "stage-flow",
+    );
+    expect(screen.getByRole("button", { name: /数据准备/ })).toHaveClass(
+      "stage-node",
+    );
+    expect(screen.getByRole("button", { name: /模型训练/ })).toHaveClass(
+      "stage-node",
+    );
+  });
 });
 
 describe("WorkspaceStatusBadge", () => {
