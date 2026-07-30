@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from stock_analyze import competition
+from stock_analyze import dashboard_aggregator as agg
 from stock_analyze.dashboard_workspace_api import (
     FORMAL_FACTOR_SOURCES,
     _bounded_intelligence_lane,
@@ -169,6 +170,316 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
                 repo_root=root,
                 market="a_share",
             )
+
+    def test_model_resource_keeps_simulation_when_model_health_is_unreadable(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+            side_effect=agg.DashboardDataError("model_health"),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+            return_value=_iteration(),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_research_source_health",
+            return_value=[],
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+            return_value=[],
+        ):
+            payload = build_dashboard_model_research_data(
+                repo_root=Path(tmp),
+                market="a_share",
+            )
+
+        self.assertEqual(payload["training"]["models"], [])
+        self.assertEqual(
+            payload["simulation"]["candidate"]["model_version"],
+            "A20-V005",
+        )
+        self.assertEqual(
+            payload["errors"],
+            [{"resource": "model_health", "reason": "unavailable"}],
+        )
+
+    def test_model_resource_keeps_training_when_other_sections_fail(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+            return_value={"status": "available", "models": [_model()]},
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+            side_effect=OSError("iteration path must not leak"),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_research_source_health",
+            side_effect=ValueError("source payload must not leak"),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+            side_effect=OSError("lineage path must not leak"),
+        ):
+            payload = build_dashboard_model_research_data(
+                repo_root=Path(tmp),
+                market="a_share",
+            )
+
+        self.assertEqual(
+            payload["training"]["models"][0]["modelVersion"],
+            "A20-V005",
+        )
+        self.assertEqual(payload["dataPreparation"]["sources"], [])
+        self.assertEqual(payload["simulation"]["status"], "unavailable")
+        simulation_stage = next(
+            row for row in payload["stages"] if row["key"] == "simulation"
+        )
+        self.assertEqual(simulation_stage["status"], "unavailable")
+        self.assertEqual(payload["adoption"]["strategyUsage"], [])
+        self.assertEqual(
+            payload["errors"],
+            [
+                {"resource": "source_health", "reason": "unavailable"},
+                {"resource": "model_iteration", "reason": "unavailable"},
+                {"resource": "strategy_model_usage", "reason": "unavailable"},
+            ],
+        )
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self.assertNotIn("must not leak", serialized)
+
+    def test_data_resource_keeps_structured_lane_when_intelligence_is_unreadable(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api._public_strategy_profiles",
+            return_value={},
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+            return_value={"status": "available", "models": [_model()]},
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+            return_value=_iteration(),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            side_effect=agg.DashboardDataError("intelligence"),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+            return_value=[],
+        ):
+            payload = build_dashboard_data_intelligence_data(
+                repo_root=Path(tmp),
+                market="a_share",
+            )
+
+        self.assertTrue(payload["structured"]["sources"])
+        self.assertEqual(
+            payload["intelligence"]["pipeline"]["status"],
+            "unavailable",
+        )
+        self.assertEqual(
+            {row["status"] for row in payload["intelligence"]["stages"]},
+            {"unavailable"},
+        )
+        self.assertEqual(
+            payload["errors"],
+            [{"resource": "intelligence", "reason": "unavailable"}],
+        )
+
+    def test_data_resource_keeps_intelligence_when_model_sections_fail(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api._public_strategy_profiles",
+            return_value={},
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+            side_effect=OSError("health path must not leak"),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+            side_effect=TypeError("iteration detail must not leak"),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            return_value=_intelligence(),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+            side_effect=ValueError("usage detail must not leak"),
+        ):
+            payload = build_dashboard_data_intelligence_data(
+                repo_root=Path(tmp),
+                market="a_share",
+            )
+
+        self.assertEqual(
+            payload["intelligence"]["pipeline"]["documents"],
+            584598,
+        )
+        self.assertTrue(payload["structured"]["sources"])
+        formal_consumers = [
+            row
+            for row in payload["usageMatrix"]
+            if row["consumerKey"] in {"defensive", "trend"}
+        ]
+        self.assertEqual(
+            {row["modelAdoption"]["status"] for row in formal_consumers},
+            {"unavailable"},
+        )
+        self.assertEqual(
+            payload["errors"],
+            [
+                {"resource": "model_health", "reason": "unavailable"},
+                {"resource": "model_iteration", "reason": "unavailable"},
+                {"resource": "strategy_model_usage", "reason": "unavailable"},
+            ],
+        )
+        self.assertNotIn(
+            "must not leak",
+            json.dumps(payload, ensure_ascii=False),
+        )
+
+    def test_operations_resource_keeps_runtime_when_intelligence_is_unreadable(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+            return_value=self._operations_scope_runtime(),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            side_effect=OSError("database path must not leak"),
+        ):
+            payload = build_dashboard_operations_center_data(
+                repo_root=Path(tmp),
+                scope="all",
+                now=datetime(2026, 7, 30, 13, 30),
+            )
+
+        self.assertEqual(payload["runtime"]["status"], "available")
+        self.assertTrue(payload["mainChain"])
+        self.assertEqual(payload["background"]["status"], "unavailable")
+        self.assertEqual(
+            payload["errors"],
+            [{"resource": "intelligence", "reason": "unavailable"}],
+        )
+        self.assertNotIn(
+            "database path",
+            json.dumps(payload, ensure_ascii=False),
+        )
+
+    def test_workspace_read_does_not_hide_unexpected_programming_errors(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+            side_effect=RuntimeError("unexpected programming error"),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "unexpected programming error",
+            ):
+                build_dashboard_model_research_data(
+                    repo_root=Path(tmp),
+                    market="a_share",
+                )
+
+    def test_workspace_payloads_remain_bounded(self) -> None:
+        runtime = self._operations_scope_runtime()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+            return_value={"status": "available", "models": [_model()]},
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+            return_value=_iteration(),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_research_source_health",
+            return_value=[],
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+            return_value=[],
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            return_value=_intelligence(),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+            return_value=runtime,
+        ):
+            root = Path(tmp)
+            payloads = (
+                build_dashboard_model_research_data(
+                    repo_root=root,
+                    market="a_share",
+                ),
+                build_dashboard_data_intelligence_data(
+                    repo_root=root,
+                    market="a_share",
+                ),
+                build_dashboard_operations_center_data(
+                    repo_root=root,
+                    scope="all",
+                    now=datetime(2026, 7, 30, 13, 30),
+                ),
+            )
+
+        def assert_bounded_lists(value: object) -> None:
+            if isinstance(value, list):
+                self.assertLessEqual(len(value), 20)
+                for item in value:
+                    assert_bounded_lists(item)
+            elif isinstance(value, dict):
+                for item in value.values():
+                    assert_bounded_lists(item)
+
+        for payload in payloads:
+            encoded = json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self.assertLess(len(encoded), 250_000)
+            assert_bounded_lists(payload)
+
+    def test_release_gates_cover_workspace_runtime_and_live_canaries(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[1]
+        deploy = (root / "scripts" / "deploy-app-to-ecs.sh").read_text(
+            encoding="utf-8"
+        )
+        audit = (root / "scripts" / "system-audit.sh").read_text(
+            encoding="utf-8"
+        )
+
+        for module in (
+            "tests.test_dashboard_workspace_api",
+            "tests.test_dashboard_runtime",
+        ):
+            self.assertIn(module, deploy)
+            self.assertIn(module, audit)
+        for endpoint in (
+            "/api/dashboard/model-research.json?market=a_share",
+            "/api/dashboard/data-intelligence.json?market=a_share",
+            "/api/dashboard/operations-center.json?scope=all",
+        ):
+            self.assertIn(endpoint, audit)
+
+    def test_operator_docs_cover_five_workspace_runtime_contract(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[1]
+        overview = (root / "docs" / "system-overview.md").read_text(
+            encoding="utf-8"
+        )
+        harness = (root / "docs" / "system-harness.md").read_text(
+            encoding="utf-8"
+        )
+
+        for workspace in (
+            "决策总览",
+            "策略工作台",
+            "模型研究",
+            "数据与情报",
+            "运行中心",
+        ):
+            self.assertIn(workspace, overview)
+        self.assertIn("Dashboard Workspace Runtime Contract", harness)
+        self.assertIn("250 KB", harness)
+        self.assertIn("20", harness)
 
     def test_reports_five_evidence_backed_stages_and_explicit_gates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -323,6 +323,24 @@ describe("ModelResearchPage", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows a partial-status banner without hiding valid model sections", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({
+      ...payload,
+      errors: [{ resource: "source_health", reason: "unavailable" }],
+    })));
+    const user = userEvent.setup();
+
+    render(<ModelResearchPage market="a_share" refreshToken={0} />);
+
+    expect(await screen.findByText(/部分状态不可用/)).toHaveTextContent(
+      "source_health",
+    );
+    await user.click(screen.getByRole("button", { name: /模型训练/ }));
+    expect(
+      screen.getByRole("region", { name: "模型训练详情" }),
+    ).toHaveTextContent("A20-V005");
+  });
+
   it("rejects a malformed stage status from a successful response", async () => {
     vi.stubGlobal(
       "fetch",

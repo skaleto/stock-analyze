@@ -219,6 +219,12 @@ export function OperationsPage({
       className="workspace-page operations-page"
       aria-label="运行中心"
     >
+      {data.errors?.length ? (
+        <div className="error-banner" role="status">
+          部分状态不可用：
+          {data.errors.map((item) => item.resource).join("、")}
+        </div>
+      ) : null}
       <header className="section-heading">
         <div>
           <h1>运行中心</h1>

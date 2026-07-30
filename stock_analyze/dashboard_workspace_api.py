@@ -7,10 +7,11 @@ import json
 import math
 import re
 import shutil
+import sqlite3
 from collections import deque
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -37,6 +38,13 @@ MAX_DIAGNOSTIC_NODES = 128
 MAX_DIAGNOSTIC_TEXT = 32_000
 MAX_SERIALIZED_BYTES = 250_000
 MAX_ABS_NUMERIC = 1_000_000_000_000_000
+WORKSPACE_READ_ERRORS = (
+    OSError,
+    TypeError,
+    ValueError,
+    sqlite3.Error,
+    agg.DashboardDataError,
+)
 MODEL_METRIC_KEYS = (
     "rank_ic",
     "mean_rank_ic",
@@ -175,6 +183,108 @@ OPERATIONS_SIMULATION_UNITS_BY_MARKET = {
         "stock-analyze-codex-cn-qdii-etf-daily.service",
     ),
 }
+
+
+def _safe_workspace_read(
+    errors: list[dict[str, str]],
+    resource: str,
+    fallback: Any,
+    reader: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    try:
+        return reader(*args, **kwargs)
+    except WORKSPACE_READ_ERRORS:
+        errors.append({"resource": resource, "reason": "unavailable"})
+        return fallback
+
+
+def _empty_intelligence_workspace() -> dict[str, Any]:
+    worker_stage = {
+        "leased": 0,
+        "importing": 0,
+        "imported": 0,
+        "partial": 0,
+        "failed": 0,
+        "expired": 0,
+    }
+    decisions = {
+        "canonical": 0,
+        "no_event": 0,
+        "quarantined": 0,
+        "failed": 0,
+    }
+    return {
+        "pipeline": {
+            "status": "unavailable",
+            "documents": 0,
+            "artifacts": {},
+            "stages": {
+                "catalogued": 0,
+                "pdfReady": 0,
+                "parsed": 0,
+                "semanticCompleted": 0,
+                "canonicalEvents": 0,
+            },
+            "backlog": {
+                "download": 0,
+                "parse": 0,
+                "semantic": 0,
+                "total": 0,
+            },
+            "sources": [],
+            "snapshotGeneratedAt": None,
+            "artifactWorkers": {
+                "status": "unavailable",
+                "activeLeases": 0,
+                "leasedDocuments": 0,
+                "completedDocuments": 0,
+                "downloadedDocuments": 0,
+                "parsedDocuments": 0,
+                "latestFinishedAt": None,
+                "stages": {
+                    "download": dict(worker_stage),
+                    "parse": dict(worker_stage),
+                },
+            },
+        },
+        "extraction": {
+            "status": "unavailable",
+            "semanticRuns": {},
+            "decisions": dict(decisions),
+            "latestBatch": None,
+            "contract": {},
+        },
+        "factorSupply": {
+            "status": "unavailable",
+            "snapshotDate": None,
+            "rows": 0,
+            "reportName": None,
+            "factorSet": None,
+            "factorSets": [],
+            "suppliedFactors": 0,
+            "modelEligible": False,
+            "modelEligibleFactors": [],
+            "factors": [],
+            "lifecycleCounts": {},
+        },
+        "modelImpact": {
+            "status": "unavailable",
+            "asOf": None,
+            "snapshotDate": None,
+            "reportName": None,
+            "factorSet": None,
+            "qualifiedHorizons": 0,
+            "activation": "unavailable",
+            "adopted": False,
+            "activeFactors": [],
+            "iterationFactors": [],
+            "reason": "intelligence_status_unavailable",
+            "horizons": [],
+        },
+        "decisions": decisions,
+    }
 
 
 def _generated_at() -> str:
@@ -402,8 +512,11 @@ def _model_evidence_rank(row: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def _model_rows(root: Path, market: str) -> list[dict[str, Any]]:
-    health = _mapping(agg._read_model_health(root, market))
+def _model_rows(
+    root: Path,
+    market: str,
+    health: dict[str, Any],
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for raw in _rows(health.get("models")):
         metrics = _mapping(raw.get("metrics"))
@@ -722,11 +835,9 @@ def _public_strategy_profiles(
     return result
 
 
-def _model_feature_evidence(
-    root: Path,
-    market: str,
+def _model_feature_evidence_from_health(
+    health: dict[str, Any],
 ) -> tuple[dict[tuple[int, str], set[str]], dict[str, Any]]:
-    health = _mapping(agg._read_model_health(root, market))
     manifests: dict[tuple[int, str], set[str]] = {}
     audit_by_model: dict[tuple[int, str], bool] = {}
     for row in _rows(health.get("models")):
@@ -926,12 +1037,12 @@ def _usage_cell(
 
 
 def _active_lineage_models(
-    root: Path,
+    usage: Any,
     market: str,
 ) -> dict[str, set[tuple[int, str]]]:
     by_agent: dict[str, set[tuple[int, str]]] = {}
     latest_by_agent: dict[str, dict[str, Any]] = {}
-    for row in _rows(_latest_strategy_model_usage(root)):
+    for row in _rows(usage):
         if row.get("market") != market:
             continue
         agent = _text(row.get("agent"), limit=128)
@@ -1115,7 +1226,18 @@ def build_dashboard_model_research_data(
 
     _check_market(market)
     root = _root(repo_root)
-    all_models = _model_rows(root, market)
+    errors: list[dict[str, str]] = []
+    health = _mapping(
+        _safe_workspace_read(
+            errors,
+            "model_health",
+            {"status": "unavailable", "models": []},
+            agg._read_model_health,
+            root,
+            market,
+        )
+    )
+    all_models = _model_rows(root, market, health)
     models = all_models[:MAX_TABLE_ROWS]
     selected_features = sorted(
         {
@@ -1131,16 +1253,46 @@ def build_dashboard_model_research_data(
         set(selected_features) & (registry_names - intelligence_names)
     )
     unclassified_features = sorted(set(selected_features) - registry_names)
-    raw_source_health = agg._read_research_source_health(root, market)
+    raw_source_health = _safe_workspace_read(
+        errors,
+        "source_health",
+        [],
+        agg._read_research_source_health,
+        root,
+        market,
+    )
     source_health = _source_rows(raw_source_health)
-    iteration = _mapping(agg._read_model_iteration_status(root, market))
+    iteration = _mapping(
+        _safe_workspace_read(
+            errors,
+            "model_iteration",
+            {
+                "status": "unavailable",
+                "candidate": None,
+                "champion": None,
+            },
+            agg._read_model_iteration_status,
+            root,
+            market,
+        )
+    )
     champion_models = {
         (row["horizon"], row["modelVersion"])
         for row in all_models
         if row["isChampion"]
     }
+    formal_usage = _safe_workspace_read(
+        errors,
+        "strategy_model_usage",
+        [],
+        _latest_strategy_model_usage,
+        root,
+    )
+    iteration_available = not any(
+        item["resource"] == "model_iteration" for item in errors
+    )
     usage = _usage_rows(
-        _latest_strategy_model_usage(root),
+        formal_usage,
         market=market,
         champion_models=champion_models,
     )
@@ -1217,7 +1369,13 @@ def build_dashboard_model_research_data(
         {
             "key": "simulation",
             "label": "模拟运行",
-            "status": "running" if candidate else "waiting_upstream",
+            "status": (
+                "unavailable"
+                if not iteration_available
+                else "running"
+                if candidate
+                else "waiting_upstream"
+            ),
             "primary": str(candidate.get("display_version") or "等待候选"),
             "secondary": (
                 f"{_integer(candidate.get('shadow_cycles'))} / "
@@ -1234,6 +1392,7 @@ def build_dashboard_model_research_data(
     ]
     payload = {
         "generated_at": _generated_at(),
+        "errors": errors,
         "market": market,
         "market_label": agg.MARKET_LABELS.get(market, market),
         "stages": stages,
@@ -1310,8 +1469,55 @@ def build_dashboard_data_intelligence_data(
 
     _check_market(market)
     root = _root(repo_root)
+    errors: list[dict[str, str]] = []
     profiles = _public_strategy_profiles(root, market)
-    manifests, quality = _model_feature_evidence(root, market)
+    model_health = _mapping(
+        _safe_workspace_read(
+            errors,
+            "model_health",
+            {"status": "unavailable", "models": []},
+            agg._read_model_health,
+            root,
+            market,
+        )
+    )
+    manifests, quality = _model_feature_evidence_from_health(model_health)
+    iteration = _mapping(
+        _safe_workspace_read(
+            errors,
+            "model_iteration",
+            {
+                "status": "unavailable",
+                "candidate": None,
+                "champion": None,
+            },
+            agg._read_model_iteration_status,
+            root,
+            market,
+        )
+    )
+    formal_usage = _safe_workspace_read(
+        errors,
+        "strategy_model_usage",
+        [],
+        _latest_strategy_model_usage,
+        root,
+    )
+    formal_usage_available = not any(
+        item["resource"] == "strategy_model_usage" for item in errors
+    )
+    intelligence = _mapping(
+        _safe_workspace_read(
+            errors,
+            "intelligence",
+            _empty_intelligence_workspace(),
+            build_dashboard_intelligence_data,
+            repo_root=root,
+            market=market,
+            agent="codex",
+            limit=1,
+        )
+    )
     coverage = _structured_snapshot_coverage(root, market)
     all_model_features = {
         feature for features in manifests.values() for feature in features
@@ -1423,16 +1629,7 @@ def build_dashboard_data_intelligence_data(
             definition.name in all_model_features
         )
 
-    intelligence = _mapping(
-        build_dashboard_intelligence_data(
-            repo_root=root,
-            market=market,
-            agent="codex",
-            limit=1,
-        )
-    )
     factor_supply = _mapping(intelligence.get("factorSupply"))
-    iteration = _mapping(agg._read_model_iteration_status(root, market))
     candidate = _mapping(iteration.get("candidate"))
     candidate_identity = (
         _integer(candidate.get("horizon")),
@@ -1447,7 +1644,7 @@ def build_dashboard_data_intelligence_data(
         if candidate_registered
         else []
     )
-    active_lineage = _active_lineage_models(root, market)
+    active_lineage = _active_lineage_models(formal_usage, market)
 
     usage_matrix: list[dict[str, Any]] = []
     for public_key, agent, fallback_label in PUBLIC_STRATEGIES:
@@ -1507,7 +1704,13 @@ def build_dashboard_data_intelligence_data(
                     research_unavailable_evidence=missing_manifest_evidence,
                 ),
                 "modelAdoption": {
-                    "status": "active" if applied_identities else "rule_only",
+                    "status": (
+                        "unavailable"
+                        if not formal_usage_available
+                        else "active"
+                        if applied_identities
+                        else "rule_only"
+                    ),
                     "modelCount": len(applied_identities),
                     "resolvableManifestCount": len(resolvable_identities),
                     "missingManifestCount": len(missing_identities),
@@ -1537,9 +1740,16 @@ def build_dashboard_data_intelligence_data(
                     ][:MAX_TABLE_ROWS],
                 },
                 "impact": (
-                    f"正式决策采用 {len(applied_identities)} 个模型版本"
-                    if applied_identities
-                    else "本期规则驱动"
+                    "正式采用状态不可用"
+                    if not formal_usage_available
+                    else (
+                        f"正式决策采用 {len(applied_identities)} 个模型版本"
+                        if applied_identities
+                        else "本期规则驱动"
+                    )
+                ),
+                "lineageStatus": (
+                    None if formal_usage_available else "unavailable"
                 ),
             }
         )
@@ -1672,6 +1882,10 @@ def build_dashboard_data_intelligence_data(
         },
     ]
     pipeline = _mapping(intelligence.get("pipeline"))
+    intelligence_available = (
+        pipeline.get("status") != "unavailable"
+        and not any(item["resource"] == "intelligence" for item in errors)
+    )
     pipeline_stages = _mapping(pipeline.get("stages"))
     backlog = _mapping(pipeline.get("backlog"))
     decisions = _mapping(intelligence.get("decisions"))
@@ -1679,14 +1893,26 @@ def build_dashboard_data_intelligence_data(
         {
             "key": "documents",
             "label": "公告与政策",
-            "status": "success" if _integer(pipeline.get("documents")) else "empty",
+            "status": (
+                "unavailable"
+                if not intelligence_available
+                else "success"
+                if _integer(pipeline.get("documents"))
+                else "empty"
+            ),
             "primary": f"{_integer(pipeline.get('documents'))} 篇目录",
             "secondary": f"{len(_rows(pipeline.get('sources')))} 个来源",
         },
         {
             "key": "artifacts",
             "label": "下载与解析",
-            "status": "running" if _integer(backlog.get("total")) else "success",
+            "status": (
+                "unavailable"
+                if not intelligence_available
+                else "running"
+                if _integer(backlog.get("total"))
+                else "success"
+            ),
             "primary": f"{_integer(pipeline_stages.get('parsed'))} 篇已解析",
             "secondary": f"{_integer(backlog.get('total'))} 篇积压",
         },
@@ -1694,9 +1920,13 @@ def build_dashboard_data_intelligence_data(
             "key": "semantic",
             "label": "语义事件",
             "status": (
-                "success"
-                if _integer(pipeline_stages.get("semanticCompleted"))
-                else "research"
+                "unavailable"
+                if not intelligence_available
+                else (
+                    "success"
+                    if _integer(pipeline_stages.get("semanticCompleted"))
+                    else "research"
+                )
             ),
             "primary": (
                 f"{_integer(pipeline_stages.get('canonicalEvents'))} 个标准事件"
@@ -1706,7 +1936,13 @@ def build_dashboard_data_intelligence_data(
         {
             "key": "intelligence_factors",
             "label": "情报因子",
-            "status": "success" if factor_supply.get("modelEligible") else "research",
+            "status": (
+                "unavailable"
+                if not intelligence_available
+                else "success"
+                if factor_supply.get("modelEligible")
+                else "research"
+            ),
             "primary": f"{_integer(factor_supply.get('suppliedFactors'))} 个已计算",
             "secondary": (
                 f"{len(factor_supply.get('modelEligibleFactors') or [])} 个可入模"
@@ -1715,6 +1951,7 @@ def build_dashboard_data_intelligence_data(
     ]
     payload = {
         "generated_at": _generated_at(),
+        "errors": errors,
         "market": market,
         "market_label": agg.MARKET_LABELS.get(market, market),
         "structured": {
@@ -2119,24 +2356,8 @@ def _recent_strategy_runs(
     return bounded_rows
 
 
-def _operations_intelligence(
-    root: Path,
-) -> dict[str, Any]:
-    try:
-        intelligence = _mapping(
-            build_dashboard_intelligence_data(
-                repo_root=root,
-                market="a_share",
-                agent="codex",
-                limit=1,
-            )
-        )
-    except Exception:  # noqa: BLE001 - one observability source may degrade
-        return {
-            "status": "unavailable",
-            "backlog": None,
-            "artifactWorkers": None,
-        }
+def _operations_intelligence(intelligence: Any) -> dict[str, Any]:
+    intelligence = _mapping(intelligence)
     pipeline = _mapping(intelligence.get("pipeline"))
     backlog = {
         key: _integer(_mapping(pipeline.get("backlog")).get(key))
@@ -2296,6 +2517,7 @@ def _bound_operations_value(value: Any) -> tuple[Any, bool]:
 def _operations_minimal_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "generated_at": payload.get("generated_at"),
+        "errors": _rows(payload.get("errors"))[:MAX_TABLE_ROWS],
         "scope": payload.get("scope"),
         "runtime": {
             key: _mapping(payload.get("runtime")).get(key)
@@ -2445,16 +2667,21 @@ def build_dashboard_operations_center_data(
         )
     root = _root(repo_root)
     current = _operations_now(now)
-    try:
-        runtime = _mapping(read_dashboard_runtime())
-    except Exception:  # noqa: BLE001 - local hosts may not provide systemd
-        runtime = {
-            "status": "unavailable",
-            "last_known_at": None,
-            "reason": "runtime_status_unavailable",
-            "services": {},
-            "timers": {},
-        }
+    errors: list[dict[str, str]] = []
+    runtime = _mapping(
+        _safe_workspace_read(
+            errors,
+            "runtime",
+            {
+                "status": "unavailable",
+                "last_known_at": None,
+                "reason": "runtime_status_unavailable",
+                "services": {},
+                "timers": {},
+            },
+            read_dashboard_runtime,
+        )
+    )
     runtime_available = runtime.get("status") == "available"
     services = _mapping(runtime.get("services"))
     timers = _mapping(runtime.get("timers"))
@@ -2525,7 +2752,17 @@ def build_dashboard_operations_center_data(
         )
         upstream_ready = status == "success"
 
-    background = _operations_intelligence(root)
+    intelligence = _safe_workspace_read(
+        errors,
+        "intelligence",
+        _empty_intelligence_workspace(),
+        build_dashboard_intelligence_data,
+        repo_root=root,
+        market="a_share",
+        agent="codex",
+        limit=1,
+    )
+    background = _operations_intelligence(intelligence)
     background_workers: list[dict[str, Any]] = []
     for key, label, service_unit, timer_unit in OPERATIONS_BACKGROUND:
         service = _mapping(services.get(service_unit))
@@ -2628,6 +2865,7 @@ def build_dashboard_operations_center_data(
     disk = _operations_disk(root)
     payload = {
         "generated_at": current.isoformat(timespec="seconds"),
+        "errors": errors,
         "scope": scope,
         "runtime": {
             "status": runtime.get("status") or "unavailable",

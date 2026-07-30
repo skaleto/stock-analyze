@@ -189,6 +189,12 @@ export function ModelResearchPage({
       className="workspace-page model-research-page"
       aria-label="模型研究"
     >
+      {data.errors?.length ? (
+        <div className="error-banner" role="status">
+          部分状态不可用：
+          {data.errors.map((item) => item.resource).join("、")}
+        </div>
+      ) : null}
       {resource.stale ? (
         <div className="stale-banner" role="status">
           刷新失败，显示 {data.generated_at.replace("T", " ")} 的最后成功快照
