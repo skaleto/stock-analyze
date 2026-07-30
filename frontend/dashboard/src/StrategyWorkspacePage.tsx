@@ -224,8 +224,12 @@ export function StrategyWorkspacePage({
   const [selectedRow, setSelectedRow] = useState<OrderRow | null>(null);
   const [selectedRowTitle, setSelectedRowTitle] = useState("明细");
   const drawerTriggerRef = useRef<HTMLElement | null>(null);
-  const previousRefreshToken = useRef(refreshToken);
-  const refreshMounted = useRef(false);
+  const refreshContext = `${market}:${agent}:${mode}`;
+  const refreshState = useRef({
+    mounted: false,
+    context: refreshContext,
+    token: refreshToken,
+  });
 
   useEffect(() => {
     onBusyChange?.(summaryResource.loading || detailLoading);
@@ -236,18 +240,29 @@ export function StrategyWorkspacePage({
   ]);
 
   useEffect(() => {
-    if (!refreshMounted.current) {
-      refreshMounted.current = true;
-      previousRefreshToken.current = refreshToken;
+    const previous = refreshState.current;
+    if (!previous.mounted) {
+      refreshState.current = {
+        mounted: true,
+        context: refreshContext,
+        token: refreshToken,
+      };
       return;
     }
-    if (previousRefreshToken.current !== refreshToken) {
-      previousRefreshToken.current = refreshToken;
+    const contextChanged = previous.context !== refreshContext;
+    const tokenChanged = previous.token !== refreshToken;
+    refreshState.current = {
+      mounted: true,
+      context: refreshContext,
+      token: refreshToken,
+    };
+    if (!contextChanged && tokenChanged) {
       summaryResource.refresh();
       if (detailEnabled) void reload();
     }
   }, [
     detailEnabled,
+    refreshContext,
     refreshToken,
     reload,
     summaryResource.refresh,

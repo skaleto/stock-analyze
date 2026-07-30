@@ -1,7 +1,12 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import App from "./App";
 import { ModelResearchPage } from "./ModelResearchPage";
+
+vi.mock("./OperationsPage", () => ({
+  OperationsPage: () => <div>运行中心占位</div>,
+}));
 
 const payload = {
   generated_at: "2026-07-30T13:00:00",
@@ -173,6 +178,7 @@ function jsonResponse(body: unknown, ok = true): Response {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  window.history.replaceState({}, "", "/");
 });
 
 describe("ModelResearchPage", () => {
@@ -427,5 +433,67 @@ describe("ModelResearchPage", () => {
       "/api/dashboard/model-research.json?market=cn_qdii_etf",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
+  });
+
+  it("loads once when first mounted with a non-zero refresh token", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(payload));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ModelResearchPage market="a_share" refreshToken={4} />);
+
+    await screen.findByText("0 / 4 通过");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes only when the token changes within the same market", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(payload));
+    vi.stubGlobal("fetch", fetchMock);
+    const { rerender } = render(
+      <ModelResearchPage market="a_share" refreshToken={1} />,
+    );
+    await screen.findByText("0 / 4 通过");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    rerender(<ModelResearchPage market="a_share" refreshToken={2} />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  });
+
+  it("loads a changed market once when market and token change together", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(payload));
+    vi.stubGlobal("fetch", fetchMock);
+    const { rerender } = render(
+      <ModelResearchPage market="a_share" refreshToken={0} />,
+    );
+    await screen.findByText("0 / 4 通过");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <ModelResearchPage market="cn_qdii_etf" refreshToken={1} />,
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/dashboard/model-research.json?market=cn_qdii_etf",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("loads once when entering model research after refreshing another workspace", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(payload));
+    vi.stubGlobal("fetch", fetchMock);
+    window.history.replaceState(
+      {},
+      "",
+      "/app.html?view=operations&scope=all",
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "刷新 dashboard" }));
+    await user.click(screen.getByRole("button", { name: "模型研究" }));
+
+    expect(await screen.findByText("0 / 4 通过")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

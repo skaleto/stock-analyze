@@ -343,4 +343,72 @@ describe("StrategyWorkspacePage", () => {
     expect((await screen.findAllByText("防守ETF")).length).toBeGreaterThan(0);
     expect(screen.queryAllByText("纳指ETF")).toHaveLength(0);
   });
+
+  it("does not double load when market and token change together", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => (
+      response(payloadFor(String(input)))
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const props = {
+      mode: "detail" as const,
+      strategy: "trend" as const,
+      search: "",
+      onSelectStrategy: vi.fn(),
+    };
+    const { rerender } = render(
+      <StrategyWorkspacePage
+        {...props}
+        market="cn_qdii_etf"
+        refreshToken={0}
+      />,
+    );
+    await screen.findByRole("region", { name: "当前持仓" });
+    expect(fetchMock).toHaveBeenCalledTimes(8);
+
+    rerender(
+      <StrategyWorkspacePage
+        {...props}
+        market="a_share"
+        refreshToken={1}
+      />,
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(16));
+  });
+
+  it("does not refresh summary or duplicate detail when strategy and token change together", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => (
+      response(payloadFor(String(input)))
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const props = {
+      market: "cn_qdii_etf" as const,
+      mode: "detail" as const,
+      search: "",
+      onSelectStrategy: vi.fn(),
+    };
+    const { rerender } = render(
+      <StrategyWorkspacePage
+        {...props}
+        strategy="trend"
+        refreshToken={0}
+      />,
+    );
+    await screen.findByRole("region", { name: "当前持仓" });
+    expect(fetchMock).toHaveBeenCalledTimes(8);
+
+    rerender(
+      <StrategyWorkspacePage
+        {...props}
+        strategy="defensive"
+        refreshToken={1}
+      />,
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(15));
+    const summaryCalls = fetchMock.mock.calls.filter(([input]) => (
+      String(input).includes("/summary.json")
+    ));
+    expect(summaryCalls).toHaveLength(1);
+  });
 });
