@@ -200,6 +200,18 @@ def _safe_workspace_read(
         return fallback
 
 
+def _workspace_resource_unavailable(
+    value: Any,
+    *,
+    errors: list[dict[str, str]],
+    resource: str,
+) -> bool:
+    if any(item.get("resource") == resource for item in errors):
+        return True
+    status = _text(_mapping(value).get("status"), limit=128).strip().lower()
+    return status in {"error", "failed", "unavailable"}
+
+
 def _empty_intelligence_workspace() -> dict[str, Any]:
     worker_stage = {
         "leased": 0,
@@ -613,17 +625,14 @@ def _source_rows(value: Any) -> list[dict[str, Any]]:
     bounded: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in _rows(value):
+        has_error = bool(row.get("error") or row.get("error_summary"))
         evidence = {
             "source": _text(row.get("source"), limit=256),
             "status": _text(row.get("status"), limit=128),
             "rows": _integer(row.get("rows")),
             "failed": bool(row.get("failed")),
             "as_of": _scalar(row.get("as_of"), text_limit=256),
-            "error": _text(
-                row.get("error") or row.get("error_summary"),
-                limit=MAX_TEXT_LENGTH,
-            )
-            or None,
+            "error": "数据源状态读取失败" if has_error else None,
         }
         identity = json.dumps(evidence, sort_keys=True, ensure_ascii=False)
         if identity in seen:
@@ -1237,6 +1246,11 @@ def build_dashboard_model_research_data(
             market,
         )
     )
+    model_health_available = not _workspace_resource_unavailable(
+        health,
+        errors=errors,
+        resource="model_health",
+    )
     all_models = _model_rows(root, market, health)
     models = all_models[:MAX_TABLE_ROWS]
     selected_features = sorted(
@@ -1287,6 +1301,11 @@ def build_dashboard_model_research_data(
         [],
         _latest_strategy_model_usage,
         root,
+    )
+    formal_usage_available = not _workspace_resource_unavailable(
+        formal_usage,
+        errors=errors,
+        resource="strategy_model_usage",
     )
     iteration_available = not any(
         item["resource"] == "model_iteration" for item in errors
@@ -1351,7 +1370,13 @@ def build_dashboard_model_research_data(
         {
             "key": "training",
             "label": "模型训练",
-            "status": "success" if all_models else "empty",
+            "status": (
+                "unavailable"
+                if not model_health_available
+                else "success"
+                if all_models
+                else "empty"
+            ),
             "primary": f"{len(all_models)} 个研究版本",
             "secondary": (
                 f"{sum(row['sampleSupport'] for row in all_models)} 条样本支持"
@@ -1360,7 +1385,13 @@ def build_dashboard_model_research_data(
         {
             "key": "validation",
             "label": "测试验收",
-            "status": "success" if passed else "research",
+            "status": (
+                "unavailable"
+                if not model_health_available
+                else "success"
+                if passed
+                else "research"
+            ),
             "primary": f"{passed} / {len(all_models)} 通过",
             "secondary": (
                 f"{sum(len(row['gateReasons']) for row in all_models)} 个阻塞项"
@@ -1385,7 +1416,13 @@ def build_dashboard_model_research_data(
         {
             "key": "adoption",
             "label": "正式采用",
-            "status": "success" if champions and usage else "waiting_upstream",
+            "status": (
+                "unavailable"
+                if not model_health_available or not formal_usage_available
+                else "success"
+                if champions and usage
+                else "waiting_upstream"
+            ),
             "primary": f"{len(champions)} 个 Champion",
             "secondary": f"{len(usage)} 个正式策略账户已采用",
         },
@@ -1481,6 +1518,11 @@ def build_dashboard_data_intelligence_data(
             market,
         )
     )
+    model_health_available = not _workspace_resource_unavailable(
+        model_health,
+        errors=errors,
+        resource="model_health",
+    )
     manifests, quality = _model_feature_evidence_from_health(model_health)
     iteration = _mapping(
         _safe_workspace_read(
@@ -1503,8 +1545,18 @@ def build_dashboard_data_intelligence_data(
         _latest_strategy_model_usage,
         root,
     )
-    formal_usage_available = not any(
-        item["resource"] == "strategy_model_usage" for item in errors
+    formal_usage_available = not _workspace_resource_unavailable(
+        formal_usage,
+        errors=errors,
+        resource="strategy_model_usage",
+    )
+    model_health_unavailable_evidence = (
+        [] if model_health_available else ["model_health:unavailable"]
+    )
+    strategy_usage_unavailable_evidence = (
+        []
+        if formal_usage_available
+        else ["strategy_model_usage:unavailable"]
     )
     intelligence = _mapping(
         _safe_workspace_read(
@@ -1669,6 +1721,11 @@ def build_dashboard_data_intelligence_data(
             _manifest_evidence("missing_manifest", identity)
             for identity in sorted(missing_identities)
         ]
+        lineage_unavailable_evidence = [
+            *missing_manifest_evidence,
+            *model_health_unavailable_evidence,
+            *strategy_usage_unavailable_evidence,
+        ]
         usage_matrix.append(
             {
                 "consumerKey": public_key,
@@ -1683,7 +1740,7 @@ def build_dashboard_data_intelligence_data(
                     research_eligible=research_traditional_names,
                     formal_evidence=["strategy_overlay"],
                     research_evidence=lineage_evidence,
-                    research_unavailable_evidence=missing_manifest_evidence,
+                    research_unavailable_evidence=lineage_unavailable_evidence,
                 ),
                 "traditionalFactors": _usage_cell(
                     formal_items=overlay_factors,
@@ -1692,7 +1749,7 @@ def build_dashboard_data_intelligence_data(
                     research_eligible=research_traditional_names,
                     formal_evidence=["strategy_overlay"],
                     research_evidence=lineage_evidence,
-                    research_unavailable_evidence=missing_manifest_evidence,
+                    research_unavailable_evidence=lineage_unavailable_evidence,
                 ),
                 "intelligenceFactors": _usage_cell(
                     formal_items=overlay_factors,
@@ -1701,7 +1758,7 @@ def build_dashboard_data_intelligence_data(
                     research_eligible=research_intelligence_names,
                     formal_evidence=["strategy_overlay"],
                     research_evidence=lineage_evidence,
-                    research_unavailable_evidence=missing_manifest_evidence,
+                    research_unavailable_evidence=lineage_unavailable_evidence,
                 ),
                 "modelAdoption": {
                     "status": (
@@ -1775,6 +1832,9 @@ def build_dashboard_data_intelligence_data(
                     research_eligible=research_traditional_names,
                     formal_evidence=[],
                     research_evidence=manifest_evidence,
+                    research_unavailable_evidence=(
+                        model_health_unavailable_evidence
+                    ),
                 ),
                 "traditionalFactors": _usage_cell(
                     formal_items=set(),
@@ -1783,6 +1843,9 @@ def build_dashboard_data_intelligence_data(
                     research_eligible=research_traditional_names,
                     formal_evidence=[],
                     research_evidence=manifest_evidence,
+                    research_unavailable_evidence=(
+                        model_health_unavailable_evidence
+                    ),
                 ),
                 "intelligenceFactors": _usage_cell(
                     formal_items=set(),
@@ -1791,6 +1854,9 @@ def build_dashboard_data_intelligence_data(
                     research_eligible=research_intelligence_names,
                     formal_evidence=[],
                     research_evidence=intelligence_manifest_evidence,
+                    research_unavailable_evidence=(
+                        model_health_unavailable_evidence
+                    ),
                     observing=bool(factor_supply.get("suppliedFactors")),
                 ),
                 "impact": (
@@ -1809,6 +1875,9 @@ def build_dashboard_data_intelligence_data(
                     research_eligible=research_traditional_names,
                     formal_evidence=[],
                     research_evidence=candidate_evidence,
+                    research_unavailable_evidence=(
+                        model_health_unavailable_evidence
+                    ),
                 ),
                 "traditionalFactors": _usage_cell(
                     formal_items=set(),
@@ -1817,6 +1886,9 @@ def build_dashboard_data_intelligence_data(
                     research_eligible=research_traditional_names,
                     formal_evidence=[],
                     research_evidence=candidate_evidence,
+                    research_unavailable_evidence=(
+                        model_health_unavailable_evidence
+                    ),
                 ),
                 "intelligenceFactors": _usage_cell(
                     formal_items=set(),
@@ -1825,6 +1897,9 @@ def build_dashboard_data_intelligence_data(
                     research_eligible=research_intelligence_names,
                     formal_evidence=[],
                     research_evidence=candidate_evidence,
+                    research_unavailable_evidence=(
+                        model_health_unavailable_evidence
+                    ),
                 ),
                 "impact": (
                     f"本期 {_integer(iteration.get('selected_count'))} 个入选，"
