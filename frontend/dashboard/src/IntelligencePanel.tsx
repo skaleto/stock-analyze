@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   BrainCircuit,
@@ -14,8 +14,10 @@ import {
 import type {
   IntelligenceDecision,
   IntelligenceDecisionRow,
+  IntelligenceDocumentDetail,
   MarketIntelligence,
 } from "./types";
+import { fetchIntelligenceDocument } from "./api";
 import { useIntelligenceData } from "./useDashboardData";
 
 const eventLabels: Record<string, string> = {
@@ -45,6 +47,31 @@ const lifecycleLabels: Record<string, string> = {
   uncertain: "待确认",
 };
 
+const operationalStateLabels: Record<string, string> = {
+  active: "正式启用",
+  available: "可用",
+  complete: "已完成",
+  degraded: "需关注",
+  failed: "失败",
+  failed_retryable: "待重试",
+  failed_terminal: "失败",
+  fresh: "新鲜",
+  healthy: "健康",
+  idle: "无待处理",
+  not_recorded: "未记录",
+  observe: "继续观察",
+  observing: "观察中",
+  partial: "部分有效",
+  research: "研究中",
+  stale: "已过期",
+  succeeded: "成功",
+  success: "成功",
+  unavailable: "状态不可用",
+  unchanged: "未变更",
+  unknown: "未知状态",
+  waiting: "等待中",
+};
+
 const decisionLabels: Record<IntelligenceDecision, string> = {
   canonical: "已确认",
   no_event: "无事件",
@@ -57,6 +84,7 @@ const reasonLabels: Record<string, string> = {
   validation_failed: "语义结果未通过确定性校验",
   evidence_quote_mismatch: "证据引文无法与原文严格对齐",
   provider_schema_invalid: "模型输出未通过结构校验",
+  no_factor_passed_gate: "暂无情报因子通过采用门槛",
 };
 
 const sourceLabels: Record<string, string> = {
@@ -178,6 +206,20 @@ function deltaLabel(value: number | null | undefined): string {
   return `${sign}${(value * 100).toFixed(2)}%`;
 }
 
+function operationalState(value?: string | null): string {
+  return value ? operationalStateLabels[value] ?? "未知状态" : "未知状态";
+}
+
+function lifecycleLabel(value?: string | null): string {
+  return value ? lifecycleLabels[value] ?? "未知状态" : "-";
+}
+
+function reasonLabel(value?: string | null): string {
+  if (!value) return "";
+  if (reasonLabels[value]) return reasonLabels[value];
+  return /[\u3400-\u9fff]/.test(value) ? value : "未知原因";
+}
+
 export function IntelligencePanel({
   intelligence,
   eager = false,
@@ -190,6 +232,16 @@ export function IntelligencePanel({
   const [visible, setVisible] = useState(eager);
   const [filter, setFilter] = useState<IntelligenceDecision>("canonical");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [documentDetail, setDocumentDetail] =
+    useState<IntelligenceDocumentDetail | null>(null);
+  const [documentError, setDocumentError] = useState<string | null>(null);
+  const [documentLoading, setDocumentLoading] = useState(false);
+  const documentRequestRef = useRef<{
+    controller: AbortController;
+    sequence: number;
+    documentId: number;
+  } | null>(null);
+  const documentSequenceRef = useRef(0);
   const market = intelligence?.market ?? "";
   const agent = intelligence?.agent ?? "";
   const {
@@ -199,8 +251,6 @@ export function IntelligencePanel({
     detail,
     detailError,
     detailLoading,
-    documentDetail,
-    loadDocument,
   } = useIntelligenceData(
     market,
     agent,
@@ -208,6 +258,76 @@ export function IntelligencePanel({
     selectedId,
     refreshToken,
   );
+
+  const cancelDocumentRequest = useCallback(() => {
+    documentRequestRef.current?.controller.abort();
+    documentRequestRef.current = null;
+    documentSequenceRef.current += 1;
+    setDocumentDetail(null);
+    setDocumentError(null);
+    setDocumentLoading(false);
+  }, []);
+
+  useEffect(() => {
+    cancelDocumentRequest();
+  }, [agent, cancelDocumentRequest, market, selectedId]);
+
+  useEffect(() => () => {
+    documentRequestRef.current?.controller.abort();
+    documentRequestRef.current = null;
+    documentSequenceRef.current += 1;
+  }, []);
+
+  const loadDocument = useCallback(async (documentId: number) => {
+    documentRequestRef.current?.controller.abort();
+    const controller = new AbortController();
+    const sequence = ++documentSequenceRef.current;
+    documentRequestRef.current = { controller, sequence, documentId };
+    setDocumentDetail(null);
+    setDocumentError(null);
+    setDocumentLoading(true);
+    try {
+      const value = await fetchIntelligenceDocument(
+        market,
+        agent,
+        documentId,
+        controller.signal,
+      );
+      const current = documentRequestRef.current;
+      if (
+        !controller.signal.aborted
+        && current?.sequence === sequence
+        && current.documentId === documentId
+      ) {
+        setDocumentDetail(value);
+      }
+    } catch (reason: unknown) {
+      const current = documentRequestRef.current;
+      if (
+        !controller.signal.aborted
+        && current?.sequence === sequence
+        && current.documentId === documentId
+      ) {
+        setDocumentError(
+          reason instanceof Error ? reason.message : String(reason),
+        );
+      }
+    } finally {
+      const current = documentRequestRef.current;
+      if (
+        current?.sequence === sequence
+        && current.documentId === documentId
+      ) {
+        documentRequestRef.current = null;
+        setDocumentLoading(false);
+      }
+    }
+  }, [agent, market]);
+
+  const closeDecision = useCallback(() => {
+    cancelDocumentRequest();
+    setSelectedId(null);
+  }, [cancelDocumentRequest]);
 
   useEffect(() => {
     if (eager) {
@@ -277,7 +397,7 @@ export function IntelligencePanel({
       step: "04",
       label: "模型影响",
       value: summary.modelImpact.adopted ? "已入模" : "当前未入模",
-      detail: `可评估周期 ${integer(summary.modelImpact.qualifiedHorizons)} · ${summary.modelImpact.activation}`,
+      detail: `可评估周期 ${integer(summary.modelImpact.qualifiedHorizons)} · ${operationalState(summary.modelImpact.activation)}`,
       icon: BrainCircuit,
       status: summary.modelImpact.status,
     },
@@ -329,7 +449,7 @@ export function IntelligencePanel({
                       <strong>{item.value}</strong>
                       <small>{item.detail}</small>
                     </div>
-                    <i className={`flow-status status-${item.status}`} aria-label={item.status} />
+                    <i className={`flow-status status-${item.status}`} aria-label={operationalState(item.status)} />
                   </article>
                   {index < flow.length - 1 ? <ArrowRight className="flow-arrow" size={15} aria-hidden="true" /> : null}
                 </div>
@@ -358,8 +478,8 @@ export function IntelligencePanel({
                     <div><dt>本批新增</dt><dd>{integer(source.inserted)} / {integer(source.fetched)}</dd></div>
                   </dl>
                   <span className={`freshness-state ${source.freshnessStatus}`}>
-                    {freshnessLabels[source.freshnessStatus] ?? source.freshnessStatus}
-                    <small>{runStatusLabels[source.latestRunStatus] ?? source.latestRunStatus}</small>
+                    {freshnessLabels[source.freshnessStatus] ?? operationalState(source.freshnessStatus)}
+                    <small>{runStatusLabels[source.latestRunStatus] ?? operationalState(source.latestRunStatus)}</small>
                   </span>
                 </article>
               )) : <p className="intelligence-empty">尚无数据源运行记录。</p>}
@@ -406,7 +526,7 @@ export function IntelligencePanel({
               </div>
               <small>
                 {latestBatch?.finishedAt
-                  ? `完成于 ${shortTime(latestBatch.finishedAt)} · ${batchQualityLabels[latestBatch.qualityStatus] ?? latestBatch.qualityStatus}`
+                  ? `完成于 ${shortTime(latestBatch.finishedAt)} · ${batchQualityLabels[latestBatch.qualityStatus] ?? operationalState(latestBatch.qualityStatus)}`
                   : "尚无批次"}
               </small>
             </header>
@@ -455,7 +575,7 @@ export function IntelligencePanel({
                   <article key={factor.name}>
                     <div>
                       <strong>{factorLabels[factor.name] ?? factor.name}</strong>
-                      <small>{factorStateLabels[factor.state] ?? factor.state}</small>
+                      <small>{factorStateLabels[factor.state] ?? operationalState(factor.state)}</small>
                     </div>
                     <dl>
                       <div><dt>覆盖率</dt><dd>{percent(factor.coverage)}</dd></div>
@@ -477,7 +597,9 @@ export function IntelligencePanel({
                   {summary.modelImpact.adopted ? "已入模" : "当前未入模"}
                 </span>
               </header>
-              <p className="model-impact-reason">{summary.modelImpact.reason}</p>
+              <p className="model-impact-reason">
+                {reasonLabel(summary.modelImpact.reason)}
+              </p>
               <div className="impact-horizons">
                 {summary.modelImpact.horizons.length ? summary.modelImpact.horizons.map((horizon) => {
                   const deltas = Object.entries(horizon.deltas);
@@ -522,6 +644,7 @@ export function IntelligencePanel({
                   className={filter === decision ? "active" : ""}
                   key={decision}
                   type="button"
+                  aria-pressed={filter === decision}
                   onClick={() => setFilter(decision)}
                 >
                   {decisionLabels[decision]} {summary.decisions[decision] ?? 0}
@@ -544,7 +667,7 @@ export function IntelligencePanel({
                             <strong>{row.issuer_name || "未知主体"}</strong>
                             <small>{row.issuer_code || "-"}　{eventLabels[row.event_type || ""] || decisionLabels[row.decision]}</small>
                             {row.event_subject ? <small>{row.event_subject}</small> : null}
-                            {row.reason ? <small>{reasonLabels[row.reason] || row.reason}</small> : null}
+                            {row.reason ? <small>{reasonLabel(row.reason)}</small> : null}
                           </button>
                         </td>
                         <td><span className={`decision-state ${row.decision}`}>{decisionLabels[row.decision]}</span></td>
@@ -562,7 +685,7 @@ export function IntelligencePanel({
       )}
 
       {selectedId ? (
-        <div className="intelligence-drawer-backdrop" onMouseDown={() => setSelectedId(null)}>
+        <div className="intelligence-drawer-backdrop" onMouseDown={closeDecision}>
           <aside
             className="intelligence-drawer"
             role="dialog"
@@ -572,7 +695,7 @@ export function IntelligencePanel({
           >
             <header>
               <div><span>语义决策</span><h3>{detail ? eventLabels[detail.event.event_type || ""] || decisionLabels[detail.decision] : "加载中"}</h3></div>
-              <button type="button" onClick={() => setSelectedId(null)} aria-label="关闭决策详情"><X size={18} /></button>
+              <button type="button" onClick={closeDecision} aria-label="关闭决策详情"><X size={18} /></button>
             </header>
             {detailError ? <p className="intelligence-error" role="alert">{detailError}</p> : null}
             {detailLoading || !detail ? (
@@ -583,7 +706,7 @@ export function IntelligencePanel({
                   <h4>决策结论</h4>
                   <dl className="decision-definition">
                     <div><dt>状态</dt><dd>{decisionLabels[detail.decision]}</dd></div>
-                    <div><dt>生命周期</dt><dd>{lifecycleLabels[detail.event.lifecycle || ""] || detail.event.lifecycle || "-"}</dd></div>
+                    <div><dt>生命周期</dt><dd title={detail.event.lifecycle || undefined}>{lifecycleLabel(detail.event.lifecycle)}</dd></div>
                     <div><dt>主体</dt><dd>{detail.issuer.name || "-"} <code>{detail.issuer.code || "-"}</code></dd></div>
                     <div><dt>方向</dt><dd>{directionLabel(detail.scores.direction)}</dd></div>
                     <div><dt>重要性</dt><dd>{percent(detail.scores.materiality)}</dd></div>
@@ -591,7 +714,7 @@ export function IntelligencePanel({
                     <div><dt>新颖度</dt><dd>{percent(detail.scores.novelty)}</dd></div>
                     <div><dt>置信度</dt><dd>{percent(detail.scores.confidence)}</dd></div>
                   </dl>
-                  {detail.reason ? <p className="decision-reason">{reasonLabels[detail.reason] || detail.reason}</p> : null}
+                  {detail.reason ? <p className="decision-reason">{reasonLabel(detail.reason)}</p> : null}
                 </section>
 
                 <section>
@@ -618,6 +741,8 @@ export function IntelligencePanel({
                   <button className="document-lineage-button" type="button" onClick={() => void loadDocument(detail.document.document_id)}>
                     <FileSearch size={14} />查看文档处理记录
                   </button>
+                  {documentLoading ? <p className="document-lineage-summary">文档处理记录加载中</p> : null}
+                  {documentError ? <p className="intelligence-error" role="alert">文档处理记录加载失败：{documentError}</p> : null}
                   {documentDetail ? <p className="document-lineage-summary">处理产物 {documentDetail.artifacts.length} 个，关联决策 {documentDetail.decisions.length} 条</p> : null}
                 </section>
               </div>

@@ -388,7 +388,13 @@ describe("IntelligencePanel", () => {
     });
     await screen.findByText("晨星科技");
 
-    await user.click(screen.getByRole("button", { name: "无事件 8" }));
+    const canonical = screen.getByRole("button", { name: "已确认 18" });
+    const noEvent = screen.getByRole("button", { name: "无事件 8" });
+    expect(canonical).toHaveAttribute("aria-pressed", "true");
+    expect(noEvent).toHaveAttribute("aria-pressed", "false");
+    await user.click(noEvent);
+    expect(canonical).toHaveAttribute("aria-pressed", "false");
+    expect(noEvent).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("海岳材料")).toBeInTheDocument();
     expect(screen.getByText(/例行披露/)).toBeInTheDocument();
 
@@ -402,6 +408,94 @@ describe("IntelligencePanel", () => {
 
     await user.click(screen.getByRole("button", { name: "已确认 18" }));
     await waitFor(() => expect(screen.getByText("晨星科技")).toBeInTheDocument());
+  });
+
+  it("ignores a stale document response after switching decisions", async () => {
+    const user = userEvent.setup();
+    let resolveFirst: (value: unknown) => void = () => undefined;
+    let resolveSecond: (value: unknown) => void = () => undefined;
+    const firstDocument = new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
+    const secondDocument = new Promise((resolve) => {
+      resolveSecond = resolve;
+    });
+    const secondRow = {
+      ...summary.rows[0],
+      decision_id: "event-2",
+      document_id: 2,
+      issuer_name: "海川科技",
+      issuer_code: "600002.SH",
+    };
+    fetchIntelligence.mockResolvedValue({
+      ...summary,
+      rows: [summary.rows[0], secondRow, ...summary.rows.slice(1)],
+    });
+    fetchIntelligenceEvent.mockImplementation(
+      async (_market, _agent, decisionId) => ({
+        ...canonicalDetail,
+        event: {
+          ...canonicalDetail.event,
+          event_id: decisionId,
+          lifecycle: decisionId === "event-2" ? "future_lifecycle" : "announced",
+        },
+        issuer: decisionId === "event-2"
+          ? { ...canonicalDetail.issuer, name: "海川科技", code: "600002.SH" }
+          : canonicalDetail.issuer,
+        document: {
+          ...canonicalDetail.document,
+          document_id: decisionId === "event-2" ? 2 : 1,
+        },
+      }),
+    );
+    const signals: AbortSignal[] = [];
+    fetchIntelligenceDocument.mockImplementation(
+      (_market, _agent, documentId, signal) => {
+        signals.push(signal);
+        return documentId === 1 ? firstDocument : secondDocument;
+      },
+    );
+    render(
+      <IntelligencePanel
+        intelligence={{ market: "a_share", agent: "codex" } as MarketIntelligence}
+        eager
+      />,
+    );
+
+    await user.click(await screen.findByRole("button", { name: /晨星科技/ }));
+    let dialog = await screen.findByRole("dialog", { name: "决策详情" });
+    await user.click(within(dialog).getByRole("button", {
+      name: "查看文档处理记录",
+    }));
+    await user.click(within(dialog).getByRole("button", {
+      name: "关闭决策详情",
+    }));
+    expect(signals[0].aborted).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: /海川科技/ }));
+    dialog = await screen.findByRole("dialog", { name: "决策详情" });
+    expect(await within(dialog).findByText("海川科技")).toBeInTheDocument();
+    expect(within(dialog).getByText("未知状态")).toBeInTheDocument();
+    expect(within(dialog).queryByText("future_lifecycle")).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", {
+      name: "查看文档处理记录",
+    }));
+    resolveSecond({
+      document: { ...canonicalDetail.document, document_id: 2 },
+      artifacts: [{ id: "a" }, { id: "b" }],
+      decisions: [{ id: "d" }],
+    });
+    expect(await within(dialog).findByText(
+      "处理产物 2 个，关联决策 1 条",
+    )).toBeInTheDocument();
+    resolveFirst({
+      document: canonicalDetail.document,
+      artifacts: [{ id: "stale" }],
+      decisions: [],
+    });
+    await waitFor(() => expect(within(dialog).getByText(
+      "处理产物 2 个，关联决策 1 条",
+    )).toBeInTheDocument());
   });
 
   it("reloads the intelligence resource when the workspace refreshes", async () => {
