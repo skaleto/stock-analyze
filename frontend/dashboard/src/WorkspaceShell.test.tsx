@@ -328,4 +328,61 @@ describe("WorkspaceShell", () => {
     await user.click(autoRefresh);
     expect(onToggleAutoRefresh).toHaveBeenCalledOnce();
   });
+
+  it("keeps market scope and workspace navigation in stable rail containers", () => {
+    render(
+      <WorkspaceShell
+        route={{ view: "model-research", market: "a_share" }}
+        marketContext="a_share"
+        title="模型研究"
+        subtitle="A股"
+        busy={false}
+        autoRefresh
+        onNavigate={vi.fn()}
+        onRefresh={vi.fn()}
+        onToggleAutoRefresh={vi.fn()}
+      >
+        <div>content</div>
+      </WorkspaceShell>,
+    );
+
+    expect(screen.getByRole("navigation", { name: "市场范围" })).toHaveClass(
+      "workspace-scope-slot",
+    );
+    expect(screen.getByRole("navigation", { name: "工作区" })).toHaveClass(
+      "rail-analysis-nav",
+    );
+    expect(screen.getByRole("main")).toHaveClass("app-shell");
+  });
+
+  it("keeps rail controls separate from the bounded workspace surface", () => {
+    render(
+      <WorkspaceShell
+        route={{ view: "operations", scope: "all" }}
+        marketContext="a_share"
+        title="运行中心"
+        subtitle="全部范围"
+        busy={false}
+        autoRefresh
+        onNavigate={vi.fn()}
+        onRefresh={vi.fn()}
+        onToggleAutoRefresh={vi.fn()}
+      >
+        <div data-testid="bounded-content">content</div>
+      </WorkspaceShell>,
+    );
+
+    const shell = screen.getByRole("main");
+    const rail = shell.querySelector(".left-rail");
+    const workspace = shell.querySelector(".workspace");
+    expect(rail).not.toBeNull();
+    expect(workspace).not.toBeNull();
+    expect(rail).toContainElement(
+      screen.getByRole("navigation", { name: "市场范围" }),
+    );
+    expect(rail).toContainElement(
+      screen.getByRole("navigation", { name: "工作区" }),
+    );
+    expect(workspace).toContainElement(screen.getByTestId("bounded-content"));
+  });
 });

@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import { ArrowRight } from "lucide-react";
 import { WorkspaceStatusBadge } from "./WorkspacePrimitives";
 import type { WorkspaceStage } from "./workspaceTypes";
@@ -22,7 +23,12 @@ export function StageFlow({
   }
 
   return (
-    <div className="stage-flow" role="group" aria-label={ariaLabel}>
+    <div
+      className="stage-flow"
+      role="group"
+      aria-label={ariaLabel}
+      style={{ "--stage-count": stages.length } as CSSProperties}
+    >
       {stages.map((stage, index) => (
         <div className="stage-flow-item" key={stage.key}>
           <button
