@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import math
+import re
+import shutil
+from collections import deque
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -16,6 +21,7 @@ from .dashboard_api import (
     _latest_strategy_model_usage,
     build_dashboard_intelligence_data,
 )
+from .dashboard_runtime import read_dashboard_runtime
 from .overlay_guard import AVAILABLE_FACTORS_BY_MARKET, SENTIMENT_FACTORS
 from .research.feature_registry import DEFAULT_REGISTRY, INTELLIGENCE_FEATURES
 
@@ -70,6 +76,95 @@ FORMAL_FACTOR_SOURCES = {
         "fund_nav": {"discount_premium"},
     },
 }
+OPERATIONS_MAIN_CHAIN = (
+    (
+        "intelligence",
+        "情报增量",
+        ("stock-analyze-intelligence.service",),
+        "stock-analyze-intelligence.timer",
+    ),
+    (
+        "market_snapshot",
+        "行情与研究快照",
+        ("stock-analyze-market-data.service",),
+        "stock-analyze-market-data.timer",
+    ),
+    (
+        "research",
+        "特征、预测与评估",
+        ("stock-analyze-research.service",),
+        None,
+    ),
+    (
+        "simulation",
+        "双策略及候选模型模拟",
+        (
+            "stock-analyze-model-iteration.service",
+            "stock-analyze-claude-daily.service",
+            "stock-analyze-codex-daily.service",
+            "stock-analyze-claude-cn-qdii-etf-daily.service",
+            "stock-analyze-codex-cn-qdii-etf-daily.service",
+        ),
+        None,
+    ),
+    (
+        "publish",
+        "Dashboard 聚合与通知",
+        (
+            "stock-analyze-aggregate-dashboard.service",
+            "stock-analyze-daily-summary.service",
+        ),
+        "stock-analyze-daily-summary.timer",
+    ),
+)
+OPERATIONS_BACKGROUND = (
+    (
+        "artifact_backfill",
+        "PDF 下载与解析回填",
+        "stock-analyze-intelligence-artifact-backfill.service",
+        "stock-analyze-intelligence-artifact-backfill.timer",
+    ),
+    (
+        "reconcile",
+        "情报对账",
+        "stock-analyze-intelligence-reconcile.service",
+        "stock-analyze-intelligence-reconcile.timer",
+    ),
+    (
+        "semantic",
+        "LLM 语义抽取",
+        "stock-analyze-intelligence-semantic.service",
+        "stock-analyze-intelligence-semantic.timer",
+    ),
+)
+OPERATIONS_TIMERS = {
+    "stock-analyze-market-data.timer": ("行情与研究日链", "daily"),
+    "stock-analyze-daily-summary.timer": ("每日运行摘要", "daily"),
+    "stock-analyze-intelligence.timer": ("情报增量采集", "daily"),
+    "stock-analyze-intelligence-reconcile.timer": ("情报对账", "daily"),
+    "stock-analyze-intelligence-artifact-backfill.timer": (
+        "PDF 下载解析回填",
+        "daily",
+    ),
+    "stock-analyze-intelligence-semantic.timer": ("LLM 语义抽取", "daily"),
+    "stock-analyze-ifind-source-audit.timer": ("iFinD 数据源审计", "daily"),
+    "stock-analyze-weekly-trigger.timer": ("A股周度复盘", "weekly"),
+    "stock-analyze-claude-cn-qdii-etf-weekly.timer": (
+        "跨境ETF稳健防守周度复盘",
+        "weekly",
+    ),
+    "stock-analyze-codex-cn-qdii-etf-weekly.timer": (
+        "跨境ETF趋势进攻周度复盘",
+        "weekly",
+    ),
+    "stock-analyze-qdii-research.timer": ("跨境ETF周度研究", "weekly"),
+    "stock-analyze-weekly-summary.timer": ("每周运行摘要", "weekly"),
+    "stock-analyze-monthly-review.timer": ("月度策略复盘", "monthly"),
+    "stock-analyze-model-training.timer": ("月度模型训练", "monthly"),
+    "stock-analyze-monthly-summary.timer": ("每月运行摘要", "monthly"),
+}
+OPERATIONS_SCOPES = {"all", "a_share", "cn_qdii_etf", "exceptions"}
+OPERATIONS_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 def _generated_at() -> str:
@@ -1657,3 +1752,541 @@ def build_dashboard_data_intelligence_data(
     return _enforce_data_intelligence_size(
         agg._json_safe(payload)
     )
+
+
+def _operations_now(value: datetime | None) -> datetime:
+    current = value or datetime.now(tz=OPERATIONS_TIMEZONE)
+    if current.tzinfo is None:
+        return current.replace(tzinfo=OPERATIONS_TIMEZONE)
+    return current.astimezone(OPERATIONS_TIMEZONE)
+
+
+def _operations_timestamp(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text or text in {"n/a", "never"}:
+        return None
+    text = re.sub(r"^[A-Za-z]{3}\s+", "", text)
+    if text.endswith(" CST"):
+        text = text[:-4] + "+08:00"
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=OPERATIONS_TIMEZONE)
+    return parsed.astimezone(OPERATIONS_TIMEZONE)
+
+
+def _operations_service_status(
+    row: dict[str, Any] | None,
+    *,
+    current: datetime,
+    runtime_available: bool,
+) -> str:
+    if not runtime_available:
+        return "unavailable"
+    if not row:
+        return "waiting_schedule"
+    if str(row.get("activeState") or "").lower() in {
+        "active",
+        "activating",
+        "reloading",
+    }:
+        return "running"
+    started = _operations_timestamp(row.get("startedAt"))
+    if started is None or started.date() != current.date():
+        return "waiting_schedule"
+    result = str(row.get("result") or "unknown").lower()
+    exit_status = row.get("exitStatus")
+    if result == "success" and exit_status == 75:
+        return "skipped"
+    if result not in {"success", "unknown", ""}:
+        return "failed"
+    if exit_status not in {0, None}:
+        return "failed"
+    if result == "success":
+        return "success"
+    return "waiting_schedule"
+
+
+def _operations_chain_status(
+    statuses: list[str],
+    *,
+    upstream_ready: bool,
+    runtime_available: bool,
+) -> str:
+    if not runtime_available:
+        return "unavailable"
+    if "failed" in statuses:
+        return "failed"
+    if "running" in statuses:
+        return "running"
+    if statuses and all(status in {"success", "skipped"} for status in statuses):
+        return (
+            "skipped"
+            if all(status == "skipped" for status in statuses)
+            else "success"
+        )
+    if not upstream_ready:
+        return "waiting_upstream"
+    return "waiting_schedule"
+
+
+def _sanitize_run_error(value: object) -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " ")
+    text = re.sub(
+        r"(?i)(authorization\s*:\s*(?:bearer|basic)\s+)\S+",
+        r"\1<redacted>",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(token|api[_-]?key|apikey|access[_-]?key(?:_id|_secret)?|"
+        r"secret|password)\b(\s*[:=]\s*)([^,\s;&]+)",
+        r"\1\2<redacted>",
+        text,
+    )
+    text = re.sub(
+        r"(?i)([?&](?:token|api[_-]?key|access[_-]?key|secret|password)=)"
+        r"[^&\s]+",
+        r"\1<redacted>",
+        text,
+    )
+    return text[:200]
+
+
+def _operations_run_rows(
+    path: Path,
+    *,
+    limit: int,
+) -> list[dict[str, str]]:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            raw_rows = deque(csv.DictReader(handle), maxlen=max(40, limit * 4))
+    except (FileNotFoundError, OSError, csv.Error):
+        return []
+    selected: dict[str, tuple[tuple[int, str, int], dict[str, str]]] = {}
+    for index, row in enumerate(raw_rows):
+        run_id = str(row.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        status = str(row.get("status") or "").strip().lower()
+        finished_at = str(row.get("finished_at") or "")
+        terminal = int(bool(finished_at) or status not in {"", "running"})
+        rank = (terminal, finished_at, index)
+        if run_id not in selected or rank >= selected[run_id][0]:
+            selected[run_id] = (rank, row)
+    return [
+        pair[1]
+        for pair in sorted(
+            selected.values(),
+            key=lambda pair: (
+                str(pair[1].get("started_at") or ""),
+                str(pair[1].get("run_id") or ""),
+            ),
+            reverse=True,
+        )[:limit]
+    ]
+
+
+def _recent_strategy_runs(
+    root: Path,
+    scope: str,
+    *,
+    limit: int = MAX_TABLE_ROWS,
+) -> list[dict[str, Any]]:
+    markets = (
+        [scope]
+        if scope in competition.MARKETS
+        else list(competition.MARKETS)
+    )
+    rows: list[dict[str, Any]] = []
+    for market in markets:
+        for public_key, agent, label in PUBLIC_STRATEGIES:
+            path = root / "data" / market / agent / "runs.csv"
+            for raw in _operations_run_rows(path, limit=limit):
+                status = _text(raw.get("status"), limit=32).lower() or "unknown"
+                if scope == "exceptions" and status != "failed":
+                    continue
+                rows.append(
+                    {
+                        "runId": _text(raw.get("run_id"), limit=256),
+                        "market": market,
+                        "strategyKey": public_key,
+                        "strategyLabel": label,
+                        "command": _text(raw.get("command"), limit=128),
+                        "asOf": _text(raw.get("as_of"), limit=64),
+                        "status": status,
+                        "startedAt": _text(raw.get("started_at"), limit=64),
+                        "finishedAt": _text(raw.get("finished_at"), limit=64),
+                        "durationMs": _integer(raw.get("duration_ms")),
+                        "errorSummary": _sanitize_run_error(
+                            raw.get("error_summary")
+                        ),
+                    }
+                )
+    rows.sort(
+        key=lambda row: (row["startedAt"], row["runId"]),
+        reverse=True,
+    )
+    return rows[:limit]
+
+
+def _operations_intelligence(
+    root: Path,
+) -> dict[str, Any]:
+    try:
+        intelligence = _mapping(
+            build_dashboard_intelligence_data(
+                repo_root=root,
+                market="a_share",
+                agent="codex",
+                limit=1,
+            )
+        )
+    except Exception:  # noqa: BLE001 - one observability source may degrade
+        return {
+            "status": "unavailable",
+            "backlog": None,
+            "artifactWorkers": None,
+        }
+    pipeline = _mapping(intelligence.get("pipeline"))
+    backlog = {
+        key: _integer(_mapping(pipeline.get("backlog")).get(key))
+        for key in ("download", "parse", "semantic", "total")
+    }
+    workers = _mapping(pipeline.get("artifactWorkers"))
+    return {
+        "status": str(pipeline.get("status") or "unavailable"),
+        "snapshotGeneratedAt": _scalar(
+            pipeline.get("snapshotGeneratedAt"),
+            text_limit=128,
+        ),
+        "backlog": backlog,
+        "artifactWorkers": {
+            "status": str(workers.get("status") or "unavailable"),
+            "activeLeases": _integer(workers.get("activeLeases")),
+            "latestFinishedAt": _scalar(
+                workers.get("latestFinishedAt"),
+                text_limit=128,
+            ),
+        },
+    }
+
+
+def _operations_disk(root: Path) -> dict[str, Any]:
+    try:
+        usage = shutil.disk_usage(root)
+        ratio = usage.used / usage.total if usage.total else 0.0
+    except OSError:
+        return {"status": "unavailable", "usedRatio": None}
+    return {
+        "status": "available",
+        "usedRatio": round(ratio, 6),
+        "totalBytes": int(usage.total),
+        "freeBytes": int(usage.free),
+    }
+
+
+def _operations_interventions(
+    recent_runs: list[dict[str, Any]],
+    *,
+    disk: dict[str, Any],
+    background: dict[str, Any],
+    current: datetime,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    disk_ratio = disk.get("usedRatio")
+    if isinstance(disk_ratio, (int, float)) and disk_ratio >= 0.85:
+        items.append(
+            {
+                "key": "disk_capacity",
+                "severity": "critical",
+                "title": "磁盘使用率超过 85%",
+                "evidence": f"{disk_ratio:.1%}",
+            }
+        )
+
+    credential_terms = (
+        "credential",
+        "unauthorized",
+        "forbidden",
+        "api_key",
+        "api-key",
+        "access key",
+        "invalid token",
+        "凭据",
+        "密钥",
+    )
+    for row in recent_runs:
+        error = str(row.get("errorSummary") or "").lower()
+        if row.get("status") == "failed" and any(
+            term in error for term in credential_terms
+        ):
+            items.append(
+                {
+                    "key": f"credential:{row['market']}:{row['strategyKey']}:"
+                    f"{row['runId']}",
+                    "severity": "critical",
+                    "title": f"{row['strategyLabel']} 凭据错误",
+                    "evidence": error[:200],
+                }
+            )
+            break
+
+    backlog = _mapping(background.get("backlog"))
+    workers = _mapping(background.get("artifactWorkers"))
+    latest_finished = _operations_timestamp(workers.get("latestFinishedAt"))
+    if (
+        _integer(backlog.get("total")) > 0
+        and latest_finished is not None
+        and (current - latest_finished).total_seconds() > 24 * 3600
+        and _integer(workers.get("activeLeases")) == 0
+    ):
+        items.append(
+            {
+                "key": "artifact_worker_stale",
+                "severity": "critical",
+                "title": "PDF 回填超过 24 小时没有完成记录",
+                "evidence": latest_finished.isoformat(timespec="seconds"),
+            }
+        )
+
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for row in recent_runs:
+        grouped.setdefault(
+            (
+                str(row.get("market") or ""),
+                str(row.get("strategyKey") or ""),
+                str(row.get("command") or ""),
+            ),
+            [],
+        ).append(row)
+    for key, rows in grouped.items():
+        consecutive = 0
+        for row in rows:
+            if row.get("status") != "failed":
+                break
+            consecutive += 1
+        if consecutive >= 2:
+            items.append(
+                {
+                    "key": "consecutive_failure:" + ":".join(key),
+                    "severity": "critical",
+                    "title": (
+                        f"{rows[0]['strategyLabel']} "
+                        f"{rows[0]['command']} 连续失败"
+                    ),
+                    "evidence": f"{consecutive} 次",
+                }
+            )
+    return items[:MAX_TABLE_ROWS]
+
+
+def build_dashboard_operations_center_data(
+    *,
+    repo_root: str | Path | None = None,
+    scope: str = "all",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Build a bounded, read-only snapshot of scheduled runtime evidence."""
+
+    if scope not in OPERATIONS_SCOPES:
+        from .dashboard_http import InvalidDashboardQuery
+
+        raise InvalidDashboardQuery(
+            "scope must be all, a_share, cn_qdii_etf, or exceptions"
+        )
+    root = _root(repo_root)
+    current = _operations_now(now)
+    try:
+        runtime = _mapping(read_dashboard_runtime())
+    except Exception:  # noqa: BLE001 - local hosts may not provide systemd
+        runtime = {
+            "status": "unavailable",
+            "last_known_at": None,
+            "reason": "runtime_status_unavailable",
+            "services": {},
+            "timers": {},
+        }
+    runtime_available = runtime.get("status") == "available"
+    services = _mapping(runtime.get("services"))
+    timers = _mapping(runtime.get("timers"))
+
+    main_chain: list[dict[str, Any]] = []
+    upstream_ready = True
+    for key, label, units, timer_unit in OPERATIONS_MAIN_CHAIN:
+        statuses = [
+            _operations_service_status(
+                _mapping(services.get(unit)) or None,
+                current=current,
+                runtime_available=runtime_available,
+            )
+            for unit in units
+        ]
+        status = _operations_chain_status(
+            statuses,
+            upstream_ready=upstream_ready,
+            runtime_available=runtime_available,
+        )
+        timer = _mapping(timers.get(timer_unit)) if timer_unit else {}
+        completed = sum(
+            item in {"success", "skipped"} for item in statuses
+        )
+        main_chain.append(
+            {
+                "key": key,
+                "label": label,
+                "status": status,
+                "primary": f"{completed} / {len(units)} 个任务完成",
+                "secondary": (
+                    f"下次 {timer['nextTriggerAt']}"
+                    if timer.get("nextTriggerAt")
+                    else "由上游成功后自动触发"
+                ),
+                "units": [
+                    {
+                        "unit": unit,
+                        "status": statuses[index],
+                        **_mapping(services.get(unit)),
+                    }
+                    for index, unit in enumerate(units)
+                ][:MAX_TABLE_ROWS],
+            }
+        )
+        upstream_ready = status == "success"
+
+    background = _operations_intelligence(root)
+    background_workers: list[dict[str, Any]] = []
+    for key, label, service_unit, timer_unit in OPERATIONS_BACKGROUND:
+        service = _mapping(services.get(service_unit))
+        timer = _mapping(timers.get(timer_unit))
+        background_workers.append(
+            {
+                "key": key,
+                "label": label,
+                "status": _operations_service_status(
+                    service or None,
+                    current=current,
+                    runtime_available=runtime_available,
+                ),
+                "serviceUnit": service_unit,
+                "timerUnit": timer_unit,
+                "lastResult": service.get("result"),
+                "startedAt": service.get("startedAt"),
+                "finishedAt": service.get("finishedAt"),
+                "nextTriggerAt": timer.get("nextTriggerAt"),
+                "backlog": (
+                    background.get("backlog")
+                    if key == "artifact_backfill"
+                    else (
+                        {
+                            "semantic": _integer(
+                                _mapping(background.get("backlog")).get(
+                                    "semantic"
+                                )
+                            )
+                        }
+                        if key == "semantic"
+                        and isinstance(background.get("backlog"), dict)
+                        else None
+                    )
+                ),
+            }
+        )
+
+    schedules: dict[str, list[dict[str, Any]]] = {
+        "daily": [],
+        "weekly": [],
+        "monthly": [],
+    }
+    for unit, (label, cadence) in OPERATIONS_TIMERS.items():
+        timer = _mapping(timers.get(unit))
+        schedules[cadence].append(
+            {
+                "unit": unit,
+                "label": label,
+                "status": (
+                    "unavailable"
+                    if not runtime_available or not timer
+                    else (
+                        "active"
+                        if timer.get("activeState") == "active"
+                        else "inactive"
+                    )
+                ),
+                "lastTriggerAt": timer.get("lastTriggerAt"),
+                "nextTriggerAt": timer.get("nextTriggerAt"),
+                "automation": "automatic",
+            }
+        )
+    for rows in schedules.values():
+        rows.sort(
+            key=lambda row: (
+                str(row.get("nextTriggerAt") or ""),
+                row["unit"],
+            )
+        )
+
+    recent_runs = _recent_strategy_runs(root, scope)
+    disk = _operations_disk(root)
+    payload = {
+        "generated_at": current.isoformat(timespec="seconds"),
+        "scope": scope,
+        "runtime": {
+            "status": runtime.get("status") or "unavailable",
+            "lastKnownAt": runtime.get("last_known_at"),
+            "reason": runtime.get("reason"),
+        },
+        "dailyFreshness": {
+            "asOfDate": current.date().isoformat(),
+            "status": (
+                "unavailable"
+                if not runtime_available
+                else (
+                    "failed"
+                    if any(row["status"] == "failed" for row in main_chain)
+                    else (
+                        "running"
+                        if any(
+                            row["status"] == "running" for row in main_chain
+                        )
+                        else (
+                            "success"
+                            if all(
+                                row["status"] == "success"
+                                for row in main_chain
+                            )
+                            else "waiting"
+                        )
+                    )
+                )
+            ),
+        },
+        "mainChain": main_chain,
+        "background": background,
+        "backgroundWorkers": background_workers,
+        "schedules": schedules,
+        "recentRuns": recent_runs,
+        "disk": disk,
+        "interventions": _operations_interventions(
+            recent_runs,
+            disk=disk,
+            background=background,
+            current=current,
+        ),
+    }
+    if scope == "exceptions":
+        payload["mainChain"] = [
+            row
+            for row in main_chain
+            if row["status"] in {"failed", "unavailable"}
+        ]
+        payload["backgroundWorkers"] = [
+            row
+            for row in background_workers
+            if row["status"] in {"failed", "unavailable"}
+        ]
+    safe_payload = agg._json_safe(payload)
+    if _serialized_size(safe_payload) >= MAX_SERIALIZED_BYTES:
+        raise ValueError("dashboard_operations_payload_exceeds_size_limit")
+    return safe_payload
