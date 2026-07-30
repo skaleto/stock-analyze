@@ -19,6 +19,7 @@ run_local() {
     tests.test_archived_markets \
     tests.test_qdii_systemd_units \
     tests.test_deploy_app_script \
+    tests.test_deploy_dashboard_workspaces_script \
     tests.test_dashboard_http \
     tests.test_dashboard_resource_api \
     tests.test_dashboard_workspace_api \
