@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import threading
 from copy import deepcopy
@@ -76,16 +77,23 @@ _RUNTIME_CACHE_LOCK = threading.Lock()
 
 
 def _parse_show(output: str) -> dict[str, dict[str, str]]:
+    if not output.strip():
+        raise ValueError("systemctl_show_empty")
+
     parsed: dict[str, dict[str, str]] = {}
-    for block in output.strip().split("\n\n"):
+    for block in re.split(r"\r?\n[ \t]*\r?\n", output.strip()):
         row: dict[str, str] = {}
         for line in block.splitlines():
+            if not line.strip():
+                continue
             key, separator, value = line.partition("=")
-            if separator:
-                row[key] = value
+            if not separator or not key or key in row:
+                raise ValueError("systemctl_show_malformed")
+            row[key] = value
         unit = row.get("Id")
-        if unit:
-            parsed[unit] = row
+        if not unit or unit in parsed:
+            raise ValueError("systemctl_show_invalid_id")
+        parsed[unit] = row
     return parsed
 
 
@@ -111,7 +119,17 @@ def _show(
     )
     if result.returncode != 0:
         raise OSError(result.stderr.strip() or "systemctl_show_failed")
-    return _parse_show(result.stdout)
+    try:
+        parsed = _parse_show(result.stdout)
+    except ValueError as error:
+        raise OSError(str(error)) from error
+
+    expected_units = set(units)
+    if set(parsed) != expected_units:
+        raise OSError("systemctl_show_unit_mismatch")
+    if any(not set(properties).issubset(row) for row in parsed.values()):
+        raise OSError("systemctl_show_missing_properties")
+    return parsed
 
 
 def _project_service(row: dict[str, str]) -> dict[str, Any]:
@@ -134,28 +152,31 @@ def _project_timer(row: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def _last_successful(
-    runtime_cache: dict[str, Any],
-    *,
-    use_lock: bool,
-) -> dict[str, Any]:
-    if use_lock:
-        with _RUNTIME_CACHE_LOCK:
-            return deepcopy(runtime_cache.get("last_successful") or {})
-    return deepcopy(runtime_cache.get("last_successful") or {})
+def _begin_generation(runtime_cache: dict[str, Any]) -> int:
+    with _RUNTIME_CACHE_LOCK:
+        generation = int(runtime_cache.get("_next_generation") or 0) + 1
+        runtime_cache["_next_generation"] = generation
+        return generation
+
+
+def _last_successful(runtime_cache: dict[str, Any]) -> dict[str, Any]:
+    with _RUNTIME_CACHE_LOCK:
+        return deepcopy(runtime_cache.get("last_successful") or {})
 
 
 def _store_successful(
     runtime_cache: dict[str, Any],
     payload: dict[str, Any],
     *,
-    use_lock: bool,
+    generation: int,
 ) -> None:
-    if use_lock:
-        with _RUNTIME_CACHE_LOCK:
+    with _RUNTIME_CACHE_LOCK:
+        stored_generation = int(
+            runtime_cache.get("_last_successful_generation") or 0
+        )
+        if generation >= stored_generation:
             runtime_cache["last_successful"] = deepcopy(payload)
-        return
-    runtime_cache["last_successful"] = deepcopy(payload)
+            runtime_cache["_last_successful_generation"] = generation
 
 
 def read_dashboard_runtime(
@@ -163,9 +184,9 @@ def read_dashboard_runtime(
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    generated_at = datetime.now().isoformat(timespec="seconds")
     runtime_cache = _RUNTIME_CACHE if cache is None else cache
-    use_lock = cache is None
+    generation = _begin_generation(runtime_cache)
+    generated_at = datetime.now().isoformat(timespec="seconds")
 
     try:
         services = _show(
@@ -179,7 +200,7 @@ def read_dashboard_runtime(
             runner=runner,
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        previous = _last_successful(runtime_cache, use_lock=use_lock)
+        previous = _last_successful(runtime_cache)
         return {
             "status": "unavailable",
             "generated_at": generated_at,
@@ -205,5 +226,5 @@ def read_dashboard_runtime(
             if unit in timers
         },
     }
-    _store_successful(runtime_cache, payload, use_lock=use_lock)
+    _store_successful(runtime_cache, payload, generation=generation)
     return payload
