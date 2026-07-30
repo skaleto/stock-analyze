@@ -53,8 +53,31 @@ const severityLabels: Record<string, string> = {
   info: "提示",
 };
 
+const unitLabels: Record<string, string> = {
+  "stock-analyze-intelligence.service": "情报增量采集",
+  "stock-analyze-market-data.service": "行情与研究快照",
+  "stock-analyze-research.service": "特征、预测与评估",
+  "stock-analyze-model-iteration.service": "跨市场候选模型迭代",
+  "stock-analyze-claude-daily.service": "稳健防守",
+  "stock-analyze-codex-daily.service": "趋势进攻",
+  "stock-analyze-claude-cn-qdii-etf-daily.service":
+    "跨境ETF稳健防守",
+  "stock-analyze-codex-cn-qdii-etf-daily.service":
+    "跨境ETF趋势进攻",
+  "stock-analyze-aggregate-dashboard.service": "Dashboard 聚合",
+  "stock-analyze-daily-summary.service": "每日运行摘要",
+  "stock-analyze-intelligence-artifact-backfill.service":
+    "PDF 下载与解析回填",
+  "stock-analyze-intelligence-reconcile.service": "情报对账",
+  "stock-analyze-intelligence-semantic.service": "LLM 语义抽取",
+};
+
 function statusLabel(value: string | null | undefined): string {
   return value ? statusLabels[value] ?? "未知状态" : "未记录";
+}
+
+function unitLabel(unit: string): string {
+  return unitLabels[unit] ?? "系统任务";
 }
 
 function loadStateLabel(value: string | null | undefined): string {
@@ -168,6 +191,30 @@ export function OperationsPage({
   const data = resource.data;
   const schedules = data.schedules[cadence];
   const staleRuntime = data.runtime.status === "unavailable";
+  const cadenceOrder = Object.keys(cadenceLabels) as Cadence[];
+
+  const onCadenceKeyDown = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    current: Cadence,
+  ) => {
+    const currentIndex = cadenceOrder.indexOf(current);
+    let next: Cadence | null = null;
+    if (event.key === "ArrowRight") {
+      next = cadenceOrder[(currentIndex + 1) % cadenceOrder.length];
+    } else if (event.key === "ArrowLeft") {
+      next = cadenceOrder[
+        (currentIndex - 1 + cadenceOrder.length) % cadenceOrder.length
+      ];
+    } else if (event.key === "Home") {
+      next = cadenceOrder[0];
+    } else if (event.key === "End") {
+      next = cadenceOrder[cadenceOrder.length - 1];
+    }
+    if (!next) return;
+    event.preventDefault();
+    setCadence(next);
+    document.getElementById(`operations-${next}-tab`)?.focus();
+  };
 
   return (
     <section
@@ -296,7 +343,6 @@ export function OperationsPage({
                     <dd>{workerBacklog(worker.backlog)}</dd>
                   </div>
                 </dl>
-                <small>{worker.serviceUnit}</small>
               </article>
             ),
           ) : (
@@ -314,7 +360,7 @@ export function OperationsPage({
           aria-label="周期计划"
           className="workspace-tabs"
         >
-          {(Object.keys(cadenceLabels) as Cadence[]).map((key) => (
+          {cadenceOrder.map((key) => (
             <button
               key={key}
               id={`operations-${key}-tab`}
@@ -325,6 +371,7 @@ export function OperationsPage({
               tabIndex={cadence === key ? 0 : -1}
               className={cadence === key ? "active" : ""}
               onClick={() => setCadence(key)}
+              onKeyDown={(event) => onCadenceKeyDown(event, key)}
             >
               {cadenceLabels[key]}
             </button>
@@ -372,11 +419,6 @@ export function OperationsPage({
                 key: "automation",
                 label: "执行方式",
                 render: () => "自动执行",
-              },
-              {
-                key: "unit",
-                label: "技术证据",
-                render: (row) => row.unit,
               },
             ]}
           />
@@ -464,7 +506,7 @@ function TaskDetail({
         rowKey={(row) => row.unit}
         emptyLabel="任务明细已裁剪或尚无本日执行记录"
         columns={[
-          { key: "unit", label: "任务", render: (row) => row.unit },
+          { key: "unit", label: "任务", render: (row) => unitLabel(row.unit) },
           {
             key: "status",
             label: "状态",
@@ -496,7 +538,11 @@ function TaskDetail({
             rowKey={(row) => row.unit}
             emptyLabel="暂无跨市场候选模型证据"
             columns={[
-              { key: "unit", label: "任务", render: (row) => row.unit },
+              {
+                key: "unit",
+                label: "任务",
+                render: (row) => unitLabel(row.unit),
+              },
               {
                 key: "status",
                 label: "状态",
