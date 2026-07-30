@@ -14,7 +14,10 @@ import type {
   InstrumentDetail,
   SystemOverviewData,
 } from "./types";
-import type { ModelResearchData } from "./workspaceTypes";
+import type {
+  DataIntelligenceData,
+  ModelResearchData,
+} from "./workspaceTypes";
 
 const workspaceStatuses = new Set([
   "success",
@@ -279,6 +282,429 @@ function validateModelResearch(value: unknown): ModelResearchData {
   return data as unknown as ModelResearchData;
 }
 
+const DATA_INTELLIGENCE_LIST_LIMIT = 20;
+
+function dataIntelligenceError(path: string): never {
+  throw new Error(`Invalid data intelligence response: ${path}`);
+}
+
+function dataObject(
+  value: unknown,
+  path: string,
+): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    dataIntelligenceError(path);
+  }
+  return value as Record<string, unknown>;
+}
+
+function dataArray(value: unknown, path: string): unknown[] {
+  if (!Array.isArray(value)) dataIntelligenceError(path);
+  if (value.length > DATA_INTELLIGENCE_LIST_LIMIT) {
+    dataIntelligenceError(`${path} exceeds ${DATA_INTELLIGENCE_LIST_LIMIT}`);
+  }
+  return value;
+}
+
+function dataString(value: unknown, path: string): string {
+  if (typeof value !== "string") dataIntelligenceError(path);
+  return value;
+}
+
+function dataNumber(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    dataIntelligenceError(path);
+  }
+  return value;
+}
+
+function dataBoolean(value: unknown, path: string): boolean {
+  if (typeof value !== "boolean") dataIntelligenceError(path);
+  return value;
+}
+
+function dataOptionalString(value: unknown, path: string): void {
+  if (value !== undefined && value !== null && typeof value !== "string") {
+    dataIntelligenceError(path);
+  }
+}
+
+function dataStringList(value: unknown, path: string): string[] {
+  return dataArray(value, path).map((item, index) => (
+    dataString(item, `${path}[${index}]`)
+  ));
+}
+
+function dataOptionalNumber(value: unknown, path: string): void {
+  if (value !== undefined && value !== null) dataNumber(value, path);
+}
+
+function validateWorkspaceStages(value: unknown, path: string): void {
+  const keys = new Set<string>();
+  dataArray(value, path).forEach((item, index) => {
+    const itemPath = `${path}[${index}]`;
+    const stage = dataObject(item, itemPath);
+    const key = dataString(stage.key, `${itemPath}.key`);
+    if (keys.has(key)) dataIntelligenceError(`${itemPath}.key duplicate key`);
+    keys.add(key);
+    dataString(stage.label, `${itemPath}.label`);
+    const status = dataString(stage.status, `${itemPath}.status`);
+    if (!workspaceStatuses.has(status)) {
+      dataIntelligenceError(`${itemPath}.status`);
+    }
+    dataString(stage.primary, `${itemPath}.primary`);
+    dataString(stage.secondary, `${itemPath}.secondary`);
+  });
+}
+
+function validateUsageCell(value: unknown, path: string): void {
+  const cell = dataObject(value, path);
+  dataString(cell.status, `${path}.status`);
+  dataNumber(cell.count, `${path}.count`);
+  dataString(cell.countSemantics, `${path}.countSemantics`);
+  dataStringList(cell.features, `${path}.features`);
+  dataStringList(cell.evidence, `${path}.evidence`);
+  const formalCount = dataNumber(cell.formalCount, `${path}.formalCount`);
+  const formalFactors = dataStringList(
+    cell.formalFactors,
+    `${path}.formalFactors`,
+  );
+  dataOptionalString(cell.formalStatus, `${path}.formalStatus`);
+  const researchCount = dataNumber(
+    cell.researchCount,
+    `${path}.researchCount`,
+  );
+  const researchFeatures = dataStringList(
+    cell.researchFeatures,
+    `${path}.researchFeatures`,
+  );
+  dataOptionalString(cell.researchStatus, `${path}.researchStatus`);
+  if (cell.missingManifestEvidence !== undefined) {
+    dataStringList(
+      cell.missingManifestEvidence,
+      `${path}.missingManifestEvidence`,
+    );
+  }
+  if (formalFactors.length > formalCount || researchFeatures.length > researchCount) {
+    dataIntelligenceError(`${path} namespace count`);
+  }
+  if (cell.count !== formalCount + researchCount) {
+    dataIntelligenceError(`${path}.count`);
+  }
+  const evidence = dataObject(
+    cell.evidenceByNamespace,
+    `${path}.evidenceByNamespace`,
+  );
+  dataStringList(evidence.formal, `${path}.evidenceByNamespace.formal`);
+  dataStringList(evidence.research, `${path}.evidenceByNamespace.research`);
+  if (cell.missingManifest !== undefined) {
+    dataBoolean(cell.missingManifest, `${path}.missingManifest`);
+  }
+  dataOptionalString(cell.lineageStatus, `${path}.lineageStatus`);
+}
+
+function validateDataIntelligence(value: unknown): DataIntelligenceData {
+  const data = dataObject(value, "root");
+  dataString(data.generated_at, "generated_at");
+  dataString(data.market, "market");
+  dataString(data.market_label, "market_label");
+  if (data.truncated !== undefined) {
+    dataBoolean(data.truncated, "truncated");
+  }
+  dataOptionalString(data.truncationReason, "truncationReason");
+
+  const structured = dataObject(data.structured, "structured");
+  validateWorkspaceStages(structured.stages, "structured.stages");
+  const sourceKeys = new Set<string>();
+  dataArray(structured.sources, "structured.sources").forEach((item, index) => {
+    const path = `structured.sources[${index}]`;
+    const source = dataObject(item, path);
+    const sourceKey = dataString(source.source, `${path}.source`);
+    if (sourceKeys.has(sourceKey)) {
+      dataIntelligenceError(`${path}.source duplicate source`);
+    }
+    sourceKeys.add(sourceKey);
+    [
+      "researchFeatureCount",
+      "selectedModelFeatureCount",
+      "strategyFactorCount",
+      "activeStrategyFactorCount",
+    ].forEach((key) => dataNumber(source[key], `${path}.${key}`));
+    dataString(source.status, `${path}.status`);
+    dataStringList(source.useLocations, `${path}.useLocations`);
+  });
+
+  const coverage = dataObject(structured.coverage, "structured.coverage");
+  dataString(coverage.status, "structured.coverage.status");
+  [
+    "rangeStart",
+    "rangeEnd",
+    "latestTradeDate",
+    "snapshotAsOf",
+    "latestSnapshot",
+  ].forEach((key) => (
+    dataOptionalString(coverage[key], `structured.coverage.${key}`)
+  ));
+  [
+    "snapshotCount",
+    "inspectedSnapshots",
+    "readableSnapshots",
+    "datedSnapshots",
+  ].forEach(
+    (key) => dataOptionalNumber(coverage[key], `structured.coverage.${key}`),
+  );
+
+  const familyKeys = new Set<string>();
+  dataArray(structured.factorGroups, "structured.factorGroups").forEach(
+    (item, index) => {
+      const path = `structured.factorGroups[${index}]`;
+      const group = dataObject(item, path);
+      const family = dataString(group.family, `${path}.family`);
+      if (familyKeys.has(family)) {
+        dataIntelligenceError(`${path}.family duplicate family`);
+      }
+      familyKeys.add(family);
+      dataNumber(group.definedFeatureCount, `${path}.definedFeatureCount`);
+      dataNumber(group.selectedFeatureCount, `${path}.selectedFeatureCount`);
+    },
+  );
+  dataStringList(structured.selectedFeatures, "structured.selectedFeatures");
+  const formal = dataObject(
+    structured.formalFactorNamespace,
+    "structured.formalFactorNamespace",
+  );
+  dataNumber(
+    formal.definedFactorCount,
+    "structured.formalFactorNamespace.definedFactorCount",
+  );
+  dataNumber(
+    formal.activeFactorCount,
+    "structured.formalFactorNamespace.activeFactorCount",
+  );
+  dataStringList(
+    formal.activeFactors,
+    "structured.formalFactorNamespace.activeFactors",
+  );
+  const research = dataObject(
+    structured.researchFeatureNamespace,
+    "structured.researchFeatureNamespace",
+  );
+  dataNumber(
+    research.definedFeatureCount,
+    "structured.researchFeatureNamespace.definedFeatureCount",
+  );
+  dataStringList(
+    research.selectedFeatures,
+    "structured.researchFeatureNamespace.selectedFeatures",
+  );
+  const quality = dataObject(structured.quality, "structured.quality");
+  dataString(quality.status, "structured.quality.status");
+  [
+    "modelCount",
+    "pointInTimeAuditedModels",
+    "pointInTimeFailedModels",
+  ].forEach((key) => dataNumber(quality[key], `structured.quality.${key}`));
+  dataString(quality.missingRateStatus, "structured.quality.missingRateStatus");
+  dataString(quality.outlierStatus, "structured.quality.outlierStatus");
+
+  const intelligence = dataObject(data.intelligence, "intelligence");
+  validateWorkspaceStages(intelligence.stages, "intelligence.stages");
+  if (intelligence.truncated !== undefined) {
+    dataBoolean(intelligence.truncated, "intelligence.truncated");
+  }
+  if (intelligence.truncationReasons !== undefined) {
+    dataStringList(
+      intelligence.truncationReasons,
+      "intelligence.truncationReasons",
+    );
+  }
+  const intelligenceNamespace = dataObject(
+    intelligence.featureNamespace,
+    "intelligence.featureNamespace",
+  );
+  dataNumber(
+    intelligenceNamespace.definedFeatureCount,
+    "intelligence.featureNamespace.definedFeatureCount",
+  );
+  dataNumber(
+    intelligenceNamespace.selectedFeatureCount,
+    "intelligence.featureNamespace.selectedFeatureCount",
+  );
+  dataStringList(
+    intelligenceNamespace.selectedFeatures,
+    "intelligence.featureNamespace.selectedFeatures",
+  );
+
+  const pipeline = dataObject(intelligence.pipeline, "intelligence.pipeline");
+  dataString(pipeline.status, "intelligence.pipeline.status");
+  dataNumber(pipeline.documents, "intelligence.pipeline.documents");
+  const pipelineStages = dataObject(
+    pipeline.stages,
+    "intelligence.pipeline.stages",
+  );
+  [
+    "catalogued",
+    "pdfReady",
+    "parsed",
+    "semanticCompleted",
+    "canonicalEvents",
+  ].forEach((key) => (
+    dataNumber(pipelineStages[key], `intelligence.pipeline.stages.${key}`)
+  ));
+  const backlog = dataObject(pipeline.backlog, "intelligence.pipeline.backlog");
+  ["download", "parse", "semantic", "total"].forEach((key) => (
+    dataNumber(backlog[key], `intelligence.pipeline.backlog.${key}`)
+  ));
+  const sourceIdentities = new Set<string>();
+  dataArray(pipeline.sources, "intelligence.pipeline.sources").forEach(
+    (item, index) => {
+      const path = `intelligence.pipeline.sources[${index}]`;
+      const source = dataObject(item, path);
+      const identity = dataString(source.source, `${path}.source`);
+      if (sourceIdentities.has(identity)) {
+        dataIntelligenceError(`${path}.source duplicate source`);
+      }
+      sourceIdentities.add(identity);
+      dataString(source.freshnessStatus, `${path}.freshnessStatus`);
+      dataOptionalString(source.latestPublishedAt, `${path}.latestPublishedAt`);
+      dataOptionalString(source.lastIngestedAt, `${path}.lastIngestedAt`);
+      dataOptionalString(source.cursor, `${path}.cursor`);
+    },
+  );
+  dataObject(pipeline.artifactWorkers, "intelligence.pipeline.artifactWorkers");
+
+  const extraction = dataObject(
+    intelligence.extraction,
+    "intelligence.extraction",
+  );
+  dataString(extraction.status, "intelligence.extraction.status");
+  dataObject(extraction.semanticRuns, "intelligence.extraction.semanticRuns");
+  dataObject(extraction.decisions, "intelligence.extraction.decisions");
+  if (extraction.latestBatch !== null) {
+    dataObject(extraction.latestBatch, "intelligence.extraction.latestBatch");
+  }
+  const contract = dataObject(
+    extraction.contract,
+    "intelligence.extraction.contract",
+  );
+  dataString(contract.profileId, "intelligence.extraction.contract.profileId");
+
+  const supply = dataObject(
+    intelligence.factorSupply,
+    "intelligence.factorSupply",
+  );
+  dataString(supply.status, "intelligence.factorSupply.status");
+  dataNumber(supply.suppliedFactors, "intelligence.factorSupply.suppliedFactors");
+  dataBoolean(supply.modelEligible, "intelligence.factorSupply.modelEligible");
+  dataStringList(
+    supply.modelEligibleFactors,
+    "intelligence.factorSupply.modelEligibleFactors",
+  );
+  const factorNames = new Set<string>();
+  dataArray(supply.factors, "intelligence.factorSupply.factors").forEach(
+    (item, index) => {
+      const path = `intelligence.factorSupply.factors[${index}]`;
+      const factor = dataObject(item, path);
+      const name = dataString(factor.name, `${path}.name`);
+      if (factorNames.has(name)) {
+        dataIntelligenceError(`${path}.name duplicate factor`);
+      }
+      factorNames.add(name);
+      dataString(factor.state, `${path}.state`);
+      dataOptionalNumber(factor.coverage, `${path}.coverage`);
+      dataOptionalNumber(factor.activationRate, `${path}.activationRate`);
+      if (
+        factor.meanRankIc !== undefined
+        && factor.meanRankIc !== null
+        && (
+          typeof factor.meanRankIc !== "number"
+          || !Number.isFinite(factor.meanRankIc)
+        )
+      ) {
+        dataIntelligenceError(`${path}.meanRankIc`);
+      }
+      dataOptionalString(factor.recommendation, `${path}.recommendation`);
+    },
+  );
+
+  const impact = dataObject(
+    intelligence.modelImpact,
+    "intelligence.modelImpact",
+  );
+  dataString(impact.status, "intelligence.modelImpact.status");
+  dataNumber(
+    impact.qualifiedHorizons,
+    "intelligence.modelImpact.qualifiedHorizons",
+  );
+  dataString(impact.activation, "intelligence.modelImpact.activation");
+  dataBoolean(impact.adopted, "intelligence.modelImpact.adopted");
+  dataStringList(impact.activeFactors, "intelligence.modelImpact.activeFactors");
+  dataStringList(
+    impact.iterationFactors,
+    "intelligence.modelImpact.iterationFactors",
+  );
+  dataString(impact.reason, "intelligence.modelImpact.reason");
+  dataArray(impact.horizons, "intelligence.modelImpact.horizons");
+  dataObject(intelligence.decisions, "intelligence.decisions");
+
+  const consumerKeys = new Set<string>();
+  const usage = dataArray(data.usageMatrix, "usageMatrix");
+  if (usage.length !== 4) dataIntelligenceError("usageMatrix expected 4 rows");
+  usage.forEach((item, index) => {
+    const path = `usageMatrix[${index}]`;
+    const row = dataObject(item, path);
+    const key = dataString(row.consumerKey, `${path}.consumerKey`);
+    if (consumerKeys.has(key)) {
+      dataIntelligenceError(`${path}.consumerKey duplicate key`);
+    }
+    consumerKeys.add(key);
+    dataString(row.consumerLabel, `${path}.consumerLabel`);
+    validateUsageCell(row.structuredData, `${path}.structuredData`);
+    validateUsageCell(row.traditionalFactors, `${path}.traditionalFactors`);
+    validateUsageCell(row.intelligenceFactors, `${path}.intelligenceFactors`);
+    if (row.modelAdoption !== undefined) {
+      const adoption = dataObject(row.modelAdoption, `${path}.modelAdoption`);
+      dataString(adoption.status, `${path}.modelAdoption.status`);
+      [
+        "modelCount",
+        "resolvableManifestCount",
+        "missingManifestCount",
+      ].forEach((key) => (
+        dataNumber(adoption[key], `${path}.modelAdoption.${key}`)
+      ));
+      const modelIdentities = new Set<string>();
+      dataArray(adoption.models, `${path}.modelAdoption.models`).forEach(
+        (modelItem, modelIndex) => {
+          const modelPath = `${path}.modelAdoption.models[${modelIndex}]`;
+          const model = dataObject(modelItem, modelPath);
+          const horizon = dataNumber(model.horizon, `${modelPath}.horizon`);
+          const version = dataString(
+            model.modelVersion,
+            `${modelPath}.modelVersion`,
+          );
+          const identity = `${horizon}:${version}`;
+          if (modelIdentities.has(identity)) {
+            dataIntelligenceError(`${modelPath} duplicate horizon,modelVersion`);
+          }
+          modelIdentities.add(identity);
+          dataString(model.manifestStatus, `${modelPath}.manifestStatus`);
+          dataString(model.evidence, `${modelPath}.evidence`);
+          dataOptionalString(
+            model.missingManifestEvidence,
+            `${modelPath}.missingManifestEvidence`,
+          );
+        },
+      );
+    }
+    dataString(row.impact, `${path}.impact`);
+    dataOptionalString(row.lineageStatus, `${path}.lineageStatus`);
+    if (row.missingManifest !== undefined) {
+      dataBoolean(row.missingManifest, `${path}.missingManifest`);
+    }
+  });
+  return data as unknown as DataIntelligenceData;
+}
+
 async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, { cache: "no-cache", signal });
   if (!response.ok) {
@@ -399,4 +825,15 @@ export function fetchModelResearch(
     `/api/dashboard/model-research.json?${params.toString()}`,
     signal,
   ).then(validateModelResearch);
+}
+
+export function fetchDataIntelligence(
+  market: string,
+  signal?: AbortSignal,
+): Promise<DataIntelligenceData> {
+  const params = new URLSearchParams({ market });
+  return fetchJson<unknown>(
+    `/api/dashboard/data-intelligence.json?${params.toString()}`,
+    signal,
+  ).then(validateDataIntelligence);
 }
