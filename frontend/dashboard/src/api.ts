@@ -888,12 +888,6 @@ async function fetchJson<T>(
     throw new Error(message);
   }
   if (maxResponseBytes !== undefined) {
-    const contentLength = Number(response.headers.get("content-length"));
-    if (Number.isFinite(contentLength) && contentLength > maxResponseBytes) {
-      throw new Error(
-        `Data intelligence response exceeds ${maxResponseBytes} bytes`,
-      );
-    }
     const body = await response.text();
     if (new TextEncoder().encode(body).byteLength > maxResponseBytes) {
       throw new Error(
