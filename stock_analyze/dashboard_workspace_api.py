@@ -739,25 +739,54 @@ def _manifest_evidence(prefix: str, identity: tuple[int, str]) -> str:
 
 
 def _usage_cell(
-    features: set[str],
-    eligible: set[str],
-    evidence: list[str],
     *,
+    formal_items: set[str],
+    research_items: set[str],
+    formal_eligible: set[str],
+    research_eligible: set[str],
+    formal_evidence: list[str],
+    research_evidence: list[str],
     observing: bool = False,
 ) -> dict[str, Any]:
-    used = sorted(features & eligible)
-    bounded_evidence = list(
+    formal_used = sorted(formal_items & formal_eligible)
+    research_used = sorted(research_items & research_eligible)
+    formal_evidence_used = list(
         dict.fromkeys(
             _text(value, limit=MAX_TEXT_LENGTH)
-            for value in evidence
+            for value in formal_evidence
             if value
         )
     )[:MAX_TABLE_ROWS]
+    research_evidence_used = list(
+        dict.fromkeys(
+            _text(value, limit=MAX_TEXT_LENGTH)
+            for value in research_evidence
+            if value
+        )
+    )[:MAX_TABLE_ROWS]
+    if not formal_used:
+        formal_evidence_used = []
+    if not research_used:
+        research_evidence_used = []
+    count = len(formal_used) + len(research_used)
+    legacy_features = sorted(set(formal_used) | set(research_used))
+    legacy_evidence = list(
+        dict.fromkeys([*formal_evidence_used, *research_evidence_used])
+    )[:MAX_TABLE_ROWS]
     return {
-        "status": "used" if used else "observing" if observing else "not_used",
-        "count": len(used),
-        "features": used[:MAX_FEATURE_ROWS],
-        "evidence": bounded_evidence if used or observing else [],
+        "status": "used" if count else "observing" if observing else "not_used",
+        "count": count,
+        "countSemantics": "formal_plus_research_namespace_items",
+        "features": legacy_features[:MAX_FEATURE_ROWS],
+        "evidence": legacy_evidence if count or observing else [],
+        "formalCount": len(formal_used),
+        "formalFactors": formal_used[:MAX_FEATURE_ROWS],
+        "researchCount": len(research_used),
+        "researchFeatures": research_used[:MAX_FEATURE_ROWS],
+        "evidenceByNamespace": {
+            "formal": formal_evidence_used,
+            "research": research_evidence_used,
+        },
     }
 
 
@@ -872,7 +901,9 @@ def _enforce_data_intelligence_size(
     payload["intelligence"]["pipeline"]["sources"] = []
     payload["intelligence"]["factorSupply"]["factors"] = []
     payload["structured"]["selectedFeatures"] = []
+    payload["structured"]["formalFactorNamespace"]["activeFactors"] = []
     payload["structured"]["researchFeatureNamespace"]["selectedFeatures"] = []
+    payload["intelligence"]["featureNamespace"]["selectedFeatures"] = []
     for row in payload["structured"]["sources"]:
         row["useLocations"] = []
     for row in payload["usageMatrix"]:
@@ -883,6 +914,12 @@ def _enforce_data_intelligence_size(
         ):
             row[key]["features"] = []
             row[key]["evidence"] = []
+            row[key]["formalFactors"] = []
+            row[key]["researchFeatures"] = []
+            row[key]["evidenceByNamespace"] = {
+                "formal": [],
+                "research": [],
+            }
     if _serialized_size(payload) >= MAX_SERIALIZED_BYTES:
         raise ValueError("dashboard_data_intelligence_payload_exceeds_size_limit")
     return payload
@@ -1098,9 +1135,15 @@ def build_dashboard_data_intelligence_data(
     all_model_features = {
         feature for features in manifests.values() for feature in features
     }
-    intelligence_names = {
-        item.name for item in INTELLIGENCE_FEATURES
-    } | set(SENTIMENT_FACTORS)
+    research_intelligence_names = {
+        item.name
+        for item in INTELLIGENCE_FEATURES
+        if market in item.markets
+    }
+    formal_intelligence_names = (
+        set(AVAILABLE_FACTORS_BY_MARKET.get(market, set()))
+        & set(SENTIMENT_FACTORS)
+    )
     research_traditional_names = {
         item.name
         for item in DEFAULT_REGISTRY
@@ -1242,33 +1285,6 @@ def build_dashboard_data_intelligence_data(
             _manifest_evidence("decision_lineage", identity)
             for identity in sorted(applied_identities)
         ]
-        traditional_names = (
-            formal_traditional_names | research_traditional_names
-        )
-        traditional_evidence = [
-            *(
-                ["strategy_overlay"]
-                if overlay_factors & traditional_names
-                else []
-            ),
-            *(
-                lineage_evidence
-                if applied_features & traditional_names
-                else []
-            ),
-        ]
-        intelligence_evidence = [
-            *(
-                ["strategy_overlay"]
-                if overlay_factors & intelligence_names
-                else []
-            ),
-            *(
-                lineage_evidence
-                if applied_features & intelligence_names
-                else []
-            ),
-        ]
         usage_matrix.append(
             {
                 "consumerKey": public_key,
@@ -1277,19 +1293,28 @@ def build_dashboard_data_intelligence_data(
                     limit=256,
                 ),
                 "structuredData": _usage_cell(
-                    overlay_factors | applied_features,
-                    traditional_names,
-                    traditional_evidence,
+                    formal_items=overlay_factors,
+                    research_items=applied_features,
+                    formal_eligible=formal_traditional_names,
+                    research_eligible=research_traditional_names,
+                    formal_evidence=["strategy_overlay"],
+                    research_evidence=lineage_evidence,
                 ),
                 "traditionalFactors": _usage_cell(
-                    overlay_factors | applied_features,
-                    traditional_names,
-                    traditional_evidence,
+                    formal_items=overlay_factors,
+                    research_items=applied_features,
+                    formal_eligible=formal_traditional_names,
+                    research_eligible=research_traditional_names,
+                    formal_evidence=["strategy_overlay"],
+                    research_evidence=lineage_evidence,
                 ),
                 "intelligenceFactors": _usage_cell(
-                    overlay_factors | applied_features,
-                    intelligence_names,
-                    intelligence_evidence,
+                    formal_items=overlay_factors,
+                    research_items=applied_features,
+                    formal_eligible=formal_intelligence_names,
+                    research_eligible=research_intelligence_names,
+                    formal_evidence=["strategy_overlay"],
+                    research_evidence=lineage_evidence,
                 ),
                 "impact": (
                     f"正式决策采用 {len(applied_identities)} 个模型版本"
@@ -1306,7 +1331,7 @@ def build_dashboard_data_intelligence_data(
     intelligence_manifest_evidence = [
         _manifest_evidence("model_feature_manifest", identity)
         for identity, features in sorted(manifests.items())
-        if features & intelligence_names
+        if features & research_intelligence_names
     ]
     usage_matrix.extend(
         [
@@ -1314,43 +1339,62 @@ def build_dashboard_data_intelligence_data(
                 "consumerKey": "research_model",
                 "consumerLabel": "研究模型",
                 "structuredData": _usage_cell(
-                    all_model_features,
-                    research_traditional_names,
-                    manifest_evidence,
+                    formal_items=set(),
+                    research_items=all_model_features,
+                    formal_eligible=formal_traditional_names,
+                    research_eligible=research_traditional_names,
+                    formal_evidence=[],
+                    research_evidence=manifest_evidence,
                 ),
                 "traditionalFactors": _usage_cell(
-                    all_model_features,
-                    research_traditional_names,
-                    manifest_evidence,
+                    formal_items=set(),
+                    research_items=all_model_features,
+                    formal_eligible=formal_traditional_names,
+                    research_eligible=research_traditional_names,
+                    formal_evidence=[],
+                    research_evidence=manifest_evidence,
                 ),
                 "intelligenceFactors": _usage_cell(
-                    all_model_features,
-                    intelligence_names,
-                    intelligence_manifest_evidence,
+                    formal_items=set(),
+                    research_items=all_model_features,
+                    formal_eligible=formal_intelligence_names,
+                    research_eligible=research_intelligence_names,
+                    formal_evidence=[],
+                    research_evidence=intelligence_manifest_evidence,
                     observing=bool(factor_supply.get("suppliedFactors")),
                 ),
                 "impact": (
                     f"{len(all_model_features)} 个训练特征，"
-                    f"{len(all_model_features & intelligence_names)} 个来自情报"
+                    f"{len(all_model_features & research_intelligence_names)}"
+                    " 个来自情报"
                 ),
             },
             {
                 "consumerKey": "candidate_simulation",
                 "consumerLabel": "候选模拟账户",
                 "structuredData": _usage_cell(
-                    candidate_features,
-                    research_traditional_names,
-                    candidate_evidence,
+                    formal_items=set(),
+                    research_items=candidate_features,
+                    formal_eligible=formal_traditional_names,
+                    research_eligible=research_traditional_names,
+                    formal_evidence=[],
+                    research_evidence=candidate_evidence,
                 ),
                 "traditionalFactors": _usage_cell(
-                    candidate_features,
-                    research_traditional_names,
-                    candidate_evidence,
+                    formal_items=set(),
+                    research_items=candidate_features,
+                    formal_eligible=formal_traditional_names,
+                    research_eligible=research_traditional_names,
+                    formal_evidence=[],
+                    research_evidence=candidate_evidence,
                 ),
                 "intelligenceFactors": _usage_cell(
-                    candidate_features,
-                    intelligence_names,
-                    candidate_evidence,
+                    formal_items=set(),
+                    research_items=candidate_features,
+                    formal_eligible=formal_intelligence_names,
+                    research_eligible=research_intelligence_names,
+                    formal_evidence=[],
+                    research_evidence=candidate_evidence,
                 ),
                 "impact": (
                     f"本期 {_integer(iteration.get('selected_count'))} 个入选，"
@@ -1465,8 +1509,15 @@ def build_dashboard_data_intelligence_data(
             "selectedFeatures": sorted(selected_research_traditional)[
                 :MAX_FEATURE_ROWS
             ],
+            "formalFactorNamespace": {
+                "definedFactorCount": len(formal_traditional_names),
+                "activeFactorCount": len(active_formal_factors),
+                "activeFactors": sorted(active_formal_factors)[
+                    :MAX_FEATURE_ROWS
+                ],
+            },
             "researchFeatureNamespace": {
-                "selectedFeatures": sorted(all_model_features)[
+                "selectedFeatures": sorted(selected_research_traditional)[
                     :MAX_FEATURE_ROWS
                 ],
                 "definedFeatureCount": len(research_traditional_names),
@@ -1475,6 +1526,15 @@ def build_dashboard_data_intelligence_data(
         },
         "intelligence": {
             "stages": intelligence_stages,
+            "featureNamespace": {
+                "definedFeatureCount": len(research_intelligence_names),
+                "selectedFeatureCount": len(
+                    all_model_features & research_intelligence_names
+                ),
+                "selectedFeatures": sorted(
+                    all_model_features & research_intelligence_names
+                )[:MAX_FEATURE_ROWS],
+            },
             **_mapping(_bounded_intelligence_lane(intelligence)),
         },
         "usageMatrix": usage_matrix,
