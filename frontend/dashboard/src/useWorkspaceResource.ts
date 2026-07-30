@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-type Loader<T> = (signal: AbortSignal) => Promise<T>;
+/**
+ * Callers must memoize the loader identity, typically with `useCallback`, and
+ * should honor the supplied AbortSignal whenever possible.
+ */
+export type Loader<T> = (signal: AbortSignal) => Promise<T>;
 
 type ResourceState<T> = {
   key: string;
@@ -52,29 +56,33 @@ export function useWorkspaceResource<T>(
       error: null,
       stale: false,
     }));
-    loader(controller.signal)
-      .then((data) => {
-        if (requestRef.current === requestId && !controller.signal.aborted) {
-          setState({
-            key,
-            data,
-            loading: false,
-            error: null,
-            stale: false,
-          });
-        }
-      })
-      .catch((reason: unknown) => {
-        if (requestRef.current === requestId && !controller.signal.aborted) {
-          setState((current) => ({
-            key,
-            data: current.key === key ? current.data : null,
-            loading: false,
-            error: message(reason),
-            stale: current.key === key && current.data !== null,
-          }));
-        }
-      });
+    const succeed = (data: T) => {
+      if (requestRef.current === requestId && !controller.signal.aborted) {
+        setState({
+          key,
+          data,
+          loading: false,
+          error: null,
+          stale: false,
+        });
+      }
+    };
+    const fail = (reason: unknown) => {
+      if (requestRef.current === requestId && !controller.signal.aborted) {
+        setState((current) => ({
+          key,
+          data: current.key === key ? current.data : null,
+          loading: false,
+          error: message(reason),
+          stale: current.key === key && current.data !== null,
+        }));
+      }
+    };
+    try {
+      void loader(controller.signal).then(succeed, fail);
+    } catch (reason: unknown) {
+      fail(reason);
+    }
   }, [enabled, key, loader]);
 
   useEffect(() => {
@@ -88,7 +96,7 @@ export function useWorkspaceResource<T>(
   const active = state.key === key ? state : {
     key,
     data: null,
-    loading: false,
+    loading: enabled,
     error: null,
     stale: false,
   };
