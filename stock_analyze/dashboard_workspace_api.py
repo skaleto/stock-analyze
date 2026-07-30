@@ -47,7 +47,7 @@ PUBLIC_STRATEGIES = (
 )
 FORMAL_FACTOR_SOURCES = {
     "a_share": {
-        "tushare_daily_basic": {"pe", "pb"},
+        "tushare_daily_basic": {"pe", "pb", "dividend_yield"},
         "tushare_fina_indicator_announced": {
             "roe",
             "gross_margin",
@@ -59,7 +59,6 @@ FORMAL_FACTOR_SOURCES = {
             "momentum_60",
             "low_volatility_60",
         },
-        "tushare_dividend": {"dividend_yield"},
     },
     "cn_qdii_etf": {
         "fund_daily_adjusted_ohlcv": {
@@ -681,6 +680,7 @@ def _structured_snapshot_coverage(root: Path, market: str) -> dict[str, Any]:
     if not paths:
         return {
             "status": "not_recorded",
+            "snapshotAsOf": None,
             "rangeStart": None,
             "rangeEnd": None,
             "latestTradeDate": None,
@@ -688,18 +688,15 @@ def _structured_snapshot_coverage(root: Path, market: str) -> dict[str, Any]:
             "snapshotCount": 0,
             "inspectedSnapshots": 0,
             "readableSnapshots": 0,
+            "datedSnapshots": 0,
         }
 
-    filename_dates = [
-        path.stem
-        for path in paths
-        if len(path.stem) == 8 and path.stem.isdigit()
-    ]
     boundary_paths = [paths[0]]
     if paths[-1] != paths[0]:
         boundary_paths.append(paths[-1])
     content_dates: list[str] = []
     readable = 0
+    dated = 0
     for path in boundary_paths:
         try:
             frame = pd.read_parquet(path, columns=["trade_date"])
@@ -707,17 +704,20 @@ def _structured_snapshot_coverage(root: Path, market: str) -> dict[str, Any]:
         except (FileNotFoundError, KeyError, OSError, TypeError, ValueError):
             continue
         readable += 1
+        if dates:
+            dated += 1
         content_dates.extend(dates)
 
-    observed_dates = sorted(set(filename_dates) | set(content_dates))
+    observed_dates = sorted(set(content_dates))
     latest = paths[-1]
     try:
         artifact = str(latest.relative_to(root))
     except ValueError:
         artifact = latest.name
-    complete = readable == len(boundary_paths) and bool(content_dates)
+    complete = dated == len(boundary_paths)
     return {
         "status": "available" if complete else "partial",
+        "snapshotAsOf": latest.stem,
         "rangeStart": observed_dates[0] if observed_dates else None,
         "rangeEnd": observed_dates[-1] if observed_dates else None,
         "latestTradeDate": observed_dates[-1] if observed_dates else None,
@@ -725,6 +725,7 @@ def _structured_snapshot_coverage(root: Path, market: str) -> dict[str, Any]:
         "snapshotCount": len(paths),
         "inspectedSnapshots": len(boundary_paths),
         "readableSnapshots": readable,
+        "datedSnapshots": dated,
     }
 
 
@@ -746,6 +747,7 @@ def _usage_cell(
     research_eligible: set[str],
     formal_evidence: list[str],
     research_evidence: list[str],
+    research_unavailable_evidence: list[str] | None = None,
     observing: bool = False,
 ) -> dict[str, Any]:
     formal_used = sorted(formal_items & formal_eligible)
@@ -764,25 +766,53 @@ def _usage_cell(
             if value
         )
     )[:MAX_TABLE_ROWS]
+    missing_manifest_evidence = list(
+        dict.fromkeys(
+            _text(value, limit=MAX_TEXT_LENGTH)
+            for value in (research_unavailable_evidence or [])
+            if value
+        )
+    )[:MAX_TABLE_ROWS]
     if not formal_used:
         formal_evidence_used = []
     if not research_used:
         research_evidence_used = []
     count = len(formal_used) + len(research_used)
+    formal_status = "used" if formal_used else "not_used"
+    research_status = (
+        "used"
+        if research_used
+        else "unavailable"
+        if missing_manifest_evidence
+        else "observing"
+        if observing
+        else "not_used"
+    )
     legacy_features = sorted(set(formal_used) | set(research_used))
     legacy_evidence = list(
         dict.fromkeys([*formal_evidence_used, *research_evidence_used])
     )[:MAX_TABLE_ROWS]
     return {
-        "status": "used" if count else "observing" if observing else "not_used",
+        "status": (
+            "used"
+            if count
+            else "unavailable"
+            if missing_manifest_evidence
+            else "observing"
+            if observing
+            else "not_used"
+        ),
         "count": count,
         "countSemantics": "formal_plus_research_namespace_items",
         "features": legacy_features[:MAX_FEATURE_ROWS],
         "evidence": legacy_evidence if count or observing else [],
         "formalCount": len(formal_used),
         "formalFactors": formal_used[:MAX_FEATURE_ROWS],
+        "formalStatus": formal_status,
         "researchCount": len(research_used),
         "researchFeatures": research_used[:MAX_FEATURE_ROWS],
+        "researchStatus": research_status,
+        "missingManifestEvidence": missing_manifest_evidence,
         "evidenceByNamespace": {
             "formal": formal_evidence_used,
             "research": research_evidence_used,
@@ -793,7 +823,6 @@ def _usage_cell(
 def _active_lineage_models(
     root: Path,
     market: str,
-    manifests: dict[tuple[int, str], set[str]],
 ) -> dict[str, set[tuple[int, str]]]:
     by_agent: dict[str, set[tuple[int, str]]] = {}
     latest_by_agent: dict[str, dict[str, Any]] = {}
@@ -819,7 +848,7 @@ def _active_lineage_models(
                 _integer(raw_horizon),
                 _text(raw_version, limit=256),
             )
-            if identity in manifests:
+            if identity[0] > 0 and identity[1]:
                 identities.add(identity)
         by_agent[agent] = identities
     return by_agent
@@ -840,19 +869,39 @@ _RESOURCE_OMIT_KEYS = frozenset(
 )
 
 
-def _bounded_resource(value: Any) -> Any:
+def _bounded_resource(value: Any) -> tuple[Any, list[str]]:
     budget = {"nodes": 512, "text": 80_000}
+    reasons: set[str] = set()
+
+    def empty_like(item: Any) -> Any:
+        if isinstance(item, dict):
+            return {}
+        if isinstance(item, (list, tuple, set)):
+            return []
+        return None
 
     def sanitize(item: Any, depth: int) -> Any:
-        if budget["nodes"] <= 0 or depth >= 8:
-            return None
+        if budget["nodes"] <= 0:
+            reasons.add("node_budget_exhausted")
+            return empty_like(item)
+        if depth >= 8:
+            reasons.add("depth_limit")
+            return empty_like(item)
         budget["nodes"] -= 1
         if isinstance(item, dict):
             result: dict[str, Any] = {}
-            for raw_key in sorted(item, key=str):
+            sorted_keys = sorted(item, key=str)
+            if len(sorted_keys) > MAX_TABLE_ROWS:
+                reasons.add("item_limit")
+            for raw_key in sorted_keys:
                 key = _text(raw_key, limit=128)
-                if key in _RESOURCE_OMIT_KEYS or len(result) >= MAX_TABLE_ROWS:
+                if key in _RESOURCE_OMIT_KEYS:
                     continue
+                if len(result) >= MAX_TABLE_ROWS:
+                    break
+                if budget["nodes"] <= 0:
+                    reasons.add("node_budget_exhausted")
+                    break
                 result[key] = sanitize(item[raw_key], depth + 1)
             return result
         if isinstance(item, (list, tuple, set)):
@@ -861,31 +910,58 @@ def _bounded_resource(value: Any) -> Any:
                 if isinstance(item, set)
                 else list(item)
             )
-            return [
-                sanitize(child, depth + 1)
-                for child in values[:MAX_TABLE_ROWS]
-                if budget["nodes"] > 0
-            ]
+            if len(values) > MAX_TABLE_ROWS:
+                reasons.add("item_limit")
+            result: list[Any] = []
+            for child in values[:MAX_TABLE_ROWS]:
+                if budget["nodes"] <= 0:
+                    reasons.add("node_budget_exhausted")
+                    break
+                result.append(sanitize(child, depth + 1))
+            return result
         if item is None or isinstance(item, (bool, int, float)):
             return _scalar(item)
-        available = min(MAX_TEXT_LENGTH, max(0, budget["text"]))
-        text = _text(_iso_timestamp(item), limit=available)
+        if budget["text"] <= 0:
+            reasons.add("text_budget_exhausted")
+            return None
+        available = min(MAX_TEXT_LENGTH, budget["text"])
+        raw_text = _text(_iso_timestamp(item), limit=MAX_TEXT_LENGTH + 1)
+        if len(raw_text) > available:
+            reasons.add(
+                "text_budget_exhausted"
+                if available < MAX_TEXT_LENGTH
+                else "text_item_limit"
+            )
+        text = raw_text[:available]
         budget["text"] -= len(text)
         return text
 
-    return sanitize(value, 0)
+    return sanitize(value, 0), sorted(reasons)
 
 
 def _bounded_intelligence_lane(intelligence: dict[str, Any]) -> dict[str, Any]:
-    return _bounded_resource(
+    required = (
+        "pipeline",
+        "extraction",
+        "factorSupply",
+        "modelImpact",
+        "decisions",
+    )
+    sanitized, reasons = _bounded_resource(
         {
-            "pipeline": _mapping(intelligence.get("pipeline")),
-            "extraction": _mapping(intelligence.get("extraction")),
-            "factorSupply": _mapping(intelligence.get("factorSupply")),
-            "modelImpact": _mapping(intelligence.get("modelImpact")),
-            "decisions": _mapping(intelligence.get("decisions")),
+            key: _mapping(intelligence.get(key))
+            for key in required
         }
     )
+    lane = sanitized if isinstance(sanitized, dict) else {}
+    for key in required:
+        if not isinstance(lane.get(key), dict):
+            lane[key] = {}
+            reasons.append("required_object_repaired")
+    unique_reasons = sorted(set(reasons))
+    lane["truncated"] = bool(unique_reasons)
+    lane["truncationReasons"] = unique_reasons
+    return lane
 
 
 def _enforce_data_intelligence_size(
@@ -1266,7 +1342,7 @@ def build_dashboard_data_intelligence_data(
         if candidate_registered
         else []
     )
-    active_lineage = _active_lineage_models(root, market, manifests)
+    active_lineage = _active_lineage_models(root, market)
 
     usage_matrix: list[dict[str, Any]] = []
     for public_key, agent, fallback_label in PUBLIC_STRATEGIES:
@@ -1276,14 +1352,20 @@ def build_dashboard_data_intelligence_data(
         }
         overlay_factors = set(profile.get("factors", []))
         applied_identities = active_lineage.get(agent, set())
+        resolvable_identities = applied_identities & set(manifests)
+        missing_identities = applied_identities - set(manifests)
         applied_features = {
             feature
-            for identity in applied_identities
+            for identity in resolvable_identities
             for feature in manifests.get(identity, set())
         }
         lineage_evidence = [
             _manifest_evidence("decision_lineage", identity)
-            for identity in sorted(applied_identities)
+            for identity in sorted(resolvable_identities)
+        ]
+        missing_manifest_evidence = [
+            _manifest_evidence("missing_manifest", identity)
+            for identity in sorted(missing_identities)
         ]
         usage_matrix.append(
             {
@@ -1299,6 +1381,7 @@ def build_dashboard_data_intelligence_data(
                     research_eligible=research_traditional_names,
                     formal_evidence=["strategy_overlay"],
                     research_evidence=lineage_evidence,
+                    research_unavailable_evidence=missing_manifest_evidence,
                 ),
                 "traditionalFactors": _usage_cell(
                     formal_items=overlay_factors,
@@ -1307,6 +1390,7 @@ def build_dashboard_data_intelligence_data(
                     research_eligible=research_traditional_names,
                     formal_evidence=["strategy_overlay"],
                     research_evidence=lineage_evidence,
+                    research_unavailable_evidence=missing_manifest_evidence,
                 ),
                 "intelligenceFactors": _usage_cell(
                     formal_items=overlay_factors,
@@ -1315,7 +1399,38 @@ def build_dashboard_data_intelligence_data(
                     research_eligible=research_intelligence_names,
                     formal_evidence=["strategy_overlay"],
                     research_evidence=lineage_evidence,
+                    research_unavailable_evidence=missing_manifest_evidence,
                 ),
+                "modelAdoption": {
+                    "status": "active" if applied_identities else "rule_only",
+                    "modelCount": len(applied_identities),
+                    "resolvableManifestCount": len(resolvable_identities),
+                    "missingManifestCount": len(missing_identities),
+                    "models": [
+                        {
+                            "horizon": identity[0],
+                            "modelVersion": identity[1],
+                            "manifestStatus": (
+                                "available"
+                                if identity in manifests
+                                else "unavailable"
+                            ),
+                            "evidence": _manifest_evidence(
+                                "decision_lineage",
+                                identity,
+                            ),
+                            "missingManifestEvidence": (
+                                None
+                                if identity in manifests
+                                else _manifest_evidence(
+                                    "missing_manifest",
+                                    identity,
+                                )
+                            ),
+                        }
+                        for identity in sorted(applied_identities)
+                    ][:MAX_TABLE_ROWS],
+                },
                 "impact": (
                     f"正式决策采用 {len(applied_identities)} 个模型版本"
                     if applied_identities
