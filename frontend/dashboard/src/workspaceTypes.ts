@@ -262,3 +262,108 @@ export type DataIntelligenceData = {
     missingManifest?: boolean;
   }[];
 };
+
+export type OperationsRuntimeStatus = "available" | "unavailable";
+
+export type OperationsUnit = {
+  unit: string;
+  status: WorkspaceStatus;
+  loadState?: string | null;
+  activeState?: string | null;
+  subState?: string | null;
+  result?: string | null;
+  exitStatus?: number | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  reason?: string | null;
+};
+
+export type OperationsChainStage = WorkspaceStage & {
+  units: OperationsUnit[];
+  crossMarketUnits: OperationsUnit[];
+};
+
+export type OperationsBacklog = {
+  download?: number;
+  parse?: number;
+  semantic?: number;
+  total?: number;
+};
+
+export type OperationsBackgroundWorker = {
+  key: string;
+  label: string;
+  status: WorkspaceStatus;
+  serviceUnit: string;
+  timerUnit: string;
+  loadState?: string | null;
+  lastResult?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  nextTriggerAt?: string | null;
+  backlog?: OperationsBacklog | null;
+};
+
+export type OperationsSchedule = {
+  unit: string;
+  label: string;
+  status: "active" | "inactive" | "unavailable";
+  loadState?: string | null;
+  lastTriggerAt?: string | null;
+  nextTriggerAt?: string | null;
+  automation: "automatic";
+};
+
+export type OperationsCenterData = {
+  generated_at: string;
+  scope: "all" | "a_share" | "cn_qdii_etf" | "exceptions";
+  truncated?: boolean;
+  truncationReason?: "serialized_size_limit" | string | null;
+  runtime: {
+    status: OperationsRuntimeStatus;
+    lastKnownAt?: string | null;
+    reason?: string | null;
+  };
+  dailyFreshness: {
+    asOfDate: string;
+    status: "waiting" | WorkspaceStatus;
+  };
+  mainChain: OperationsChainStage[];
+  background: {
+    status: OperationsRuntimeStatus;
+    snapshotGeneratedAt?: string | null;
+    backlog: OperationsBacklog;
+    artifactWorkers: {
+      status: OperationsRuntimeStatus;
+      activeLeases: number;
+      latestFinishedAt?: string | null;
+    };
+  };
+  backgroundWorkers: OperationsBackgroundWorker[];
+  schedules: Record<"daily" | "weekly" | "monthly", OperationsSchedule[]>;
+  recentRuns: {
+    runId: string;
+    market: string;
+    strategyKey: string;
+    strategyLabel: string;
+    command: string;
+    asOf?: string | null;
+    status: string;
+    startedAt: string;
+    finishedAt: string;
+    durationMs: number;
+    errorSummary: string;
+  }[];
+  disk: {
+    status: OperationsRuntimeStatus;
+    usedRatio?: number | null;
+    totalBytes?: number;
+    freeBytes?: number;
+  };
+  interventions: {
+    key: string;
+    severity: "critical" | "warning" | "info" | string;
+    title: string;
+    evidence: string;
+  }[];
+};
