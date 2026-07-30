@@ -1854,6 +1854,32 @@ def _operations_chain_status(
     return "waiting_schedule"
 
 
+def _looks_secret_token(value: object) -> bool:
+    token = str(value or "").strip()
+    if (
+        len(token) >= 2
+        and token[0] in {"'", '"'}
+        and token[-1] == token[0]
+    ):
+        token = token[1:-1]
+    return (
+        len(token) >= 16
+        and not any(character.isspace() for character in token)
+        and any(character.isalpha() for character in token)
+        and any(character.isdigit() for character in token)
+    )
+
+
+def _redact_named_secret(match: re.Match[str]) -> str:
+    return f"{match.group('prefix')}<redacted>"
+
+
+def _redact_secret_token_if_needed(match: re.Match[str]) -> str:
+    if not _looks_secret_token(match.group("value")):
+        return match.group(0)
+    return f"{match.group('prefix')}<redacted>"
+
+
 def _sanitize_run_error(value: object) -> str:
     text = str(value or "").replace("\r", " ").replace("\n", " ")
     text = re.sub(
@@ -1867,20 +1893,21 @@ def _sanitize_run_error(value: object) -> str:
         text,
     )
     text = re.sub(
-        r"(?i)\b("
-        r"[A-Z][A-Z0-9_]*"
-        r"(?:_API_KEY|_TOKEN|_PASSWORD|_SECRET|"
-        r"_ACCESS_KEY[A-Z0-9_]*)"
-        r")(\s*=\s*)"
-        r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^,\s;&]+)",
-        r"\1\2<redacted>",
-        text,
-    )
-    text = re.sub(
-        r"(?i)\b(token|api[_-]?key|apikey|"
-        r"access[_-]?key(?:[_-]?(?:id|secret))?|secret|password)"
-        r"\b(\s*[:=]\s*)([^,\s;&]+)",
-        r"\1\2<redacted>",
+        r"(?i)"
+        r"(?P<prefix>"
+        r"(?<![A-Za-z0-9_])[\"']?"
+        r"(?:"
+        r"token|api[_-]?key|apikey|"
+        r"access[_-]?key(?:[_-]?(?:id|secret))?|secret|password|"
+        r"[A-Z][A-Z0-9_]*(?:"
+        r"_API_KEY|_TOKEN|_PASSWORD|_SECRET|"
+        r"_ACCESS_KEY[A-Z0-9_]*"
+        r")"
+        r")"
+        r"[\"']?\s*[:=]\s*"
+        r")"
+        r"(?P<value>\"[^\"\r\n]*\"|'[^'\r\n]*'|[^,\s;&}\]]+)",
+        _redact_named_secret,
         text,
     )
     text = re.sub(
@@ -1890,18 +1917,22 @@ def _sanitize_run_error(value: object) -> str:
         text,
     )
     text = re.sub(
-        r"(?i)\b(credential)(\s*[:=]\s*)([^,\s;&]+)",
-        r"\1\2<redacted>",
+        r"(?i)"
+        r"(?P<prefix>"
+        r"(?<![A-Za-z0-9_])[\"']?credential[\"']?"
+        r"(?:\s*[:=]\s*|\s+)"
+        r")"
+        r"(?P<value>\"[^\"\r\n]*\"|'[^'\r\n]*'|[^,\s;&}\]]+)",
+        _redact_secret_token_if_needed,
         text,
     )
     text = re.sub(
-        r"(?i)\b(key)(\s*[:=]\s*)([^,\s;&]+)",
-        r"\1\2<redacted>",
-        text,
-    )
-    text = re.sub(
-        r"(?i)\b(credential)(\s+)([^,\s;&]+)",
-        _redact_contextual_credential,
+        r"(?i)"
+        r"(?P<prefix>"
+        r"(?<![A-Za-z0-9_])[\"']?key[\"']?\s*[:=]\s*"
+        r")"
+        r"(?P<value>\"[^\"\r\n]*\"|'[^'\r\n]*'|[^,\s;&}\]]+)",
+        _redact_secret_token_if_needed,
         text,
     )
     standalone_patterns = (
@@ -1929,21 +1960,6 @@ def _sanitize_run_error(value: object) -> str:
         text,
     )
     return text[:200]
-
-
-def _redact_contextual_credential(match: re.Match[str]) -> str:
-    token = match.group(3)
-    character_classes = sum(
-        (
-            any(character.islower() for character in token),
-            any(character.isupper() for character in token),
-            any(character.isdigit() for character in token),
-            any(not character.isalnum() for character in token),
-        )
-    )
-    if len(token) < 16 or character_classes < 3:
-        return match.group(0)
-    return f"{match.group(1)}{match.group(2)}<redacted>"
 
 
 def _redact_legacy_sk_token(match: re.Match[str]) -> str:
