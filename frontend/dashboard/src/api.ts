@@ -283,6 +283,16 @@ function validateModelResearch(value: unknown): ModelResearchData {
 }
 
 const DATA_INTELLIGENCE_LIST_LIMIT = 20;
+const DATA_INTELLIGENCE_STRING_LIMIT = 1_000;
+const DATA_INTELLIGENCE_DEPTH_LIMIT = 8;
+const DATA_INTELLIGENCE_NODE_LIMIT = 512;
+const DATA_INTELLIGENCE_RESPONSE_LIMIT = 250_000;
+const DATA_INTELLIGENCE_CONSUMERS = new Set([
+  "defensive",
+  "trend",
+  "research_model",
+  "candidate_simulation",
+]);
 
 function dataIntelligenceError(path: string): never {
   throw new Error(`Invalid data intelligence response: ${path}`);
@@ -307,7 +317,12 @@ function dataArray(value: unknown, path: string): unknown[] {
 }
 
 function dataString(value: unknown, path: string): string {
-  if (typeof value !== "string") dataIntelligenceError(path);
+  if (
+    typeof value !== "string"
+    || value.length > DATA_INTELLIGENCE_STRING_LIMIT
+  ) {
+    dataIntelligenceError(path);
+  }
   return value;
 }
 
@@ -337,6 +352,85 @@ function dataStringList(value: unknown, path: string): string[] {
 
 function dataOptionalNumber(value: unknown, path: string): void {
   if (value !== undefined && value !== null) dataNumber(value, path);
+}
+
+function validateBoundedNested(value: unknown, path: string): void {
+  const budget = { nodes: 0 };
+
+  function visit(item: unknown, itemPath: string, depth: number): void {
+    budget.nodes += 1;
+    if (budget.nodes > DATA_INTELLIGENCE_NODE_LIMIT) {
+      dataIntelligenceError(`${path} node limit`);
+    }
+    if (depth > DATA_INTELLIGENCE_DEPTH_LIMIT) {
+      dataIntelligenceError(`${path} depth limit`);
+    }
+    if (item === null || typeof item === "boolean") return;
+    if (typeof item === "number") {
+      if (!Number.isFinite(item)) dataIntelligenceError(itemPath);
+      return;
+    }
+    if (typeof item === "string") {
+      dataString(item, itemPath);
+      return;
+    }
+    if (Array.isArray(item)) {
+      if (item.length > DATA_INTELLIGENCE_LIST_LIMIT) {
+        dataIntelligenceError(`${itemPath} exceeds ${DATA_INTELLIGENCE_LIST_LIMIT}`);
+      }
+      item.forEach((child, index) => {
+        visit(child, `${itemPath}[${index}]`, depth + 1);
+      });
+      return;
+    }
+    if (typeof item === "object") {
+      const entries = Object.entries(item);
+      if (entries.length > DATA_INTELLIGENCE_LIST_LIMIT) {
+        dataIntelligenceError(`${itemPath} key limit`);
+      }
+      entries.forEach(([key, child]) => {
+        if (key.length > 128) dataIntelligenceError(`${itemPath} key length`);
+        visit(child, `${itemPath}.${key}`, depth + 1);
+      });
+      return;
+    }
+    dataIntelligenceError(itemPath);
+  }
+
+  visit(value, path, 0);
+}
+
+function validateCountRecord(value: unknown, path: string): void {
+  validateBoundedNested(value, path);
+  const record = dataObject(value, path);
+  Object.entries(record).forEach(([key, count]) => {
+    dataNumber(count, `${path}.${key}`);
+  });
+}
+
+function validateDecisionCounts(value: unknown, path: string): void {
+  validateCountRecord(value, path);
+  const decisions = dataObject(value, path);
+  const expected = new Set(["canonical", "no_event", "quarantined", "failed"]);
+  if (
+    Object.keys(decisions).length !== expected.size
+    || Object.keys(decisions).some((key) => !expected.has(key))
+  ) {
+    dataIntelligenceError(`${path} decision keys`);
+  }
+}
+
+function validateMetricRecord(value: unknown, path: string): void {
+  validateBoundedNested(value, path);
+  const metrics = dataObject(value, path);
+  Object.entries(metrics).forEach(([key, metric]) => {
+    if (
+      metric !== null
+      && (typeof metric !== "number" || !Number.isFinite(metric))
+    ) {
+      dataIntelligenceError(`${path}.${key}`);
+    }
+  });
 }
 
 function validateWorkspaceStages(value: unknown, path: string): void {
@@ -571,18 +665,63 @@ function validateDataIntelligence(value: unknown): DataIntelligenceData {
       dataOptionalString(source.cursor, `${path}.cursor`);
     },
   );
-  dataObject(pipeline.artifactWorkers, "intelligence.pipeline.artifactWorkers");
+  validateBoundedNested(
+    pipeline.artifactWorkers,
+    "intelligence.pipeline.artifactWorkers",
+  );
+  const artifactWorkers = dataObject(
+    pipeline.artifactWorkers,
+    "intelligence.pipeline.artifactWorkers",
+  );
+  dataString(
+    artifactWorkers.status,
+    "intelligence.pipeline.artifactWorkers.status",
+  );
 
   const extraction = dataObject(
     intelligence.extraction,
     "intelligence.extraction",
   );
   dataString(extraction.status, "intelligence.extraction.status");
-  dataObject(extraction.semanticRuns, "intelligence.extraction.semanticRuns");
-  dataObject(extraction.decisions, "intelligence.extraction.decisions");
+  validateCountRecord(
+    extraction.semanticRuns,
+    "intelligence.extraction.semanticRuns",
+  );
+  validateDecisionCounts(
+    extraction.decisions,
+    "intelligence.extraction.decisions",
+  );
   if (extraction.latestBatch !== null) {
-    dataObject(extraction.latestBatch, "intelligence.extraction.latestBatch");
+    validateBoundedNested(
+      extraction.latestBatch,
+      "intelligence.extraction.latestBatch",
+    );
+    const latestBatch = dataObject(
+      extraction.latestBatch,
+      "intelligence.extraction.latestBatch",
+    );
+    [
+      "batchKey",
+      "profileId",
+      "provider",
+      "model",
+      "promptVersion",
+      "schemaVersion",
+      "taxonomyVersion",
+      "parserVersion",
+      "batchDate",
+      "qualityStatus",
+    ].forEach((key) => (
+      dataString(
+        latestBatch[key],
+        `intelligence.extraction.latestBatch.${key}`,
+      )
+    ));
   }
+  validateBoundedNested(
+    extraction.contract,
+    "intelligence.extraction.contract",
+  );
   const contract = dataObject(
     extraction.contract,
     "intelligence.extraction.contract",
@@ -644,8 +783,27 @@ function validateDataIntelligence(value: unknown): DataIntelligenceData {
     "intelligence.modelImpact.iterationFactors",
   );
   dataString(impact.reason, "intelligence.modelImpact.reason");
-  dataArray(impact.horizons, "intelligence.modelImpact.horizons");
-  dataObject(intelligence.decisions, "intelligence.decisions");
+  validateBoundedNested(
+    impact.horizons,
+    "intelligence.modelImpact.horizons",
+  );
+  dataArray(impact.horizons, "intelligence.modelImpact.horizons").forEach(
+    (item, index) => {
+      const path = `intelligence.modelImpact.horizons[${index}]`;
+      const horizon = dataObject(item, path);
+      dataString(horizon.horizon, `${path}.horizon`);
+      dataString(horizon.status, `${path}.status`);
+      dataOptionalString(horizon.reason, `${path}.reason`);
+      validateMetricRecord(horizon.support, `${path}.support`);
+      validateMetricRecord(horizon.deltas, `${path}.deltas`);
+      validateMetricRecord(horizon.baseMetrics, `${path}.baseMetrics`);
+      validateMetricRecord(
+        horizon.candidateMetrics,
+        `${path}.candidateMetrics`,
+      );
+    },
+  );
+  validateDecisionCounts(intelligence.decisions, "intelligence.decisions");
 
   const consumerKeys = new Set<string>();
   const usage = dataArray(data.usageMatrix, "usageMatrix");
@@ -702,10 +860,20 @@ function validateDataIntelligence(value: unknown): DataIntelligenceData {
       dataBoolean(row.missingManifest, `${path}.missingManifest`);
     }
   });
+  if (
+    consumerKeys.size !== DATA_INTELLIGENCE_CONSUMERS.size
+    || [...consumerKeys].some((key) => !DATA_INTELLIGENCE_CONSUMERS.has(key))
+  ) {
+    dataIntelligenceError("usageMatrix consumerKey set");
+  }
   return data as unknown as DataIntelligenceData;
 }
 
-async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
+async function fetchJson<T>(
+  url: string,
+  signal?: AbortSignal,
+  maxResponseBytes?: number,
+): Promise<T> {
   const response = await fetch(url, { cache: "no-cache", signal });
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`.trim();
@@ -718,6 +886,25 @@ async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
       // Keep the HTTP fallback when the error body is not JSON.
     }
     throw new Error(message);
+  }
+  if (maxResponseBytes !== undefined) {
+    const contentLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > maxResponseBytes) {
+      throw new Error(
+        `Data intelligence response exceeds ${maxResponseBytes} bytes`,
+      );
+    }
+    const body = await response.text();
+    if (new TextEncoder().encode(body).byteLength > maxResponseBytes) {
+      throw new Error(
+        `Data intelligence response exceeds ${maxResponseBytes} bytes`,
+      );
+    }
+    try {
+      return JSON.parse(body) as T;
+    } catch {
+      throw new Error("Invalid JSON response");
+    }
   }
   return response.json() as Promise<T>;
 }
@@ -835,5 +1022,6 @@ export function fetchDataIntelligence(
   return fetchJson<unknown>(
     `/api/dashboard/data-intelligence.json?${params.toString()}`,
     signal,
+    DATA_INTELLIGENCE_RESPONSE_LIMIT,
   ).then(validateDataIntelligence);
 }

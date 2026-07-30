@@ -284,12 +284,30 @@ function responsePayload(): DataIntelligenceData {
   };
 }
 
+function jsonResponse(payload: unknown, contentLength?: number): Response {
+  const body = JSON.stringify(payload);
+  return {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    headers: {
+      get: vi.fn((name: string) => (
+        name.toLowerCase() === "content-length"
+          ? String(contentLength ?? new TextEncoder().encode(body).byteLength)
+          : null
+      )),
+    },
+    json: vi.fn().mockResolvedValue(payload),
+    text: vi.fn().mockResolvedValue(body),
+  } as unknown as Response;
+}
+
 describe("DataIntelligencePage", () => {
   beforeEach(() => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue(responsePayload()),
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse(responsePayload())),
+    );
   });
 
   afterEach(() => {
@@ -376,10 +394,7 @@ describe("DataIntelligencePage", () => {
       }],
     };
     defensive.impact = "正式决策采用 1 个模型版本";
-    vi.mocked(fetch).mockResolvedValueOnce({
-      ok: true,
-      json: vi.fn().mockResolvedValue(payload),
-    } as unknown as Response);
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(payload));
 
     render(<DataIntelligencePage market="a_share" refreshToken={0} />);
 
@@ -406,13 +421,65 @@ describe("DataIntelligencePage", () => {
   ])("rejects malformed 200 responses with %s", async (_label, mutate) => {
     const payload = responsePayload();
     mutate(payload);
-    vi.mocked(fetch).mockResolvedValueOnce({
-      ok: true,
-      json: vi.fn().mockResolvedValue(payload),
-    } as unknown as Response);
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(payload));
 
     await expect(fetchDataIntelligence("a_share")).rejects.toThrow(
       "Invalid data intelligence response",
+    );
+  });
+
+  it("rejects an oversized HTTP 200 before parsing trusted JSON", async () => {
+    const response = jsonResponse(responsePayload(), 250_001);
+    vi.mocked(fetch).mockResolvedValueOnce(response);
+
+    await expect(fetchDataIntelligence("a_share")).rejects.toThrow(
+      "Data intelligence response exceeds 250000 bytes",
+    );
+    expect(response.text).not.toHaveBeenCalled();
+    expect(response.json).not.toHaveBeenCalled();
+  });
+
+  it("rejects oversized nested prose even when transport metadata lies", async () => {
+    const payload = responsePayload() as unknown as Record<string, unknown>;
+    const intelligence = payload.intelligence as Record<string, unknown>;
+    const pipeline = intelligence.pipeline as Record<string, unknown>;
+    pipeline.artifactWorkers = {
+      status: "available",
+      diagnostic: {
+        raw: "x".repeat(260_000),
+      },
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(payload, 100));
+
+    await expect(fetchDataIntelligence("a_share")).rejects.toThrow(
+      "Data intelligence response exceeds 250000 bytes",
+    );
+  });
+
+  it("rejects deeply nested diagnostic prose below the transport limit", async () => {
+    const payload = responsePayload() as unknown as Record<string, unknown>;
+    const intelligence = payload.intelligence as Record<string, unknown>;
+    const extraction = intelligence.extraction as Record<string, unknown>;
+    extraction.semanticRuns = {
+      succeeded: 12,
+      diagnostic: {
+        raw: "x".repeat(5_000),
+      },
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(payload));
+
+    await expect(fetchDataIntelligence("a_share")).rejects.toThrow(
+      "Invalid data intelligence response: intelligence.extraction.semanticRuns",
+    );
+  });
+
+  it("rejects four unique but non-canonical usage consumer keys", async () => {
+    const payload = responsePayload();
+    payload.usageMatrix[0].consumerKey = "defensive_alias";
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(payload));
+
+    await expect(fetchDataIntelligence("a_share")).rejects.toThrow(
+      "usageMatrix consumerKey set",
     );
   });
 });
