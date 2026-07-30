@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "source_agent": "codex",
+  "minimum_confidence": 0.55,
+  "turnover_penalty": 0.35,
+  "min_trade_weight": 0.005,
+  "markets": {
+    "a_share": {
+      "horizon": 20,
+      "initial_cash": 1000000,
+      "account_id": "model_shadow",
+      "account_name": "候选模型模拟组合",
+      "benchmark": "000300",
+      "top_n": 10,
+      "max_single_weight": 0.10,
+      "cash_reserve_pct": 0.0,
+      "trading": {
+        "lot_size": 100,
+        "commission_rate": 0.0003,
+        "min_commission": 5,
+        "stamp_tax_rate": 0.0005,
+        "slippage_rate": 0.0005
+      }
+    },
+    "cn_qdii_etf": {
+      "horizon": 5,
+      "initial_cash": 1000000,
+      "account_id": "model_shadow",
+      "account_name": "候选模型模拟组合",
+      "benchmark": "513100.SH",
+      "top_n": 5,
+      "max_single_weight": 0.20,
+      "cash_reserve_pct": 0.02,
+      "trading": {
+        "lot_size_default": 100,
+        "commission_rate": 0.0003,
+        "stamp_tax_rate": 0.0,
+        "slippage_bps": 5
+      }
+    }
+  }
+}
