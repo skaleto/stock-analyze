@@ -15,6 +15,7 @@ LEGACY_SCRIPT = ROOT / "scripts" / "deploy-app-to-ecs.sh"
 
 EXPECTED_FILES = [
     "stock_analyze/cli.py",
+    "stock_analyze/dashboard_aggregator.py",
     "stock_analyze/dashboard_api.py",
     "stock_analyze/dashboard_finance.py",
     "stock_analyze/dashboard_http.py",

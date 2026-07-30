@@ -194,22 +194,36 @@ def _read_qdii_research(root: Path, agent: str) -> dict[str, Any]:
         shadow["metrics"] = _read_optional_csv(shadow_dir / "metrics.csv", "qdii_shadow_metrics")
         shadow["catalog"] = _read_optional_csv(shadow_dir / "catalog.csv", "qdii_shadow_catalog")
 
-    from .markets.cn_qdii_etf.fund_events import active_event_state, load_event_store
-    from .markets.cn_qdii_etf.theme_sentiment import load_theme_sentiment
-
     event_path = root / "data" / "cn_qdii_etf" / "shared" / "fund_events.csv"
-    events = load_event_store(event_path)
+    if event_path.exists():
+        from .markets.cn_qdii_etf.fund_events import (
+            active_event_state,
+            load_event_store,
+        )
+
+        events = load_event_store(event_path)
+    else:
+        active_event_state = None
+        events = pd.DataFrame()
     now = datetime.now().isoformat(timespec="seconds")
     active_blocks = 0
     if not events.empty:
         for code in events["code"].astype(str).drop_duplicates():
-            active_blocks += int(active_event_state(events, code, now).get("hard_block", False))
+            active_blocks += int(
+                active_event_state(events, code, now).get("hard_block", False)
+            )
         event_rows = events.sort_values(["published_at", "code"], ascending=[False, True]).head(50).to_dict(orient="records")
         latest_observed = str(events["observed_at"].max())
     else:
         event_rows = []
         latest_observed = None
-    theme = load_theme_sentiment(research / "theme_sentiment.csv")
+    theme_path = research / "theme_sentiment.csv"
+    if theme_path.exists():
+        from .markets.cn_qdii_etf.theme_sentiment import load_theme_sentiment
+
+        theme = load_theme_sentiment(theme_path)
+    else:
+        theme = pd.DataFrame()
     if not theme.empty:
         theme = theme.loc[theme["agent"].astype(str).eq(agent)].sort_values("observed_at", ascending=False)
     return {
