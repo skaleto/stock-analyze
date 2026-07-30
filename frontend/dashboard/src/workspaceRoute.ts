@@ -14,8 +14,14 @@ export type WorkspaceRoute =
   | {
       view: "strategy";
       market: DashboardMarket;
-      mode: "compare" | "detail";
-      strategy?: StrategyKey;
+      mode: "compare";
+      strategy?: never;
+    }
+  | {
+      view: "strategy";
+      market: DashboardMarket;
+      mode: "detail";
+      strategy: StrategyKey;
     }
   | { view: "model-research"; market: DashboardMarket }
   | { view: "data-intelligence"; market: DashboardMarket }
@@ -105,7 +111,7 @@ export function serializeWorkspaceRoute(route: WorkspaceRoute): string {
     params.set("mode", route.mode);
     params.set("market", route.market);
     if (route.mode === "detail") {
-      params.set("strategy", route.strategy ?? "trend");
+      params.set("strategy", route.strategy);
     }
   } else if (route.view === "model-research"
     || route.view === "data-intelligence") {
