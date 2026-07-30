@@ -1429,6 +1429,14 @@ function validateOperationsCenter(value: unknown): OperationsCenterData {
       `${path}.crossMarketUnits`,
       "unit",
     );
+    const unitIdentities = new Set(
+      units.map((unit) => String(unit.unit)),
+    );
+    for (const unit of crossMarket) {
+      if (unitIdentities.has(String(unit.unit))) {
+        operationsError(`${path} duplicate unit identity`);
+      }
+    }
     crossMarket.forEach((unit, unitIndex) => (
       validateOperationsUnit(
         unit,

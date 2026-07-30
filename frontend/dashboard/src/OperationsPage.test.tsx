@@ -328,6 +328,15 @@ describe("fetchOperationsCenter", () => {
     await expect(fetchOperationsCenter("all")).rejects.toThrow(
       /Invalid operations center response/,
     );
+
+    const duplicateIdentity = payload();
+    duplicateIdentity.mainChain[0].crossMarketUnits = [{
+      ...duplicateIdentity.mainChain[0].units[0],
+    }];
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(duplicateIdentity));
+    await expect(fetchOperationsCenter("all")).rejects.toThrow(
+      /duplicate unit identity/,
+    );
   });
 });
 
@@ -355,13 +364,22 @@ describe("OperationsPage", () => {
     )).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /正式策略模拟/ }));
-    expect(screen.getByText("stock-analyze-claude-daily.service"))
-      .toBeInTheDocument();
+    expect(screen.getByText("稳健防守")).toBeInTheDocument();
     expect(screen.getByText("跨市场候选模型证据")).toBeInTheDocument();
     expect(screen.getByText(/不能归属到单一市场/)).toBeInTheDocument();
     expect(screen.queryByRole("button", {
       name: /^(启动|停止|重跑|执行|立即执行)$/,
     })).not.toBeInTheDocument();
+
+    const exposed = [
+      document.body.textContent ?? "",
+      ...Array.from(document.querySelectorAll("[title], [aria-label]"))
+        .flatMap((element) => [
+          element.getAttribute("title") ?? "",
+          element.getAttribute("aria-label") ?? "",
+        ]),
+    ].join("\n");
+    expect(exposed).not.toMatch(/claude|codex|model_shadow/i);
   });
 
   it("separates backlog, freshness, and worker state", async () => {
@@ -390,6 +408,33 @@ describe("OperationsPage", () => {
 
     await user.click(within(tabs).getByRole("tab", { name: "每月" }));
     expect(screen.getByText("月度模型训练")).toBeInTheDocument();
+  });
+
+  it("supports standard roving keyboard navigation across schedule tabs", async () => {
+    const user = userEvent.setup();
+    render(<OperationsPage scope="a_share" refreshToken={0} />);
+    await screen.findByText("周期计划");
+    const tabs = screen.getByRole("tablist", { name: "周期计划" });
+    const daily = within(tabs).getByRole("tab", { name: "每日" });
+    const weekly = within(tabs).getByRole("tab", { name: "每周" });
+    const monthly = within(tabs).getByRole("tab", { name: "每月" });
+
+    daily.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(weekly).toHaveFocus();
+    expect(weekly).toHaveAttribute("aria-selected", "true");
+
+    await user.keyboard("{End}");
+    expect(monthly).toHaveFocus();
+    expect(monthly).toHaveAttribute("aria-selected", "true");
+
+    await user.keyboard("{Home}");
+    expect(daily).toHaveFocus();
+    expect(daily).toHaveAttribute("aria-selected", "true");
+
+    await user.keyboard("{ArrowLeft}");
+    expect(monthly).toHaveFocus();
+    expect(monthly).toHaveAttribute("aria-selected", "true");
   });
 
   it("shows recent runs, empty interventions, and exception scope", async () => {
