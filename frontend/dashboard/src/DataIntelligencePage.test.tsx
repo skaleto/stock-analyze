@@ -353,14 +353,80 @@ describe("DataIntelligencePage", () => {
     expect(screen.getByText("情报证据模式：ledger")).toBeInTheDocument();
   });
 
-  it("refreshes through the resource loader and preserves canonical page copy", async () => {
+  it("does not double-fetch a non-zero initial refresh token", async () => {
     const { rerender } = render(
-      <DataIntelligencePage market="a_share" refreshToken={0} />,
+      <DataIntelligencePage market="a_share" refreshToken={7} />,
     );
     await screen.findByRole("heading", { name: "结构化数据" });
-    rerender(<DataIntelligencePage market="a_share" refreshToken={1} />);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    rerender(<DataIntelligencePage market="a_share" refreshToken={7} />);
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    rerender(<DataIntelligencePage market="a_share" refreshToken={8} />);
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     expect(screen.queryByText(/claude|codex|model_shadow/i)).not.toBeInTheDocument();
+  });
+
+  it("preserves structured data when a truncated intelligence lane is partial", async () => {
+    const payload = responsePayload() as unknown as Record<string, unknown>;
+    payload.truncated = true;
+    payload.truncationReason = "serialized_size_limit";
+    const intelligence = payload.intelligence as Record<string, unknown>;
+    intelligence.truncated = true;
+    intelligence.truncationReasons = ["node_budget_exhausted"];
+    intelligence.pipeline = { status: "partial" };
+    intelligence.extraction = { status: "unavailable" };
+    intelligence.factorSupply = { status: "unavailable" };
+    intelligence.modelImpact = { status: "unavailable" };
+    intelligence.decisions = {};
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(payload));
+    const user = userEvent.setup();
+
+    render(<DataIntelligencePage market="a_share" refreshToken={0} />);
+
+    expect(await screen.findByText("adjusted_ohlcv")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /下载与解析/ }));
+    expect(screen.getByText("公告目录")).toBeInTheDocument();
+    expect(screen.getAllByText("0").length).toBeGreaterThan(0);
+    expect(screen.getByText("状态不可用")).toBeInTheDocument();
+  });
+
+  it("renders operational states and recommendations in Chinese", async () => {
+    const payload = responsePayload();
+    payload.structured.sources[0].status = "declared";
+    payload.intelligence.pipeline.sources[0].freshnessStatus = "stale";
+    payload.intelligence.pipeline.artifactWorkers.status = "unavailable";
+    payload.usageMatrix[0].lineageStatus = "active";
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(payload));
+    const user = userEvent.setup();
+
+    render(<DataIntelligencePage market="a_share" refreshToken={0} />);
+
+    expect(await screen.findByText("已声明")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /清洗与质量/ }));
+    expect(screen.getAllByText("未记录").length).toBeGreaterThanOrEqual(2);
+    await user.click(screen.getByRole("button", { name: /公告与政策/ }));
+    expect(screen.getByText("已过期")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /下载与解析/ }));
+    expect(screen.getByText("状态不可用")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /情报因子/ }));
+    expect(screen.getByText("观察中")).toBeInTheDocument();
+    expect(screen.getByText("继续观察")).toBeInTheDocument();
+    expect(screen.getByText(/正式启用/)).toBeInTheDocument();
+    expect(screen.queryByText(
+      /declared|not_recorded|stale|unavailable|observing|observe|active/,
+    )).not.toBeInTheDocument();
+  });
+
+  it("uses a safe Chinese fallback for unknown states", async () => {
+    const payload = responsePayload();
+    payload.structured.sources[0].status = "future_state";
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(payload));
+
+    render(<DataIntelligencePage market="a_share" refreshToken={0} />);
+
+    expect(await screen.findByText("未知状态")).toBeInTheDocument();
+    expect(screen.queryByText("future_state")).not.toBeInTheDocument();
   });
 
   it("keeps active lineage visible when its feature manifest is unavailable", async () => {

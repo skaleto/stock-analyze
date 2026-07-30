@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchDataIntelligence } from "./api";
 import { IntelligencePanel } from "./IntelligencePanel";
 import { StageFlow } from "./StageFlow";
@@ -12,13 +12,29 @@ import type {
 
 type SupplyLane = "structured" | "intelligence";
 
-function usageLabel(status: string): string {
-  return {
-    used: "已使用",
-    not_used: "未使用",
-    observing: "观察中",
-    unavailable: "状态不可用",
-  }[status] ?? status;
+const stateLabels: Record<string, string> = {
+  active: "正式启用",
+  available: "可用",
+  complete: "已完成",
+  declared: "已声明",
+  failed: "失败",
+  fresh: "新鲜",
+  not_recorded: "未记录",
+  not_used: "未使用",
+  observe: "继续观察",
+  observing: "观察中",
+  partial: "部分可用",
+  research: "研究中",
+  rule_only: "规则驱动",
+  stale: "已过期",
+  unavailable: "状态不可用",
+  unchanged: "未变更",
+  used: "已使用",
+  waiting: "等待中",
+};
+
+function stateLabel(status: string | null | undefined): string {
+  return status ? stateLabels[status] ?? "未知状态" : "未知状态";
 }
 
 function usageCellLabel(cell: UsageEvidenceCell): string {
@@ -27,9 +43,11 @@ function usageCellLabel(cell: UsageEvidenceCell): string {
       ? ` · 正式 ${cell.formalCount} · 研究 ${cell.researchCount}`
       : ` · ${cell.count}`
   );
-  const lineage = cell.lineageStatus ? ` · ${cell.lineageStatus}` : "";
+  const lineage = cell.lineageStatus
+    ? ` · ${stateLabel(cell.lineageStatus)}`
+    : "";
   const manifest = cell.missingManifest ? " · 清单缺失" : "";
-  return `${usageLabel(cell.status)}${namespaceCounts}${lineage}${manifest}`;
+  return `${stateLabel(cell.status)}${namespaceCounts}${lineage}${manifest}`;
 }
 
 function usageEvidence(cell: UsageEvidenceCell): string {
@@ -66,13 +84,23 @@ export function DataIntelligencePage({
     loader,
   );
   const [selected, setSelected] = useState("structured:sources");
+  const previousRefreshToken = useRef(refreshToken);
+  const refreshMounted = useRef(false);
 
   useEffect(() => {
     setSelected("structured:sources");
   }, [market]);
 
   useEffect(() => {
-    if (refreshToken > 0) resource.refresh();
+    if (!refreshMounted.current) {
+      refreshMounted.current = true;
+      previousRefreshToken.current = refreshToken;
+      return;
+    }
+    if (previousRefreshToken.current !== refreshToken) {
+      previousRefreshToken.current = refreshToken;
+      resource.refresh();
+    }
   }, [refreshToken, resource.refresh]);
 
   if (resource.loading && !resource.data) {
@@ -191,7 +219,9 @@ export function DataIntelligencePage({
                     {row.modelAdoption?.missingManifestCount
                       ? ` · ${row.modelAdoption.missingManifestCount} 个模型清单缺失`
                       : ""}
-                    {row.lineageStatus ? ` · ${row.lineageStatus}` : ""}
+                    {row.lineageStatus
+                      ? ` · ${stateLabel(row.lineageStatus)}`
+                      : ""}
                     {row.missingManifest ? " · 模型清单缺失" : ""}
                   </td>
                 </tr>
@@ -264,7 +294,11 @@ function SupplyDetail({
             emptyLabel="尚无结构化数据源记录"
             columns={[
               { key: "source", label: "数据源", render: (row) => row.source },
-              { key: "status", label: "状态", render: (row) => row.status },
+              {
+                key: "status",
+                label: "状态",
+                render: (row) => stateLabel(row.status),
+              },
               {
                 key: "research",
                 label: "研究模型特征",
@@ -302,11 +336,11 @@ function SupplyDetail({
           </div>
           <div>
             <dt>缺失率产物</dt>
-            <dd>{data.structured.quality.missingRateStatus}</dd>
+            <dd>{stateLabel(data.structured.quality.missingRateStatus)}</dd>
           </div>
           <div>
             <dt>异常值产物</dt>
-            <dd>{data.structured.quality.outlierStatus}</dd>
+            <dd>{stateLabel(data.structured.quality.outlierStatus)}</dd>
           </div>
         </dl>
       ) : null}
@@ -362,7 +396,7 @@ function SupplyDetail({
             {
               key: "freshness",
               label: "每日增量新鲜度",
-              render: (row) => row.freshnessStatus,
+              render: (row) => stateLabel(row.freshnessStatus),
             },
             {
               key: "published",
@@ -407,7 +441,7 @@ function SupplyDetail({
           </div>
           <div>
             <dt>Worker 状态</dt>
-            <dd>{data.intelligence.pipeline.artifactWorkers.status}</dd>
+            <dd>{stateLabel(data.intelligence.pipeline.artifactWorkers.status)}</dd>
           </div>
         </dl>
       ) : null}
@@ -430,7 +464,11 @@ function SupplyDetail({
             emptyLabel="尚无情报因子验证记录"
             columns={[
               { key: "name", label: "因子", render: (row) => row.name },
-              { key: "state", label: "生命周期", render: (row) => row.state },
+              {
+                key: "state",
+                label: "生命周期",
+                render: (row) => stateLabel(row.state),
+              },
               {
                 key: "coverage",
                 label: "覆盖率",
@@ -455,7 +493,9 @@ function SupplyDetail({
               {
                 key: "recommendation",
                 label: "采用建议",
-                render: (row) => row.recommendation ?? "-",
+                render: (row) => row.recommendation
+                  ? stateLabel(row.recommendation)
+                  : "未记录",
               },
             ]}
           />

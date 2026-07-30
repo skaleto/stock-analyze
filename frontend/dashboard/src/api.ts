@@ -433,6 +433,164 @@ function validateMetricRecord(value: unknown, path: string): void {
   });
 }
 
+function looseObject(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function safeCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : 0;
+}
+
+function safeStatus(value: unknown, fallback = "unavailable"): string {
+  return typeof value === "string" && value ? value : fallback;
+}
+
+function normalizeDecisionCounts(value: unknown): Record<string, number> {
+  const current = looseObject(value) ?? {};
+  return {
+    canonical: safeCount(current.canonical),
+    no_event: safeCount(current.no_event),
+    quarantined: safeCount(current.quarantined),
+    failed: safeCount(current.failed),
+  };
+}
+
+function normalizeDataIntelligence(value: unknown): unknown {
+  const root = looseObject(value);
+  const intelligence = looseObject(root?.intelligence);
+  if (!root || !intelligence) return value;
+
+  const laneDegraded = root.truncated === true || intelligence.truncated === true;
+  const shouldNormalize = (section: unknown): boolean => {
+    const current = looseObject(section);
+    return laneDegraded
+      || current?.status === "partial"
+      || current?.status === "unavailable";
+  };
+  const normalized = { ...intelligence };
+
+  if (shouldNormalize(intelligence.pipeline)) {
+    const pipeline = looseObject(intelligence.pipeline) ?? {};
+    const stages = looseObject(pipeline.stages) ?? {};
+    const backlog = looseObject(pipeline.backlog) ?? {};
+    const workers = looseObject(pipeline.artifactWorkers) ?? {};
+    const workerStages = looseObject(workers.stages) ?? {};
+    const workerStage = (key: string) => {
+      const stage = looseObject(workerStages[key]) ?? {};
+      return {
+        leased: safeCount(stage.leased),
+        importing: safeCount(stage.importing),
+        imported: safeCount(stage.imported),
+        partial: safeCount(stage.partial),
+        failed: safeCount(stage.failed),
+        expired: safeCount(stage.expired),
+      };
+    };
+    normalized.pipeline = {
+      ...pipeline,
+      status: safeStatus(pipeline.status),
+      documents: safeCount(pipeline.documents),
+      artifacts: looseObject(pipeline.artifacts) ?? {},
+      stages: {
+        catalogued: safeCount(stages.catalogued),
+        pdfReady: safeCount(stages.pdfReady),
+        parsed: safeCount(stages.parsed),
+        semanticCompleted: safeCount(stages.semanticCompleted),
+        canonicalEvents: safeCount(stages.canonicalEvents),
+      },
+      backlog: {
+        download: safeCount(backlog.download),
+        parse: safeCount(backlog.parse),
+        semantic: safeCount(backlog.semantic),
+        total: safeCount(backlog.total),
+      },
+      artifactWorkers: {
+        ...workers,
+        status: safeStatus(workers.status),
+        activeLeases: safeCount(workers.activeLeases),
+        leasedDocuments: safeCount(workers.leasedDocuments),
+        completedDocuments: safeCount(workers.completedDocuments),
+        downloadedDocuments: safeCount(workers.downloadedDocuments),
+        parsedDocuments: safeCount(workers.parsedDocuments),
+        stages: {
+          download: workerStage("download"),
+          parse: workerStage("parse"),
+        },
+      },
+      sources: Array.isArray(pipeline.sources) ? pipeline.sources : [],
+    };
+  }
+
+  if (shouldNormalize(intelligence.extraction)) {
+    const extraction = looseObject(intelligence.extraction) ?? {};
+    const contract = looseObject(extraction.contract) ?? {};
+    normalized.extraction = {
+      ...extraction,
+      status: safeStatus(extraction.status),
+      semanticRuns: looseObject(extraction.semanticRuns) ?? {},
+      decisions: normalizeDecisionCounts(extraction.decisions),
+      latestBatch: looseObject(extraction.latestBatch),
+      contract: {
+        ...contract,
+        profileId: typeof contract.profileId === "string"
+          ? contract.profileId
+          : "",
+      },
+    };
+  }
+
+  if (shouldNormalize(intelligence.factorSupply)) {
+    const supply = looseObject(intelligence.factorSupply) ?? {};
+    normalized.factorSupply = {
+      ...supply,
+      status: safeStatus(supply.status),
+      rows: safeCount(supply.rows),
+      factorSets: Array.isArray(supply.factorSets) ? supply.factorSets : [],
+      factors: Array.isArray(supply.factors) ? supply.factors : [],
+      lifecycleCounts: looseObject(supply.lifecycleCounts) ?? {},
+      suppliedFactors: safeCount(supply.suppliedFactors),
+      modelEligible: supply.modelEligible === true,
+      modelEligibleFactors: Array.isArray(supply.modelEligibleFactors)
+        ? supply.modelEligibleFactors
+        : [],
+    };
+  }
+
+  if (shouldNormalize(intelligence.modelImpact)) {
+    const impact = looseObject(intelligence.modelImpact) ?? {};
+    normalized.modelImpact = {
+      ...impact,
+      status: safeStatus(impact.status),
+      qualifiedHorizons: safeCount(impact.qualifiedHorizons),
+      activation: typeof impact.activation === "string"
+        ? impact.activation
+        : "unavailable",
+      adopted: impact.adopted === true,
+      activeFactors: Array.isArray(impact.activeFactors)
+        ? impact.activeFactors
+        : [],
+      iterationFactors: Array.isArray(impact.iterationFactors)
+        ? impact.iterationFactors
+        : [],
+      reason: typeof impact.reason === "string" ? impact.reason : "",
+      horizons: Array.isArray(impact.horizons) ? impact.horizons : [],
+    };
+  }
+
+  if (
+    laneDegraded
+    || !looseObject(intelligence.decisions)
+  ) {
+    normalized.decisions = normalizeDecisionCounts(intelligence.decisions);
+  }
+
+  return { ...root, intelligence: normalized };
+}
+
 function validateWorkspaceStages(value: unknown, path: string): void {
   const keys = new Set<string>();
   dataArray(value, path).forEach((item, index) => {
@@ -498,7 +656,7 @@ function validateUsageCell(value: unknown, path: string): void {
 }
 
 function validateDataIntelligence(value: unknown): DataIntelligenceData {
-  const data = dataObject(value, "root");
+  const data = dataObject(normalizeDataIntelligence(value), "root");
   dataString(data.generated_at, "generated_at");
   dataString(data.market, "market");
   dataString(data.market_label, "market_label");
