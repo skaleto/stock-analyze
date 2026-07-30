@@ -706,7 +706,7 @@ export function IntelligencePanel({
                   <h4>决策结论</h4>
                   <dl className="decision-definition">
                     <div><dt>状态</dt><dd>{decisionLabels[detail.decision]}</dd></div>
-                    <div><dt>生命周期</dt><dd title={detail.event.lifecycle || undefined}>{lifecycleLabel(detail.event.lifecycle)}</dd></div>
+                    <div><dt>生命周期</dt><dd title={lifecycleLabel(detail.event.lifecycle)}>{lifecycleLabel(detail.event.lifecycle)}</dd></div>
                     <div><dt>主体</dt><dd>{detail.issuer.name || "-"} <code>{detail.issuer.code || "-"}</code></dd></div>
                     <div><dt>方向</dt><dd>{directionLabel(detail.scores.direction)}</dd></div>
                     <div><dt>重要性</dt><dd>{percent(detail.scores.materiality)}</dd></div>

@@ -33,8 +33,23 @@ const stateLabels: Record<string, string> = {
   waiting: "等待中",
 };
 
+const truncationReasonLabels: Record<string, string> = {
+  serialized_size_limit: "内容超过安全展示上限，已安全截断",
+  node_budget_exhausted: "内容节点过多，已安全截断",
+  text_budget_exhausted: "文本内容过多，已安全截断",
+  text_item_limit: "单项文本过长，已安全截断",
+  item_limit: "明细数量过多，已安全截断",
+  depth_limit: "内容层级过深，已安全截断",
+};
+
 function stateLabel(status: string | null | undefined): string {
   return status ? stateLabels[status] ?? "未知状态" : "未知状态";
+}
+
+function truncationReasonLabel(reason: string | null | undefined): string {
+  return reason
+    ? truncationReasonLabels[reason] ?? "内容过多，已安全截断"
+    : "内容过多，已安全截断";
 }
 
 function usageCellLabel(cell: UsageEvidenceCell): string {
@@ -152,8 +167,7 @@ export function DataIntelligencePage({
       ) : null}
       {data.truncated ? (
         <div className="stale-banner" role="status">
-          响应内容已截断
-          {data.truncationReason ? `：${data.truncationReason}` : ""}
+          {truncationReasonLabel(data.truncationReason)}
         </div>
       ) : null}
 

@@ -467,9 +467,10 @@ function normalizeDataIntelligence(value: unknown): unknown {
   const laneDegraded = root.truncated === true || intelligence.truncated === true;
   const shouldNormalize = (section: unknown): boolean => {
     const current = looseObject(section);
-    return laneDegraded
-      || current?.status === "partial"
-      || current?.status === "unavailable";
+    if (current?.status === "partial" || current?.status === "unavailable") {
+      return true;
+    }
+    return current?.status === undefined && laneDegraded;
   };
   const normalized = { ...intelligence };
 
