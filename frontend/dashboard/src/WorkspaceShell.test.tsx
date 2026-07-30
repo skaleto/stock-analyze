@@ -96,6 +96,9 @@ describe("WorkspaceShell", () => {
     );
 
     const scope = screen.getByRole("navigation", { name: "市场范围" });
+    expect(scope.querySelector(".segmented")).toHaveClass(
+      "segmented-operations",
+    );
     expect(
       within(scope).getAllByRole("button").map((button) => button.textContent),
     ).toEqual(["全部", "A股", "跨境ETF", "仅异常"]);
