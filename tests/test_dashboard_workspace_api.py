@@ -17,6 +17,7 @@ from stock_analyze import competition
 from stock_analyze.dashboard_workspace_api import (
     FORMAL_FACTOR_SOURCES,
     _bounded_intelligence_lane,
+    _sanitize_run_error,
     _structured_snapshot_coverage,
     build_dashboard_data_intelligence_data,
     build_dashboard_model_research_data,
@@ -1902,6 +1903,136 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             )
         )
 
+    def test_operations_center_a_share_scope_excludes_etf_simulation_failure(
+        self,
+    ) -> None:
+        runtime = self._operations_scope_runtime()
+        runtime["services"][
+            "stock-analyze-codex-cn-qdii-etf-daily.service"
+        ] = self._operations_failed_service()
+        runtime["services"][
+            "stock-analyze-model-iteration.service"
+        ] = self._operations_failed_service()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+            return_value=runtime,
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            return_value=_intelligence(),
+        ):
+            a_share = build_dashboard_operations_center_data(
+                repo_root=Path(tmp),
+                scope="a_share",
+                now=datetime(2026, 7, 30, 13, 30),
+            )
+            all_markets = build_dashboard_operations_center_data(
+                repo_root=Path(tmp),
+                scope="all",
+                now=datetime(2026, 7, 30, 13, 30),
+            )
+
+        a_simulation = next(
+            row for row in a_share["mainChain"] if row["key"] == "simulation"
+        )
+        self.assertEqual(a_simulation["status"], "success")
+        self.assertEqual(a_share["dailyFreshness"]["status"], "success")
+        self.assertEqual(
+            {row["unit"] for row in a_simulation["units"]},
+            {
+                "stock-analyze-claude-daily.service",
+                "stock-analyze-codex-daily.service",
+            },
+        )
+        all_simulation = next(
+            row
+            for row in all_markets["mainChain"]
+            if row["key"] == "simulation"
+        )
+        self.assertEqual(all_simulation["status"], "failed")
+
+    def test_operations_center_etf_scope_excludes_a_share_simulation_failure(
+        self,
+    ) -> None:
+        runtime = self._operations_scope_runtime()
+        runtime["services"][
+            "stock-analyze-claude-daily.service"
+        ] = self._operations_failed_service()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+            return_value=runtime,
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            return_value=_intelligence(),
+        ):
+            etf = build_dashboard_operations_center_data(
+                repo_root=Path(tmp),
+                scope="cn_qdii_etf",
+                now=datetime(2026, 7, 30, 13, 30),
+            )
+            exceptions = build_dashboard_operations_center_data(
+                repo_root=Path(tmp),
+                scope="exceptions",
+                now=datetime(2026, 7, 30, 13, 30),
+            )
+
+        etf_simulation = next(
+            row for row in etf["mainChain"] if row["key"] == "simulation"
+        )
+        self.assertEqual(etf_simulation["status"], "success")
+        self.assertEqual(etf["dailyFreshness"]["status"], "success")
+        self.assertEqual(
+            {row["unit"] for row in etf_simulation["units"]},
+            {
+                "stock-analyze-claude-cn-qdii-etf-daily.service",
+                "stock-analyze-codex-cn-qdii-etf-daily.service",
+            },
+        )
+        exception_simulation = next(
+            row
+            for row in exceptions["mainChain"]
+            if row["key"] == "simulation"
+        )
+        self.assertEqual(exception_simulation["status"], "failed")
+
+    @staticmethod
+    def _operations_scope_runtime() -> dict:
+        success = {
+            "activeState": "inactive",
+            "subState": "dead",
+            "result": "success",
+            "exitStatus": 0,
+            "startedAt": "Wed 2026-07-30 13:00:00 CST",
+            "finishedAt": "Wed 2026-07-30 13:01:00 CST",
+        }
+        units = (
+            "stock-analyze-intelligence.service",
+            "stock-analyze-market-data.service",
+            "stock-analyze-research.service",
+            "stock-analyze-model-iteration.service",
+            "stock-analyze-claude-daily.service",
+            "stock-analyze-codex-daily.service",
+            "stock-analyze-claude-cn-qdii-etf-daily.service",
+            "stock-analyze-codex-cn-qdii-etf-daily.service",
+            "stock-analyze-aggregate-dashboard.service",
+            "stock-analyze-daily-summary.service",
+        )
+        return {
+            "status": "available",
+            "services": {unit: dict(success) for unit in units},
+            "timers": {},
+        }
+
+    @staticmethod
+    def _operations_failed_service() -> dict:
+        return {
+            "activeState": "failed",
+            "subState": "failed",
+            "result": "exit-code",
+            "exitStatus": 1,
+            "startedAt": "Wed 2026-07-30 13:00:00 CST",
+            "finishedAt": "Wed 2026-07-30 13:01:00 CST",
+        }
+
     def test_operations_center_recent_runs_are_logical_bounded_and_redacted(
         self,
     ) -> None:
@@ -1955,6 +2086,103 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             len(payload["recentRuns"][0]["errorSummary"]),
             200,
         )
+
+    def test_operations_center_success_run_keeps_empty_error_string(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "data" / "a_share" / "codex" / "runs.csv"
+            runs.parent.mkdir(parents=True)
+            runs.write_text(
+                "\n".join(
+                    [
+                        "run_id,command,as_of,started_at,finished_at,duration_ms,status,error_summary,config_hash,code_version",
+                        "000201,run-daily,,2026-07-30T10:00:00,2026-07-30T10:01:00,1,success,,h,v",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+                return_value={
+                    "status": "available",
+                    "services": {},
+                    "timers": {},
+                },
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+                return_value=_intelligence(),
+            ):
+                payload = build_dashboard_operations_center_data(
+                    repo_root=root,
+                    scope="a_share",
+                    now=datetime(2026, 7, 30, 13, 30),
+                )
+
+        self.assertEqual(payload["recentRuns"][0]["errorSummary"], "")
+
+    def test_run_error_sanitizer_redacts_prefixed_api_keys(self) -> None:
+        secrets = (
+            "sk-proj-" + "A" * 32,
+            "AIza" + "B" * 35,
+            "AKID" + "C" * 20,
+            "LTAI" + "D" * 20,
+        )
+        text = (
+            "HTTP 401 provider rejected "
+            + " ".join(secrets)
+            + "; request denied"
+        )
+
+        sanitized = _sanitize_run_error(text)
+
+        for secret in secrets:
+            self.assertNotIn(secret, sanitized)
+        self.assertIn("HTTP 401 provider rejected", sanitized)
+        self.assertIn("request denied", sanitized)
+        self.assertLessEqual(len(sanitized), 200)
+
+    def test_run_error_sanitizer_redacts_url_userinfo(self) -> None:
+        text = (
+            "fetch https://alice:p%40ssword@example.com/private/path?mode=full "
+            "failed with timeout"
+        )
+
+        sanitized = _sanitize_run_error(text)
+
+        self.assertNotIn("alice", sanitized)
+        self.assertNotIn("p%40ssword", sanitized)
+        self.assertIn("https://<redacted>@example.com/private/path", sanitized)
+        self.assertIn("failed with timeout", sanitized)
+
+    def test_run_error_sanitizer_redacts_credential_and_access_key_fields(
+        self,
+    ) -> None:
+        text = (
+            "credential abcDEF123-xyz rejected; "
+            "credential abcdef123456 rejected again; "
+            "credential topsecret rejected once more; "
+            "AccessKeySecret=SecretValue987654321; "
+            "AccessKeyId=LTAI5tExampleAccessKey12"
+        )
+
+        sanitized = _sanitize_run_error(text)
+
+        self.assertNotIn("abcDEF123-xyz", sanitized)
+        self.assertNotIn("abcdef123456", sanitized)
+        self.assertNotIn("topsecret", sanitized)
+        self.assertNotIn("SecretValue987654321", sanitized)
+        self.assertNotIn("LTAI5tExampleAccessKey12", sanitized)
+        self.assertIn("credential <redacted> rejected", sanitized)
+        self.assertLessEqual(len(sanitized), 200)
+
+    def test_run_error_sanitizer_preserves_non_secret_diagnostics(self) -> None:
+        text = (
+            "credential file missing; sk-short is a label; "
+            "LTAI docs unavailable; task skipped after 3 retries"
+        )
+
+        self.assertEqual(_sanitize_run_error(text), text)
 
     def test_operations_center_only_raises_actionable_interventions(self) -> None:
         intelligence = _intelligence()

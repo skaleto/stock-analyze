@@ -165,6 +165,16 @@ OPERATIONS_TIMERS = {
 }
 OPERATIONS_SCOPES = {"all", "a_share", "cn_qdii_etf", "exceptions"}
 OPERATIONS_TIMEZONE = ZoneInfo("Asia/Shanghai")
+OPERATIONS_SIMULATION_UNITS_BY_MARKET = {
+    "a_share": (
+        "stock-analyze-claude-daily.service",
+        "stock-analyze-codex-daily.service",
+    ),
+    "cn_qdii_etf": (
+        "stock-analyze-claude-cn-qdii-etf-daily.service",
+        "stock-analyze-codex-cn-qdii-etf-daily.service",
+    ),
+}
 
 
 def _generated_at() -> str:
@@ -1835,13 +1845,19 @@ def _operations_chain_status(
 def _sanitize_run_error(value: object) -> str:
     text = str(value or "").replace("\r", " ").replace("\n", " ")
     text = re.sub(
+        r"(?i)\b([a-z][a-z0-9+.-]*://)([^/\s@]+)@",
+        r"\1<redacted>@",
+        text,
+    )
+    text = re.sub(
         r"(?i)(authorization\s*:\s*(?:bearer|basic)\s+)\S+",
         r"\1<redacted>",
         text,
     )
     text = re.sub(
-        r"(?i)\b(token|api[_-]?key|apikey|access[_-]?key(?:_id|_secret)?|"
-        r"secret|password)\b(\s*[:=]\s*)([^,\s;&]+)",
+        r"(?i)\b(token|api[_-]?key|apikey|"
+        r"access[_-]?key(?:[_-]?(?:id|secret))?|secret|password)"
+        r"\b(\s*[:=]\s*)([^,\s;&]+)",
         r"\1\2<redacted>",
         text,
     )
@@ -1851,7 +1867,71 @@ def _sanitize_run_error(value: object) -> str:
         r"\1<redacted>",
         text,
     )
+    text = re.sub(
+        r"(?i)\bcredential(\s+)([^\s,;]+)",
+        _redact_credential_value,
+        text,
+    )
+    standalone_patterns = (
+        r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}"
+        r"(?![A-Za-z0-9_-])",
+        r"(?<![A-Za-z0-9_-])AIza[A-Za-z0-9_-]{30,}"
+        r"(?![A-Za-z0-9_-])",
+        r"(?<![A-Za-z0-9_-])(?:gh[pousr]_|github_pat_)"
+        r"[A-Za-z0-9_]{20,}(?![A-Za-z0-9_])",
+        r"(?<![A-Za-z0-9_-])xox[baprs]-[A-Za-z0-9-]{16,}"
+        r"(?![A-Za-z0-9-])",
+        r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}"
+        r"(?![A-Za-z0-9])",
+        r"(?<![A-Za-z0-9])(?:AKID|LTAI)[A-Za-z0-9]{12,}"
+        r"(?![A-Za-z0-9])",
+    )
+    for pattern in standalone_patterns:
+        text = re.sub(pattern, "<redacted>", text)
     return text[:200]
+
+
+def _redact_credential_value(match: re.Match[str]) -> str:
+    value = match.group(2)
+    diagnostic_words = {
+        "check",
+        "config",
+        "configuration",
+        "error",
+        "expired",
+        "file",
+        "invalid",
+        "load",
+        "loading",
+        "missing",
+        "not",
+        "provider",
+        "refresh",
+        "required",
+        "rotation",
+        "source",
+        "status",
+        "store",
+        "unavailable",
+        "validation",
+    }
+    looks_secret = len(value) >= 8
+    if value.lower() in diagnostic_words or not looks_secret:
+        return match.group(0)
+    return f"credential{match.group(1)}<redacted>"
+
+
+def _operations_chain_units(
+    key: str,
+    units: tuple[str, ...],
+    *,
+    scope: str,
+) -> tuple[str, ...]:
+    if key != "simulation" or scope not in competition.MARKETS:
+        return units
+    # model-iteration.service loops both markets in one process, so its
+    # systemd result cannot be attributed safely to either single market.
+    return OPERATIONS_SIMULATION_UNITS_BY_MARKET[scope]
 
 
 def _operations_run_rows(
@@ -2115,6 +2195,7 @@ def build_dashboard_operations_center_data(
     main_chain: list[dict[str, Any]] = []
     upstream_ready = True
     for key, label, units, timer_unit in OPERATIONS_MAIN_CHAIN:
+        units = _operations_chain_units(key, units, scope=scope)
         statuses = [
             _operations_service_status(
                 _mapping(services.get(unit)) or None,
@@ -2287,6 +2368,9 @@ def build_dashboard_operations_center_data(
             if row["status"] in {"failed", "unavailable"}
         ]
     safe_payload = agg._json_safe(payload)
+    for row in safe_payload["recentRuns"]:
+        if row.get("errorSummary") is None:
+            row["errorSummary"] = ""
     if _serialized_size(safe_payload) >= MAX_SERIALIZED_BYTES:
         raise ValueError("dashboard_operations_payload_exceeds_size_limit")
     return safe_payload
