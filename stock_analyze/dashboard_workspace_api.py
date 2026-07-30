@@ -1773,10 +1773,18 @@ def _operations_now(value: datetime | None) -> datetime:
 
 def _operations_timestamp(value: object) -> datetime | None:
     text = str(value or "").strip()
-    if not text or text in {"n/a", "never"}:
+    if not text or text.lower() in {"n/a", "never"}:
         return None
-    text = re.sub(r"^[A-Za-z]{3}\s+", "", text)
-    if text.endswith(" CST"):
+    match = re.search(
+        r"\d{4}-\d{2}-\d{2}"
+        r"(?:[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?)?"
+        r"(?:\s*CST|Z|[+-]\d{2}:?\d{2})?",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        text = match.group(0)
+    if text.upper().endswith(" CST"):
         text = text[:-4] + "+08:00"
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
@@ -1797,6 +1805,8 @@ def _operations_service_status(
         return "unavailable"
     if not row:
         return "waiting_schedule"
+    if str(row.get("loadState") or "loaded").lower() != "loaded":
+        return "unavailable"
     if str(row.get("activeState") or "").lower() in {
         "active",
         "activating",
@@ -1827,6 +1837,8 @@ def _operations_chain_status(
 ) -> str:
     if not runtime_available:
         return "unavailable"
+    if "unavailable" in statuses:
+        return "unavailable"
     if "failed" in statuses:
         return "failed"
     if "running" in statuses:
@@ -1855,6 +1867,16 @@ def _sanitize_run_error(value: object) -> str:
         text,
     )
     text = re.sub(
+        r"(?i)\b("
+        r"[A-Z][A-Z0-9_]*"
+        r"(?:_API_KEY|_TOKEN|_PASSWORD|_SECRET|"
+        r"_ACCESS_KEY[A-Z0-9_]*)"
+        r")(\s*=\s*)"
+        r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^,\s;&]+)",
+        r"\1\2<redacted>",
+        text,
+    )
+    text = re.sub(
         r"(?i)\b(token|api[_-]?key|apikey|"
         r"access[_-]?key(?:[_-]?(?:id|secret))?|secret|password)"
         r"\b(\s*[:=]\s*)([^,\s;&]+)",
@@ -1870,6 +1892,16 @@ def _sanitize_run_error(value: object) -> str:
     text = re.sub(
         r"(?i)\b(credential)(\s*[:=]\s*)([^,\s;&]+)",
         r"\1\2<redacted>",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(key)(\s*[:=]\s*)([^,\s;&]+)",
+        r"\1\2<redacted>",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(credential)(\s+)([^,\s;&]+)",
+        _redact_contextual_credential,
         text,
     )
     standalone_patterns = (
@@ -1897,6 +1929,21 @@ def _sanitize_run_error(value: object) -> str:
         text,
     )
     return text[:200]
+
+
+def _redact_contextual_credential(match: re.Match[str]) -> str:
+    token = match.group(3)
+    character_classes = sum(
+        (
+            any(character.islower() for character in token),
+            any(character.isupper() for character in token),
+            any(character.isdigit() for character in token),
+            any(not character.isalnum() for character in token),
+        )
+    )
+    if len(token) < 16 or character_classes < 3:
+        return match.group(0)
+    return f"{match.group(1)}{match.group(2)}<redacted>"
 
 
 def _redact_legacy_sk_token(match: re.Match[str]) -> str:
@@ -1930,29 +1977,58 @@ def _operations_run_rows(
     path: Path,
     *,
     limit: int,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             raw_rows = deque(csv.DictReader(handle), maxlen=max(40, limit * 4))
     except (FileNotFoundError, OSError, csv.Error):
         return []
-    selected: dict[str, tuple[tuple[int, str, int], dict[str, str]]] = {}
+    selected: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
     for index, row in enumerate(raw_rows):
         run_id = str(row.get("run_id") or "").strip()
         if not run_id:
             continue
         status = str(row.get("status") or "").strip().lower()
-        finished_at = str(row.get("finished_at") or "")
-        terminal = int(bool(finished_at) or status not in {"", "running"})
-        rank = (terminal, finished_at, index)
+        finished_rank = _operations_timestamp(
+            row.get("finished_at")
+        )
+        started_rank = _operations_timestamp(row.get("started_at"))
+        terminal = int(
+            finished_rank is not None or status not in {"", "running"}
+        )
+        rank = (
+            terminal,
+            finished_rank.timestamp() if finished_rank else float("-inf"),
+            started_rank.timestamp() if started_rank else float("-inf"),
+            index,
+            run_id,
+        )
         if run_id not in selected or rank >= selected[run_id][0]:
-            selected[run_id] = (rank, row)
+            selected_row: dict[str, Any] = dict(row)
+            selected_row["_append_index"] = index
+            selected_row["_finished_rank"] = (
+                finished_rank.timestamp() if finished_rank else None
+            )
+            selected_row["_started_rank"] = (
+                started_rank.timestamp() if started_rank else None
+            )
+            selected[run_id] = (rank, selected_row)
     return [
         pair[1]
         for pair in sorted(
             selected.values(),
             key=lambda pair: (
-                str(pair[1].get("started_at") or ""),
+                pair[1].get("_finished_rank")
+                if pair[1].get("_finished_rank") is not None
+                else (
+                    pair[1].get("_started_rank")
+                    if pair[1].get("_started_rank") is not None
+                    else float("-inf")
+                ),
+                pair[1].get("_started_rank")
+                if pair[1].get("_started_rank") is not None
+                else float("-inf"),
+                int(pair[1].get("_append_index") or 0),
                 str(pair[1].get("run_id") or ""),
             ),
             reverse=True,
@@ -1994,13 +2070,34 @@ def _recent_strategy_runs(
                         "errorSummary": _sanitize_run_error(
                             raw.get("error_summary")
                         ),
+                        "_finishedRank": raw.get("_finished_rank"),
+                        "_startedRank": raw.get("_started_rank"),
+                        "_appendIndex": raw.get("_append_index"),
                     }
                 )
     rows.sort(
-        key=lambda row: (row["startedAt"], row["runId"]),
+        key=lambda row: (
+            row["_finishedRank"]
+            if row["_finishedRank"] is not None
+            else (
+                row["_startedRank"]
+                if row["_startedRank"] is not None
+                else float("-inf")
+            ),
+            row["_startedRank"]
+            if row["_startedRank"] is not None
+            else float("-inf"),
+            row["_appendIndex"],
+            row["runId"],
+        ),
         reverse=True,
     )
-    return rows[:limit]
+    bounded_rows = rows[:limit]
+    for row in bounded_rows:
+        row.pop("_finishedRank", None)
+        row.pop("_startedRank", None)
+        row.pop("_appendIndex", None)
+    return bounded_rows
 
 
 def _operations_intelligence(
@@ -2154,6 +2251,165 @@ def _operations_interventions(
     return items[:MAX_TABLE_ROWS]
 
 
+def _bound_operations_value(value: Any) -> tuple[Any, bool]:
+    if isinstance(value, str):
+        bounded = value[:MAX_TEXT_LENGTH]
+        return bounded, bounded != value
+    if isinstance(value, list):
+        changed = len(value) > MAX_TABLE_ROWS
+        result: list[Any] = []
+        for item in value[:MAX_TABLE_ROWS]:
+            bounded_item, item_changed = _bound_operations_value(item)
+            result.append(bounded_item)
+            changed = changed or item_changed
+        return result, changed
+    if isinstance(value, dict):
+        changed = False
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            bounded_item, item_changed = _bound_operations_value(item)
+            result[str(key)] = bounded_item
+            changed = changed or item_changed
+        return result, changed
+    return value, False
+
+
+def _operations_minimal_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "generated_at": payload.get("generated_at"),
+        "scope": payload.get("scope"),
+        "runtime": {
+            key: _mapping(payload.get("runtime")).get(key)
+            for key in ("status", "lastKnownAt", "reason")
+        },
+        "dailyFreshness": {
+            key: _mapping(payload.get("dailyFreshness")).get(key)
+            for key in ("asOfDate", "status")
+        },
+        "mainChain": [
+            {
+                key: row.get(key)
+                for key in ("key", "label", "status", "primary", "secondary")
+            }
+            for row in _rows(payload.get("mainChain"))[:MAX_TABLE_ROWS]
+        ],
+        "background": {
+            key: _mapping(payload.get("background")).get(key)
+            for key in ("status", "snapshotGeneratedAt", "backlog")
+        },
+        "backgroundWorkers": [
+            {
+                key: row.get(key)
+                for key in ("key", "label", "status", "loadState", "reason")
+            }
+            for row in _rows(payload.get("backgroundWorkers"))[
+                :MAX_TABLE_ROWS
+            ]
+        ],
+        "schedules": {
+            cadence: [
+                {
+                    key: row.get(key)
+                    for key in (
+                        "unit",
+                        "label",
+                        "status",
+                        "loadState",
+                        "reason",
+                    )
+                }
+                for row in _rows(_mapping(payload.get("schedules")).get(cadence))[
+                    :MAX_TABLE_ROWS
+                ]
+            ]
+            for cadence in ("daily", "weekly", "monthly")
+        },
+        "recentRuns": [],
+        "disk": {
+            key: _mapping(payload.get("disk")).get(key)
+            for key in ("status", "usedRatio")
+        },
+        "interventions": [
+            {
+                key: row.get(key)
+                for key in ("key", "severity", "title", "evidence")
+            }
+            for row in _rows(payload.get("interventions"))[:MAX_TABLE_ROWS]
+        ],
+        "truncated": True,
+        "truncationReason": "serialized_size_limit",
+    }
+
+
+def _enforce_operations_size(
+    payload: dict[str, Any],
+    *,
+    pre_truncated: bool,
+) -> dict[str, Any]:
+    payload["truncated"] = pre_truncated
+    payload["truncationReason"] = (
+        "serialized_size_limit" if pre_truncated else None
+    )
+    if _serialized_size(payload) < MAX_SERIALIZED_BYTES:
+        return payload
+
+    payload["truncated"] = True
+    payload["truncationReason"] = "serialized_size_limit"
+    for row in _rows(payload.get("recentRuns")):
+        row["errorSummary"] = ""
+    if _serialized_size(payload) < MAX_SERIALIZED_BYTES:
+        return payload
+
+    for stage in _rows(payload.get("mainChain")):
+        stage["units"] = [
+            {
+                key: unit.get(key)
+                for key in ("unit", "status", "loadState", "reason")
+            }
+            for unit in _rows(stage.get("units"))
+        ]
+        stage["crossMarketUnits"] = [
+            {
+                key: unit.get(key)
+                for key in (
+                    "unit",
+                    "status",
+                    "loadState",
+                    "reason",
+                    "loadReason",
+                )
+            }
+            for unit in _rows(stage.get("crossMarketUnits"))
+        ]
+    if _serialized_size(payload) < MAX_SERIALIZED_BYTES:
+        return payload
+
+    payload["recentRuns"] = _rows(payload.get("recentRuns"))[:10]
+    for worker in _rows(payload.get("backgroundWorkers")):
+        for key in (
+            "serviceUnit",
+            "timerUnit",
+            "lastResult",
+            "startedAt",
+            "finishedAt",
+            "nextTriggerAt",
+        ):
+            worker.pop(key, None)
+    if _serialized_size(payload) < MAX_SERIALIZED_BYTES:
+        return payload
+
+    payload["recentRuns"] = []
+    for stage in _rows(payload.get("mainChain")):
+        stage["units"] = []
+        stage["crossMarketUnits"] = []
+    if _serialized_size(payload) < MAX_SERIALIZED_BYTES:
+        return payload
+
+    minimal = _operations_minimal_payload(payload)
+    bounded_minimal, _ = _bound_operations_value(minimal)
+    return agg._json_safe(bounded_minimal)
+
+
 def build_dashboard_operations_center_data(
     *,
     repo_root: str | Path | None = None,
@@ -2200,6 +2456,7 @@ def build_dashboard_operations_center_data(
                         current=current,
                         runtime_available=runtime_available,
                     ),
+                    "loadReason": model_service.get("reason"),
                     "reason": (
                         "cross_market_service_result_not_attributable_"
                         "to_single_market"
@@ -2239,8 +2496,8 @@ def build_dashboard_operations_center_data(
                 "units": [
                     {
                         "unit": unit,
-                        "status": statuses[index],
                         **_mapping(services.get(unit)),
+                        "status": statuses[index],
                     }
                     for index, unit in enumerate(units)
                 ][:MAX_TABLE_ROWS],
@@ -2254,6 +2511,7 @@ def build_dashboard_operations_center_data(
     for key, label, service_unit, timer_unit in OPERATIONS_BACKGROUND:
         service = _mapping(services.get(service_unit))
         timer = _mapping(timers.get(timer_unit))
+        service_load_state = str(service.get("loadState") or "loaded")
         background_workers.append(
             {
                 "key": key,
@@ -2262,6 +2520,12 @@ def build_dashboard_operations_center_data(
                     service or None,
                     current=current,
                     runtime_available=runtime_available,
+                ),
+                "loadState": service_load_state,
+                "reason": (
+                    service.get("reason")
+                    if service_load_state.lower() != "loaded"
+                    else None
                 ),
                 "serviceUnit": service_unit,
                 "timerUnit": timer_unit,
@@ -2295,19 +2559,39 @@ def build_dashboard_operations_center_data(
     }
     for unit, (label, cadence) in OPERATIONS_TIMERS.items():
         timer = _mapping(timers.get(unit))
+        load_state = str(timer.get("loadState") or "loaded")
+        timer_available = (
+            runtime_available
+            and bool(timer)
+            and load_state.lower() == "loaded"
+        )
+        timer_reason = None
+        if not timer_available:
+            if timer and load_state.lower() != "loaded":
+                timer_reason = (
+                    timer.get("reason")
+                    or f"unit_load_state_{load_state}"
+                )
+            else:
+                timer_reason = (
+                    runtime.get("reason")
+                    or "runtime_timer_evidence_unavailable"
+                )
         schedules[cadence].append(
             {
                 "unit": unit,
                 "label": label,
                 "status": (
                     "unavailable"
-                    if not runtime_available or not timer
+                    if not timer_available
                     else (
                         "active"
                         if timer.get("activeState") == "active"
                         else "inactive"
                     )
                 ),
+                "loadState": load_state,
+                "reason": timer_reason,
                 "lastTriggerAt": timer.get("lastTriggerAt"),
                 "nextTriggerAt": timer.get("nextTriggerAt"),
                 "automation": "automatic",
@@ -2337,20 +2621,31 @@ def build_dashboard_operations_center_data(
                 "unavailable"
                 if not runtime_available
                 else (
-                    "failed"
-                    if any(row["status"] == "failed" for row in main_chain)
+                    "unavailable"
+                    if any(
+                        row["status"] == "unavailable"
+                        for row in main_chain
+                    )
                     else (
-                        "running"
+                        "failed"
                         if any(
-                            row["status"] == "running" for row in main_chain
+                            row["status"] == "failed"
+                            for row in main_chain
                         )
                         else (
-                            "success"
-                            if all(
-                                row["status"] == "success"
+                            "running"
+                            if any(
+                                row["status"] == "running"
                                 for row in main_chain
                             )
-                            else "waiting"
+                            else (
+                                "success"
+                                if all(
+                                    row["status"] == "success"
+                                    for row in main_chain
+                                )
+                                else "waiting"
+                            )
                         )
                     )
                 )
@@ -2380,10 +2675,12 @@ def build_dashboard_operations_center_data(
             for row in background_workers
             if row["status"] in {"failed", "unavailable"}
         ]
-    safe_payload = agg._json_safe(payload)
+    bounded_payload, pre_truncated = _bound_operations_value(payload)
+    safe_payload = agg._json_safe(bounded_payload)
     for row in safe_payload["recentRuns"]:
         if row.get("errorSummary") is None:
             row["errorSummary"] = ""
-    if _serialized_size(safe_payload) >= MAX_SERIALIZED_BYTES:
-        raise ValueError("dashboard_operations_payload_exceeds_size_limit")
-    return safe_payload
+    return _enforce_operations_size(
+        safe_payload,
+        pre_truncated=pre_truncated,
+    )

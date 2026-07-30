@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import threading
 import unittest
@@ -8,6 +9,7 @@ from stock_analyze.dashboard_runtime import (
     RUNTIME_SERVICE_UNITS,
     RUNTIME_TIMER_UNITS,
     _project_service,
+    _project_timer,
     read_dashboard_runtime,
 )
 
@@ -29,6 +31,7 @@ def _batch_show_result(
                 "\n".join(
                     [
                         f"Id={unit}",
+                        "LoadState=loaded",
                         f"ActiveState={active_state or 'active'}",
                         "LastTriggerUSec=Wed 2026-07-30 12:30:00 CST",
                         "NextElapseUSecRealtime=Wed 2026-07-30 16:30:00 CST",
@@ -40,6 +43,7 @@ def _batch_show_result(
                 "\n".join(
                     [
                         f"Id={unit}",
+                        "LoadState=loaded",
                         f"ActiveState={active_state or 'inactive'}",
                         "SubState=dead",
                         "Result=success",
@@ -55,9 +59,11 @@ def _batch_show_result(
 class DashboardRuntimeTests(unittest.TestCase):
     def test_reads_only_fixed_allowlisted_units_in_two_batch_calls(self) -> None:
         calls: list[list[str]] = []
+        environments: list[dict[str, str]] = []
 
-        def runner(command, **_kwargs):
+        def runner(command, **kwargs):
             calls.append(list(command))
+            environments.append(dict(kwargs["env"]))
             return _batch_show_result(list(command))
 
         payload = read_dashboard_runtime(runner=runner, cache={})
@@ -76,6 +82,19 @@ class DashboardRuntimeTests(unittest.TestCase):
             set(RUNTIME_SERVICE_UNITS) | set(RUNTIME_TIMER_UNITS),
         )
         self.assertEqual(payload["status"], "available")
+        self.assertTrue(
+            all(environment["LC_ALL"] == "C" for environment in environments)
+        )
+        self.assertTrue(
+            all(environment["LANG"] == "C" for environment in environments)
+        )
+        if "PATH" in os.environ:
+            self.assertTrue(
+                all(
+                    environment["PATH"] == os.environ["PATH"]
+                    for environment in environments
+                )
+            )
         self.assertEqual(
             set(payload["services"]),
             set(RUNTIME_SERVICE_UNITS),
@@ -87,6 +106,16 @@ class DashboardRuntimeTests(unittest.TestCase):
         self.assertEqual(
             payload["services"]["stock-analyze-intelligence.service"]["result"],
             "success",
+        )
+        self.assertEqual(
+            payload["services"]["stock-analyze-intelligence.service"][
+                "loadState"
+            ],
+            "loaded",
+        )
+        self.assertEqual(
+            payload["timers"]["stock-analyze-market-data.timer"]["loadState"],
+            "loaded",
         )
 
     def test_empty_properties_are_retained_and_projected(self) -> None:
@@ -301,6 +330,30 @@ class DashboardRuntimeTests(unittest.TestCase):
 
         self.assertEqual(row["result"], "success")
         self.assertEqual(row["exitStatus"], 75)
+        self.assertEqual(row["loadState"], "loaded")
+
+    def test_projection_preserves_explicit_unavailable_load_state(self) -> None:
+        row = _project_service(
+            {
+                "LoadState": "not-found",
+                "ActiveState": "inactive",
+                "SubState": "dead",
+                "Result": "success",
+                "ExecMainStatus": "0",
+            }
+        )
+
+        self.assertEqual(row["loadState"], "not-found")
+        self.assertEqual(row["reason"], "unit_load_state_not-found")
+
+        timer = _project_timer(
+            {
+                "LoadState": "masked",
+                "ActiveState": "inactive",
+            }
+        )
+        self.assertEqual(timer["loadState"], "masked")
+        self.assertEqual(timer["reason"], "unit_load_state_masked")
 
 
 if __name__ == "__main__":
