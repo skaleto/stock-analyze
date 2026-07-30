@@ -5,9 +5,12 @@ import http.server
 import json
 import socketserver
 import sys
-from datetime import date
+import time
+import uuid
+from datetime import date, datetime, timezone
 from functools import partial
 from pathlib import Path
+from urllib.parse import parse_qs
 
 from . import competition
 from .agent_briefing import (
@@ -51,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--market",
         choices=competition.MARKETS,
         default="a_share",
-        help="Market (a_share | hk | us). Default: a_share (back-compat).",
+        help="Account range (a_share | cn_qdii_etf). Default: a_share.",
     )
     parser.add_argument("--as-of", help="Override run date in YYYY-MM-DD format")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -77,13 +80,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=5,
         help="ThreadPoolExecutor size for per-candidate fetch (default: 5)",
     )
-    daily = sub.add_parser("run-daily", help="Execute due orders, update NAV, refresh dashboard")
+    sub.add_parser(
+        "prepare-qdii-market-data",
+        help="Warm daily mainland QDII fund history caches before offline research.",
+    )
+    daily = sub.add_parser("run-daily", help="Execute due orders, update NAV, and generate the next-session target")
     daily.add_argument(
         "--offline",
         action="store_true",
         help="Forbid the provider from reaching the network — cache miss raises CacheMiss and fails the run.",
     )
-    weekly = sub.add_parser("run-weekly", help="Generate signals, update NAV, report, and dashboard")
+    weekly = sub.add_parser("run-weekly", help="Refresh diagnostics, weekly review, report, and dashboard without orders")
     weekly.add_argument(
         "--offline",
         action="store_true",
@@ -112,6 +119,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run overlay_guard checks on configs/agents/<agent>.yaml (schema + lock fields only).",
     )
     validate.add_argument("--agent", required=True, help="Agent overlay to validate (claude|codex).")
+    sub.add_parser(
+        "validate-strategy-pair",
+        help="Validate that the two strategy slots remain materially different.",
+    )
+    release = sub.add_parser(
+        "apply-strategy-release",
+        help="Apply one audited multi-market strategy release manifest.",
+    )
+    release.add_argument("--manifest", type=Path, required=True)
+    release.add_argument("--dry-run", action="store_true")
     rollback = sub.add_parser("agent-rollback", help="Rollback an agent overlay to a historical config hash")
     rollback.add_argument("--agent", required=True)
     rollback.add_argument("--to", required=True, help="Config hash saved under configs/agents/_history/")
@@ -173,6 +190,87 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also run the MVP low-PE proxy over the same window and append a "
              "full-pipeline-vs-MVP comparison panel to report.md.",
     )
+
+    qdii_capacity = sub.add_parser(
+        "qdii-capacity-study",
+        help="Run the offline three-year QDII top-N capacity study.",
+    )
+    qdii_capacity.add_argument("--start", type=_parse_iso_date, default=None)
+    qdii_capacity.add_argument("--end", type=_parse_iso_date, default=None)
+    qdii_capacity.add_argument(
+        "--top-n",
+        type=int,
+        nargs="+",
+        default=[4, 5, 6, 8, 10],
+        help="Portfolio sizes to compare (default: 4 5 6 8 10).",
+    )
+    qdii_capacity.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=Path("data/cn_qdii_etf/shared/cache"),
+    )
+    qdii_capacity.add_argument(
+        "--universe",
+        type=Path,
+        default=Path("data/cn_qdii_etf/shared/universe_latest.json"),
+    )
+    qdii_capacity.add_argument("--output-root", type=Path, default=Path("."))
+    qdii_capacity.add_argument("--min-signal-weeks", type=int, default=20)
+
+    qdii_events = sub.add_parser(
+        "refresh-qdii-events",
+        help="Refresh source-dated fund announcements for the current QDII catalog.",
+    )
+    qdii_events.add_argument(
+        "--universe",
+        type=Path,
+        default=Path("data/cn_qdii_etf/shared/universe_latest.json"),
+    )
+    qdii_events.add_argument(
+        "--output",
+        type=Path,
+        default=Path("data/cn_qdii_etf/shared/fund_events.csv"),
+    )
+
+    qdii_shadow = sub.add_parser(
+        "qdii-shadow-research",
+        help="Build the research catalog and run global/commodity/bond shadow portfolios.",
+    )
+    qdii_shadow.add_argument("--start", type=_parse_iso_date, default=None)
+    qdii_shadow.add_argument("--end", type=_parse_iso_date, default=None)
+    qdii_shadow.add_argument(
+        "--cache-dir", type=Path, default=Path("data/cn_qdii_etf/shared/cache")
+    )
+    qdii_shadow.add_argument(
+        "--catalog", type=Path, default=Path("data/cn_qdii_etf/research/catalog_latest.json")
+    )
+    qdii_shadow.add_argument("--output-root", type=Path, default=Path("."))
+    qdii_shadow.add_argument("--refresh-data", action="store_true")
+    qdii_shadow.add_argument("--min-signal-weeks", type=int, default=12)
+    qdii_shadow.add_argument(
+        "--sentiment-file",
+        type=Path,
+        default=Path("data/cn_qdii_etf/research/theme_sentiment.csv"),
+    )
+    qdii_shadow.add_argument("--sentiment-agent", choices=["claude", "codex"], default="codex")
+
+    theme_sentiment = sub.add_parser(
+        "record-theme-sentiment",
+        help="Record source-backed per-index sentiment for QDII shadow research.",
+    )
+    theme_sentiment.add_argument("--agent", required=True, choices=["claude", "codex"])
+    theme_sentiment.add_argument("--week-end", required=True)
+    theme_sentiment.add_argument("--index-key", required=True)
+    theme_sentiment.add_argument("--score", type=float, required=True)
+    theme_sentiment.add_argument("--confidence", type=float, required=True)
+    theme_sentiment.add_argument("--drivers", required=True)
+    theme_sentiment.add_argument("--sources", required=True)
+    theme_sentiment.add_argument("--llm-model", required=True)
+    theme_sentiment.add_argument("--prompt-version", default="theme_v1")
+    theme_sentiment.add_argument(
+        "--output", type=Path, default=Path("data/cn_qdii_etf/research/theme_sentiment.csv")
+    )
+    theme_sentiment.add_argument("--force", action="store_true")
 
     rec = sub.add_parser(
         "record-sentiment",
@@ -265,10 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
     sanity.add_argument("--repo-root", type=Path, default=None,
                           help="Override repo root (defaults to SA_REPO_ROOT or __file__ anchor).")
 
-    # Daily summary push to the operator's Lark DM. Triggered nightly via
-    # systemd ExecStartPost on stock-analyze-aggregate-dashboard.service.
-    # Reads SA_LARK_APP_ID / SA_LARK_APP_SECRET / SA_LARK_USER_OPEN_ID;
-    # falls back to stdout preview if any is missing.
+    # Compatibility alias for the consolidated daily workflow summary.
     notify = sub.add_parser(
         "notify-daily-summary",
         help="Build daily ECS summary + send DM to operator via Lark Open API.",
@@ -278,6 +373,349 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Override repo root (default: cwd; ECS will use /opt/stock-analyze/app).",
+    )
+
+    workflow_notify = sub.add_parser(
+        "notify-workflow-summary",
+        help="Send one idempotent daily, weekly, or monthly workflow summary.",
+    )
+    workflow_notify.add_argument(
+        "--cadence",
+        required=True,
+        choices=["daily", "weekly", "monthly"],
+    )
+    workflow_notify.add_argument(
+        "--target",
+        help="YYYY-MM-DD for daily/weekly or YYYY-MM for monthly.",
+    )
+    workflow_notify.add_argument("--repo-root", type=Path, default=None)
+    workflow_notify.add_argument(
+        "--force",
+        action="store_true",
+        help="Send again even if this cadence/target was already delivered.",
+    )
+    workflow_notify.add_argument(
+        "--preview",
+        action="store_true",
+        help="Print the summary without sending or marking it delivered.",
+    )
+
+    for command, help_text in (
+        ("prepare-research-data", "Build immutable feature snapshots from market caches."),
+        ("run-prediction-research", "Build labels, events, regimes, and event studies."),
+        ("train-prediction-models", "Train and register calibrated challenger models."),
+        ("predict", "Generate research or active prediction records."),
+    ):
+        research = sub.add_parser(command, help=help_text)
+        research.add_argument("--offline", action="store_true", help="Use local market caches only.")
+        research.add_argument("--repo-root", type=Path, default=Path("."))
+        research.add_argument("--force", action="store_true", help="Rebuild an existing feature snapshot.")
+        research.add_argument(
+            "--max-full-history-instruments", type=int, default=500,
+            help="A-share instruments retaining full history; all others keep the latest row.",
+        )
+
+    for command, help_text in (
+        (
+            "run-model-iteration",
+            "Run the pinned Challenger model paper portfolio for one market.",
+        ),
+        (
+            "run-model-shadow",
+            "Compatibility alias for run-model-iteration.",
+        ),
+    ):
+        model_iteration = sub.add_parser(command, help=help_text)
+        model_iteration.add_argument(
+            "--offline",
+            action="store_true",
+            help="Use only point-in-time market caches.",
+        )
+        model_iteration.add_argument("--repo-root", type=Path, default=Path("."))
+
+    intelligence_ingest = sub.add_parser(
+        "intelligence-ingest",
+        help="Incrementally collect official announcements, policies, and licensed news.",
+    )
+    intelligence_ingest.add_argument("--repo-root", type=Path, default=Path("."))
+    intelligence_ingest.add_argument("--config-path", type=Path, default=None)
+    intelligence_ingest.add_argument("--since", default=None, help="Optional ISO cursor override for backfill.")
+    intelligence_ingest.add_argument("--until", default=None, help="ISO end timestamp (default: now).")
+    intelligence_ingest.add_argument("--sources", nargs="*", default=None)
+
+    intelligence_backfill = sub.add_parser(
+        "intelligence-backfill",
+        help="Run isolated resumable full-history source backfill.",
+    )
+    intelligence_backfill.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    intelligence_backfill.add_argument("--config-path", type=Path, default=None)
+    intelligence_backfill.add_argument(
+        "--source",
+        choices=["tushare_announcement"],
+        required=True,
+    )
+    intelligence_backfill.add_argument("--start-date", required=True)
+    intelligence_backfill.add_argument("--end-date", required=True)
+    intelligence_backfill.add_argument(
+        "--max-partitions",
+        type=int,
+        required=True,
+    )
+    intelligence_backfill.add_argument("--resume", action="store_true")
+
+    intelligence_extract = sub.add_parser(
+        "intelligence-extract",
+        help="Extract auditable market events from newly collected documents.",
+    )
+    intelligence_extract.add_argument("--repo-root", type=Path, default=Path("."))
+    intelligence_extract.add_argument("--config-path", type=Path, default=None)
+    intelligence_extract.add_argument("--limit", type=int, default=500)
+
+    intelligence_status = sub.add_parser(
+        "intelligence-status",
+        help="Write and print intelligence coverage and source-health diagnostics.",
+    )
+    intelligence_status.add_argument("--repo-root", type=Path, default=Path("."))
+
+    intelligence_evaluate = sub.add_parser(
+        "intelligence-evaluate",
+        help="Evaluate event-factor coverage and forward rank IC on the latest research snapshot.",
+    )
+    intelligence_evaluate.add_argument("--repo-root", type=Path, default=Path("."))
+    intelligence_evaluate.add_argument(
+        "--market", choices=["a_share", "cn_qdii_etf"], required=True,
+    )
+    intelligence_evaluate.add_argument("--as-of", default=None)
+
+    intelligence_model_effect = sub.add_parser(
+        "intelligence-model-effect",
+        help="Compare Base and Base+Event models without registry side effects.",
+    )
+    intelligence_model_effect.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    intelligence_model_effect.add_argument(
+        "--market",
+        choices=["a_share", "cn_qdii_etf"],
+        required=True,
+    )
+    intelligence_model_effect.add_argument("--as-of", default=None)
+
+    semantic_prepare = sub.add_parser(
+        "intelligence-semantic-prepare",
+        help="Prepare a bounded provider-neutral filesystem extraction job.",
+    )
+    semantic_prepare.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    semantic_prepare.add_argument(
+        "--profile", default="a-share-announcement-v1"
+    )
+    semantic_prepare.add_argument("--limit", type=int, default=50)
+    semantic_prepare.add_argument(
+        "--max-input-characters", type=int, default=40_000
+    )
+
+    semantic_run = sub.add_parser(
+        "intelligence-semantic-run",
+        help="Run missing job rows through one pluggable executor adapter.",
+    )
+    semantic_run.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    semantic_run.add_argument("--job", required=True)
+    semantic_run.add_argument("--executor-config", required=True)
+
+    semantic_import = sub.add_parser(
+        "intelligence-semantic-import",
+        help="Validate and persist one provider-neutral extraction job.",
+    )
+    semantic_import.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    semantic_import.add_argument("--job", required=True)
+
+    semantic_job_status = sub.add_parser(
+        "intelligence-semantic-job-status",
+        help="Inspect one provider-neutral extraction job.",
+    )
+    semantic_job_status.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    semantic_job_status.add_argument("--job", required=True)
+
+    semantic_daily = sub.add_parser(
+        "intelligence-semantic-daily",
+        help="Import returned artifacts, prepare a batch, and optionally run it.",
+    )
+    semantic_daily.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    semantic_daily.add_argument(
+        "--profile", default="a-share-announcement-v1"
+    )
+    semantic_daily.add_argument("--limit", type=int, default=50)
+    semantic_daily.add_argument(
+        "--max-input-characters", type=int, default=40_000
+    )
+    semantic_daily.add_argument("--executor-config", default=None)
+
+    artifact_job_export = sub.add_parser(
+        "intelligence-artifact-job-export",
+        help="Lease and export a bounded historical artifact worker job.",
+    )
+    artifact_job_export.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    artifact_job_export.add_argument(
+        "--stage",
+        choices=["download", "parse"],
+        default="parse",
+    )
+    artifact_job_export.add_argument("--limit", type=int, default=25)
+    artifact_job_export.add_argument("--worker-id", required=True)
+    artifact_job_export.add_argument(
+        "--lease-seconds", type=int, default=14_400
+    )
+
+    artifact_job_run = sub.add_parser(
+        "intelligence-artifact-job-run",
+        help="Run one portable artifact job without production credentials.",
+    )
+    artifact_job_run.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    artifact_job_run.add_argument(
+        "--job-dir", type=Path, required=True
+    )
+    artifact_job_run.add_argument("--workers", type=int, default=4)
+
+    artifact_job_import = sub.add_parser(
+        "intelligence-artifact-job-import",
+        help="Verify and import a returned artifact worker job.",
+    )
+    artifact_job_import.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    artifact_job_import.add_argument(
+        "--job-dir", type=Path, required=True
+    )
+
+    artifact_job_status = sub.add_parser(
+        "intelligence-artifact-job-status",
+        help="Inspect artifact worker leases and completed batches.",
+    )
+    artifact_job_status.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+
+    intelligence_enrich = sub.add_parser(
+        "intelligence-enrich",
+        help="Run bounded announcement artifact download and parse stages.",
+    )
+    intelligence_enrich.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    intelligence_enrich.add_argument("--limit", type=int, default=500)
+    intelligence_enrich.add_argument(
+        "--stages",
+        nargs="+",
+        choices=[
+            "enqueue",
+            "download",
+            "parse",
+        ],
+        default=["enqueue", "download", "parse"],
+    )
+
+    intelligence_reconcile = sub.add_parser(
+        "intelligence-reconcile",
+        help="Reconcile metadata and run the bounded enrichment pipeline.",
+    )
+    intelligence_reconcile.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    intelligence_reconcile.add_argument(
+        "--lookback-days", type=int, default=2
+    )
+    intelligence_reconcile.add_argument("--limit", type=int, default=500)
+    intelligence_reconcile.add_argument(
+        "--stages",
+        nargs="+",
+        choices=[
+            "metadata",
+            "enqueue",
+            "download",
+            "parse",
+        ],
+        default=[
+            "metadata",
+            "enqueue",
+            "download",
+            "parse",
+        ],
+    )
+
+    intelligence_semantic_status = sub.add_parser(
+        "intelligence-semantic-status",
+        help="Write and print the semantic pipeline operational snapshot.",
+    )
+    intelligence_semantic_status.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+
+    intelligence_prune_raw = sub.add_parser(
+        "intelligence-prune-raw",
+        help="Delete raw source files that are no longer referenced.",
+    )
+    intelligence_prune_raw.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    intelligence_prune_raw.add_argument(
+        "--source",
+        choices=["tushare_announcement"],
+        required=True,
+    )
+
+    source_audit = sub.add_parser(
+        "intelligence-source-audit",
+        help=(
+            "Cross-check Tushare materializations with iFinD and "
+            "optionally supplement primary-source gaps."
+        ),
+    )
+    source_audit.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    source_audit.add_argument(
+        "--as-of",
+        dest="audit_as_of",
+        default=None,
+        help="Audit date YYYY-MM-DD; defaults to latest fresh snapshot.",
+    )
+    source_audit.add_argument(
+        "--datasets",
+        nargs="+",
+        choices=["market", "announcement"],
+        default=["market", "announcement"],
+    )
+    source_audit.add_argument(
+        "--announcement-scope",
+        choices=["operational", "full-market"],
+        default="operational",
+    )
+    source_audit.add_argument(
+        "--codes",
+        nargs="*",
+        default=None,
+        help="Explicit announcement codes for operational scope.",
+    )
+    source_audit.add_argument(
+        "--supplement",
+        action="store_true",
+        help="Persist iFinD-only announcements and missing market rows.",
     )
 
     return parser
@@ -319,8 +757,8 @@ def _resolve_runtime(args: argparse.Namespace) -> tuple[dict | None, str, str, P
     Market is taken from ``--market`` (default ``a_share``). For the default
     a_share market this is byte-identical to the historical single-market
     behaviour (competition.load + resolve_agent_paths + data/shared/cache).
-    For hk/us the config, data/reports dirs, and a per-market shared cache are
-    resolved via ``resolve_market_paths``.
+    For the cross-border ETF account, config, data/reports dirs, and a
+    per-market shared cache are resolved via ``resolve_market_paths``.
 
     For competition agent mode, config is loaded via competition.load. For
     legacy single-agent mode, config falls back to configs/strategy_v1.yaml.
@@ -361,6 +799,77 @@ def _resolve_runtime(args: argparse.Namespace) -> tuple[dict | None, str, str, P
     return cfg, data_dir, reports_dir, cache_dir, market
 
 
+def _count_generated_orders(rows: list[dict]) -> int:
+    return sum(
+        len(row["orders"])
+        if isinstance(row.get("orders"), list)
+        else 1
+        for row in rows
+    )
+
+
+def _runtime_repo_root(store: PortfolioStore) -> Path:
+    data_dir = Path(store.data_dir).resolve()
+    for candidate in (data_dir, *data_dir.parents):
+        if candidate.name == "data":
+            return candidate.parent
+    return Path.cwd()
+
+
+def _run_daily_decision_cycle(
+    config: dict,
+    store: PortfolioStore,
+    provider,
+    market_module,
+    *,
+    as_of: str | None,
+    run_id: str,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    trades = market_module.execute_due_orders(config, store, provider, as_of=as_of)
+    nav_rows = market_module.update_nav(
+        config,
+        store,
+        provider,
+        as_of=as_of,
+        notes=f"daily decision; trades={len(trades)}",
+    )
+    previous_targets = store.load_pending()
+    store.save_pending([])
+    try:
+        batches = market_module.generate_rebalance_orders(
+            config,
+            store,
+            provider,
+            as_of=as_of,
+            run_id=run_id,
+        )
+    except Exception:
+        store.save_pending(previous_targets)
+        raise
+    return trades, nav_rows, batches
+
+
+def _run_weekly_review_state(
+    config: dict,
+    store: PortfolioStore,
+    provider,
+    market_module,
+    *,
+    market: str,
+    as_of: str | None,
+) -> list[dict]:
+    rows = market_module.update_nav(
+        config,
+        store,
+        provider,
+        as_of=as_of,
+        notes="weekly review",
+    )
+    if market == "a_share":
+        compute_pending_forward_ic(config, store, provider, as_of=as_of)
+    return rows
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -389,18 +898,39 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "validate-overlay":
         ensure_dirs(args.logs_dir)
         return _command_validate_overlay(args)
+    if args.command == "validate-strategy-pair":
+        ensure_dirs(args.logs_dir)
+        return _command_validate_strategy_pair(args)
+    if args.command == "apply-strategy-release":
+        ensure_dirs(args.logs_dir)
+        return _command_apply_strategy_release(args)
     if args.command == "agent-rollback":
         ensure_dirs(args.logs_dir)
         return _command_agent_rollback(args)
     if args.command == "prepare-market-data":
         ensure_dirs(args.logs_dir)
         return _command_prepare_market_data(args)
+    if args.command == "prepare-qdii-market-data":
+        ensure_dirs(args.logs_dir)
+        return _command_prepare_qdii_market_data(args)
     if args.command == "prepare-backtest-data":
         ensure_dirs(args.logs_dir)
         return _command_prepare_backtest_data(args)
     if args.command == "backtest":
         ensure_dirs(args.logs_dir)
         return _command_backtest(args)
+    if args.command == "qdii-capacity-study":
+        ensure_dirs(args.logs_dir)
+        return _command_qdii_capacity_study(args)
+    if args.command == "refresh-qdii-events":
+        ensure_dirs(args.logs_dir)
+        return _command_refresh_qdii_events(args)
+    if args.command == "qdii-shadow-research":
+        ensure_dirs(args.logs_dir)
+        return _command_qdii_shadow_research(args)
+    if args.command == "record-theme-sentiment":
+        ensure_dirs(args.logs_dir)
+        return _command_record_theme_sentiment(args)
     if args.command == "record-sentiment":
         ensure_dirs(args.logs_dir)
         return _command_record_sentiment(args)
@@ -416,6 +946,57 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "notify-daily-summary":
         ensure_dirs(args.logs_dir)
         return _command_notify_daily_summary(args)
+    if args.command == "notify-workflow-summary":
+        ensure_dirs(args.logs_dir)
+        return _command_notify_workflow_summary(args)
+    if args.command in {
+        "prepare-research-data",
+        "run-prediction-research",
+        "train-prediction-models",
+        "predict",
+    }:
+        ensure_dirs(args.logs_dir)
+        return _command_research_workflow(args)
+    if args.command in {"run-model-iteration", "run-model-shadow"}:
+        ensure_dirs(args.logs_dir)
+        return _command_run_model_iteration(args)
+    if args.command in {
+        "intelligence-ingest", "intelligence-backfill",
+        "intelligence-extract", "intelligence-status", "intelligence-evaluate",
+    }:
+        ensure_dirs(args.logs_dir)
+        return _command_intelligence(args)
+    if args.command == "intelligence-model-effect":
+        ensure_dirs(args.logs_dir)
+        return _command_intelligence_model_effect(args)
+    if args.command in {
+        "intelligence-semantic-prepare",
+        "intelligence-semantic-run",
+        "intelligence-semantic-import",
+        "intelligence-semantic-job-status",
+        "intelligence-semantic-daily",
+    }:
+        ensure_dirs(args.logs_dir)
+        return _command_intelligence_exchange(args)
+    if args.command in {
+        "intelligence-artifact-job-export",
+        "intelligence-artifact-job-run",
+        "intelligence-artifact-job-import",
+        "intelligence-artifact-job-status",
+    }:
+        ensure_dirs(args.logs_dir)
+        return _command_intelligence_artifact_exchange(args)
+    if args.command in {
+        "intelligence-enrich",
+        "intelligence-reconcile",
+        "intelligence-semantic-status",
+        "intelligence-prune-raw",
+    }:
+        ensure_dirs(args.logs_dir)
+        return _command_intelligence_operations(args)
+    if args.command == "intelligence-source-audit":
+        ensure_dirs(args.logs_dir)
+        return _command_intelligence_source_audit(args)
 
     try:
         config, data_dir, reports_dir, cache_dir, market = _resolve_runtime(args)
@@ -448,12 +1029,41 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Initialized {data_dir}")
             elif args.command == "rebalance":
                 batches = market_module.generate_rebalance_orders(config, store, provider, as_of=args.as_of, run_id=run_id)
-                print(f"Generated {sum(len(batch.get('orders', [])) for batch in batches)} pending orders")
+                from .research.formal_lineage import record_formal_decision
+
+                record_formal_decision(
+                    repo_root=_runtime_repo_root(store),
+                    market=market,
+                    config=config,
+                    store=store,
+                    run_id=run_id,
+                    as_of=args.as_of or date.today().isoformat(),
+                    generated=batches,
+                )
+                print(f"Generated {_count_generated_orders(batches)} pending orders")
             elif args.command == "execute":
                 trades = market_module.execute_due_orders(config, store, provider, as_of=args.as_of)
+                from .research.formal_lineage import record_formal_fills
+
+                record_formal_fills(
+                    repo_root=_runtime_repo_root(store),
+                    market=market,
+                    agent_id=str(config.get("agent_id") or args.agent or ""),
+                    trades=trades,
+                )
                 print(f"Executed {len(trades)} trades")
             elif args.command == "update-nav":
                 rows = market_module.update_nav(config, store, provider, as_of=args.as_of)
+                from .research.formal_lineage import record_nav_attribution
+
+                record_nav_attribution(
+                    repo_root=_runtime_repo_root(store),
+                    market=market,
+                    agent_id=str(config.get("agent_id") or args.agent or ""),
+                    store=store,
+                    nav_rows=rows,
+                    trades=[],
+                )
                 print(f"Updated NAV for {len(rows)} accounts")
             elif args.command == "report":
                 path = generate_weekly_report(config, store, reports_dir, run_id=run_id)
@@ -463,8 +1073,45 @@ def main(argv: list[str] | None = None) -> int:
                 fragment_path = generate_dashboard(config, store, reports_dir, mode="fragment")
                 print(f"Dashboard written to {page_path}; fragment {fragment_path}")
             elif args.command == "run-daily":
-                trades = market_module.execute_due_orders(config, store, provider, as_of=args.as_of)
-                rows = market_module.update_nav(config, store, provider, as_of=args.as_of, notes=f"daily; trades={len(trades)}")
+                trades, rows, batches = _run_daily_decision_cycle(
+                    config,
+                    store,
+                    provider,
+                    market_module,
+                    as_of=args.as_of,
+                    run_id=run_id,
+                )
+                from .research.formal_lineage import (
+                    record_formal_decision,
+                    record_formal_fills,
+                    record_nav_attribution,
+                )
+
+                lineage_root = _runtime_repo_root(store)
+                fill_projection = record_formal_fills(
+                    repo_root=lineage_root,
+                    market=market,
+                    agent_id=str(config.get("agent_id") or args.agent or ""),
+                    trades=trades,
+                )
+                decision_projection = record_formal_decision(
+                    repo_root=lineage_root,
+                    market=market,
+                    config=config,
+                    store=store,
+                    run_id=run_id,
+                    as_of=args.as_of or date.today().isoformat(),
+                    generated=batches,
+                )
+                attribution_projection = record_nav_attribution(
+                    repo_root=lineage_root,
+                    market=market,
+                    agent_id=str(config.get("agent_id") or args.agent or ""),
+                    store=store,
+                    nav_rows=rows,
+                    trades=trades,
+                    decision_ids=fill_projection.get("decision_ids") or {},
+                )
                 # Forward-IC diagnostic is A-share-only (uses Tushare-specific
                 # provider methods); skip for hk/us.
                 if market == "a_share":
@@ -472,12 +1119,22 @@ def main(argv: list[str] | None = None) -> int:
                 provider.persist_health()
                 page_path = generate_dashboard(config, store, reports_dir)
                 generate_dashboard(config, store, reports_dir, mode="fragment")
-                print(f"Daily run complete: trades={len(trades)}, nav_rows={len(rows)}, dashboard={page_path}")
+                order_count = _count_generated_orders(batches)
+                print(
+                    f"Daily decision complete: trades={len(trades)}, "
+                    f"orders={order_count}, nav_rows={len(rows)}, dashboard={page_path}, "
+                    f"lineage_decisions={decision_projection['inserted']['decision_runs']}, "
+                    f"attributions={attribution_projection['inserted']}"
+                )
             elif args.command == "run-weekly":
-                batches = market_module.generate_rebalance_orders(config, store, provider, as_of=args.as_of, run_id=run_id)
-                rows = market_module.update_nav(config, store, provider, as_of=args.as_of, notes="weekly signal")
-                if market == "a_share":
-                    compute_pending_forward_ic(config, store, provider, as_of=args.as_of)
+                rows = _run_weekly_review_state(
+                    config,
+                    store,
+                    provider,
+                    market_module,
+                    market=market,
+                    as_of=args.as_of,
+                )
                 provider.persist_health()
                 report = generate_weekly_report(config, store, reports_dir, run_id=run_id)
                 dashboard = generate_dashboard(config, store, reports_dir)
@@ -485,11 +1142,368 @@ def main(argv: list[str] | None = None) -> int:
                 # The weekly briefing is part of the A-share review workflow.
                 briefing = _auto_write_weekly_briefing(args.agent, args.as_of) if market == "a_share" else None
                 briefing_note = f", briefing={briefing}" if briefing else ""
-                print(f"Weekly run complete: batches={len(batches)}, nav_rows={len(rows)}, report={report}, dashboard={dashboard}{briefing_note}")
+                print(
+                    f"Weekly review complete: orders=0, nav_rows={len(rows)}, "
+                    f"report={report}, dashboard={dashboard}{briefing_note}"
+                )
             else:
                 parser.error(f"Unknown command: {args.command}")
     finally:
         provider.persist_health()
+    return 0
+
+
+def _command_research_workflow(args: argparse.Namespace) -> int:
+    from .research.pipeline import ResearchPipeline
+
+    pipeline = ResearchPipeline(
+        args.repo_root,
+        market=args.market,
+        agent=args.agent or "codex",
+        as_of=args.as_of,
+        offline=bool(args.offline),
+        max_full_history_instruments=args.max_full_history_instruments,
+    )
+    try:
+        if args.command == "prepare-research-data":
+            result = pipeline.prepare_data(force=bool(args.force))
+        elif args.command == "run-prediction-research":
+            result = pipeline.run_research()
+        elif args.command == "train-prediction-models":
+            result = pipeline.train_models()
+        else:
+            result = pipeline.predict()
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("status") not in {"failed"} else 2
+
+
+def _command_run_model_iteration(args: argparse.Namespace) -> int:
+    from .model_shadow import run_model_iteration
+
+    as_of = args.as_of
+    if as_of is None and bool(args.offline) and args.market == "a_share":
+        as_of = _resolve_offline_as_of(
+            Path(args.repo_root) / "data" / "shared" / "cache"
+        )
+    as_of = as_of or date.today().isoformat()
+    try:
+        result = run_model_iteration(
+            repo_root=args.repo_root,
+            market=args.market,
+            as_of=as_of,
+            offline=bool(args.offline),
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI reports a bounded failure
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if str(result.get("status") or "") in {"complete", "no_candidate"} else 2
+
+
+def _command_intelligence(args: argparse.Namespace) -> int:
+    from .intelligence.diagnostics import build_quality_report, evaluate_event_factors
+    from .intelligence.ingestion import IntelligencePipeline
+
+    if args.command == "intelligence-status":
+        result = build_quality_report(args.repo_root)
+    elif args.command == "intelligence-evaluate":
+        from .research.storage import ResearchStore
+
+        root = Path(args.repo_root)
+        store = ResearchStore(root / "data" / "research")
+        snapshot_date = store.latest_common_snapshot_date(
+            args.market,
+            as_of=args.as_of or datetime.now(timezone.utc).strftime("%Y%m%d"),
+        )
+        result = evaluate_event_factors(
+            store.read_feature_snapshot(args.market, snapshot_date),
+            store.read_label_snapshot(args.market, snapshot_date),
+        )
+        result.update({"market": args.market, "snapshot_date": snapshot_date})
+        report_dir = root / "reports" / "intelligence"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report_path = report_dir / f"factor_validation_{args.market}_{snapshot_date}.json"
+        report_path.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+        )
+        result["report_path"] = str(report_path)
+    else:
+        pipeline = IntelligencePipeline(args.repo_root, getattr(args, "config_path", None))
+        if args.command == "intelligence-ingest":
+            result = pipeline.ingest(
+                since=args.since,
+                until=args.until or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                sources=set(args.sources) if args.sources else None,
+            )
+        elif args.command == "intelligence-backfill":
+            try:
+                result = pipeline.backfill(
+                    source=args.source,
+                    start_date=args.start_date,
+                    end_date=args.end_date,
+                    max_partitions=args.max_partitions,
+                    resume=bool(args.resume),
+                )
+            except Exception as exc:  # noqa: BLE001 - secret-safe CLI boundary
+                result = {
+                    "status": "failed",
+                    "source": args.source,
+                    "partitions_complete": 0,
+                    "partitions_failed": 0,
+                    "fetched": 0,
+                    "inserted": 0,
+                    "b_share_filtered": 0,
+                    "live_cursor_unchanged": True,
+                    "error": type(exc).__name__,
+                }
+        else:
+            result = pipeline.extract(limit=args.limit)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    failed = any(item.get("status") == "failed" for item in result.get("sources", []))
+    partial = args.command == "intelligence-backfill" and result.get("status") != "complete"
+    if failed or result.get("status") == "failed":
+        return 2
+    return 3 if partial else 0
+
+
+def _command_intelligence_model_effect(args: argparse.Namespace) -> int:
+    from .research.intelligence_effect import (
+        evaluate_latest_intelligence_effect,
+    )
+
+    try:
+        result = evaluate_latest_intelligence_effect(
+            args.repo_root,
+            market=args.market,
+            as_of=args.as_of,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        result = {
+            "status": "failed",
+            "error": str(exc),
+        }
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 2
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0 if result.get("status") == "complete" else 3
+
+
+def _command_intelligence_exchange(args: argparse.Namespace) -> int:
+    from .intelligence.semantic.exchange import (
+        SemanticExchangeError,
+        import_job,
+        job_status,
+        prepare_job,
+        run_daily,
+        run_job,
+    )
+
+    try:
+        if args.command == "intelligence-semantic-prepare":
+            result = prepare_job(
+                args.repo_root,
+                profile_id=args.profile,
+                limit=args.limit,
+                max_input_characters=args.max_input_characters,
+            )
+        elif args.command == "intelligence-semantic-run":
+            result = run_job(
+                args.repo_root,
+                args.job,
+                executor_config=args.executor_config,
+            )
+        elif args.command == "intelligence-semantic-import":
+            result = import_job(
+                args.repo_root,
+                args.job,
+                refresh_features=True,
+            )
+        elif args.command == "intelligence-semantic-job-status":
+            result = job_status(args.repo_root, args.job)
+        else:
+            result = run_daily(
+                args.repo_root,
+                profile_id=args.profile,
+                limit=args.limit,
+                max_input_characters=args.max_input_characters,
+                executor_config=args.executor_config,
+            )
+    except SemanticExchangeError as exc:
+        result = {
+            "status": "failed",
+            "error": exc.code,
+            "detail": exc.detail,
+        }
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 2
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    status = str(result.get("status") or "")
+    if status in {"failed"}:
+        return 2
+    if status in {"partial", "awaiting_executor", "ready_to_import"}:
+        return 3
+    return 0
+
+
+def _command_intelligence_artifact_exchange(
+    args: argparse.Namespace,
+) -> int:
+    from .intelligence.artifact_exchange import (
+        ArtifactExchangeError,
+        artifact_worker_status,
+        export_artifact_job,
+        import_artifact_job,
+        run_artifact_job,
+    )
+
+    try:
+        if args.command == "intelligence-artifact-job-export":
+            result = export_artifact_job(
+                args.repo_root,
+                stage=args.stage,
+                limit=args.limit,
+                worker_id=args.worker_id,
+                lease_seconds=args.lease_seconds,
+            )
+        elif args.command == "intelligence-artifact-job-run":
+            result = run_artifact_job(
+                args.repo_root,
+                args.job_dir,
+                workers=args.workers,
+            )
+        elif args.command == "intelligence-artifact-job-import":
+            result = import_artifact_job(
+                args.repo_root,
+                args.job_dir,
+            )
+        else:
+            result = artifact_worker_status(args.repo_root)
+    except ArtifactExchangeError as exc:
+        result = {
+            "status": "failed",
+            "error": exc.code,
+            "detail": exc.detail,
+        }
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 2
+    except (OSError, ValueError) as exc:
+        result = {
+            "status": "failed",
+            "error": "artifact_job_configuration",
+            "detail": type(exc).__name__,
+        }
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 2
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def _command_intelligence_operations(args: argparse.Namespace) -> int:
+    from .intelligence.operations import (
+        FatalOperationError,
+        run_intelligence_enrich,
+        run_intelligence_prune_raw,
+        run_intelligence_reconcile,
+        run_semantic_status,
+    )
+
+    try:
+        if args.command == "intelligence-enrich":
+            result = run_intelligence_enrich(
+                args.repo_root,
+                limit=args.limit,
+                stages=tuple(args.stages),
+            )
+        elif args.command == "intelligence-reconcile":
+            result = run_intelligence_reconcile(
+                args.repo_root,
+                lookback_days=args.lookback_days,
+                limit=args.limit,
+                stages=tuple(args.stages),
+            )
+        elif args.command == "intelligence-prune-raw":
+            result = run_intelligence_prune_raw(
+                args.repo_root,
+                source=args.source,
+            )
+        else:
+            result = run_semantic_status(args.repo_root)
+    except FatalOperationError as exc:
+        print(
+            json.dumps(
+                exc.report,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 2
+    except (ValueError, OSError):
+        result = {
+            "status": "failed",
+            "error": "configuration",
+            "counts": {},
+            "retryable_failures": 0,
+            "terminal_failures": 1,
+            "next_queue_depth": 0,
+        }
+        print(
+            json.dumps(result, ensure_ascii=False, sort_keys=True)
+        )
+        return 2
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def _command_intelligence_source_audit(
+    args: argparse.Namespace,
+) -> int:
+    from .intelligence.cross_source import CrossSourceAuditor
+
+    auditor = CrossSourceAuditor(args.repo_root)
+    as_of = auditor.resolve_as_of(args.audit_as_of)
+    full_market = args.announcement_scope == "full-market"
+    if full_market or "announcement" not in args.datasets:
+        announcement_codes: tuple[str, ...] = ()
+    elif args.codes:
+        announcement_codes = tuple(
+            str(code).strip().upper()
+            for code in args.codes
+            if str(code).strip()
+        )
+    else:
+        announcement_codes = auditor.operational_codes()
+    if (
+        "announcement" in args.datasets
+        and not full_market
+        and not announcement_codes
+    ):
+        result = {
+            "status": "degraded",
+            "as_of": as_of,
+            "error": "ifind_operational_codes_empty",
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    try:
+        result = auditor.run(
+            as_of=as_of,
+            datasets=set(args.datasets),
+            full_market_announcements=full_market,
+            announcement_codes=announcement_codes,
+            supplement=bool(args.supplement),
+        )
+    except Exception as exc:  # noqa: BLE001 - secret-safe CLI boundary
+        result = {
+            "status": "failed",
+            "as_of": as_of,
+            "error": type(exc).__name__,
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -619,8 +1633,12 @@ def _command_validate_overlay(args: argparse.Namespace) -> int:
 
     repo_root = Path.cwd()
     agent_id = args.agent
+    market = getattr(args, "market", None) or "a_share"
     try:
-        paths = competition.resolve_agent_paths(agent_id, repo_root=repo_root)
+        if market == "a_share":
+            paths = competition.resolve_agent_paths(agent_id, repo_root=repo_root)
+        else:
+            paths = competition.resolve_market_paths(market, agent_id, repo_root=repo_root)
     except competition.UnknownAgent as exc:
         print(f"错误：未知 agent: {exc}", file=sys.stderr)
         return 1
@@ -639,7 +1657,7 @@ def _command_validate_overlay(args: argparse.Namespace) -> int:
         )
         return 1
     try:
-        validate_overlay_guard(agent_id, overlay, repo_root=repo_root)
+        validate_overlay_guard(agent_id, overlay, repo_root=repo_root, market=market)
     except OverlayBaselineLocked as exc:
         print(
             f"错误：overlay 改动了基线锁字段 `{exc.field}`（baseline={exc.baseline_value!r}, "
@@ -651,8 +1669,41 @@ def _command_validate_overlay(args: argparse.Namespace) -> int:
         print(f"错误：overlay 守卫检查失败 — {exc}", file=sys.stderr)
         return 1
     print(
-        f"OK: agent={agent_id} overlay 通过守卫检查 ({paths.config_path})"
+        f"OK: market={market} agent={agent_id} overlay 通过守卫检查 ({paths.config_path})"
     )
+    return 0
+
+
+def _command_validate_strategy_pair(args: argparse.Namespace) -> int:
+    from .strategy_registry import StrategyPairInvalid, validate_market_strategy_pair
+
+    market = getattr(args, "market", None) or "a_share"
+    try:
+        result = validate_market_strategy_pair(market, repo_root=Path.cwd())
+    except StrategyPairInvalid as exc:
+        print(f"错误：双策略差异守卫失败 — {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"OK: market={market} factor_distance={result['factor_distance']:.4f} "
+        f"floor={result['factor_distance_floor']:.4f}"
+    )
+    return 0
+
+
+def _command_apply_strategy_release(args: argparse.Namespace) -> int:
+    from .strategy_registry import StrategyPairInvalid
+    from .strategy_release import StrategyReleaseInvalid, apply_strategy_release
+
+    try:
+        result = apply_strategy_release(
+            args.manifest,
+            repo_root=Path.cwd(),
+            dry_run=bool(args.dry_run),
+        )
+    except (StrategyReleaseInvalid, StrategyPairInvalid, OverlayGuardError) as exc:
+        print(f"错误：策略 release 失败 — {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -693,6 +1744,21 @@ def _command_prepare_market_data(args: argparse.Namespace) -> int:
         f"errors={len(snapshot.get('errors') or [])} "
         f"duration_ms={snapshot.get('duration_ms')}"
     )
+    return 0 if snapshot.get("status") != "failed" else 2
+
+
+def _command_prepare_qdii_market_data(args: argparse.Namespace) -> int:
+    from .markets.cn_qdii_etf.market_data import prepare_market_data
+
+    try:
+        snapshot = prepare_market_data(
+            repo_root=Path.cwd(),
+            as_of=args.as_of,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: prepare-qdii-market-data failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(snapshot, ensure_ascii=False, indent=2))
     return 0 if snapshot.get("status") != "failed" else 2
 
 
@@ -792,6 +1858,218 @@ def _command_backtest(args: argparse.Namespace) -> int:
     )
     print(f"  outputs: {args.output}")
     print(f"  report:  {report_path}")
+    return 0
+
+
+def _command_qdii_capacity_study(args: argparse.Namespace) -> int:
+    """Run a network-free QDII capacity study from the shared cache."""
+
+    from .markets.cn_qdii_etf import capacity_study, research_panel
+
+    try:
+        if args.end is not None:
+            end_date = args.end
+        else:
+            payload = json.loads(args.universe.read_text(encoding="utf-8"))
+            end_date = date.fromisoformat(str(payload["as_of"])[:10])
+        if args.start is not None:
+            start_date = args.start
+        else:
+            try:
+                start_date = end_date.replace(year=end_date.year - 3)
+            except ValueError:
+                start_date = end_date.replace(year=end_date.year - 3, day=28)
+        if start_date > end_date:
+            raise capacity_study.CapacityStudyError("invalid_date_range")
+
+        root = Path.cwd()
+        baseline = load_config(root / "configs" / "competition_cn_qdii_etf.yaml")
+        overlays = {
+            agent_id: load_config(
+                root / "configs" / "agents" / f"{agent_id}_cn_qdii_etf.yaml"
+            )
+            for agent_id in ("claude", "codex")
+        }
+        panel = research_panel.build_research_panel(
+            args.cache_dir,
+            args.universe,
+            start=start_date.isoformat(),
+            end=end_date.isoformat(),
+        )
+        panel_start = date.fromisoformat(str(panel.metadata.get("start") or start_date))
+        panel_end = date.fromisoformat(str(panel.metadata.get("end") or end_date))
+        effective_start = max(start_date, panel_start)
+        effective_end = min(end_date, panel_end)
+        result = capacity_study.run_capacity_study(
+            panel,
+            overlays=overlays,
+            baseline=baseline,
+            top_ns=list(args.top_n),
+            start=effective_start.isoformat(),
+            end=effective_end.isoformat(),
+            min_signal_weeks=max(int(args.min_signal_weeks), 1),
+        )
+        paths = capacity_study.write_capacity_artifacts(
+            result,
+            args.output_root,
+            end_date=effective_end.isoformat(),
+        )
+    except (
+        OSError,
+        KeyError,
+        ValueError,
+        json.JSONDecodeError,
+        research_panel.ResearchPanelError,
+        capacity_study.CapacityStudyError,
+    ) as exc:
+        print(f"error: QDII capacity study failed: {exc}", file=sys.stderr)
+        return 2
+
+    print(
+        f"QDII capacity study complete: run_id={result.run_id} "
+        f"rows={len(result.metrics)}"
+    )
+    print(f"  report: {paths['report']}")
+    for item in result.summary.get("recommendations", []):
+        print(
+            "  research: "
+            f"{item.get('strategy')}/{item.get('scope')} "
+            f"top_n={item.get('recommended_top_n')}"
+        )
+    return 0
+
+
+def _command_refresh_qdii_events(args: argparse.Namespace) -> int:
+    from .markets.cn_qdii_etf import fund_events
+
+    try:
+        payload = json.loads(args.universe.read_text(encoding="utf-8"))
+        codes = sorted(
+            {
+                str(row["code"])
+                for rows in (payload.get("scopes") or {}).values()
+                for row in rows
+                if row.get("code")
+            }
+        )
+        if not codes:
+            raise ValueError("empty_qdii_universe")
+        events = fund_events.refresh_event_store(codes, args.output)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError, RuntimeError) as exc:
+        print(f"error: QDII event refresh failed: {exc}", file=sys.stderr)
+        return 2
+    print(f"QDII events refreshed: codes={len(codes)} events={len(events)} output={args.output}")
+    return 0
+
+
+def _command_qdii_shadow_research(args: argparse.Namespace) -> int:
+    from .markets.cn_qdii_etf import data_provider, research_catalog, research_panel, shadow_research, theme_sentiment
+
+    end_date = args.end or date.today()
+    if args.start is not None:
+        start_date = args.start
+    else:
+        try:
+            start_date = end_date.replace(year=end_date.year - 3)
+        except ValueError:
+            start_date = end_date.replace(year=end_date.year - 3, day=28)
+    if start_date > end_date:
+        print("error: QDII shadow research failed: invalid_date_range", file=sys.stderr)
+        return 2
+    end_key = end_date.strftime("%Y%m%d")
+    try:
+        provider = data_provider.make_provider(
+            cache_dir=args.cache_dir,
+            offline=not args.refresh_data,
+            as_of=end_date.isoformat(),
+        )
+        basic = provider._fund_basic(refresh=bool(args.refresh_data), as_of_key=end_key)
+        catalog = research_catalog.build_research_catalog(basic, as_of=end_date)
+        if catalog.empty:
+            raise ValueError("empty_research_catalog")
+        available_codes: list[str] = []
+        for code in catalog["code"].astype(str):
+            try:
+                daily = provider._fund_daily(code, end_key)
+                if daily is None or daily.empty:
+                    continue
+                available_codes.append(code)
+                if args.refresh_data:
+                    for loader in (
+                        lambda: provider.fund_adj(code, as_of=end_key),
+                        lambda: provider._fund_nav(code, end_key),
+                        lambda: provider._fund_share(code, end_key),
+                    ):
+                        try:
+                            loader()
+                        except Exception as exc:  # noqa: BLE001 - optional research field
+                            provider.record_health("qdii_shadow_optional", "failed", f"{code}: {exc}")
+            except Exception as exc:  # noqa: BLE001 - catalog coverage is reported below
+                provider.record_health("qdii_shadow_daily", "failed", f"{code}: {exc}")
+        catalog = catalog.loc[catalog["code"].astype(str).isin(available_codes)].copy()
+        if catalog.empty:
+            raise ValueError("research_history_unavailable")
+        payload = research_catalog.catalog_payload(catalog, as_of=end_date.isoformat())
+        args.catalog.parent.mkdir(parents=True, exist_ok=True)
+        write_json(args.catalog, payload)
+        catalog.to_csv(args.catalog.with_suffix(".csv"), index=False)
+        panel = research_panel.build_research_panel(
+            args.cache_dir,
+            args.catalog,
+            start=start_date.isoformat(),
+            end=end_date.isoformat(),
+        )
+        effective_end = date.fromisoformat(str(panel.metadata.get("end") or end_date))
+        result = shadow_research.run_shadow_research(
+            panel,
+            catalog,
+            start=start_date.isoformat(),
+            end=effective_end.isoformat(),
+            min_signal_weeks=max(int(args.min_signal_weeks), 1),
+            theme_sentiment_records=theme_sentiment.load_theme_sentiment(args.sentiment_file),
+            sentiment_agent=args.sentiment_agent,
+        )
+        paths = shadow_research.write_shadow_artifacts(
+            result,
+            args.output_root,
+            end_date=effective_end.isoformat(),
+        )
+        provider.persist_health()
+    except (OSError, ValueError, KeyError, json.JSONDecodeError, research_panel.ResearchPanelError) as exc:
+        print(f"error: QDII shadow research failed: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"QDII shadow research complete: run_id={result.run_id} "
+        f"catalog={len(catalog)} metrics={len(result.metrics)}"
+    )
+    print(f"  report: {paths['report']}")
+    return 0
+
+
+def _command_record_theme_sentiment(args: argparse.Namespace) -> int:
+    from .markets.cn_qdii_etf import theme_sentiment
+
+    try:
+        rows = theme_sentiment.record_theme_sentiment(
+            args.output,
+            agent=args.agent,
+            week_end=args.week_end,
+            index_key=args.index_key,
+            score=args.score,
+            confidence=args.confidence,
+            drivers=args.drivers,
+            sources=args.sources,
+            llm_model=args.llm_model,
+            prompt_version=args.prompt_version,
+            force=args.force,
+        )
+    except (OSError, theme_sentiment.SentimentValidationError) as exc:
+        print(f"error: theme sentiment record failed: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"QDII theme sentiment recorded: agent={args.agent} "
+        f"index={args.index_key} rows={len(rows)}"
+    )
     return 0
 
 
@@ -941,14 +2219,22 @@ def _command_sanity_check(args: argparse.Namespace) -> int:
 
 
 def _command_notify_daily_summary(args: argparse.Namespace) -> int:
-    """Send the daily summary DM via Lark Open API.
+    """Compatibility alias for ``notify-workflow-summary --cadence daily``."""
+    from .workflow_notifications import cli_send_workflow_summary
 
-    Delegated to ``stock_analyze.notifier.cli_send_daily_summary`` so the
-    CLI layer stays thin and the heavy logic stays testable in isolation.
-    """
-    from .notifier import cli_send_daily_summary
+    return cli_send_workflow_summary("daily", repo_root=args.repo_root)
 
-    return cli_send_daily_summary(repo_root=args.repo_root)
+
+def _command_notify_workflow_summary(args: argparse.Namespace) -> int:
+    from .workflow_notifications import cli_send_workflow_summary
+
+    return cli_send_workflow_summary(
+        args.cadence,
+        repo_root=args.repo_root,
+        target=args.target,
+        force=args.force,
+        preview=args.preview,
+    )
 
 
 def _auto_write_weekly_briefing(agent_id: str | None, as_of: str | None) -> str | None:
@@ -977,6 +2263,7 @@ def _auto_write_weekly_briefing(agent_id: str | None, as_of: str | None) -> str 
 # - ``GET /simple/claude.html``     → reports/competition/simple/claude.html
 # - ``GET /simple/codex.html``      → reports/competition/simple/codex.html
 # - ``GET /pro.html``               → reports/competition/dashboard.html (alias)
+# - ``GET /app.html``               → reports/app/index.html (React app)
 # - ``GET /pro/<market>/<agent>.html`` → reports/<market>/<agent>/dashboard.html
 # - ``GET /pro/claude.html``        → reports/a_share/claude/dashboard.html (compat alias)
 # - ``GET /pro/codex.html``         → reports/a_share/codex/dashboard.html  (compat alias)
@@ -987,15 +2274,15 @@ DASHBOARD_ROUTES: dict[str, str] = {
     "/simple.html": "/competition/simple.html",
     "/simple/claude.html": "/competition/simple/claude.html",
     "/simple/codex.html": "/competition/simple/codex.html",
+    "/app.html": "/app/index.html",
+    "/app/": "/app/index.html",
     "/pro.html": "/competition/dashboard.html",
     "/pro/claude.html": "/a_share/claude/dashboard.html",
     "/pro/codex.html": "/a_share/codex/dashboard.html",
     "/pro/a_share/claude.html": "/a_share/claude/dashboard.html",
     "/pro/a_share/codex.html": "/a_share/codex/dashboard.html",
-    "/pro/hk/claude.html": "/hk/claude/dashboard.html",
-    "/pro/hk/codex.html": "/hk/codex/dashboard.html",
-    "/pro/us/claude.html": "/us/claude/dashboard.html",
-    "/pro/us/codex.html": "/us/codex/dashboard.html",
+    "/pro/cn_qdii_etf/claude.html": "/cn_qdii_etf/claude/dashboard.html",
+    "/pro/cn_qdii_etf/codex.html": "/cn_qdii_etf/codex/dashboard.html",
 }
 
 
@@ -1016,7 +2303,77 @@ def _resolve_dashboard_route(path: str, directory: Path) -> str | None:
 
 
 def _is_dashboard_api_path(path: str) -> bool:
-    return path in {"/api/dashboard/summary.json", "/api/dashboard.json"}
+    return path in {
+        "/api/dashboard/summary.json",
+        "/api/dashboard.json",
+        "/api/dashboard/detail.json",
+        "/api/dashboard/instrument.json",
+        "/api/dashboard/system-overview.json",
+        "/api/dashboard/model-research.json",
+        "/api/dashboard/data-intelligence.json",
+        "/api/dashboard/operations-center.json",
+        "/api/dashboard/overview.json",
+        "/api/dashboard/performance.json",
+        "/api/dashboard/portfolio.json",
+        "/api/dashboard/predictions.json",
+        "/api/dashboard/research.json",
+        "/api/dashboard/operations.json",
+        "/api/dashboard/governance.json",
+        "/api/dashboard/intelligence.json",
+        "/api/dashboard/intelligence-event.json",
+        "/api/dashboard/intelligence-document.json",
+    }
+
+
+def _dashboard_api_error_response(exc: Exception) -> tuple[int, dict[str, str]]:
+    from .dashboard_http import (
+        DashboardResourceNotFound,
+        InvalidDashboardQuery,
+    )
+
+    if isinstance(exc, InvalidDashboardQuery):
+        return 400, {
+            "error": "invalid_query",
+            "message": str(exc),
+        }
+    if isinstance(exc, competition.UnknownMarket):
+        return 400, {
+            "error": "unknown_market",
+            "message": f"Unknown market: {exc.market}",
+        }
+    if isinstance(exc, competition.UnknownAgent):
+        return 404, {
+            "error": "unknown_agent",
+            "message": "Unknown agent for the selected market",
+        }
+    if isinstance(exc, DashboardResourceNotFound):
+        return 404, {
+            "error": "resource_not_found",
+            "message": "Dashboard resource not found",
+        }
+    from .dashboard_aggregator import DashboardDataError
+    from .dashboard_finance import InstrumentDataError, InvalidInstrumentCode
+
+    if isinstance(exc, InvalidInstrumentCode):
+        return 400, {
+            "error": "invalid_instrument_code",
+            "message": "Invalid instrument code",
+        }
+
+    if isinstance(exc, DashboardDataError):
+        return 500, {
+            "error": "dashboard_data_invalid",
+            "message": f"Dashboard data source is unreadable: {exc.source}",
+        }
+    if isinstance(exc, InstrumentDataError):
+        return 500, {
+            "error": "instrument_data_invalid",
+            "message": f"Instrument data source is unreadable: {exc.source}",
+        }
+    return 500, {
+        "error": "dashboard_api_failed",
+        "message": "Dashboard request failed",
+    }
 
 
 class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
@@ -1028,47 +2385,229 @@ class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
     unchanged.
     """
 
+    from .dashboard_http import DashboardResponseCache
+
+    protocol_version = "HTTP/1.1"
+    _response_cache = DashboardResponseCache(
+        ttl_seconds=15,
+        stale_seconds=86_400,
+    )
+
     def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
         # Strip query / fragment for routing decisions; preserve them when
         # rewriting so deep links keep their parameters.
         path, _, suffix = self.path.partition("?")
         if _is_dashboard_api_path(path):
-            self._serve_dashboard_summary()
+            self._serve_dashboard_api(path, suffix)
             return
         target = _resolve_dashboard_route(path, Path(self.directory))
         if target is not None:
             self.path = target + (("?" + suffix) if suffix else "")
         super().do_GET()
 
-    def _serve_dashboard_summary(self) -> None:
-        repo_root = Path(self.directory).resolve().parent
-        try:
-            from .dashboard_aggregator import build_dashboard_summary_data
+    def _serve_dashboard_api(self, path: str, query: str) -> None:
+        from .dashboard_http import InvalidDashboardQuery, build_http_response
 
-            payload = build_dashboard_summary_data(repo_root=repo_root, markets=list(competition.MARKETS))
-            raw = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False).encode("utf-8")
-            self.send_response(200)
+        repo_root = Path(self.directory).resolve().parent
+        request_started = time.perf_counter()
+        headers = getattr(self, "headers", {})
+        request_id = headers.get("X-Request-ID") or uuid.uuid4().hex[:16]
+        try:
+            params = parse_qs(query, keep_blank_values=False)
+            canonical_path = (
+                "/api/dashboard/summary.json"
+                if path == "/api/dashboard.json"
+                else path
+            )
+            cache_key = json.dumps(
+                {
+                    "root": str(repo_root),
+                    "path": canonical_path,
+                    "query": sorted((key, tuple(values)) for key, values in params.items()),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+
+            def build_payload() -> dict:
+                if canonical_path == "/api/dashboard/summary.json":
+                    from .dashboard_aggregator import build_dashboard_summary_data
+
+                    return build_dashboard_summary_data(
+                        repo_root=repo_root,
+                        markets=list(competition.MARKETS),
+                    )
+                if canonical_path == "/api/dashboard/operations-center.json":
+                    from .dashboard_workspace_api import (
+                        build_dashboard_operations_center_data,
+                    )
+
+                    scope = (params.get("scope") or ["all"])[0]
+                    return build_dashboard_operations_center_data(
+                        repo_root=repo_root,
+                        scope=scope,
+                    )
+                market = (params.get("market") or ["a_share"])[0]
+                agent = (params.get("agent") or ["codex"])[0]
+                if canonical_path == "/api/dashboard/model-research.json":
+                    from .dashboard_workspace_api import (
+                        build_dashboard_model_research_data,
+                    )
+
+                    return build_dashboard_model_research_data(
+                        repo_root=repo_root,
+                        market=market,
+                    )
+                if canonical_path == "/api/dashboard/data-intelligence.json":
+                    from .dashboard_workspace_api import (
+                        build_dashboard_data_intelligence_data,
+                    )
+
+                    return build_dashboard_data_intelligence_data(
+                        repo_root=repo_root,
+                        market=market,
+                    )
+                if canonical_path == "/api/dashboard/detail.json":
+                    from .dashboard_aggregator import build_dashboard_detail_data
+
+                    return build_dashboard_detail_data(
+                        repo_root=repo_root,
+                        market=market,
+                        agent=agent,
+                    )
+                if canonical_path == "/api/dashboard/instrument.json":
+                    from .dashboard_aggregator import build_dashboard_instrument_data
+
+                    code = (params.get("code") or [""])[0]
+                    return build_dashboard_instrument_data(
+                        repo_root=repo_root,
+                        market=market,
+                        agent=agent,
+                        code=code,
+                    )
+                from .dashboard_api import (
+                    build_dashboard_intelligence_data,
+                    build_dashboard_intelligence_document_data,
+                    build_dashboard_intelligence_event_data,
+                    build_dashboard_operations_data,
+                    build_dashboard_governance_data,
+                    build_dashboard_overview_data,
+                    build_dashboard_performance_data,
+                    build_dashboard_portfolio_data,
+                    build_dashboard_predictions_data,
+                    build_dashboard_research_data,
+                    build_dashboard_system_overview_data,
+                )
+
+                if canonical_path == "/api/dashboard/system-overview.json":
+                    return build_dashboard_system_overview_data(
+                        repo_root=repo_root,
+                    )
+                builders = {
+                    "/api/dashboard/overview.json": build_dashboard_overview_data,
+                    "/api/dashboard/performance.json": build_dashboard_performance_data,
+                    "/api/dashboard/portfolio.json": build_dashboard_portfolio_data,
+                    "/api/dashboard/research.json": build_dashboard_research_data,
+                    "/api/dashboard/operations.json": build_dashboard_operations_data,
+                    "/api/dashboard/governance.json": build_dashboard_governance_data,
+                }
+                if canonical_path == "/api/dashboard/predictions.json":
+                    raw_limit = (params.get("limit_per_horizon") or ["12"])[0]
+                    try:
+                        limit = int(raw_limit)
+                    except ValueError as exc:
+                        raise InvalidDashboardQuery(
+                            "limit_per_horizon must be an integer"
+                        ) from exc
+                    return build_dashboard_predictions_data(
+                        repo_root=repo_root,
+                        market=market,
+                        agent=agent,
+                        limit_per_horizon=limit,
+                    )
+                if canonical_path == "/api/dashboard/intelligence.json":
+                    return build_dashboard_intelligence_data(
+                        repo_root=repo_root,
+                        market=market,
+                        agent=agent,
+                    )
+                if (
+                    canonical_path
+                    == "/api/dashboard/intelligence-event.json"
+                ):
+                    event_id = (params.get("event_id") or [""])[0]
+                    return build_dashboard_intelligence_event_data(
+                        repo_root=repo_root,
+                        market=market,
+                        agent=agent,
+                        event_id=event_id,
+                    )
+                if (
+                    canonical_path
+                    == "/api/dashboard/intelligence-document.json"
+                ):
+                    document_id = (
+                        params.get("document_id") or [""]
+                    )[0]
+                    return build_dashboard_intelligence_document_data(
+                        repo_root=repo_root,
+                        market=market,
+                        agent=agent,
+                        document_id=document_id,
+                    )
+                builder = builders[canonical_path]
+                return builder(repo_root=repo_root, market=market, agent=agent)
+
+            entry, cache_status = self._response_cache.get_or_build(
+                cache_key,
+                build_payload,
+            )
+            elapsed_ms = (time.perf_counter() - request_started) * 1000.0
+            response = build_http_response(
+                entry,
+                accept_encoding=headers.get("Accept-Encoding", ""),
+                if_none_match=headers.get("If-None-Match"),
+                cache_status=cache_status,
+                request_id=request_id,
+                elapsed_ms=elapsed_ms,
+            )
+            self.send_response(response.status)
+            for name, value in response.headers.items():
+                self.send_header(name, value)
+            self.end_headers()
+            if response.body:
+                self.wfile.write(response.body)
+            return
         except Exception as exc:  # noqa: BLE001
+            status, error_payload = _dashboard_api_error_response(exc)
             raw = json.dumps(
-                {"error": "dashboard_summary_failed", "message": str(exc)},
+                error_payload,
                 ensure_ascii=False,
+                separators=(",", ":"),
             ).encode("utf-8")
-            self.send_response(500)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("X-Request-ID", request_id)
+            self.send_header(
+                "Server-Timing",
+                f"app;dur={(time.perf_counter() - request_started) * 1000.0:.1f}",
+            )
+            self.end_headers()
+            self.wfile.write(raw)
+
+
+class _DashboardHTTPServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
 
 
 def serve_dashboard(reports_dir: str, host: str, port: int) -> int:
     directory = Path(reports_dir).resolve()
     handler = partial(_DashboardRequestHandler, directory=str(directory))
 
-    class ReusableTCPServer(socketserver.TCPServer):
-        allow_reuse_address = True
-
-    with ReusableTCPServer((host, port), handler) as httpd:
+    with _DashboardHTTPServer((host, port), handler) as httpd:
         print(f"Serving {directory} at http://{host}:{port}")
         print("Routes: / → /competition/simple.html (beginner), /pro.html → /competition/dashboard.html")
         httpd.serve_forever()
