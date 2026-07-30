@@ -13,6 +13,14 @@ export function StageFlow({
   ariaLabel: string;
   onSelect: (key: string) => void;
 }) {
+  const stageKeys = new Set<string>();
+  for (const stage of stages) {
+    if (stageKeys.has(stage.key)) {
+      throw new Error(`StageFlow received duplicate stage key "${stage.key}".`);
+    }
+    stageKeys.add(stage.key);
+  }
+
   return (
     <div className="stage-flow" role="group" aria-label={ariaLabel}>
       {stages.map((stage, index) => (
@@ -23,7 +31,6 @@ export function StageFlow({
               ? "stage-node active"
               : "stage-node"}
             aria-pressed={selectedKey === stage.key}
-            aria-label={`${stage.label} ${stage.primary}`}
             onClick={() => onSelect(stage.key)}
           >
             <span className="stage-index">

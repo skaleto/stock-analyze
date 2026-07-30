@@ -30,6 +30,37 @@ const statusMeta: Record<WorkspaceStatus, {
   unavailable: { label: "状态不可用", tone: "warn", icon: ShieldAlert },
 };
 
+const explicitZoneTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const zoneFreeTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
+
+function formatTimestamp(timestamp: string): string {
+  if (explicitZoneTimestamp.test(timestamp)) {
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) {
+      return timestamp;
+    }
+
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(date);
+    const values = Object.fromEntries(
+      parts.map(({ type, value }) => [type, value]),
+    );
+    return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}`;
+  }
+
+  return zoneFreeTimestamp.test(timestamp)
+    ? timestamp.replace("T", " ")
+    : timestamp;
+}
+
 export function WorkspaceStatusBadge({
   status,
 }: {
@@ -68,7 +99,7 @@ export function DetailPanel({
         </div>
         <div>
           {updatedAt ? (
-            <time dateTime={updatedAt}>{updatedAt.replace("T", " ")}</time>
+            <time dateTime={updatedAt}>{formatTimestamp(updatedAt)}</time>
           ) : null}
           {onClose ? (
             <button
@@ -98,6 +129,28 @@ export function BoundedTable<T>({
   emptyLabel: string;
 }) {
   const bounded = rows.slice(0, 20);
+  if (columns.length === 0) {
+    throw new Error("BoundedTable requires at least one column.");
+  }
+
+  const columnKeys = new Set<string>();
+  for (const column of columns) {
+    if (columnKeys.has(column.key)) {
+      throw new Error(
+        `BoundedTable received duplicate column key "${column.key}".`,
+      );
+    }
+    columnKeys.add(column.key);
+  }
+
+  const boundedRows = bounded.map((row) => ({ row, key: rowKey(row) }));
+  const rowKeys = new Set<string>();
+  for (const { key } of boundedRows) {
+    if (rowKeys.has(key)) {
+      throw new Error(`BoundedTable received duplicate row key "${key}".`);
+    }
+    rowKeys.add(key);
+  }
 
   return (
     <div className="bounded-table-wrap">
@@ -110,14 +163,14 @@ export function BoundedTable<T>({
           </tr>
         </thead>
         <tbody>
-          {bounded.length === 0 ? (
+          {boundedRows.length === 0 ? (
             <tr>
               <td colSpan={columns.length} className="empty-cell">
                 {emptyLabel}
               </td>
             </tr>
-          ) : bounded.map((row) => (
-            <tr key={rowKey(row)}>
+          ) : boundedRows.map(({ row, key }) => (
+            <tr key={key}>
               {columns.map((column) => (
                 <td key={column.key}>{column.render(row)}</td>
               ))}
