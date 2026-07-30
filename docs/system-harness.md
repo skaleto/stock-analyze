@@ -15,12 +15,18 @@ export SA_ECS_REMOTE=root@120.55.188.242:/opt/stock-analyze/app
 export SA_ECS_SSH_OPTS='-i $HOME/.ssh/<ssh-key-file>'
 ./scripts/system-audit.sh --remote
 
-# Dashboard-only 发布：先捕获并人工查看预镜像，再使用同一清单发布
+# Dashboard-only 发布：远端预镜像与本地 release input 必须分别审阅
 ./scripts/deploy-dashboard-workspaces-to-ecs.sh capture-preimage \
   > /tmp/dashboard-preimage.manifest
 ./scripts/deploy-dashboard-workspaces-to-ecs.sh validate-manifest \
   /tmp/dashboard-preimage.manifest
+./scripts/deploy-dashboard-workspaces-to-ecs.sh capture-release-input \
+  > /tmp/dashboard-release-input.manifest
+./scripts/deploy-dashboard-workspaces-to-ecs.sh validate-release-input \
+  /tmp/dashboard-release-input.manifest
+# 将两份清单交给独立审阅；部署命令不会现场生成并自行接受 release input
 export SA_DASHBOARD_PREIMAGE_MANIFEST=/tmp/dashboard-preimage.manifest
+export SA_DASHBOARD_RELEASE_INPUT_MANIFEST=/tmp/dashboard-release-input.manifest
 ./scripts/deploy-dashboard-workspaces-to-ecs.sh deploy
 
 # 在 ECS 使用现有飞书应用凭据发布系统总览，并回读验证
@@ -29,11 +35,16 @@ export SA_DASHBOARD_PREIMAGE_MANIFEST=/tmp/dashboard-preimage.manifest
   --output data/competition/system-doc-archive.json
 ```
 
-Dashboard 发布只同步固定后端/测试文件白名单与 `reports/app`，只重启 `stock-analyze-dashboard.service`。
-脚本在同步前核对预镜像 SHA 并创建回滚
-备份；目标测试、HTTP 状态、250 KB 体积或 0.5 秒热响应门禁失败时，仅恢复
-Dashboard 文件和静态资源。它不会同步配置、清理运行时、安装 unit 或改动
-timer。
+Dashboard 发布只同步固定后端/测试文件、`scripts/system-audit.sh`、两份系统
+文档与 `reports/app`，只重启 `stock-analyze-dashboard.service`。外部审阅的
+release-input 清单必须绑定当前 40 位 commit，且所有发布输入必须与该 commit
+完全一致；dirty 或未跟踪文件会在连接 ECS 前被拒绝。
+
+脚本在远端取得独占锁后核对预镜像 SHA 并创建回滚备份。同步、目标测试、HTTP
+状态、250 KB 体积或 0.5 秒热响应门禁失败时，只恢复 Dashboard 白名单与静态
+资源；恢复后重新核对整份预镜像、检查 service，并验证系统总览 API 和应用页。
+结果写入 `rollback-result.txt` 与 `release-manifest.txt`，之后才释放锁。它不会
+同步配置、清理运行时、安装 unit 或改动 timer。
 
 ## 2. 先确认范围
 
