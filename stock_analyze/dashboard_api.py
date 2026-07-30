@@ -1400,6 +1400,7 @@ def build_dashboard_system_overview_data(
         RuntimeError,
         TypeError,
         ValueError,
+        sqlite3.Error,
         agg.DashboardDataError,
     ):
         markets = []
@@ -1457,6 +1458,7 @@ def build_dashboard_system_overview_data(
         RuntimeError,
         TypeError,
         ValueError,
+        sqlite3.Error,
         agg.DashboardDataError,
     ):
         errors.append(
