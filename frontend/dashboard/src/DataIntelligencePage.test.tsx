@@ -428,14 +428,14 @@ describe("DataIntelligencePage", () => {
     );
   });
 
-  it("rejects an oversized HTTP 200 before parsing trusted JSON", async () => {
+  it("accepts a bounded body when Content-Length is forged too large", async () => {
     const response = jsonResponse(responsePayload(), 250_001);
     vi.mocked(fetch).mockResolvedValueOnce(response);
 
-    await expect(fetchDataIntelligence("a_share")).rejects.toThrow(
-      "Data intelligence response exceeds 250000 bytes",
-    );
-    expect(response.text).not.toHaveBeenCalled();
+    await expect(fetchDataIntelligence("a_share")).resolves.toMatchObject({
+      market: "a_share",
+    });
+    expect(response.text).toHaveBeenCalledTimes(1);
     expect(response.json).not.toHaveBeenCalled();
   });
 
@@ -450,6 +450,18 @@ describe("DataIntelligencePage", () => {
       },
     };
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(payload, 100));
+
+    await expect(fetchDataIntelligence("a_share")).rejects.toThrow(
+      "Data intelligence response exceeds 250000 bytes",
+    );
+  });
+
+  it("rejects an oversized body when Content-Length is missing", async () => {
+    const payload = responsePayload() as unknown as Record<string, unknown>;
+    payload.padding = "x".repeat(260_000);
+    const response = jsonResponse(payload);
+    vi.mocked(response.headers.get).mockReturnValue(null);
+    vi.mocked(fetch).mockResolvedValueOnce(response);
 
     await expect(fetchDataIntelligence("a_share")).rejects.toThrow(
       "Data intelligence response exceeds 250000 bytes",
