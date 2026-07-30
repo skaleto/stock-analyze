@@ -113,7 +113,10 @@ export function WorkspaceShell({
           aria-label="市场范围"
         >
           <label>{route.view === "operations" ? "运行范围" : "投资市场"}</label>
-          <div className="segmented">
+          <div className={route.view === "operations"
+            ? "segmented segmented-operations"
+            : "segmented"}
+          >
             {route.view === "operations" ? (
               <>
                 <button
