@@ -76,6 +76,57 @@ describe("WorkspaceShell", () => {
     }
   });
 
+  it("marks only the exact strategy destination as the current page", () => {
+    const sharedProps = {
+      marketContext: "a_share" as const,
+      title: "策略工作台",
+      subtitle: "A股",
+      busy: false,
+      autoRefresh: true,
+      onNavigate: vi.fn(),
+      onRefresh: vi.fn(),
+      onToggleAutoRefresh: vi.fn(),
+    };
+    const { rerender } = render(
+      <WorkspaceShell
+        {...sharedProps}
+        route={{
+          view: "strategy",
+          mode: "detail",
+          market: "a_share",
+          strategy: "defensive",
+        }}
+      >
+        <div>content</div>
+      </WorkspaceShell>,
+    );
+
+    const expectExactCurrentPage = (name: string) => {
+      const nav = screen.getByRole("navigation", { name: "工作区" });
+      expect(nav.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
+      expect(within(nav).getByRole("button", { name })).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+      expect(
+        within(nav).getByRole("button", { name: "策略工作台" }),
+      ).not.toHaveAttribute("aria-current");
+    };
+
+    expectExactCurrentPage("稳健防守");
+
+    rerender(
+      <WorkspaceShell
+        {...sharedProps}
+        route={{ view: "strategy", mode: "compare", market: "a_share" }}
+      >
+        <div>content</div>
+      </WorkspaceShell>,
+    );
+
+    expectExactCurrentPage("策略对比");
+  });
+
   it("navigates to the exact operations exception scope", async () => {
     const onNavigate = vi.fn();
     const user = userEvent.setup();
