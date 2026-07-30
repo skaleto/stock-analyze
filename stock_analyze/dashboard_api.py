@@ -27,6 +27,14 @@ MAX_PREDICTION_LIMIT_PER_HORIZON = 50
 DEFAULT_INTELLIGENCE_ROW_LIMIT = 30
 MAX_INTELLIGENCE_EVIDENCE = 100
 MAX_INTELLIGENCE_FACTS = 50
+INTELLIGENCE_ERROR_MESSAGE = "情报采集状态读取失败"
+SYSTEM_OVERVIEW_READ_ERRORS = (
+    OSError,
+    UnicodeError,
+    json.JSONDecodeError,
+    sqlite3.Error,
+    agg.DashboardDataError,
+)
 
 _COMMON_ROW_FIELDS = {
     "account_id",
@@ -297,6 +305,10 @@ def _freshness_status(value: object) -> str:
     return "stale"
 
 
+def _public_intelligence_error(value: object) -> str:
+    return INTELLIGENCE_ERROR_MESSAGE if str(value or "").strip() else ""
+
+
 def _semantic_extraction_contract(root: Path) -> dict[str, Any]:
     profile = _read_json_file(
         root
@@ -542,7 +554,11 @@ def _pipeline_sources(
                 ),
                 "fetched": int(latest_run["fetched"] or 0) if latest_run else 0,
                 "inserted": int(latest_run["inserted"] or 0) if latest_run else 0,
-                "error": str(latest_run["error"] or "") if latest_run else "",
+                "error": (
+                    _public_intelligence_error(latest_run["error"])
+                    if latest_run
+                    else ""
+                ),
                 "cursor": str(cursor["cursor"]) if cursor is not None else None,
                 "cursorUpdatedAt": (
                     cursor["updated_at"] if cursor is not None else None
@@ -574,7 +590,9 @@ def _snapshot_pipeline_sources(
                 ),
                 "fetched": int(raw.get("fetched") or 0),
                 "inserted": int(raw.get("inserted") or 0),
-                "error": str(raw.get("error") or ""),
+                "error": _public_intelligence_error(
+                    raw.get("error") or raw.get("error_summary")
+                ),
                 "cursor": raw.get("cursor"),
                 "cursorUpdatedAt": raw.get("cursor_updated_at"),
             }
@@ -1395,14 +1413,7 @@ def build_dashboard_system_overview_data(
             markets=list(competition.MARKETS),
         )
         markets = summary.get("markets", [])
-    except (
-        OSError,
-        RuntimeError,
-        TypeError,
-        ValueError,
-        sqlite3.Error,
-        agg.DashboardDataError,
-    ):
+    except SYSTEM_OVERVIEW_READ_ERRORS:
         markets = []
         errors.append(
             {
@@ -1415,14 +1426,7 @@ def build_dashboard_system_overview_data(
     for market in competition.MARKETS:
         try:
             status = agg._read_model_iteration_status(root, market)
-        except (
-            OSError,
-            RuntimeError,
-            TypeError,
-            ValueError,
-            sqlite3.Error,
-            agg.DashboardDataError,
-        ):
+        except SYSTEM_OVERVIEW_READ_ERRORS:
             status = {
                 "status": "unavailable",
                 "candidate": None,
@@ -1453,14 +1457,7 @@ def build_dashboard_system_overview_data(
             agent="codex",
             limit=5,
         )
-    except (
-        OSError,
-        RuntimeError,
-        TypeError,
-        ValueError,
-        sqlite3.Error,
-        agg.DashboardDataError,
-    ):
+    except SYSTEM_OVERVIEW_READ_ERRORS:
         errors.append(
             {
                 "code": "intelligence_read_unavailable",
@@ -1525,14 +1522,7 @@ def build_dashboard_system_overview_data(
         }
     try:
         strategy_model_usage = _latest_strategy_model_usage(root)
-    except (
-        OSError,
-        RuntimeError,
-        TypeError,
-        ValueError,
-        sqlite3.Error,
-        agg.DashboardDataError,
-    ):
+    except SYSTEM_OVERVIEW_READ_ERRORS:
         strategy_model_usage = []
         errors.append(
             {

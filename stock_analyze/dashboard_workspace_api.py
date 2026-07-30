@@ -20,6 +20,7 @@ from . import competition
 from . import dashboard_aggregator as agg
 from .dashboard_api import (
     _latest_strategy_model_usage,
+    _public_intelligence_error,
     build_dashboard_intelligence_data,
 )
 from .dashboard_runtime import read_dashboard_runtime
@@ -1173,10 +1174,12 @@ def _bounded_intelligence_lane(intelligence: dict[str, Any]) -> dict[str, Any]:
         "decisions",
     )
     sanitized, reasons = _bounded_resource(
-        {
-            key: _mapping(intelligence.get(key))
-            for key in required
-        }
+        _sanitize_intelligence_errors(
+            {
+                key: _mapping(intelligence.get(key))
+                for key in required
+            }
+        )
     )
     lane = sanitized if isinstance(sanitized, dict) else {}
     for key in required:
@@ -1187,6 +1190,22 @@ def _bounded_intelligence_lane(intelligence: dict[str, Any]) -> dict[str, Any]:
     lane["truncated"] = bool(unique_reasons)
     lane["truncationReasons"] = unique_reasons
     return lane
+
+
+def _sanitize_intelligence_errors(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized: dict[Any, Any] = {}
+        for key, child in value.items():
+            normalized_key = str(key).replace("_", "").lower()
+            sanitized[key] = (
+                _public_intelligence_error(child)
+                if normalized_key in {"error", "errorsummary"}
+                else _sanitize_intelligence_errors(child)
+            )
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_intelligence_errors(item) for item in value]
+    return value
 
 
 def _enforce_data_intelligence_size(
@@ -1307,8 +1326,10 @@ def build_dashboard_model_research_data(
         errors=errors,
         resource="strategy_model_usage",
     )
-    iteration_available = not any(
-        item["resource"] == "model_iteration" for item in errors
+    iteration_available = not _workspace_resource_unavailable(
+        iteration,
+        errors=errors,
+        resource="model_iteration",
     )
     usage = _usage_rows(
         formal_usage,
@@ -1538,6 +1559,11 @@ def build_dashboard_data_intelligence_data(
             market,
         )
     )
+    iteration_available = not _workspace_resource_unavailable(
+        iteration,
+        errors=errors,
+        resource="model_iteration",
+    )
     formal_usage = _safe_workspace_read(
         errors,
         "strategy_model_usage",
@@ -1557,6 +1583,9 @@ def build_dashboard_data_intelligence_data(
         []
         if formal_usage_available
         else ["strategy_model_usage:unavailable"]
+    )
+    iteration_unavailable_evidence = (
+        [] if iteration_available else ["model_iteration:unavailable"]
     )
     intelligence = _mapping(
         _safe_workspace_read(
@@ -1682,7 +1711,11 @@ def build_dashboard_data_intelligence_data(
         )
 
     factor_supply = _mapping(intelligence.get("factorSupply"))
-    candidate = _mapping(iteration.get("candidate"))
+    candidate = (
+        _mapping(iteration.get("candidate"))
+        if iteration_available
+        else {}
+    )
     candidate_identity = (
         _integer(candidate.get("horizon")),
         _text(candidate.get("model_version"), limit=256),
@@ -1875,9 +1908,10 @@ def build_dashboard_data_intelligence_data(
                     research_eligible=research_traditional_names,
                     formal_evidence=[],
                     research_evidence=candidate_evidence,
-                    research_unavailable_evidence=(
-                        model_health_unavailable_evidence
-                    ),
+                    research_unavailable_evidence=[
+                        *model_health_unavailable_evidence,
+                        *iteration_unavailable_evidence,
+                    ],
                 ),
                 "traditionalFactors": _usage_cell(
                     formal_items=set(),
@@ -1886,9 +1920,10 @@ def build_dashboard_data_intelligence_data(
                     research_eligible=research_traditional_names,
                     formal_evidence=[],
                     research_evidence=candidate_evidence,
-                    research_unavailable_evidence=(
-                        model_health_unavailable_evidence
-                    ),
+                    research_unavailable_evidence=[
+                        *model_health_unavailable_evidence,
+                        *iteration_unavailable_evidence,
+                    ],
                 ),
                 "intelligenceFactors": _usage_cell(
                     formal_items=set(),
@@ -1897,13 +1932,18 @@ def build_dashboard_data_intelligence_data(
                     research_eligible=research_intelligence_names,
                     formal_evidence=[],
                     research_evidence=candidate_evidence,
-                    research_unavailable_evidence=(
-                        model_health_unavailable_evidence
-                    ),
+                    research_unavailable_evidence=[
+                        *model_health_unavailable_evidence,
+                        *iteration_unavailable_evidence,
+                    ],
                 ),
                 "impact": (
-                    f"本期 {_integer(iteration.get('selected_count'))} 个入选，"
-                    f"{_integer(iteration.get('trades_executed'))} 笔成交"
+                    "候选模拟状态不可用"
+                    if not iteration_available
+                    else (
+                        f"本期 {_integer(iteration.get('selected_count'))} 个入选，"
+                        f"{_integer(iteration.get('trades_executed'))} 笔成交"
+                    )
                 ),
             },
         ]
