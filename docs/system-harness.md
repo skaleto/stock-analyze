@@ -15,14 +15,25 @@ export SA_ECS_REMOTE=root@120.55.188.242:/opt/stock-analyze/app
 export SA_ECS_SSH_OPTS='-i $HOME/.ssh/<ssh-key-file>'
 ./scripts/system-audit.sh --remote
 
-# 构建前端、跑全量回归、清理退役运行时、部署并验证
-./scripts/deploy-app-to-ecs.sh
+# Dashboard-only 发布：先捕获并人工查看预镜像，再使用同一清单发布
+./scripts/deploy-dashboard-workspaces-to-ecs.sh capture-preimage \
+  > /tmp/dashboard-preimage.manifest
+./scripts/deploy-dashboard-workspaces-to-ecs.sh validate-manifest \
+  /tmp/dashboard-preimage.manifest
+export SA_DASHBOARD_PREIMAGE_MANIFEST=/tmp/dashboard-preimage.manifest
+./scripts/deploy-dashboard-workspaces-to-ecs.sh deploy
 
 # 在 ECS 使用现有飞书应用凭据发布系统总览，并回读验证
 /opt/stock-analyze/venv/bin/python scripts/publish_system_doc_to_lark.py \
   --source docs/system-overview.md \
   --output data/competition/system-doc-archive.json
 ```
+
+Dashboard 发布只同步固定后端/测试文件白名单与 `reports/app`，只重启 `stock-analyze-dashboard.service`。
+脚本在同步前核对预镜像 SHA 并创建回滚
+备份；目标测试、HTTP 状态、250 KB 体积或 0.5 秒热响应门禁失败时，仅恢复
+Dashboard 文件和静态资源。它不会同步配置、清理运行时、安装 unit 或改动
+timer。
 
 ## 2. 先确认范围
 
