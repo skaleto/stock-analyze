@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import threading
@@ -57,6 +58,7 @@ RUNTIME_TIMER_UNITS = (
 
 SERVICE_PROPERTIES = (
     "Id",
+    "LoadState",
     "ActiveState",
     "SubState",
     "Result",
@@ -67,6 +69,7 @@ SERVICE_PROPERTIES = (
 
 TIMER_PROPERTIES = (
     "Id",
+    "LoadState",
     "ActiveState",
     "LastTriggerUSec",
     "NextElapseUSecRealtime",
@@ -117,6 +120,7 @@ def _show(
         capture_output=True,
         text=True,
         timeout=3,
+        env={**os.environ, "LC_ALL": "C", "LANG": "C"},
     )
     if result.returncode != 0:
         raise OSError(result.stderr.strip() or "systemctl_show_failed")
@@ -135,7 +139,14 @@ def _show(
 
 def _project_service(row: dict[str, str]) -> dict[str, Any]:
     exit_status = row.get("ExecMainStatus")
+    load_state = row.get("LoadState") or "loaded"
     return {
+        "loadState": load_state,
+        "reason": (
+            None
+            if load_state == "loaded"
+            else f"unit_load_state_{load_state}"
+        ),
         "activeState": row.get("ActiveState") or "unknown",
         "subState": row.get("SubState") or "unknown",
         "result": row.get("Result") or "unknown",
@@ -146,7 +157,14 @@ def _project_service(row: dict[str, str]) -> dict[str, Any]:
 
 
 def _project_timer(row: dict[str, str]) -> dict[str, Any]:
+    load_state = row.get("LoadState") or "loaded"
     return {
+        "loadState": load_state,
+        "reason": (
+            None
+            if load_state == "loaded"
+            else f"unit_load_state_{load_state}"
+        ),
         "activeState": row.get("ActiveState") or "unknown",
         "lastTriggerAt": row.get("LastTriggerUSec") or None,
         "nextTriggerAt": row.get("NextElapseUSecRealtime") or None,

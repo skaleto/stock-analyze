@@ -17,6 +17,7 @@ from stock_analyze import competition
 from stock_analyze.dashboard_workspace_api import (
     FORMAL_FACTOR_SOURCES,
     _bounded_intelligence_lane,
+    _operations_timestamp,
     _sanitize_run_error,
     _structured_snapshot_coverage,
     build_dashboard_data_intelligence_data,
@@ -1903,6 +1904,98 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             )
         )
 
+    def test_operations_center_explicit_unloaded_units_are_unavailable(
+        self,
+    ) -> None:
+        runtime = self._operations_scope_runtime()
+        runtime["services"]["stock-analyze-intelligence.service"].update(
+            {
+                "loadState": "not-found",
+                "reason": "unit_load_state_not-found",
+            }
+        )
+        runtime["services"][
+            "stock-analyze-intelligence-artifact-backfill.service"
+        ] = {
+            **self._operations_failed_service(),
+            "loadState": "error",
+            "reason": "unit_load_state_error",
+        }
+        runtime["timers"] = {
+            "stock-analyze-market-data.timer": {
+                "loadState": "masked",
+                "reason": "unit_load_state_masked",
+                "activeState": "active",
+                "lastTriggerAt": "Wed 2026-07-30 12:30:00 CST",
+                "nextTriggerAt": "Wed 2026-07-30 18:30:00 CST",
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+            return_value=runtime,
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            return_value=_intelligence(),
+        ):
+            payload = build_dashboard_operations_center_data(
+                repo_root=Path(tmp),
+                scope="all",
+                now=datetime(2026, 7, 30, 13, 30),
+            )
+
+        intelligence = next(
+            row for row in payload["mainChain"] if row["key"] == "intelligence"
+        )
+        self.assertEqual(intelligence["status"], "unavailable")
+        self.assertEqual(intelligence["units"][0]["loadState"], "not-found")
+        self.assertEqual(
+            intelligence["units"][0]["reason"],
+            "unit_load_state_not-found",
+        )
+        market_timer = next(
+            row
+            for row in payload["schedules"]["daily"]
+            if row["unit"] == "stock-analyze-market-data.timer"
+        )
+        self.assertEqual(market_timer["status"], "unavailable")
+        self.assertEqual(market_timer["loadState"], "masked")
+        self.assertEqual(market_timer["reason"], "unit_load_state_masked")
+        artifact = next(
+            row
+            for row in payload["backgroundWorkers"]
+            if row["key"] == "artifact_backfill"
+        )
+        self.assertEqual(artifact["status"], "unavailable")
+        self.assertEqual(artifact["loadState"], "error")
+        self.assertEqual(artifact["reason"], "unit_load_state_error")
+
+    def test_operations_timestamp_accepts_localized_prefix_and_never_case(
+        self,
+    ) -> None:
+        self.assertIsNone(_operations_timestamp("NeVeR"))
+        self.assertIsNone(_operations_timestamp("N/A"))
+        runtime = self._operations_scope_runtime()
+        runtime["services"]["stock-analyze-intelligence.service"][
+            "startedAt"
+        ] = "星期三 2026-07-30 12:30:00 CST"
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+            return_value=runtime,
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            return_value=_intelligence(),
+        ):
+            payload = build_dashboard_operations_center_data(
+                repo_root=Path(tmp),
+                scope="a_share",
+                now=datetime(2026, 7, 30, 13, 30),
+            )
+
+        intelligence = next(
+            row for row in payload["mainChain"] if row["key"] == "intelligence"
+        )
+        self.assertEqual(intelligence["status"], "success")
+
     def test_operations_center_a_share_scope_excludes_etf_simulation_failure(
         self,
     ) -> None:
@@ -2115,6 +2208,56 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             200,
         )
 
+    def test_operations_center_recent_runs_use_completion_order_deterministically(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "data" / "a_share" / "codex" / "runs.csv"
+            runs.parent.mkdir(parents=True)
+            runs.write_text(
+                "\n".join(
+                    [
+                        "run_id,command,as_of,started_at,finished_at,duration_ms,status,error_summary,config_hash,code_version",
+                        "000301,run-daily,,2026-07-30T10:00:00,2026-07-30T10:00:10,1,failed,first failure,h,v",
+                        "000302,run-daily,,2026-07-30T10:00:00,2026-07-30T10:00:20,1,failed,second failure,h,v",
+                        "000303,run-daily,,2026-07-30T10:00:00,2026-07-30T10:00:20,1,failed,third failure,h,v",
+                        "000304,run-daily,,2026-07-30T10:00:00,,,running,,h,v",
+                        "000304,run-daily,,2026-07-30T10:00:00,2026-07-30T10:00:30,1,success,,h,v",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+                return_value={
+                    "status": "available",
+                    "services": {},
+                    "timers": {},
+                },
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+                return_value=_intelligence(),
+            ):
+                payload = build_dashboard_operations_center_data(
+                    repo_root=root,
+                    scope="a_share",
+                    now=datetime(2026, 7, 30, 13, 30),
+                )
+
+        self.assertEqual(
+            [row["runId"] for row in payload["recentRuns"]],
+            ["000304", "000303", "000302", "000301"],
+        )
+        self.assertEqual(payload["recentRuns"][0]["status"], "success")
+        self.assertFalse(
+            any(
+                row["key"].startswith("consecutive_failure:")
+                for row in payload["interventions"]
+            )
+        )
+
     def test_operations_center_success_run_keeps_empty_error_string(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2211,16 +2354,118 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertIn("credential=<redacted> rejected", sanitized)
         self.assertLessEqual(len(sanitized), 200)
 
-    def test_run_error_sanitizer_preserves_non_secret_diagnostics(self) -> None:
+    def test_run_error_sanitizer_redacts_named_env_assignments(self) -> None:
+        secrets = (
+            "deepSeekSecret123456",
+            "tushareSecret123456",
+            "passwordSecret123456",
+            "accessSecret123456",
+            "backupAccessSecret123456",
+        )
         text = (
-            "credential file missing; sk-short is a label; "
-            "LTAI docs unavailable; task skipped after 3 retries; "
-            "endpoint sk-analysis-worker-2026; "
-            "resolver sk-model-resolver-v2; "
-            "strategy sk-growth-rotation-2026"
+            f'export DEEPSEEK_API_KEY="{secrets[0]}"; '
+            f"TUSHARE_TOKEN={secrets[1]}; "
+            f"CUSTOM_PASSWORD={secrets[2]}; "
+            f"OSS_ACCESS_KEY_SECRET={secrets[3]}; "
+            f"VENDOR_ACCESS_KEY_BACKUP={secrets[4]}"
         )
 
-        self.assertEqual(_sanitize_run_error(text), text)
+        sanitized = _sanitize_run_error(text)
+
+        for secret in secrets:
+            self.assertNotIn(secret, sanitized)
+        self.assertIn("DEEPSEEK_API_KEY=<redacted>", sanitized)
+        self.assertIn("TUSHARE_TOKEN=<redacted>", sanitized)
+
+    def test_run_error_sanitizer_redacts_generic_key_and_contextual_credential(
+        self,
+    ) -> None:
+        text = (
+            "HTTP 401 key:genericSecret123456; "
+            "credential plainSecretValue123456 rejected"
+        )
+
+        sanitized = _sanitize_run_error(text)
+
+        self.assertNotIn("genericSecret123456", sanitized)
+        self.assertNotIn("plainSecretValue123456", sanitized)
+        self.assertIn("HTTP 401 key:<redacted>", sanitized)
+        self.assertIn("credential <redacted> rejected", sanitized)
+
+    def test_run_error_sanitizer_preserves_non_secret_diagnostics(self) -> None:
+        diagnostics = (
+            "credential file missing; sk-short is a label",
+            "endpoint sk-analysis-worker-2026 unavailable",
+            "resolver sk-model-resolver-v2 failed",
+            "strategy sk-growth-rotation-2026 skipped",
+            "credential endpoint unavailable",
+            "credential resolver failed",
+            "LTAI docs unavailable; task skipped after 3 retries",
+        )
+
+        for diagnostic in diagnostics:
+            with self.subTest(diagnostic=diagnostic):
+                self.assertEqual(_sanitize_run_error(diagnostic), diagnostic)
+
+    def test_operations_center_prunes_oversized_runtime_without_500(self) -> None:
+        runtime = self._operations_scope_runtime()
+        huge = "x" * 300_000
+        runtime["reason"] = huge
+        for service in runtime["services"].values():
+            service["externalDetail"] = huge
+        runtime["timers"] = {
+            "stock-analyze-market-data.timer": {
+                "loadState": "loaded",
+                "activeState": "active",
+                "lastTriggerAt": huge,
+                "nextTriggerAt": huge,
+                "externalDetail": huge,
+            }
+        }
+        intelligence = _intelligence()
+        intelligence["pipeline"]["status"] = huge
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+            return_value=runtime,
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            return_value=intelligence,
+        ):
+            payload = build_dashboard_operations_center_data(
+                repo_root=Path(tmp),
+                scope="all",
+                now=datetime(2026, 7, 30, 13, 30),
+            )
+
+        self.assertTrue(payload["truncated"])
+        self.assertEqual(
+            payload["truncationReason"],
+            "serialized_size_limit",
+        )
+        self.assertLess(
+            len(json.dumps(payload, ensure_ascii=False).encode("utf-8")),
+            250_000,
+        )
+        self.assertIsInstance(payload["mainChain"], list)
+        self.assertTrue(
+            all("status" in row for row in payload["mainChain"])
+        )
+        self.assertIn("status", payload["background"])
+        self.assertIn("status", payload["dailyFreshness"])
+        self.assertIn("status", payload["runtime"])
+        self.assertIsInstance(payload["interventions"], list)
+
+        def assert_external_text_bounded(value: object) -> None:
+            if isinstance(value, str):
+                self.assertLessEqual(len(value), 1_000)
+            elif isinstance(value, list):
+                for item in value:
+                    assert_external_text_bounded(item)
+            elif isinstance(value, dict):
+                for item in value.values():
+                    assert_external_text_bounded(item)
+
+        assert_external_text_bounded(payload)
 
     def test_operations_center_only_raises_actionable_interventions(self) -> None:
         intelligence = _intelligence()
