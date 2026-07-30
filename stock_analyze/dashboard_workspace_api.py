@@ -1919,8 +1919,10 @@ def _sanitize_run_error(value: object) -> str:
     text = re.sub(
         r"(?i)"
         r"(?P<prefix>"
-        r"(?<![A-Za-z0-9_])[\"']?credential[\"']?"
-        r"(?:\s*[:=]\s*|\s+)"
+        r"(?<![A-Za-z0-9_])"
+        r"(?:auth(?:entication|orization)?|provider|credential|"
+        r"secret|token|api)"
+        r"\s+[\"']?key[\"']?\s*[:=]\s*"
         r")"
         r"(?P<value>\"[^\"\r\n]*\"|'[^'\r\n]*'|[^,\s;&}\]]+)",
         _redact_secret_token_if_needed,
@@ -1929,7 +1931,8 @@ def _sanitize_run_error(value: object) -> str:
     text = re.sub(
         r"(?i)"
         r"(?P<prefix>"
-        r"(?<![A-Za-z0-9_])[\"']?key[\"']?\s*[:=]\s*"
+        r"(?<![A-Za-z0-9_])[\"']?credential[\"']?"
+        r"(?:\s*[:=]\s*|\s+)"
         r")"
         r"(?P<value>\"[^\"\r\n]*\"|'[^'\r\n]*'|[^,\s;&}\]]+)",
         _redact_secret_token_if_needed,

@@ -2393,20 +2393,47 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
                 self.assertNotIn(secret, sanitized)
                 self.assertIn("<redacted>", sanitized)
 
-    def test_run_error_sanitizer_redacts_generic_key_and_contextual_credential(
+    def test_run_error_sanitizer_redacts_safe_context_key_and_credential(
         self,
     ) -> None:
-        text = (
-            'HTTP 401 key:"genericsecret123456"; '
-            "credential plainsecretvalue123456 rejected"
+        for context in (
+            "auth",
+            "authentication",
+            "authorization",
+            "provider",
+            "credential",
+            "secret",
+            "token",
+            "api",
+        ):
+            text = f'{context} key:"plainsecretvalue123456"'
+            with self.subTest(context=context):
+                self.assertEqual(
+                    _sanitize_run_error(text),
+                    f"{context} key:<redacted>",
+                )
+
+        self.assertEqual(
+            _sanitize_run_error(
+                "credential plainsecretvalue123456 rejected"
+            ),
+            "credential <redacted> rejected",
         )
 
-        sanitized = _sanitize_run_error(text)
+    def test_run_error_sanitizer_preserves_long_business_key_values(
+        self,
+    ) -> None:
+        diagnostics = (
+            "factor key=momentumfactor20261234",
+            "feature key=technicalfeature20261234",
+            "market key=asharemarket20261234",
+            "service key=dashboardservice20261234",
+            "key=plainsecretvalue123456",
+        )
 
-        self.assertNotIn("genericsecret123456", sanitized)
-        self.assertNotIn("plainsecretvalue123456", sanitized)
-        self.assertIn("HTTP 401 key:<redacted>", sanitized)
-        self.assertIn("credential <redacted> rejected", sanitized)
+        for diagnostic in diagnostics:
+            with self.subTest(diagnostic=diagnostic):
+                self.assertEqual(_sanitize_run_error(diagnostic), diagnostic)
 
     def test_run_error_sanitizer_preserves_non_secret_diagnostics(self) -> None:
         diagnostics = (
