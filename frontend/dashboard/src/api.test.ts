@@ -179,6 +179,19 @@ describe("fetchSystemOverview", () => {
 
   it("strictly validates the real nested iteration contract and bounds", async () => {
     const payload = structuredClone(await currentBuilderPayload()) as any;
+    payload.models[0].iteration.candidate ??= {
+      market: "a_share",
+      horizon: 20,
+      model_version: "fixture-model",
+      display_version: "A20-V001",
+      status: "research",
+      status_label: "研究候选",
+      champion_model_version: null,
+      shadow_cycles: 0,
+      shadow_cycles_remaining: 12,
+      registered_at: null,
+      artifact: null,
+    };
     payload.models[0].iteration.candidate.artifact = "models/a20-v001.json";
     const invalidArtifact = structuredClone(payload);
     invalidArtifact.models[0].iteration.candidate.artifact = 42;

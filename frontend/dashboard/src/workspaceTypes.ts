@@ -69,11 +69,11 @@ export type ModelResearchCandidate = {
 };
 
 export type ModelResearchSimulationAccount = {
-  accountId: string;
+  accountId: string | null;
   accountLabel: string;
   isolation: string;
   navRows: number;
-  portfolioRef: string;
+  portfolioRef: string | null;
 };
 
 export type ModelResearchData = {
