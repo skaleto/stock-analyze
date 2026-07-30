@@ -201,6 +201,67 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             payload["errors"],
             [{"resource": "model_health", "reason": "unavailable"}],
         )
+        stage_statuses = {
+            row["key"]: row["status"] for row in payload["stages"]
+        }
+        self.assertEqual(stage_statuses["training"], "unavailable")
+        self.assertEqual(stage_statuses["validation"], "unavailable")
+        self.assertEqual(stage_statuses["adoption"], "unavailable")
+
+    def test_explicit_unavailable_model_health_stays_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._build(
+                Path(tmp),
+                models={"status": "unavailable", "models": []},
+            )
+
+        stage_statuses = {
+            row["key"]: row["status"] for row in payload["stages"]
+        }
+        self.assertEqual(stage_statuses["training"], "unavailable")
+        self.assertEqual(stage_statuses["validation"], "unavailable")
+        self.assertEqual(stage_statuses["adoption"], "unavailable")
+
+    def test_source_health_errors_are_replaced_with_stable_codes(self) -> None:
+        sensitive_path = "/opt/stock-analyze/secrets/provider.env"
+        sensitive_key = "DEEPSEEK_API_KEY=plainsecretvalue123456"
+        sensitive_endpoint = "https://user:password@api.internal.example/v1"
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._build(
+                Path(tmp),
+                models={"status": "available", "models": [_model()]},
+                sources=[
+                    {
+                        "source": "tushare",
+                        "status": "failed",
+                        "failed": True,
+                        "error": (
+                            f"{sensitive_path}: {sensitive_key}; "
+                            f"endpoint={sensitive_endpoint}"
+                        ),
+                    },
+                    {
+                        "source": "ifind",
+                        "status": "source_unavailable",
+                        "error_summary": "endpoint=10.0.0.8:9443 timeout",
+                    },
+                ],
+            )
+
+        self.assertEqual(
+            {
+                row["error"] for row in payload["dataPreparation"]["sources"]
+            },
+            {"数据源状态读取失败"},
+        )
+        serialized = json.dumps(payload, ensure_ascii=False)
+        for secret in (
+            sensitive_path,
+            sensitive_key,
+            sensitive_endpoint,
+            "10.0.0.8:9443",
+        ):
+            self.assertNotIn(secret, serialized)
 
     def test_model_resource_keeps_training_when_other_sections_fail(
         self,
@@ -234,6 +295,10 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         )
         self.assertEqual(simulation_stage["status"], "unavailable")
         self.assertEqual(payload["adoption"]["strategyUsage"], [])
+        adoption_stage = next(
+            row for row in payload["stages"] if row["key"] == "adoption"
+        )
+        self.assertEqual(adoption_stage["status"], "unavailable")
         self.assertEqual(
             payload["errors"],
             [
@@ -244,6 +309,20 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         )
         serialized = json.dumps(payload, ensure_ascii=False)
         self.assertNotIn("must not leak", serialized)
+
+    def test_explicit_unavailable_strategy_usage_stays_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._build(
+                Path(tmp),
+                models={"status": "available", "models": [_model()]},
+                usage={"status": "unavailable", "rows": []},
+            )
+
+        adoption_stage = next(
+            row for row in payload["stages"] if row["key"] == "adoption"
+        )
+        self.assertEqual(adoption_stage["status"], "unavailable")
+        self.assertEqual(payload["adoption"]["strategyUsage"], [])
 
     def test_data_resource_keeps_structured_lane_when_intelligence_is_unreadable(
         self,
@@ -321,6 +400,23 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             {row["modelAdoption"]["status"] for row in formal_consumers},
             {"unavailable"},
         )
+        research_consumers = [
+            row
+            for row in payload["usageMatrix"]
+            if row["consumerKey"] in {"research_model", "candidate_simulation"}
+        ]
+        self.assertEqual(
+            {
+                cell["status"]
+                for row in research_consumers
+                for cell in (
+                    row["structuredData"],
+                    row["traditionalFactors"],
+                    row["intelligenceFactors"],
+                )
+            },
+            {"unavailable"},
+        )
         self.assertEqual(
             payload["errors"],
             [
@@ -332,6 +428,61 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertNotIn(
             "must not leak",
             json.dumps(payload, ensure_ascii=False),
+        )
+
+    def test_data_resource_preserves_explicit_unavailable_strategy_usage(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api._public_strategy_profiles",
+            return_value={
+                "defensive": {
+                    "label": "稳健防守",
+                    "factors": ["momentum_20"],
+                },
+                "trend": {
+                    "label": "趋势进攻",
+                    "factors": ["momentum_20"],
+                },
+            },
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+            return_value={"status": "available", "models": [_model()]},
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+            return_value=_iteration(),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            return_value=_intelligence(),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+            return_value={"status": "unavailable", "rows": []},
+        ):
+            payload = build_dashboard_data_intelligence_data(
+                repo_root=Path(tmp),
+                market="a_share",
+            )
+
+        formal_consumers = [
+            row
+            for row in payload["usageMatrix"]
+            if row["consumerKey"] in {"defensive", "trend"}
+        ]
+        self.assertEqual(
+            {row["modelAdoption"]["status"] for row in formal_consumers},
+            {"unavailable"},
+        )
+        self.assertEqual(
+            {
+                cell["researchStatus"]
+                for row in formal_consumers
+                for cell in (
+                    row["structuredData"],
+                    row["traditionalFactors"],
+                    row["intelligenceFactors"],
+                )
+            },
+            {"unavailable"},
         )
 
     def test_operations_resource_keeps_runtime_when_intelligence_is_unreadable(
@@ -1767,7 +1918,7 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertEqual(len(payload["usageMatrix"]), 4)
         self.assertTrue(
             all(
-                cell["status"] == "not_used"
+                cell["status"] == "unavailable"
                 for row in payload["usageMatrix"]
                 for cell in (
                     row["structuredData"],
