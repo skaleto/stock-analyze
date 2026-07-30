@@ -97,7 +97,7 @@ OPERATIONS_MAIN_CHAIN = (
     ),
     (
         "simulation",
-        "双策略及候选模型模拟",
+        "正式策略及候选模型模拟",
         (
             "stock-analyze-model-iteration.service",
             "stock-analyze-claude-daily.service",
@@ -1868,13 +1868,15 @@ def _sanitize_run_error(value: object) -> str:
         text,
     )
     text = re.sub(
-        r"(?i)\bcredential(\s+)([^\s,;]+)",
-        _redact_credential_value,
+        r"(?i)\b(credential)(\s*[:=]\s*)([^,\s;&]+)",
+        r"\1\2<redacted>",
         text,
     )
     standalone_patterns = (
-        r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}"
-        r"(?![A-Za-z0-9_-])",
+        r"(?<![A-Za-z0-9_-])sk-(?:live|proj|ant(?:-api\d+)?|or-v1)-"
+        r"[A-Za-z0-9_-]{16,}(?![A-Za-z0-9_-])",
+        r"(?<![A-Za-z0-9_-])sk_(?:live|test)_"
+        r"[A-Za-z0-9_-]{16,}(?![A-Za-z0-9_-])",
         r"(?<![A-Za-z0-9_-])AIza[A-Za-z0-9_-]{30,}"
         r"(?![A-Za-z0-9_-])",
         r"(?<![A-Za-z0-9_-])(?:gh[pousr]_|github_pat_)"
@@ -1888,37 +1890,27 @@ def _sanitize_run_error(value: object) -> str:
     )
     for pattern in standalone_patterns:
         text = re.sub(pattern, "<redacted>", text)
+    text = re.sub(
+        r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9]{24,}"
+        r"(?![A-Za-z0-9_-])",
+        _redact_legacy_sk_token,
+        text,
+    )
     return text[:200]
 
 
-def _redact_credential_value(match: re.Match[str]) -> str:
-    value = match.group(2)
-    diagnostic_words = {
-        "check",
-        "config",
-        "configuration",
-        "error",
-        "expired",
-        "file",
-        "invalid",
-        "load",
-        "loading",
-        "missing",
-        "not",
-        "provider",
-        "refresh",
-        "required",
-        "rotation",
-        "source",
-        "status",
-        "store",
-        "unavailable",
-        "validation",
-    }
-    looks_secret = len(value) >= 8
-    if value.lower() in diagnostic_words or not looks_secret:
+def _redact_legacy_sk_token(match: re.Match[str]) -> str:
+    token = match.group(0)[3:]
+    character_classes = sum(
+        (
+            any(character.islower() for character in token),
+            any(character.isupper() for character in token),
+            any(character.isdigit() for character in token),
+        )
+    )
+    if character_classes < 3 or len(set(token)) < 12:
         return match.group(0)
-    return f"credential{match.group(1)}<redacted>"
+    return "<redacted>"
 
 
 def _operations_chain_units(
@@ -2195,6 +2187,26 @@ def build_dashboard_operations_center_data(
     main_chain: list[dict[str, Any]] = []
     upstream_ready = True
     for key, label, units, timer_unit in OPERATIONS_MAIN_CHAIN:
+        cross_market_units: list[dict[str, Any]] = []
+        if key == "simulation" and scope in competition.MARKETS:
+            model_unit = "stock-analyze-model-iteration.service"
+            model_service = _mapping(services.get(model_unit))
+            cross_market_units.append(
+                {
+                    "unit": model_unit,
+                    **model_service,
+                    "status": _operations_service_status(
+                        model_service or None,
+                        current=current,
+                        runtime_available=runtime_available,
+                    ),
+                    "reason": (
+                        "cross_market_service_result_not_attributable_"
+                        "to_single_market"
+                    ),
+                }
+            )
+            label = "正式策略模拟"
         units = _operations_chain_units(key, units, scope=scope)
         statuses = [
             _operations_service_status(
@@ -2232,6 +2244,7 @@ def build_dashboard_operations_center_data(
                     }
                     for index, unit in enumerate(units)
                 ][:MAX_TABLE_ROWS],
+                "crossMarketUnits": cross_market_units[:MAX_TABLE_ROWS],
             }
         )
         upstream_ready = status == "success"

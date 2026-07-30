@@ -1935,6 +1935,7 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             row for row in a_share["mainChain"] if row["key"] == "simulation"
         )
         self.assertEqual(a_simulation["status"], "success")
+        self.assertEqual(a_simulation["label"], "正式策略模拟")
         self.assertEqual(a_share["dailyFreshness"]["status"], "success")
         self.assertEqual(
             {row["unit"] for row in a_simulation["units"]},
@@ -1943,12 +1944,29 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
                 "stock-analyze-codex-daily.service",
             },
         )
+        self.assertEqual(len(a_simulation["crossMarketUnits"]), 1)
+        model_evidence = a_simulation["crossMarketUnits"][0]
+        self.assertEqual(
+            model_evidence["unit"],
+            "stock-analyze-model-iteration.service",
+        )
+        self.assertEqual(model_evidence["status"], "failed")
+        self.assertEqual(
+            model_evidence["reason"],
+            "cross_market_service_result_not_attributable_to_single_market",
+        )
+        self.assertNotIn("候选模型", a_simulation["label"])
         all_simulation = next(
             row
             for row in all_markets["mainChain"]
             if row["key"] == "simulation"
         )
         self.assertEqual(all_simulation["status"], "failed")
+        self.assertEqual(
+            all_simulation["label"],
+            "正式策略及候选模型模拟",
+        )
+        self.assertEqual(all_simulation["crossMarketUnits"], [])
 
     def test_operations_center_etf_scope_excludes_a_share_simulation_failure(
         self,
@@ -1979,6 +1997,7 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             row for row in etf["mainChain"] if row["key"] == "simulation"
         )
         self.assertEqual(etf_simulation["status"], "success")
+        self.assertEqual(etf_simulation["label"], "正式策略模拟")
         self.assertEqual(etf["dailyFreshness"]["status"], "success")
         self.assertEqual(
             {row["unit"] for row in etf_simulation["units"]},
@@ -1987,12 +2006,21 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
                 "stock-analyze-codex-cn-qdii-etf-daily.service",
             },
         )
+        self.assertLessEqual(len(etf_simulation["crossMarketUnits"]), 20)
+        self.assertEqual(
+            etf_simulation["crossMarketUnits"][0]["reason"],
+            "cross_market_service_result_not_attributable_to_single_market",
+        )
         exception_simulation = next(
             row
             for row in exceptions["mainChain"]
             if row["key"] == "simulation"
         )
         self.assertEqual(exception_simulation["status"], "failed")
+        self.assertEqual(
+            exception_simulation["label"],
+            "正式策略及候选模型模拟",
+        )
 
     @staticmethod
     def _operations_scope_runtime() -> dict:
@@ -2124,6 +2152,10 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
     def test_run_error_sanitizer_redacts_prefixed_api_keys(self) -> None:
         secrets = (
             "sk-proj-" + "A" * 32,
+            "sk-ant-api03-" + "B7cD" * 10,
+            "sk-or-v1-" + "E8fG" * 10,
+            "sk-live-" + "H9iJ" * 10,
+            "sk-Ab3dEf4gHi5jKl6mNo7pQr8sTu9vWx0y",
             "AIza" + "B" * 35,
             "AKID" + "C" * 20,
             "LTAI" + "D" * 20,
@@ -2158,10 +2190,12 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
     def test_run_error_sanitizer_redacts_credential_and_access_key_fields(
         self,
     ) -> None:
+        known_key = "sk-proj-" + "Z9yX" * 10
         text = (
-            "credential abcDEF123-xyz rejected; "
-            "credential abcdef123456 rejected again; "
-            "credential topsecret rejected once more; "
+            "credential=abcDEF123-xyz rejected; "
+            "credential:abcdef123456 rejected again; "
+            f"credential {known_key} rejected as known key; "
+            "credential topsecret remains diagnostic; "
             "AccessKeySecret=SecretValue987654321; "
             "AccessKeyId=LTAI5tExampleAccessKey12"
         )
@@ -2170,16 +2204,20 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
 
         self.assertNotIn("abcDEF123-xyz", sanitized)
         self.assertNotIn("abcdef123456", sanitized)
-        self.assertNotIn("topsecret", sanitized)
+        self.assertNotIn(known_key, sanitized)
+        self.assertIn("credential topsecret remains diagnostic", sanitized)
         self.assertNotIn("SecretValue987654321", sanitized)
         self.assertNotIn("LTAI5tExampleAccessKey12", sanitized)
-        self.assertIn("credential <redacted> rejected", sanitized)
+        self.assertIn("credential=<redacted> rejected", sanitized)
         self.assertLessEqual(len(sanitized), 200)
 
     def test_run_error_sanitizer_preserves_non_secret_diagnostics(self) -> None:
         text = (
             "credential file missing; sk-short is a label; "
-            "LTAI docs unavailable; task skipped after 3 retries"
+            "LTAI docs unavailable; task skipped after 3 retries; "
+            "endpoint sk-analysis-worker-2026; "
+            "resolver sk-model-resolver-v2; "
+            "strategy sk-growth-rotation-2026"
         )
 
         self.assertEqual(_sanitize_run_error(text), text)
