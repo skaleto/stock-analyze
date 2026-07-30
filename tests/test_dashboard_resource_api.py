@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -805,6 +806,95 @@ class DashboardResourceApiTests(unittest.TestCase):
         )
         serialized = json.dumps(payload, ensure_ascii=False)
         self.assertNotIn("/srv/stock-analyze", serialized)
+        self.assertNotIn("secret-token", serialized)
+
+    def test_system_overview_isolates_sqlite_summary_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_repo(root)
+            with (
+                mock.patch(
+                    "stock_analyze.dashboard_api.agg.build_dashboard_summary_data",
+                    side_effect=sqlite3.OperationalError(
+                        "/srv/private/summary.sqlite3: secret-token"
+                    ),
+                ),
+                mock.patch(
+                    "stock_analyze.dashboard_api.agg._read_model_iteration_status",
+                    return_value={
+                        "status": "unavailable",
+                        "candidate": None,
+                        "champion": None,
+                    },
+                ),
+                mock.patch(
+                    "stock_analyze.dashboard_api._latest_strategy_model_usage",
+                    return_value=[],
+                ),
+            ):
+                payload = build_dashboard_system_overview_data(repo_root=root)
+
+        self.assertEqual(payload["markets"], [])
+        self.assertEqual(len(payload["models"]), 2)
+        self.assertIn("pipeline", payload["intelligence"])
+        self.assertEqual(
+            payload["errors"],
+            [
+                {
+                    "code": "market_summary_read_unavailable",
+                    "section": "markets",
+                    "message": "市场概览暂不可用。",
+                }
+            ],
+        )
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self.assertNotIn("/srv/private", serialized)
+        self.assertNotIn("secret-token", serialized)
+
+    def test_system_overview_isolates_sqlite_intelligence_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_repo(root)
+            with (
+                mock.patch(
+                    "stock_analyze.dashboard_api.build_dashboard_intelligence_data",
+                    side_effect=sqlite3.OperationalError(
+                        "/srv/private/intelligence.sqlite3: secret-token"
+                    ),
+                ),
+                mock.patch(
+                    "stock_analyze.dashboard_api.agg._read_model_iteration_status",
+                    return_value={
+                        "status": "unavailable",
+                        "candidate": None,
+                        "champion": None,
+                    },
+                ),
+                mock.patch(
+                    "stock_analyze.dashboard_api._latest_strategy_model_usage",
+                    return_value=[],
+                ),
+            ):
+                payload = build_dashboard_system_overview_data(repo_root=root)
+
+        self.assertEqual(
+            {item["market"] for item in payload["markets"]},
+            {"a_share", "cn_qdii_etf"},
+        )
+        self.assertEqual(len(payload["models"]), 2)
+        self.assertEqual(payload["intelligence"]["pipeline"]["status"], "unavailable")
+        self.assertEqual(
+            payload["errors"],
+            [
+                {
+                    "code": "intelligence_read_unavailable",
+                    "section": "intelligence",
+                    "message": "情报链路暂不可用。",
+                }
+            ],
+        )
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self.assertNotIn("/srv/private", serialized)
         self.assertNotIn("secret-token", serialized)
 
     def test_system_overview_isolates_one_model_lineage_read_failure(
