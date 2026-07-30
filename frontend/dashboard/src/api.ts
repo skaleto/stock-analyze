@@ -1372,9 +1372,11 @@ function validateModelResearch(value: unknown): ModelResearchData {
   }
   if (simulation.account !== null) {
     const account = objectAt(simulation.account, "simulation.account");
-    stringAt(account.accountId, "simulation.account.accountId");
+    optionalString(account.accountId, "simulation.account.accountId");
     stringAt(account.accountLabel, "simulation.account.accountLabel");
     stringAt(account.isolation, "simulation.account.isolation");
+    numberAt(account.navRows, "simulation.account.navRows");
+    optionalString(account.portfolioRef, "simulation.account.portfolioRef");
   }
   optionalString(simulation.predictionAsOf, "simulation.predictionAsOf");
   stringAt(simulation.predictionStatus, "simulation.predictionStatus");
