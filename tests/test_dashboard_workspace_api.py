@@ -222,6 +222,27 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertEqual(stage_statuses["validation"], "unavailable")
         self.assertEqual(stage_statuses["adoption"], "unavailable")
 
+    def test_explicit_unavailable_iteration_marks_simulation_unavailable(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._build(
+                Path(tmp),
+                models={"status": "available", "models": [_model()]},
+                iteration={
+                    "status": "unavailable",
+                    "candidate": None,
+                    "champion": None,
+                },
+            )
+
+        simulation_stage = next(
+            row for row in payload["stages"] if row["key"] == "simulation"
+        )
+        self.assertEqual(simulation_stage["status"], "unavailable")
+        self.assertEqual(payload["simulation"]["status"], "unavailable")
+        self.assertEqual(payload["errors"], [])
+
     def test_source_health_errors_are_replaced_with_stable_codes(self) -> None:
         sensitive_path = "/opt/stock-analyze/secrets/provider.env"
         sensitive_key = "DEEPSEEK_API_KEY=plainsecretvalue123456"
@@ -484,6 +505,96 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             },
             {"unavailable"},
         )
+
+    def test_data_resource_redacts_intelligence_source_errors(self) -> None:
+        intelligence = _intelligence()
+        intelligence["pipeline"]["sources"] = [
+            {
+                "source": "tushare_anns_d",
+                "status": "failed",
+                "error": (
+                    "/opt/stock-analyze/secrets/intelligence.env: "
+                    "DEEPSEEK_API_KEY=plainsecretvalue123456; "
+                    "endpoint=https://user:password@api.internal.example/v1"
+                ),
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api._public_strategy_profiles",
+            return_value={},
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+            return_value={"status": "available", "models": [_model()]},
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+            return_value=_iteration(),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            return_value=intelligence,
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+            return_value=[],
+        ):
+            payload = build_dashboard_data_intelligence_data(
+                repo_root=Path(tmp),
+                market="a_share",
+            )
+
+        source = payload["intelligence"]["pipeline"]["sources"][0]
+        self.assertEqual(source["error"], "情报采集状态读取失败")
+        serialized = json.dumps(payload, ensure_ascii=False)
+        for secret in (
+            "/opt/stock-analyze/secrets/intelligence.env",
+            "DEEPSEEK_API_KEY=plainsecretvalue123456",
+            "https://user:password@api.internal.example/v1",
+        ):
+            self.assertNotIn(secret, serialized)
+
+    def test_data_resource_marks_unavailable_candidate_simulation_usage(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api._public_strategy_profiles",
+            return_value={},
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+            return_value={"status": "available", "models": [_model()]},
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+            return_value={
+                "status": "unavailable",
+                "candidate": None,
+                "champion": None,
+            },
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            return_value=_intelligence(),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+            return_value=[],
+        ):
+            payload = build_dashboard_data_intelligence_data(
+                repo_root=Path(tmp),
+                market="a_share",
+            )
+
+        candidate = next(
+            row
+            for row in payload["usageMatrix"]
+            if row["consumerKey"] == "candidate_simulation"
+        )
+        for cell in (
+            candidate["structuredData"],
+            candidate["traditionalFactors"],
+            candidate["intelligenceFactors"],
+        ):
+            self.assertEqual(cell["status"], "unavailable")
+            self.assertEqual(cell["researchStatus"], "unavailable")
+            self.assertEqual(
+                cell["missingManifestEvidence"],
+                ["model_iteration:unavailable"],
+            )
+        self.assertEqual(candidate["impact"], "候选模拟状态不可用")
 
     def test_operations_resource_keeps_runtime_when_intelligence_is_unreadable(
         self,

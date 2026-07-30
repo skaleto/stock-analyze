@@ -716,9 +716,17 @@ class DashboardResourceApiTests(unittest.TestCase):
                 ]
             )
 
-            payload = build_dashboard_system_overview_data(
-                repo_root=root,
-            )
+            with mock.patch(
+                "stock_analyze.dashboard_api.agg._read_model_iteration_status",
+                return_value={
+                    "status": "unavailable",
+                    "candidate": None,
+                    "champion": None,
+                },
+            ):
+                payload = build_dashboard_system_overview_data(
+                    repo_root=root,
+                )
 
         self.assertEqual(
             set(payload),
@@ -758,6 +766,56 @@ class DashboardResourceApiTests(unittest.TestCase):
         self.assertLess(len(serialized.encode("utf-8")), 250_000)
         self.assertNotIn("rowsByDecision", serialized)
         self.assertNotIn("raw_content", serialized)
+
+    def test_system_overview_redacts_intelligence_ingestion_errors(self) -> None:
+        sensitive_path = "/opt/stock-analyze/secrets/intelligence.env"
+        sensitive_key = "DEEPSEEK_API_KEY=plainsecretvalue123456"
+        sensitive_endpoint = "https://user:password@api.internal.example/v1"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_repo(root)
+            _seed_intelligence(root)
+            database = (
+                root
+                / "data"
+                / "shared"
+                / "intelligence"
+                / "intelligence.sqlite3"
+            )
+            with sqlite3.connect(database) as connection:
+                connection.execute(
+                    """
+                    UPDATE ingestion_runs
+                    SET status='failed', error=?
+                    WHERE run_id='ingest-1'
+                    """,
+                    (
+                        f"{sensitive_path}: {sensitive_key}; "
+                        f"endpoint={sensitive_endpoint}",
+                    ),
+                )
+                connection.commit()
+
+            with mock.patch(
+                "stock_analyze.dashboard_api.agg._read_model_iteration_status",
+                return_value={
+                    "status": "unavailable",
+                    "candidate": None,
+                    "champion": None,
+                },
+            ):
+                payload = build_dashboard_system_overview_data(repo_root=root)
+
+        source = payload["intelligence"]["pipeline"]["sources"][0]
+        self.assertEqual(source["error"], "情报采集状态读取失败")
+        serialized = json.dumps(payload, ensure_ascii=False)
+        for secret in (
+            sensitive_path,
+            sensitive_key,
+            sensitive_endpoint,
+            "plainsecretvalue123456",
+        ):
+            self.assertNotIn(secret, serialized)
 
     def test_system_overview_keeps_other_sections_when_model_usage_read_fails(
         self,
@@ -902,7 +960,7 @@ class DashboardResourceApiTests(unittest.TestCase):
     ) -> None:
         def model_status(_root: Path, market: str) -> dict[str, object]:
             if market == "a_share":
-                raise ValueError("/private/model-registry.json is invalid")
+                raise OSError("/private/model-registry.json is unreadable")
             return {
                 "status": "complete",
                 "candidate": {"display_version": "Q5-V004"},
@@ -939,40 +997,64 @@ class DashboardResourceApiTests(unittest.TestCase):
             "/private/model-registry.json",
             json.dumps(payload, ensure_ascii=False),
         )
-    def test_system_overview_keeps_markets_when_intelligence_is_unavailable(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            _seed_repo(root)
-            with mock.patch(
-                "stock_analyze.dashboard_api.build_dashboard_intelligence_data",
-                side_effect=RuntimeError("intelligence store unavailable"),
-            ):
-                payload = build_dashboard_system_overview_data(repo_root=root)
 
-        self.assertEqual(
-            {item["market"] for item in payload["markets"]},
-            {"a_share", "cn_qdii_etf"},
+    def test_system_overview_does_not_hide_programming_errors(self) -> None:
+        targets = (
+            "stock_analyze.dashboard_api.agg.build_dashboard_summary_data",
+            "stock_analyze.dashboard_api.agg._read_model_iteration_status",
+            "stock_analyze.dashboard_api.build_dashboard_intelligence_data",
+            "stock_analyze.dashboard_api._latest_strategy_model_usage",
         )
-        self.assertEqual(payload["intelligence"]["pipeline"]["status"], "unavailable")
-        self.assertEqual(
-            {item["market"] for item in payload["models"]},
-            {"a_share", "cn_qdii_etf"},
-        )
-        intelligence_error = next(
-            item
-            for item in payload["errors"]
-            if item["code"] == "intelligence_read_unavailable"
-        )
-        self.assertEqual(
-            intelligence_error,
-            {
-                "code": "intelligence_read_unavailable",
-                "section": "intelligence",
-                "message": "情报链路暂不可用。",
-            },
-        )
+        exception_types = (RuntimeError, TypeError, ValueError)
+        safe_intelligence = {
+            "pipeline": {"status": "unavailable", "sources": []},
+            "extraction": {},
+            "factorSupply": {},
+            "modelImpact": {},
+            "decisions": {},
+            "rowsByDecision": {},
+        }
+        for target in targets:
+            for exception_type in exception_types:
+                with self.subTest(target=target, exception=exception_type.__name__):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        root = Path(tmp)
+                        _seed_repo(root)
+                        with (
+                            mock.patch(
+                                "stock_analyze.dashboard_api.agg.build_dashboard_summary_data",
+                                return_value={"markets": []},
+                            ),
+                            mock.patch(
+                                "stock_analyze.dashboard_api.agg._read_model_iteration_status",
+                                return_value={
+                                    "status": "unavailable",
+                                    "candidate": None,
+                                    "champion": None,
+                                },
+                            ),
+                            mock.patch(
+                                "stock_analyze.dashboard_api.build_dashboard_intelligence_data",
+                                return_value=safe_intelligence,
+                            ),
+                            mock.patch(
+                                "stock_analyze.dashboard_api._latest_strategy_model_usage",
+                                return_value=[],
+                            ),
+                            mock.patch(
+                                target,
+                                side_effect=exception_type(
+                                    "unexpected programming error"
+                                ),
+                            ),
+                        ):
+                            with self.assertRaisesRegex(
+                                exception_type,
+                                "unexpected programming error",
+                            ):
+                                build_dashboard_system_overview_data(
+                                    repo_root=root,
+                                )
 
     def test_governance_resource_projects_latest_lineage_and_risk(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
