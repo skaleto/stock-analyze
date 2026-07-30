@@ -218,6 +218,59 @@ function payload(
   };
 }
 
+function backendMinimalTruncatedPayload(): Record<string, unknown> {
+  const source = payload();
+  return {
+    generated_at: source.generated_at,
+    scope: source.scope,
+    runtime: {
+      status: source.runtime.status,
+      lastKnownAt: source.runtime.lastKnownAt,
+      reason: "详".repeat(1_000),
+    },
+    dailyFreshness: source.dailyFreshness,
+    mainChain: source.mainChain.map((row) => ({
+      key: row.key,
+      label: row.label,
+      status: row.status,
+      primary: row.primary,
+      secondary: row.secondary,
+    })),
+    background: {
+      status: source.background.status,
+      snapshotGeneratedAt: source.background.snapshotGeneratedAt,
+      backlog: source.background.backlog,
+    },
+    backgroundWorkers: source.backgroundWorkers.map((row) => ({
+      key: row.key,
+      label: row.label,
+      status: row.status,
+      loadState: row.loadState ?? "loaded",
+      reason: null,
+    })),
+    schedules: Object.fromEntries(
+      Object.entries(source.schedules).map(([cadence, rows]) => [
+        cadence,
+        rows.map((row) => ({
+          unit: row.unit,
+          label: row.label,
+          status: row.status,
+          loadState: row.loadState ?? "loaded",
+          reason: null,
+        })),
+      ]),
+    ),
+    recentRuns: [],
+    disk: {
+      status: source.disk.status,
+      usedRatio: source.disk.usedRatio,
+    },
+    interventions: [],
+    truncated: true,
+    truncationReason: "serialized_size_limit",
+  };
+}
+
 function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), {
     status: 200,
@@ -267,6 +320,44 @@ describe("fetchOperationsCenter", () => {
     expect(fetch).toHaveBeenCalledWith(
       "/api/dashboard/operations-center.json?scope=a_share",
       expect.objectContaining({ cache: "no-cache" }),
+    );
+  });
+
+  it("normalizes the backend minimal truncated payload without weakening full responses", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(backendMinimalTruncatedPayload()),
+    );
+    const result = await fetchOperationsCenter("a_share");
+    expect(result.runtime.reason).toHaveLength(1_000);
+    expect(result.mainChain[0].units).toEqual([]);
+    expect(result.mainChain[0].crossMarketUnits).toEqual([]);
+    expect(result.background.artifactWorkers).toEqual({
+      status: "unavailable",
+      activeLeases: 0,
+      latestFinishedAt: null,
+    });
+    expect(result.backgroundWorkers[0]).toMatchObject({
+      serviceUnit: "",
+      timerUnit: "",
+      backlog: null,
+    });
+    expect(result.schedules.daily[0]).toMatchObject({
+      automation: "automatic",
+      lastTriggerAt: null,
+      nextTriggerAt: null,
+    });
+    expect(result.disk).toMatchObject({
+      status: "available",
+      usedRatio: 0.52,
+    });
+
+    const malformedFull = payload();
+    delete (malformedFull.mainChain[0] as Partial<
+      OperationsCenterData["mainChain"][number]
+    >).units;
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(malformedFull));
+    await expect(fetchOperationsCenter("a_share")).rejects.toThrow(
+      /Invalid operations center response/,
     );
   });
 
@@ -563,5 +654,41 @@ describe("OperationsPage", () => {
     expect(screen.queryByText("等待计划时间")).not.toBeInTheDocument();
     expect(screen.getByText("后台明细已裁剪")).toBeInTheDocument();
     expect(screen.getByText("周期计划明细已裁剪")).toBeInTheDocument();
+  });
+
+  it("renders the backend minimal truncated payload instead of a page error", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse(backendMinimalTruncatedPayload()),
+    );
+    render(<OperationsPage scope="a_share" refreshToken={0} />);
+    expect(await screen.findByText(/响应内容已裁剪/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "今日主任务链" }))
+      .toBeInTheDocument();
+    expect(screen.getAllByText("任务明细已裁剪或尚无本日执行记录").length)
+      .toBeGreaterThan(0);
+  });
+
+  it("does not double refresh when scope and token change together", async () => {
+    const signals: AbortSignal[] = [];
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      signals.push(init?.signal as AbortSignal);
+      const scope = String(input).includes("cn_qdii_etf")
+        ? "cn_qdii_etf"
+        : "a_share";
+      return Promise.resolve(jsonResponse(payload({ scope })));
+    });
+    const { rerender } = render(
+      <OperationsPage scope="a_share" refreshToken={2} />,
+    );
+    await screen.findByText("今日主任务链");
+
+    rerender(
+      <OperationsPage scope="cn_qdii_etf" refreshToken={3} />,
+    );
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    expect(signals).toHaveLength(2);
+    expect(signals[0].aborted).toBe(true);
+    expect(signals[1].aborted).toBe(false);
   });
 });
