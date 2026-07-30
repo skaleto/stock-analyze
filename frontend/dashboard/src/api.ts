@@ -1174,6 +1174,10 @@ function validateSystemOverview(value: unknown): SystemOverviewData {
   return data as SystemOverviewData;
 }
 
+const MODEL_RESEARCH_LIST_LIMIT = 20;
+const MODEL_RESEARCH_ROLLBACK_LIMIT = 5;
+const MODEL_RESEARCH_RESPONSE_LIMIT = 250_000;
+
 function modelResearchError(path: string): never {
   throw new Error(`Invalid model research response: ${path}`);
 }
@@ -1185,8 +1189,13 @@ function objectAt(value: unknown, path: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function arrayAt(value: unknown, path: string): unknown[] {
+function arrayAt(
+  value: unknown,
+  path: string,
+  limit = MODEL_RESEARCH_LIST_LIMIT,
+): unknown[] {
   if (!Array.isArray(value)) modelResearchError(path);
+  if (value.length > limit) modelResearchError(`${path} exceeds ${limit}`);
   return value;
 }
 
@@ -1255,6 +1264,7 @@ function validateModelResearch(value: unknown): ModelResearchData {
   stringAt(data.generated_at, "generated_at");
   stringAt(data.market, "market");
   stringAt(data.market_label, "market_label");
+  if (data.errors !== undefined) arrayAt(data.errors, "errors");
 
   const stageKeys = new Set<string>();
   arrayAt(data.stages, "stages").forEach((item, index) => {
@@ -1315,6 +1325,11 @@ function validateModelResearch(value: unknown): ModelResearchData {
       "dataPreparation.unclassifiedFeatures",
     );
   }
+  stringArray(
+    preparation.selectedFeatures,
+    "dataPreparation.selectedFeatures",
+  );
+  stringArray(preparation.gaps, "dataPreparation.gaps");
   stringAt(preparation.pointInTimeAudit, "dataPreparation.pointInTimeAudit");
 
   const training = objectAt(data.training, "training");
@@ -1392,13 +1407,15 @@ function validateModelResearch(value: unknown): ModelResearchData {
       "horizon,modelVersion",
     );
   });
-  arrayAt(adoption.rollbackCandidates, "adoption.rollbackCandidates").forEach(
-    (item, index) => {
-      const path = `adoption.rollbackCandidates[${index}]`;
-      const rollback = objectAt(item, path);
-      stringAt(rollback.displayVersion, `${path}.displayVersion`);
-    },
-  );
+  arrayAt(
+    adoption.rollbackCandidates,
+    "adoption.rollbackCandidates",
+    MODEL_RESEARCH_ROLLBACK_LIMIT,
+  ).forEach((item, index) => {
+    const path = `adoption.rollbackCandidates[${index}]`;
+    const rollback = objectAt(item, path);
+    stringAt(rollback.displayVersion, `${path}.displayVersion`);
+  });
   const strategyAgents = new Set<string>();
   arrayAt(adoption.strategyUsage, "adoption.strategyUsage").forEach(
     (item, index) => {
@@ -2191,6 +2208,16 @@ async function fetchJson<T>(
     throw new Error(message);
   }
   if (maxResponseBytes !== undefined) {
+    if (typeof response.text !== "function") {
+      const payload = await response.json() as T;
+      const body = JSON.stringify(payload);
+      if (new TextEncoder().encode(body).byteLength > maxResponseBytes) {
+        throw new Error(
+          `${responseName} response exceeds ${maxResponseBytes} bytes`,
+        );
+      }
+      return payload;
+    }
     const body = await response.text();
     if (new TextEncoder().encode(body).byteLength > maxResponseBytes) {
       throw new Error(
@@ -2313,6 +2340,8 @@ export function fetchModelResearch(
   return fetchJson<unknown>(
     `/api/dashboard/model-research.json?${params.toString()}`,
     signal,
+    MODEL_RESEARCH_RESPONSE_LIMIT,
+    "Model research",
   ).then(validateModelResearch);
 }
 
