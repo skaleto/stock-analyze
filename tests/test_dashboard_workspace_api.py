@@ -241,6 +241,51 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertEqual(len(payload["adoption"]["rollbackCandidates"]), 5)
         self.assertEqual(payload["stages"][-1]["status"], "success")
 
+    def test_external_registry_artifact_cannot_evidence_champion_adoption(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            tempfile.NamedTemporaryFile() as external,
+        ):
+            root = Path(tmp)
+            model_root = root / "data" / "research" / "models" / "a_share" / "20"
+            model_root.mkdir(parents=True)
+            (model_root / "registry.json").write_text(
+                json.dumps(
+                    {
+                        "champion_model_version": "A20-V005",
+                        "models": {
+                            "A20-V005": {
+                                "status": "active",
+                                "artifact": external.name,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = self._build(
+                root,
+                models={
+                    "status": "available",
+                    "models": [_model(champion=True)],
+                },
+                usage=[
+                    {
+                        "market": "a_share",
+                        "agent": "codex",
+                        "status": "active",
+                        "model_versions": {"20": "A20-V005"},
+                    }
+                ],
+            )
+
+        model = payload["training"]["models"][0]
+        self.assertEqual(model["artifactStatus"], "missing")
+        self.assertIsNone(model["artifactRef"])
+        self.assertEqual(payload["adoption"]["champions"], [])
+        self.assertEqual(payload["adoption"]["strategyUsage"], [])
+        self.assertEqual(payload["stages"][-1]["status"], "waiting_upstream")
+
     def test_adoption_requires_matching_champion_horizon_and_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -459,6 +504,108 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             "utf-8"
         )
         self.assertLess(len(encoded), 250_000)
+
+    def test_adversarial_scalars_are_sanitized_and_final_payload_is_pruned(self) -> None:
+        models = []
+        for index in range(20):
+            model = _model(
+                f"A20-V{index:03d}",
+                features=[
+                    f"feature-{index}-{part}-" + ("f" * 200)
+                    for part in range(20)
+                ],
+            )
+            model["metrics"] = {
+                key: "m" * 300_000
+                for key in (
+                    "rank_ic",
+                    "mean_rank_ic",
+                    "icir",
+                    "brier_score",
+                    "auc",
+                    "hit_rate_lift",
+                    "net_excess_return",
+                    "turnover",
+                )
+            }
+            model["metrics"]["candidate_feature_count"] = math.inf
+            model["metrics"]["point_in_time_audit"] = math.nan
+            model["gate_reasons"] = ["g" * 300_000 for _ in range(20)]
+            models.append(model)
+        candidate = {
+            "model_version": "v" * 300_000,
+            "display_version": "d" * 300_000,
+            "status": "s" * 300_000,
+            "shadow_cycles": math.inf,
+            "shadow_cycles_remaining": math.nan,
+            "horizon": object(),
+        }
+        usage = [
+            {
+                "market": "a_share",
+                "agent": "a" * 300_000,
+                "strategy_label": "l" * 300_000,
+                "status": "active",
+                "model_versions": {"20": "A20-V000"},
+                "applied_candidates": math.inf,
+                "candidate_coverage": math.nan,
+                "fallback_reason": "r" * 300_000,
+                "accounts": object(),
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_root = root / "data" / "research" / "models" / "a_share" / "20"
+            model_root.mkdir(parents=True)
+            artifact = model_root / "run-A20-V000.joblib"
+            artifact.write_bytes(b"model")
+            (model_root / "registry.json").write_text(
+                json.dumps(
+                    {
+                        "champion_model_version": "A20-V000",
+                        "models": {
+                            "A20-V000": {
+                                "status": "active",
+                                "artifact": str(artifact),
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            models[0]["is_champion"] = True
+            payload = self._build(
+                root,
+                models={"status": "available", "models": models},
+                iteration=_iteration(candidate=candidate),
+                usage=usage,
+            )
+
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        self.assertLess(len(encoded), 250_000)
+        self.assertTrue(payload["truncated"])
+        self.assertEqual(payload["truncationReason"], "serialized_size_limit")
+        self.assertEqual(
+            [stage["key"] for stage in payload["stages"]],
+            ["data", "training", "validation", "simulation", "adoption"],
+        )
+        self.assertEqual(payload["validation"]["total"], 20)
+        self.assertEqual(payload["dataPreparation"]["selectedFeatureCount"], 400)
+        first_model = payload["training"]["models"][0]
+        self.assertEqual(first_model["candidateFeatureCount"], 20)
+        self.assertIsNone(first_model["pointInTimeAudit"])
+        self.assertLessEqual(len(first_model["metrics"]["rank_ic"]), 1_000)
+        bounded_candidate = payload["simulation"]["candidate"]
+        self.assertLessEqual(len(bounded_candidate["model_version"]), 256)
+        self.assertEqual(bounded_candidate["shadow_cycles"], 0)
+        self.assertIsNone(bounded_candidate["horizon"])
+        bounded_usage = payload["adoption"]["strategyUsage"][0]
+        self.assertEqual(bounded_usage["candidate_coverage"], 0.0)
+        self.assertLessEqual(len(bounded_usage["fallback_reason"]), 1_000)
 
 
 if __name__ == "__main__":
