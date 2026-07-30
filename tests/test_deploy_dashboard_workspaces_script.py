@@ -91,7 +91,12 @@ class DashboardWorkspaceDeployScriptTests(unittest.TestCase):
 
         self._write_executable(
             root / "scripts" / "build-dashboard-app.sh",
-            "#!/usr/bin/env bash\nset -euo pipefail\ntest -f reports/app/index.html\n",
+            (
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "echo 'fixture build log'\n"
+                "test -f reports/app/index.html\n"
+            ),
         )
         self._write_executable(
             fake_bin / "ssh",
@@ -398,6 +403,20 @@ else:
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("TREE ", completed.stdout)
         self.assertIn(" reports/app", completed.stdout)
+
+    def test_capture_release_stdout_contains_only_the_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = self._create_deploy_fixture(temporary_directory)
+
+            completed = self._run_fixture(
+                fixture,
+                "capture-release-input",
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(completed.stdout.startswith("FORMAT "))
+        self.assertNotIn("fixture build log", completed.stdout)
+        self.assertIn("fixture build log", completed.stderr)
 
     def test_asset_sync_failure_rolls_back_and_verifies_preimage_and_app(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

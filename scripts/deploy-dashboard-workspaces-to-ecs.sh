@@ -548,7 +548,7 @@ capture_local_release_input() {
   CURRENT_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
   [[ "$CURRENT_COMMIT" =~ ^[0-9a-f]{40}$ ]] \
     || die "unable to resolve current git commit"
-  build_dashboard_assets
+  build_dashboard_assets >&2
   ensure_release_inputs_match_head
   LOCAL_RELEASE_MANIFEST="$LOCAL_RELEASE_DIR/release-input.manifest"
   write_local_release_manifest "$LOCAL_RELEASE_MANIFEST"
