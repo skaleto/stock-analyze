@@ -1,0 +1,40 @@
+import { describe, expect, it } from "vitest";
+import { accountLabel, fieldMeta, formatFieldValue, formatStrategyReason, sideLabel } from "./finance";
+
+
+describe("finance field dictionary", () => {
+  it("translates common stock indicators for beginners", () => {
+    expect(fieldMeta("roe").label).toBe("净资产收益率 ROE");
+    expect(fieldMeta("roe").explanation).toContain("股东投入");
+    expect(fieldMeta("gross_margin").label).toBe("毛利率");
+    expect(fieldMeta("debt_ratio").label).toBe("资产负债率");
+    expect(fieldMeta("index_key").label).toBe("底层指数标识");
+    expect(fieldMeta("last_buy_date").label).toBe("最近买入日");
+    expect(fieldMeta("hold_since").label).toBe("持仓起始日");
+    expect(fieldMeta("updated_at").label).toBe("更新时间");
+    expect(fieldMeta("delta_shares").label).toBe("变动份额");
+    expect(fieldMeta("reference_price").label).toBe("参考价格");
+    expect(fieldMeta("strategy_id").label).toBe("策略版本");
+    expect(formatFieldValue("index_key", "unknown")).toBe("未知");
+  });
+
+  it("translates account and order vocabulary", () => {
+    expect(sideLabel("buy")).toBe("买入");
+    expect(sideLabel("sell")).toBe("卖出");
+    expect(accountLabel("us_exposure")).toBe("美国市场ETF账户");
+    expect(accountLabel("model_shadow")).toBe("候选模型模拟组合");
+  });
+
+  it("formats ratio and money fields by meaning", () => {
+    expect(formatFieldValue("roe", 0.1532)).toBe("15.32%");
+    expect(formatFieldValue("avg_amount_20", 12345678)).toContain("1,234.57万");
+    expect(formatFieldValue("shares", 1200)).toBe("1,200");
+  });
+
+  it("translates factor reasons into readable Chinese", () => {
+    expect(formatStrategyReason("momentum_20=+0.0231; low_volatility_60=+0.0135"))
+      .toBe("近20日涨跌 +2.31% · 近60日波动率 +1.35%");
+    expect(formatFieldValue("reason", "momentum_60=-0.0353"))
+      .toBe("近60日涨跌 -3.53%");
+  });
+});
