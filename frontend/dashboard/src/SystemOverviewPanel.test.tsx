@@ -150,6 +150,7 @@ const system = {
     decisions: { canonical: 11, no_event: 25, quarantined: 48, failed: 37 },
     recentEvents: [],
   },
+  errors: [],
 };
 
 describe("SystemOverviewPanel", () => {
@@ -186,5 +187,29 @@ describe("SystemOverviewPanel", () => {
     expect(JSON.stringify(onNavigate.mock.calls)).not.toMatch(
       /claude|codex|model_shadow/,
     );
+  });
+
+  it("keeps partial data visible and shows controlled read failures", async () => {
+    fetchSystemOverview.mockResolvedValue({
+      ...system,
+      strategy_model_usage: [],
+      errors: [
+        {
+          code: "strategy_model_usage_read_unavailable",
+          section: "strategy_model_usage",
+          message: "策略模型采用记录暂不可用。",
+        },
+      ],
+    });
+
+    render(<SystemOverviewPanel onNavigate={vi.fn()} />);
+
+    expect(await screen.findByText("A20-V005")).toBeInTheDocument();
+    expect(
+      screen.getByText("策略模型采用记录暂不可用。"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: "决策闭环总览" }),
+    ).toBeInTheDocument();
   });
 });

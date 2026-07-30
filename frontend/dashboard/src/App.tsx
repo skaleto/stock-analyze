@@ -1,15 +1,12 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useState,
   type ReactNode,
 } from "react";
 import { Search } from "lucide-react";
-import { DataIntelligencePage } from "./DataIntelligencePage";
-import { ModelResearchPage } from "./ModelResearchPage";
-import { OperationsPage } from "./OperationsPage";
-import { StrategyWorkspacePage } from "./StrategyWorkspacePage";
-import SystemOverviewPanel from "./SystemOverviewPanel";
 import { WorkspaceShell } from "./WorkspaceShell";
 import {
   parseWorkspaceRoute,
@@ -18,6 +15,36 @@ import {
   type DashboardMarket,
   type WorkspaceRoute,
 } from "./workspaceRoute";
+
+const SystemOverviewPanel = lazy(() => import("./SystemOverviewPanel"));
+const StrategyWorkspacePage = lazy(() => (
+  import("./StrategyWorkspacePage").then((module) => ({
+    default: module.StrategyWorkspacePage,
+  }))
+));
+const ModelResearchPage = lazy(() => (
+  import("./ModelResearchPage").then((module) => ({
+    default: module.ModelResearchPage,
+  }))
+));
+const DataIntelligencePage = lazy(() => (
+  import("./DataIntelligencePage").then((module) => ({
+    default: module.DataIntelligencePage,
+  }))
+));
+const OperationsPage = lazy(() => (
+  import("./OperationsPage").then((module) => ({
+    default: module.OperationsPage,
+  }))
+));
+
+function WorkspacePageSkeleton() {
+  return (
+    <div className="skeleton-grid" aria-label="工作区加载中">
+      <div /><div /><div /><div />
+    </div>
+  );
+}
 
 function workspaceTitle(route: WorkspaceRoute): string {
   if (route.view === "system") return "投研决策总览";
@@ -197,7 +224,9 @@ export default function App() {
         ) : null
       }
     >
-      {page}
+      <Suspense fallback={<WorkspacePageSkeleton />}>
+        {page}
+      </Suspense>
     </WorkspaceShell>
   );
 }

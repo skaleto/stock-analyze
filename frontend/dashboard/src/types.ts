@@ -384,6 +384,17 @@ export type SystemModelOverview = {
   iteration: ModelIterationStatus;
 };
 
+export type SystemOverviewError = {
+  code:
+    | "market_summary_read_unavailable"
+    | "model_lineage_read_unavailable"
+    | "strategy_model_usage_read_unavailable"
+    | "intelligence_read_unavailable";
+  section: "markets" | "models" | "strategy_model_usage" | "intelligence";
+  market?: "a_share" | "cn_qdii_etf";
+  message: string;
+};
+
 export type SystemOverviewData = {
   generated_at: string;
   markets: MarketSummary[];
@@ -395,6 +406,7 @@ export type SystemOverviewData = {
   > & {
     recentEvents: IntelligenceDecisionRow[];
   };
+  errors: SystemOverviewError[];
 };
 
 export type ExposureWeight = {

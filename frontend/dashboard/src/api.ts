@@ -32,6 +32,901 @@ const workspaceStatuses = new Set([
   "unavailable",
 ]);
 
+const SYSTEM_OVERVIEW_RESPONSE_LIMIT = 250_000;
+const systemMarkets = new Set(["a_share", "cn_qdii_etf"]);
+const systemAgents = new Set(["claude", "codex"]);
+const systemUsageStatuses = new Set([
+  "active",
+  "rule_only",
+  "not_recorded",
+]);
+const systemSectionStatuses = new Set([
+  "available",
+  "unavailable",
+  "empty",
+  "partial",
+  "complete",
+  "degraded",
+  "healthy",
+  "research",
+]);
+const systemIterationStatuses = new Set([
+  "available",
+  "unavailable",
+  "complete",
+  "no_candidate",
+  "not_started",
+  "prediction_missing",
+  "active",
+  "shadow",
+  "research",
+  "candidate",
+  "pending",
+]);
+const systemErrorContracts = {
+  market_summary_read_unavailable: {
+    section: "markets",
+    message: "市场概览暂不可用。",
+  },
+  model_lineage_read_unavailable: {
+    section: "models",
+    message: null,
+  },
+  strategy_model_usage_read_unavailable: {
+    section: "strategy_model_usage",
+    message: "策略模型采用记录暂不可用。",
+  },
+  intelligence_read_unavailable: {
+    section: "intelligence",
+    message: "情报链路暂不可用。",
+  },
+} as const;
+
+function systemOverviewError(path: string): never {
+  throw new Error(`Invalid system overview response: ${path}`);
+}
+
+function systemObject(
+  value: unknown,
+  path: string,
+): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    systemOverviewError(path);
+  }
+  return value as Record<string, unknown>;
+}
+
+function systemKeys(
+  value: unknown,
+  path: string,
+  required: readonly string[],
+  allowed: readonly string[],
+): Record<string, unknown> {
+  const object = systemObject(value, path);
+  const allowedKeys = new Set(allowed);
+  for (const key of Object.keys(object)) {
+    if (!allowedKeys.has(key)) systemOverviewError(`${path}.${key}`);
+  }
+  for (const key of required) {
+    if (!Object.prototype.hasOwnProperty.call(object, key)) {
+      systemOverviewError(`${path}.${key}`);
+    }
+  }
+  return object;
+}
+
+function systemArray(
+  value: unknown,
+  path: string,
+  limit: number,
+): unknown[] {
+  if (!Array.isArray(value) || value.length > limit) {
+    systemOverviewError(path);
+  }
+  return value;
+}
+
+function systemString(value: unknown, path: string): string {
+  if (typeof value !== "string") systemOverviewError(path);
+  return value;
+}
+
+function systemOptionalString(value: unknown, path: string): void {
+  if (value !== undefined && value !== null && typeof value !== "string") {
+    systemOverviewError(path);
+  }
+}
+
+function systemNumber(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    systemOverviewError(path);
+  }
+  return value;
+}
+
+function systemOptionalNumber(value: unknown, path: string): void {
+  if (value !== undefined && value !== null) systemNumber(value, path);
+}
+
+function systemBoolean(value: unknown, path: string): boolean {
+  if (typeof value !== "boolean") systemOverviewError(path);
+  return value;
+}
+
+function validateSystemStringMap(
+  value: unknown,
+  path: string,
+  limit: number,
+): void {
+  const object = systemObject(value, path);
+  if (Object.keys(object).length > limit) systemOverviewError(path);
+  Object.entries(object).forEach(([key, item]) => {
+    if (!key || typeof item !== "string") {
+      systemOverviewError(`${path}.${key}`);
+    }
+  });
+}
+
+function validateSystemNumberMap(
+  value: unknown,
+  path: string,
+  limit: number,
+): void {
+  const object = systemObject(value, path);
+  if (Object.keys(object).length > limit) systemOverviewError(path);
+  Object.entries(object).forEach(([key, item]) => {
+    systemNumber(item, `${path}.${key}`);
+  });
+}
+
+function validateSystemTask(value: unknown, path: string): void {
+  const task = systemKeys(
+    value,
+    path,
+    [],
+    ["status", "started_at", "finished_at", "error_summary"],
+  );
+  systemOptionalString(task.status, `${path}.status`);
+  systemOptionalString(task.started_at, `${path}.started_at`);
+  systemOptionalString(task.finished_at, `${path}.finished_at`);
+  systemOptionalString(task.error_summary, `${path}.error_summary`);
+}
+
+function validateSystemMarket(value: unknown, path: string): string {
+  const market = systemKeys(
+    value,
+    path,
+    ["market", "label", "currency", "agents", "monthly"],
+    ["market", "label", "currency", "agents", "comparison", "monthly"],
+  );
+  const marketKey = systemString(market.market, `${path}.market`);
+  if (!systemMarkets.has(marketKey)) systemOverviewError(`${path}.market`);
+  systemString(market.label, `${path}.label`);
+  systemString(market.currency, `${path}.currency`);
+  if (market.comparison !== undefined && market.comparison !== null) {
+    systemObject(market.comparison, `${path}.comparison`);
+  }
+  systemKeys(
+    market.monthly,
+    `${path}.monthly`,
+    [],
+    ["status", "href", "label"],
+  );
+  const seenAgents = new Set<string>();
+  systemArray(market.agents, `${path}.agents`, 2).forEach((item, index) => {
+    const agentPath = `${path}.agents[${index}]`;
+    const agent = systemKeys(
+      item,
+      agentPath,
+      ["agent", "nav", "decision", "tasks"],
+      ["agent", "strategy", "nav", "decision", "tasks"],
+    );
+    const agentKey = systemString(agent.agent, `${agentPath}.agent`);
+    if (!systemAgents.has(agentKey)) {
+      systemOverviewError(`${agentPath}.agent`);
+    }
+    if (seenAgents.has(agentKey)) {
+      systemOverviewError(`${agentPath} duplicate agent`);
+    }
+    seenAgents.add(agentKey);
+    if (agent.strategy !== undefined) {
+      const strategy = systemKeys(
+        agent.strategy,
+        `${agentPath}.strategy`,
+        ["agent", "label"],
+        [
+          "agent",
+          "label",
+          "description",
+          "color",
+          "strategy_id",
+          "strategy_name",
+          "holdings_source",
+          "allocations",
+          "lookthrough",
+          "research",
+          "metrics",
+        ],
+      );
+      const strategyAgent = systemString(
+        strategy.agent,
+        `${agentPath}.strategy.agent`,
+      );
+      if (strategyAgent !== agentKey) {
+        systemOverviewError(`${agentPath}.strategy.agent`);
+      }
+      systemString(strategy.label, `${agentPath}.strategy.label`);
+      systemOptionalString(
+        strategy.strategy_id,
+        `${agentPath}.strategy.strategy_id`,
+      );
+      systemOptionalString(
+        strategy.strategy_name,
+        `${agentPath}.strategy.strategy_name`,
+      );
+    }
+    const nav = systemKeys(
+      agent.nav,
+      `${agentPath}.nav`,
+      ["latest", "latest_display", "date", "return", "return_display"],
+      ["latest", "latest_display", "date", "return", "return_display"],
+    );
+    systemOptionalNumber(nav.latest, `${agentPath}.nav.latest`);
+    systemString(nav.latest_display, `${agentPath}.nav.latest_display`);
+    systemOptionalString(nav.date, `${agentPath}.nav.date`);
+    systemOptionalNumber(nav.return, `${agentPath}.nav.return`);
+    systemString(nav.return_display, `${agentPath}.nav.return_display`);
+    const decision = systemKeys(
+      agent.decision,
+      `${agentPath}.decision`,
+      ["href", "pending_orders", "weekly_report_href"],
+      ["href", "pending_orders", "weekly_report_href"],
+    );
+    systemString(decision.href, `${agentPath}.decision.href`);
+    systemOptionalString(
+      decision.weekly_report_href,
+      `${agentPath}.decision.weekly_report_href`,
+    );
+    const orders = systemKeys(
+      decision.pending_orders,
+      `${agentPath}.decision.pending_orders`,
+      ["total", "buy", "sell"],
+      ["total", "buy", "sell"],
+    );
+    ["total", "buy", "sell"].forEach((key) => (
+      systemNumber(
+        orders[key],
+        `${agentPath}.decision.pending_orders.${key}`,
+      )
+    ));
+    const tasks = systemKeys(
+      agent.tasks,
+      `${agentPath}.tasks`,
+      ["daily", "weekly"],
+      ["daily", "weekly"],
+    );
+    validateSystemTask(tasks.daily, `${agentPath}.tasks.daily`);
+    validateSystemTask(tasks.weekly, `${agentPath}.tasks.weekly`);
+  });
+  return marketKey;
+}
+
+const iterationKeys = [
+  "status",
+  "label",
+  "portfolio_label",
+  "isolation",
+  "source_agent",
+  "source_type",
+  "as_of",
+  "prediction_as_of",
+  "horizon",
+  "model_version",
+  "display_version",
+  "model_versions",
+  "decision_changed",
+  "candidate_rows",
+  "eligible_rows",
+  "selected_count",
+  "invalidated_rows",
+  "minimum_confidence",
+  "cash_only",
+  "cash_reason",
+  "decision_diagnostics",
+  "trades_executed",
+  "pending_orders",
+  "updated_at",
+  "candidate",
+  "champion",
+  "version_history",
+] as const;
+
+function validateSystemModelVersion(value: unknown, path: string): void {
+  if (value === null) return;
+  const version = systemKeys(
+    value,
+    path,
+    [],
+    [
+      "market",
+      "horizon",
+      "model_version",
+      "display_version",
+      "status",
+      "status_label",
+      "champion_model_version",
+      "shadow_cycles",
+      "shadow_cycles_remaining",
+      "registered_at",
+      "selected_at",
+      "outcome",
+      "ended_at",
+    ],
+  );
+  [
+    "market",
+    "model_version",
+    "display_version",
+    "status",
+    "status_label",
+    "champion_model_version",
+    "registered_at",
+    "selected_at",
+    "outcome",
+    "ended_at",
+  ].forEach((key) => systemOptionalString(version[key], `${path}.${key}`));
+  ["horizon", "shadow_cycles", "shadow_cycles_remaining"].forEach(
+    (key) => systemOptionalNumber(version[key], `${path}.${key}`),
+  );
+}
+
+function validateSystemIteration(value: unknown, path: string): void {
+  const iteration = systemKeys(value, path, ["status"], iterationKeys);
+  const status = systemString(iteration.status, `${path}.status`);
+  if (!systemIterationStatuses.has(status)) {
+    systemOverviewError(`${path}.status`);
+  }
+  for (const key of [
+    "label",
+    "portfolio_label",
+    "isolation",
+    "source_agent",
+    "source_type",
+    "as_of",
+    "prediction_as_of",
+    "model_version",
+    "display_version",
+    "cash_reason",
+    "updated_at",
+  ]) {
+    systemOptionalString(iteration[key], `${path}.${key}`);
+  }
+  for (const key of [
+    "horizon",
+    "candidate_rows",
+    "eligible_rows",
+    "selected_count",
+    "invalidated_rows",
+    "minimum_confidence",
+    "trades_executed",
+    "pending_orders",
+  ]) {
+    systemOptionalNumber(iteration[key], `${path}.${key}`);
+  }
+  for (const key of ["decision_changed", "cash_only"]) {
+    if (iteration[key] !== undefined) {
+      systemBoolean(iteration[key], `${path}.${key}`);
+    }
+  }
+  if (iteration.model_versions !== undefined) {
+    systemArray(iteration.model_versions, `${path}.model_versions`, 20)
+      .forEach((item, index) => (
+        systemString(item, `${path}.model_versions[${index}]`)
+      ));
+  }
+  validateSystemModelVersion(iteration.candidate, `${path}.candidate`);
+  validateSystemModelVersion(iteration.champion, `${path}.champion`);
+  if (iteration.version_history !== undefined) {
+    systemArray(iteration.version_history, `${path}.version_history`, 50)
+      .forEach((item, index) => (
+        validateSystemModelVersion(item, `${path}.version_history[${index}]`)
+      ));
+  }
+  if (
+    iteration.decision_diagnostics !== undefined
+    && iteration.decision_diagnostics !== null
+  ) {
+    systemObject(
+      iteration.decision_diagnostics,
+      `${path}.decision_diagnostics`,
+    );
+  }
+}
+
+function validateSystemIntelligence(value: unknown): void {
+  const intelligence = systemKeys(
+    value,
+    "intelligence",
+    [
+      "pipeline",
+      "extraction",
+      "factorSupply",
+      "modelImpact",
+      "decisions",
+      "recentEvents",
+    ],
+    [
+      "pipeline",
+      "extraction",
+      "factorSupply",
+      "modelImpact",
+      "decisions",
+      "recentEvents",
+    ],
+  );
+  const pipeline = systemKeys(
+    intelligence.pipeline,
+    "intelligence.pipeline",
+    ["status", "documents", "artifacts", "stages", "backlog", "sources"],
+    [
+      "status",
+      "documents",
+      "artifacts",
+      "stages",
+      "backlog",
+      "sources",
+      "artifactWorkers",
+      "snapshotGeneratedAt",
+    ],
+  );
+  const pipelineStatus = systemString(
+    pipeline.status,
+    "intelligence.pipeline.status",
+  );
+  if (!systemSectionStatuses.has(pipelineStatus)) {
+    systemOverviewError("intelligence.pipeline.status");
+  }
+  systemNumber(pipeline.documents, "intelligence.pipeline.documents");
+  validateSystemNumberMap(
+    pipeline.artifacts,
+    "intelligence.pipeline.artifacts",
+    32,
+  );
+  const stages = systemKeys(
+    pipeline.stages,
+    "intelligence.pipeline.stages",
+    [
+      "catalogued",
+      "pdfReady",
+      "parsed",
+      "semanticCompleted",
+      "canonicalEvents",
+    ],
+    [
+      "catalogued",
+      "pdfReady",
+      "parsed",
+      "semanticCompleted",
+      "canonicalEvents",
+    ],
+  );
+  [
+    "catalogued",
+    "pdfReady",
+    "parsed",
+    "semanticCompleted",
+    "canonicalEvents",
+  ].forEach((key) => (
+    systemNumber(stages[key], `intelligence.pipeline.stages.${key}`)
+  ));
+  const backlog = systemKeys(
+    pipeline.backlog,
+    "intelligence.pipeline.backlog",
+    ["download", "parse", "semantic", "total"],
+    ["download", "parse", "semantic", "total"],
+  );
+  ["download", "parse", "semantic", "total"].forEach((key) => (
+    systemNumber(backlog[key], `intelligence.pipeline.backlog.${key}`)
+  ));
+  systemArray(pipeline.sources, "intelligence.pipeline.sources", 16)
+    .forEach((item, index) => {
+      const path = `intelligence.pipeline.sources[${index}]`;
+      const source = systemKeys(
+        item,
+        path,
+        [
+          "source",
+          "documents",
+          "freshnessStatus",
+          "latestRunStatus",
+          "fetched",
+          "inserted",
+        ],
+        [
+          "source",
+          "documents",
+          "latestPublishedAt",
+          "lastIngestedAt",
+          "freshnessStatus",
+          "latestRunStatus",
+          "fetched",
+          "inserted",
+          "error",
+          "cursor",
+          "cursorUpdatedAt",
+        ],
+      );
+      systemString(source.source, `${path}.source`);
+      ["documents", "fetched", "inserted"].forEach((key) => (
+        systemNumber(source[key], `${path}.${key}`)
+      ));
+      systemString(source.freshnessStatus, `${path}.freshnessStatus`);
+      systemString(source.latestRunStatus, `${path}.latestRunStatus`);
+    });
+  if (pipeline.artifactWorkers !== undefined) {
+    systemObject(
+      pipeline.artifactWorkers,
+      "intelligence.pipeline.artifactWorkers",
+    );
+  }
+  systemOptionalString(
+    pipeline.snapshotGeneratedAt,
+    "intelligence.pipeline.snapshotGeneratedAt",
+  );
+
+  const extraction = systemKeys(
+    intelligence.extraction,
+    "intelligence.extraction",
+    ["status", "semanticRuns", "decisions", "latestBatch", "contract"],
+    ["status", "semanticRuns", "decisions", "latestBatch", "contract"],
+  );
+  const extractionStatus = systemString(
+    extraction.status,
+    "intelligence.extraction.status",
+  );
+  if (!systemSectionStatuses.has(extractionStatus)) {
+    systemOverviewError("intelligence.extraction.status");
+  }
+  validateSystemNumberMap(
+    extraction.semanticRuns,
+    "intelligence.extraction.semanticRuns",
+    16,
+  );
+  validateSystemNumberMap(
+    extraction.decisions,
+    "intelligence.extraction.decisions",
+    8,
+  );
+  if (extraction.latestBatch !== null) {
+    systemObject(
+      extraction.latestBatch,
+      "intelligence.extraction.latestBatch",
+    );
+  }
+  systemObject(extraction.contract, "intelligence.extraction.contract");
+
+  const factorSupply = systemKeys(
+    intelligence.factorSupply,
+    "intelligence.factorSupply",
+    [
+      "status",
+      "rows",
+      "factorSets",
+      "factors",
+      "lifecycleCounts",
+      "suppliedFactors",
+      "modelEligible",
+      "modelEligibleFactors",
+    ],
+    [
+      "status",
+      "snapshotDate",
+      "rows",
+      "reportName",
+      "factorSet",
+      "factorSets",
+      "factors",
+      "lifecycleCounts",
+      "suppliedFactors",
+      "modelEligible",
+      "modelEligibleFactors",
+    ],
+  );
+  const factorStatus = systemString(
+    factorSupply.status,
+    "intelligence.factorSupply.status",
+  );
+  if (!systemSectionStatuses.has(factorStatus)) {
+    systemOverviewError("intelligence.factorSupply.status");
+  }
+  systemNumber(factorSupply.rows, "intelligence.factorSupply.rows");
+  systemNumber(
+    factorSupply.suppliedFactors,
+    "intelligence.factorSupply.suppliedFactors",
+  );
+  systemBoolean(
+    factorSupply.modelEligible,
+    "intelligence.factorSupply.modelEligible",
+  );
+  systemArray(
+    factorSupply.modelEligibleFactors,
+    "intelligence.factorSupply.modelEligibleFactors",
+    100,
+  ).forEach((item, index) => (
+    systemString(
+      item,
+      `intelligence.factorSupply.modelEligibleFactors[${index}]`,
+    )
+  ));
+  systemArray(
+    factorSupply.factorSets,
+    "intelligence.factorSupply.factorSets",
+    32,
+  ).forEach((item, index) => (
+    systemObject(item, `intelligence.factorSupply.factorSets[${index}]`)
+  ));
+  systemArray(
+    factorSupply.factors,
+    "intelligence.factorSupply.factors",
+    100,
+  ).forEach((item, index) => (
+    systemObject(item, `intelligence.factorSupply.factors[${index}]`)
+  ));
+  validateSystemNumberMap(
+    factorSupply.lifecycleCounts,
+    "intelligence.factorSupply.lifecycleCounts",
+    32,
+  );
+
+  const modelImpact = systemKeys(
+    intelligence.modelImpact,
+    "intelligence.modelImpact",
+    [
+      "status",
+      "qualifiedHorizons",
+      "activation",
+      "adopted",
+      "activeFactors",
+      "iterationFactors",
+      "reason",
+      "horizons",
+    ],
+    [
+      "status",
+      "asOf",
+      "snapshotDate",
+      "reportName",
+      "factorSet",
+      "qualifiedHorizons",
+      "activation",
+      "adopted",
+      "activeFactors",
+      "iterationFactors",
+      "reason",
+      "horizons",
+    ],
+  );
+  const impactStatus = systemString(
+    modelImpact.status,
+    "intelligence.modelImpact.status",
+  );
+  if (!systemSectionStatuses.has(impactStatus)) {
+    systemOverviewError("intelligence.modelImpact.status");
+  }
+  systemNumber(
+    modelImpact.qualifiedHorizons,
+    "intelligence.modelImpact.qualifiedHorizons",
+  );
+  systemString(modelImpact.activation, "intelligence.modelImpact.activation");
+  systemBoolean(modelImpact.adopted, "intelligence.modelImpact.adopted");
+  systemString(modelImpact.reason, "intelligence.modelImpact.reason");
+  ["activeFactors", "iterationFactors"].forEach((key) => (
+    systemArray(modelImpact[key], `intelligence.modelImpact.${key}`, 100)
+      .forEach((item, index) => (
+        systemString(item, `intelligence.modelImpact.${key}[${index}]`)
+      ))
+  ));
+  systemArray(modelImpact.horizons, "intelligence.modelImpact.horizons", 20)
+    .forEach((item, index) => (
+      systemObject(item, `intelligence.modelImpact.horizons[${index}]`)
+    ));
+
+  const decisions = systemKeys(
+    intelligence.decisions,
+    "intelligence.decisions",
+    ["canonical", "no_event", "quarantined", "failed"],
+    ["canonical", "no_event", "quarantined", "failed"],
+  );
+  ["canonical", "no_event", "quarantined", "failed"].forEach((key) => (
+    systemNumber(decisions[key], `intelligence.decisions.${key}`)
+  ));
+  systemArray(
+    intelligence.recentEvents,
+    "intelligence.recentEvents",
+    5,
+  ).forEach((item, index) => {
+    const path = `intelligence.recentEvents[${index}]`;
+    const event = systemKeys(
+      item,
+      path,
+      [
+        "decision_id",
+        "decision",
+        "document_id",
+        "issuer_name",
+        "issuer_code",
+        "title",
+        "effective_at",
+      ],
+      [
+        "decision_id",
+        "decision",
+        "document_id",
+        "event_type",
+        "lifecycle",
+        "issuer_name",
+        "issuer_code",
+        "event_subject",
+        "title",
+        "effective_at",
+        "direction",
+        "materiality",
+        "relevance",
+        "novelty",
+        "confidence",
+        "reason",
+      ],
+    );
+    systemString(event.decision_id, `${path}.decision_id`);
+    const decision = systemString(event.decision, `${path}.decision`);
+    if (!["canonical", "no_event", "quarantined", "failed"].includes(decision)) {
+      systemOverviewError(`${path}.decision`);
+    }
+    systemNumber(event.document_id, `${path}.document_id`);
+    ["issuer_name", "issuer_code", "title", "effective_at"].forEach((key) => (
+      systemString(event[key], `${path}.${key}`)
+    ));
+  });
+}
+
+function validateSystemOverview(value: unknown): SystemOverviewData {
+  const data = systemKeys(
+    value,
+    "root",
+    [
+      "generated_at",
+      "markets",
+      "models",
+      "strategy_model_usage",
+      "intelligence",
+      "errors",
+    ],
+    [
+      "generated_at",
+      "markets",
+      "models",
+      "strategy_model_usage",
+      "intelligence",
+      "errors",
+    ],
+  );
+  systemString(data.generated_at, "generated_at");
+  const seenMarkets = new Set<string>();
+  systemArray(data.markets, "markets", 2).forEach((item, index) => {
+    const market = validateSystemMarket(item, `markets[${index}]`);
+    if (seenMarkets.has(market)) {
+      systemOverviewError(`markets[${index}] duplicate market`);
+    }
+    seenMarkets.add(market);
+  });
+  const seenModels = new Set<string>();
+  systemArray(data.models, "models", 2).forEach((item, index) => {
+    const path = `models[${index}]`;
+    const model = systemKeys(
+      item,
+      path,
+      ["market", "market_label", "iteration"],
+      ["market", "market_label", "iteration"],
+    );
+    const market = systemString(model.market, `${path}.market`);
+    if (!systemMarkets.has(market)) systemOverviewError(`${path}.market`);
+    if (seenModels.has(market)) {
+      systemOverviewError(`${path} duplicate market`);
+    }
+    seenModels.add(market);
+    systemString(model.market_label, `${path}.market_label`);
+    validateSystemIteration(model.iteration, `${path}.iteration`);
+  });
+  const seenUsage = new Set<string>();
+  systemArray(data.strategy_model_usage, "strategy_model_usage", 4)
+    .forEach((item, index) => {
+      const path = `strategy_model_usage[${index}]`;
+      const usage = systemKeys(
+        item,
+        path,
+        [
+          "market",
+          "agent",
+          "strategy_label",
+          "status",
+          "applied_candidates",
+          "candidate_coverage",
+          "model_versions",
+          "fallback_reason",
+          "accounts",
+        ],
+        [
+          "market",
+          "agent",
+          "strategy_label",
+          "as_of",
+          "status",
+          "applied_candidates",
+          "candidate_coverage",
+          "model_versions",
+          "fallback_reason",
+          "accounts",
+        ],
+      );
+      const market = systemString(usage.market, `${path}.market`);
+      const agent = systemString(usage.agent, `${path}.agent`);
+      if (!systemMarkets.has(market)) systemOverviewError(`${path}.market`);
+      if (!systemAgents.has(agent)) systemOverviewError(`${path}.agent`);
+      const identity = `${market}:${agent}`;
+      if (seenUsage.has(identity)) {
+        systemOverviewError(`${path} duplicate market,agent`);
+      }
+      seenUsage.add(identity);
+      systemString(usage.strategy_label, `${path}.strategy_label`);
+      systemOptionalString(usage.as_of, `${path}.as_of`);
+      const status = systemString(usage.status, `${path}.status`);
+      if (!systemUsageStatuses.has(status)) {
+        systemOverviewError(`${path}.status`);
+      }
+      systemNumber(usage.applied_candidates, `${path}.applied_candidates`);
+      systemNumber(usage.candidate_coverage, `${path}.candidate_coverage`);
+      validateSystemStringMap(usage.model_versions, `${path}.model_versions`, 20);
+      systemString(usage.fallback_reason, `${path}.fallback_reason`);
+      systemNumber(usage.accounts, `${path}.accounts`);
+    });
+  validateSystemIntelligence(data.intelligence);
+  systemArray(data.errors, "errors", 8).forEach((item, index) => {
+    const path = `errors[${index}]`;
+    const error = systemKeys(
+      item,
+      path,
+      ["code", "section", "message"],
+      ["code", "section", "market", "message"],
+    );
+    const code = systemString(error.code, `${path}.code`);
+    if (!Object.prototype.hasOwnProperty.call(systemErrorContracts, code)) {
+      systemOverviewError(`${path}.code`);
+    }
+    const contract = systemErrorContracts[
+      code as keyof typeof systemErrorContracts
+    ];
+    const section = systemString(error.section, `${path}.section`);
+    if (section !== contract.section) {
+      systemOverviewError(`${path}.section`);
+    }
+    const message = systemString(error.message, `${path}.message`);
+    if (code === "model_lineage_read_unavailable") {
+      const market = systemString(error.market, `${path}.market`);
+      if (!systemMarkets.has(market)) systemOverviewError(`${path}.market`);
+      const expected = market === "a_share"
+        ? "A股模型采用链暂不可用。"
+        : "跨境ETF模型采用链暂不可用。";
+      if (message !== expected) systemOverviewError(`${path}.message`);
+    } else {
+      if (error.market !== undefined) systemOverviewError(`${path}.market`);
+      if (message !== contract.message) {
+        systemOverviewError(`${path}.message`);
+      }
+    }
+  });
+  return data as SystemOverviewData;
+}
+
 function modelResearchError(path: string): never {
   throw new Error(`Invalid model research response: ${path}`);
 }
@@ -1033,6 +1928,7 @@ async function fetchJson<T>(
   url: string,
   signal?: AbortSignal,
   maxResponseBytes?: number,
+  responseName = "Data intelligence",
 ): Promise<T> {
   const response = await fetch(url, { cache: "no-cache", signal });
   if (!response.ok) {
@@ -1051,7 +1947,7 @@ async function fetchJson<T>(
     const body = await response.text();
     if (new TextEncoder().encode(body).byteLength > maxResponseBytes) {
       throw new Error(
-        `Data intelligence response exceeds ${maxResponseBytes} bytes`,
+        `${responseName} response exceeds ${maxResponseBytes} bytes`,
       );
     }
     try {
@@ -1068,7 +1964,12 @@ export function fetchSummary(signal?: AbortSignal): Promise<DashboardSummary> {
 }
 
 export function fetchSystemOverview(signal?: AbortSignal): Promise<SystemOverviewData> {
-  return fetchJson<SystemOverviewData>("/api/dashboard/system-overview.json", signal);
+  return fetchJson<unknown>(
+    "/api/dashboard/system-overview.json",
+    signal,
+    SYSTEM_OVERVIEW_RESPONSE_LIMIT,
+    "System overview",
+  ).then(validateSystemOverview);
 }
 
 export function fetchDetail(

@@ -727,7 +727,12 @@ class DashboardResourceApiTests(unittest.TestCase):
                 "models",
                 "strategy_model_usage",
                 "intelligence",
+                "errors",
             },
+        )
+        self.assertNotIn(
+            "strategy_model_usage_read_unavailable",
+            {item["code"] for item in payload["errors"]},
         )
         self.assertEqual(
             {item["market"] for item in payload["markets"]},
@@ -753,6 +758,97 @@ class DashboardResourceApiTests(unittest.TestCase):
         self.assertNotIn("rowsByDecision", serialized)
         self.assertNotIn("raw_content", serialized)
 
+    def test_system_overview_keeps_other_sections_when_model_usage_read_fails(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_repo(root)
+            with (
+                mock.patch(
+                    "stock_analyze.dashboard_api._latest_strategy_model_usage",
+                    side_effect=OSError(
+                        "/srv/stock-analyze/private/key.json: secret-token"
+                    ),
+                ),
+                mock.patch(
+                    "stock_analyze.dashboard_api.agg._read_model_iteration_status",
+                    return_value={
+                        "status": "unavailable",
+                        "candidate": None,
+                        "champion": None,
+                    },
+                ),
+            ):
+                payload = build_dashboard_system_overview_data(
+                    repo_root=root,
+                )
+
+        self.assertEqual(
+            {item["market"] for item in payload["markets"]},
+            {"a_share", "cn_qdii_etf"},
+        )
+        self.assertEqual(
+            {item["market"] for item in payload["models"]},
+            {"a_share", "cn_qdii_etf"},
+        )
+        self.assertEqual(payload["strategy_model_usage"], [])
+        self.assertEqual(
+            payload["errors"],
+            [
+                {
+                    "code": "strategy_model_usage_read_unavailable",
+                    "section": "strategy_model_usage",
+                    "message": "策略模型采用记录暂不可用。",
+                }
+            ],
+        )
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self.assertNotIn("/srv/stock-analyze", serialized)
+        self.assertNotIn("secret-token", serialized)
+
+    def test_system_overview_isolates_one_model_lineage_read_failure(
+        self,
+    ) -> None:
+        def model_status(_root: Path, market: str) -> dict[str, object]:
+            if market == "a_share":
+                raise ValueError("/private/model-registry.json is invalid")
+            return {
+                "status": "complete",
+                "candidate": {"display_version": "Q5-V004"},
+                "champion": None,
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_repo(root)
+            with mock.patch(
+                "stock_analyze.dashboard_api.agg._read_model_iteration_status",
+                side_effect=model_status,
+            ):
+                payload = build_dashboard_system_overview_data(repo_root=root)
+
+        models = {item["market"]: item for item in payload["models"]}
+        self.assertEqual(models["a_share"]["iteration"]["status"], "unavailable")
+        self.assertEqual(
+            models["cn_qdii_etf"]["iteration"]["candidate"]["display_version"],
+            "Q5-V004",
+        )
+        self.assertEqual(
+            payload["errors"],
+            [
+                {
+                    "code": "model_lineage_read_unavailable",
+                    "section": "models",
+                    "market": "a_share",
+                    "message": "A股模型采用链暂不可用。",
+                }
+            ],
+        )
+        self.assertNotIn(
+            "/private/model-registry.json",
+            json.dumps(payload, ensure_ascii=False),
+        )
     def test_system_overview_keeps_markets_when_intelligence_is_unavailable(
         self,
     ) -> None:
@@ -773,6 +869,19 @@ class DashboardResourceApiTests(unittest.TestCase):
         self.assertEqual(
             {item["market"] for item in payload["models"]},
             {"a_share", "cn_qdii_etf"},
+        )
+        intelligence_error = next(
+            item
+            for item in payload["errors"]
+            if item["code"] == "intelligence_read_unavailable"
+        )
+        self.assertEqual(
+            intelligence_error,
+            {
+                "code": "intelligence_read_unavailable",
+                "section": "intelligence",
+                "message": "情报链路暂不可用。",
+            },
         )
 
     def test_governance_resource_projects_latest_lineage_and_risk(self) -> None:
