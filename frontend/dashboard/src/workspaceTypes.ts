@@ -148,3 +148,117 @@ export type ModelResearchData = {
     }[];
   };
 };
+
+export type UsageEvidenceCell = {
+  status: "used" | "not_used" | "observing" | "unavailable" | string;
+  count: number;
+  countSemantics: string;
+  features: string[];
+  evidence: string[];
+  formalCount: number;
+  formalFactors: string[];
+  formalStatus?: string;
+  researchCount: number;
+  researchFeatures: string[];
+  researchStatus?: string;
+  missingManifestEvidence?: string[];
+  evidenceByNamespace: {
+    formal: string[];
+    research: string[];
+  };
+  missingManifest?: boolean;
+  lineageStatus?: string | null;
+};
+
+export type DataIntelligenceData = {
+  generated_at: string;
+  market: string;
+  market_label: string;
+  truncated?: boolean;
+  truncationReason?: string | null;
+  structured: {
+    stages: WorkspaceStage[];
+    sources: {
+      source: string;
+      researchFeatureCount: number;
+      selectedModelFeatureCount: number;
+      strategyFactorCount: number;
+      activeStrategyFactorCount: number;
+      status: string;
+      useLocations: string[];
+    }[];
+    coverage: {
+      status: string;
+      rangeStart: string | null;
+      rangeEnd: string | null;
+      latestTradeDate: string | null;
+      snapshotAsOf?: string | null;
+      latestSnapshot: string | null;
+      snapshotCount?: number;
+      inspectedSnapshots?: number;
+      readableSnapshots?: number;
+      datedSnapshots?: number;
+    };
+    factorGroups: {
+      family: string;
+      definedFeatureCount: number;
+      selectedFeatureCount: number;
+    }[];
+    selectedFeatures: string[];
+    formalFactorNamespace: {
+      definedFactorCount: number;
+      activeFactorCount: number;
+      activeFactors: string[];
+    };
+    researchFeatureNamespace: {
+      definedFeatureCount: number;
+      selectedFeatures: string[];
+    };
+    quality: {
+      status: string;
+      modelCount: number;
+      pointInTimeAuditedModels: number;
+      pointInTimeFailedModels: number;
+      missingRateStatus: string;
+      outlierStatus: string;
+    };
+  };
+  intelligence: {
+    stages: WorkspaceStage[];
+    truncated?: boolean;
+    truncationReasons?: string[];
+    featureNamespace: {
+      definedFeatureCount: number;
+      selectedFeatureCount: number;
+      selectedFeatures: string[];
+    };
+    pipeline: import("./types").IntelligenceSummary["pipeline"];
+    extraction: import("./types").IntelligenceSummary["extraction"];
+    factorSupply: import("./types").IntelligenceSummary["factorSupply"];
+    modelImpact: import("./types").IntelligenceSummary["modelImpact"];
+    decisions: import("./types").IntelligenceSummary["decisions"];
+  };
+  usageMatrix: {
+    consumerKey: string;
+    consumerLabel: string;
+    structuredData: UsageEvidenceCell;
+    traditionalFactors: UsageEvidenceCell;
+    intelligenceFactors: UsageEvidenceCell;
+    modelAdoption?: {
+      status: string;
+      modelCount: number;
+      resolvableManifestCount: number;
+      missingManifestCount: number;
+      models: {
+        horizon: number;
+        modelVersion: string;
+        manifestStatus: string;
+        evidence: string;
+        missingManifestEvidence?: string | null;
+      }[];
+    };
+    impact: string;
+    lineageStatus?: string | null;
+    missingManifest?: boolean;
+  }[];
+};
