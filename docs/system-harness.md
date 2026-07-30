@@ -37,8 +37,9 @@ export SA_DASHBOARD_RELEASE_INPUT_MANIFEST=/tmp/dashboard-release-input.manifest
 
 Dashboard 发布只同步固定后端/测试文件、`scripts/system-audit.sh`、两份系统
 文档与 `reports/app`，只重启 `stock-analyze-dashboard.service`。外部审阅的
-release-input 清单必须绑定当前 40 位 commit，且所有发布输入必须与该 commit
-完全一致；dirty 或未跟踪文件会在连接 ECS 前被拒绝。
+release-input 清单必须绑定当前 40 位 commit；受版本控制的发布文件、前端源码
+和构建脚本必须与该 commit 一致。`reports/app` 是生成目录，不要求纳入 Git，
+但其完整树哈希必须与审阅清单一致。
 
 脚本在远端取得独占锁后核对预镜像 SHA 并创建回滚备份。同步、目标测试、HTTP
 状态、250 KB 体积或 0.5 秒热响应门禁失败时，只恢复 Dashboard 白名单与静态
