@@ -216,13 +216,39 @@ describe("useWorkspaceResource", () => {
       signals.push(signal);
       return request.promise;
     });
+    const renders: Array<{
+      key: string;
+      data: { value: number } | null;
+      loading: boolean;
+      error: string | null;
+      stale: boolean;
+    }> = [];
     const { result, rerender } = renderHook(
-      ({ enabled }) => useWorkspaceResource("a_share", enabled, loader),
+      ({ enabled }) => {
+        const resource = useWorkspaceResource("a_share", enabled, loader);
+        renders.push({
+          key: resource.key,
+          data: resource.data,
+          loading: resource.loading,
+          error: resource.error,
+          stale: resource.stale,
+        });
+        return resource;
+      },
       { initialProps: { enabled: true } },
     );
 
     await waitFor(() => expect(loader).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.loading).toBe(true));
+    renders.length = 0;
     rerender({ enabled: false });
+    expect(renders[0]).toEqual({
+      key: "a_share",
+      data: null,
+      loading: false,
+      error: null,
+      stale: false,
+    });
     await waitFor(() => expect(signals[0].aborted).toBe(true));
     expect(result.current).toMatchObject({
       key: "a_share",
