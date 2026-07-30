@@ -223,6 +223,13 @@ def _model_artifact_ref(
     return None
 
 
+def _champion_activated_at(registry_record: dict[str, Any]) -> Any:
+    for gate in reversed(_rows(registry_record.get("gate_history"))):
+        if gate.get("passed") is True and gate.get("target_status") == "active":
+            return _scalar(gate.get("evaluated_at"), text_limit=256)
+    return None
+
+
 def _model_rows(root: Path, market: str) -> list[dict[str, Any]]:
     health = _mapping(agg._read_model_health(root, market))
     rows: list[dict[str, Any]] = []
@@ -264,11 +271,15 @@ def _model_rows(root: Path, market: str) -> list[dict[str, Any]]:
                 "trainedAt": (
                     _scalar(
                         raw.get("trained_at")
-                        or raw.get("created_at")
-                        or registry_record.get("registered_at"),
+                        or raw.get("created_at"),
                         text_limit=256,
                     )
                 ),
+                "registeredAt": _scalar(
+                    registry_record.get("registered_at"),
+                    text_limit=256,
+                ),
+                "activatedAt": _champion_activated_at(registry_record),
                 "sampleSupport": _integer(raw.get("sample_support")),
                 "featureColumns": all_features[:MAX_MODEL_FEATURES],
                 "_allFeatureColumns": all_features,
@@ -408,6 +419,28 @@ def _candidate(value: Any) -> dict[str, Any]:
     return result
 
 
+def _simulation_account(iteration: dict[str, Any]) -> dict[str, Any] | None:
+    account_id = _text(iteration.get("account_id"), limit=256)
+    account_label = _text(
+        iteration.get("portfolio_label") or iteration.get("label"),
+        limit=256,
+    )
+    isolation = _text(iteration.get("isolation"), limit=MAX_TEXT_LENGTH)
+    portfolio_ref = _text(
+        iteration.get("portfolio_ref") or iteration.get("portfolio_path"),
+        limit=MAX_TEXT_LENGTH,
+    )
+    if not any((account_id, account_label, isolation, portfolio_ref)):
+        return None
+    return {
+        "accountId": account_id,
+        "accountLabel": account_label,
+        "isolation": isolation,
+        "navRows": _integer(iteration.get("nav_rows")),
+        "portfolioRef": portfolio_ref,
+    }
+
+
 def _serialized_size(payload: dict[str, Any]) -> int:
     return len(
         json.dumps(
@@ -502,7 +535,7 @@ def build_dashboard_model_research_data(
         {
             "modelVersion": row["modelVersion"],
             "horizon": row["horizon"],
-            "trainedAt": row["trainedAt"],
+            "activatedAt": row["activatedAt"],
             "artifactRef": row["artifactRef"],
         }
         for row in all_models
@@ -617,6 +650,7 @@ def build_dashboard_model_research_data(
         "simulation": {
             "status": _text(iteration.get("status"), limit=128) or "unavailable",
             "candidate": candidate or None,
+            "account": _simulation_account(iteration),
             "predictionAsOf": _scalar(
                 iteration.get("prediction_as_of"),
                 text_limit=256,

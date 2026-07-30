@@ -44,6 +44,25 @@ function ModelTable({
         { key: "horizon", label: "周期", render: (row) => `${row.horizon} 日` },
         { key: "algorithm", label: "算法族", render: (row) => row.algorithmFamily },
         { key: "samples", label: "样本", render: (row) => String(row.sampleSupport) },
+        ...(!validation
+          ? [
+              {
+                key: "trainedAt",
+                label: "训练时间",
+                render: (row: ModelResearchModel) => row.trainedAt ?? "-",
+              },
+              {
+                key: "artifactStatus",
+                label: "产物状态",
+                render: (row: ModelResearchModel) => row.artifactStatus,
+              },
+              {
+                key: "artifactRef",
+                label: "产物引用",
+                render: (row: ModelResearchModel) => row.artifactRef ?? "-",
+              },
+            ]
+          : []),
         {
           key: "rank_ic",
           label: "Rank IC",
@@ -73,15 +92,15 @@ function ModelTable({
           label: "换手",
           render: (row) => value(row.metrics.turnover),
         },
-        {
-          key: "result",
-          label: validation ? "验收结果" : "模型产物",
-          render: (row) => validation
-            ? row.gatePassed
-              ? "通过"
-              : row.gateReasons.map(reasonLabel).join("；") || "未通过"
-            : row.artifactRef ?? row.artifactStatus,
-        },
+        ...(validation
+          ? [{
+              key: "result",
+              label: "验收结果",
+              render: (row: ModelResearchModel) => row.gatePassed
+                ? "通过"
+                : row.gateReasons.map(reasonLabel).join("；") || "未通过",
+            }]
+          : []),
       ]}
     />
   );
@@ -263,6 +282,26 @@ export function ModelResearchPage({
               </dd>
             </div>
             <div>
+              <dt>独立账户</dt>
+              <dd>{data.simulation.account?.accountLabel || "-"}</dd>
+            </div>
+            <div>
+              <dt>账户 ID</dt>
+              <dd>{data.simulation.account?.accountId || "-"}</dd>
+            </div>
+            <div>
+              <dt>隔离状态</dt>
+              <dd>{data.simulation.account?.isolation || "-"}</dd>
+            </div>
+            <div>
+              <dt>执行结果</dt>
+              <dd>成交 {data.simulation.decision.tradesExecuted} 笔</dd>
+            </div>
+            <div>
+              <dt>挂单状态</dt>
+              <dd>待执行 {data.simulation.decision.pendingOrders} 笔</dd>
+            </div>
+            <div>
               <dt>候选证券</dt>
               <dd>{data.simulation.decision.candidateRows}</dd>
             </div>
@@ -297,6 +336,33 @@ export function ModelResearchPage({
                 .map((row) => row.displayVersion)
                 .join("、") || "暂无"}
             </span>
+            <BoundedTable
+              rows={data.adoption.champions}
+              rowKey={(row) => `${row.horizon}:${row.modelVersion}`}
+              emptyLabel="尚无 Champion 模型"
+              columns={[
+                {
+                  key: "version",
+                  label: "Champion 版本",
+                  render: (row) => row.modelVersion,
+                },
+                {
+                  key: "horizon",
+                  label: "周期",
+                  render: (row) => `${row.horizon} 日`,
+                },
+                {
+                  key: "activated",
+                  label: "激活时间",
+                  render: (row) => row.activatedAt ?? "-",
+                },
+                {
+                  key: "artifact",
+                  label: "产物引用",
+                  render: (row) => row.artifactRef ?? "-",
+                },
+              ]}
+            />
             <BoundedTable
               rows={data.adoption.strategyUsage}
               rowKey={(row) => [
