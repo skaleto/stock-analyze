@@ -216,7 +216,7 @@ describe("ModelResearchPage", () => {
     );
   });
 
-  it("shows training time, artifact status, and artifact reference separately", async () => {
+  it("shows training time, translated artifact status, and artifact reference separately", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(payload)));
     const user = userEvent.setup();
     render(<ModelResearchPage market="a_share" refreshToken={0} />);
@@ -233,7 +233,8 @@ describe("ModelResearchPage", () => {
       .toBeInTheDocument();
     expect(within(detail).getByText("2026-07-29T23:00:00"))
       .toBeInTheDocument();
-    expect(within(detail).getByText("available")).toBeInTheDocument();
+    expect(within(detail).getByText("可用")).toBeInTheDocument();
+    expect(within(detail).queryByText("available")).not.toBeInTheDocument();
     expect(
       within(detail).getByText(
         "data/research/models/a_share/20/run-A20-V005.joblib",
@@ -257,6 +258,9 @@ describe("ModelResearchPage", () => {
     ).toBeInTheDocument();
     expect(within(detail).getByText("成交 0 笔")).toBeInTheDocument();
     expect(within(detail).getByText("待执行 0 笔")).toBeInTheDocument();
+    expect(within(detail).getByText("预测产物").parentElement)
+      .toHaveTextContent("缺失 · -");
+    expect(within(detail).queryByText("missing")).not.toBeInTheDocument();
   });
 
   it("shows bounded Champion adoption evidence by model and horizon", async () => {
@@ -307,20 +311,145 @@ describe("ModelResearchPage", () => {
 
     expect(screen.getByText("正式策略仍由规则驱动")).toBeInTheDocument();
     expect(screen.getByText("稳健防守")).toBeInTheDocument();
-    expect(screen.getByText("no_champion")).toBeInTheDocument();
+    expect(screen.getByText("规则策略兜底")).toBeInTheDocument();
+    expect(screen.getByText("尚无可用的 Champion 模型")).toBeInTheDocument();
+    expect(screen.queryByText("fallback")).not.toBeInTheDocument();
+    expect(screen.queryByText("no_champion")).not.toBeInTheDocument();
   });
 
-  it("shows source health and unclassified feature evidence", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(payload)));
+  it("shows translated audit and source health states", async () => {
+    const sourceStatusPayload = {
+      ...payload,
+      dataPreparation: {
+        ...payload.dataPreparation,
+        sources: [
+          { source: "market", status: "available", rows: 1000, failed: false },
+          {
+            source: "news",
+            status: "source_unavailable",
+            rows: 0,
+            failed: true,
+          },
+          { source: "finance", status: "failed", rows: 0, failed: true },
+          {
+            source: "audit",
+            status: "not_recorded",
+            rows: 0,
+            failed: false,
+          },
+          { source: "events", status: "empty", rows: 0, failed: false },
+          {
+            source: "policy",
+            status: "unavailable",
+            rows: 0,
+            failed: true,
+          },
+        ],
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse(sourceStatusPayload)),
+    );
     render(<ModelResearchPage market="a_share" refreshToken={0} />);
 
     const detail = await screen.findByRole("region", { name: "数据准备详情" });
     expect(within(detail).getByText("market")).toBeInTheDocument();
     expect(within(detail).getByText("46")).toBeInTheDocument();
     expect(within(detail).getByText("1 个未分类")).toBeInTheDocument();
+    expect(within(detail).getByText("已通过")).toBeInTheDocument();
+    expect(within(detail).getByText("可用")).toBeInTheDocument();
+    expect(within(detail).getByText("数据源不可用")).toBeInTheDocument();
+    expect(within(detail).getByText("失败")).toBeInTheDocument();
+    expect(within(detail).getByText("未记录")).toBeInTheDocument();
+    expect(within(detail).getByText("暂无数据")).toBeInTheDocument();
+    expect(within(detail).getByText("状态不可用")).toBeInTheDocument();
     expect(
       within(detail).getByText("future_feature_not_registered"),
     ).toBeInTheDocument();
+    expect(detail).not.toHaveTextContent(
+      /\b(?:available|source_unavailable|failed|not_recorded|empty|unavailable|passed)\b/,
+    );
+  });
+
+  it("safely labels unknown internal statuses across model details", async () => {
+    const unknownStatusPayload = {
+      ...payload,
+      dataPreparation: {
+        ...payload.dataPreparation,
+        pointInTimeAudit: "future_audit_state",
+        sources: [
+          {
+            source: "market",
+            status: "new_provider_state",
+            rows: 1000,
+            failed: false,
+          },
+        ],
+      },
+      training: {
+        models: [
+          {
+            ...payload.training.models[0],
+            artifactStatus: "artifact_uploaded_v2",
+          },
+        ],
+      },
+      simulation: {
+        ...payload.simulation,
+        predictionStatus: "prediction_queued_v2",
+      },
+      adoption: {
+        ...payload.adoption,
+        strategyUsage: [
+          {
+            ...payload.adoption.strategyUsage[0],
+            status: "strategy_linked_v2",
+            fallback_reason: "future_fallback_reason",
+          },
+        ],
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse(unknownStatusPayload)),
+    );
+    const user = userEvent.setup();
+    render(<ModelResearchPage market="a_share" refreshToken={0} />);
+
+    const dataDetail = await screen.findByRole("region", {
+      name: "数据准备详情",
+    });
+    expect(within(dataDetail).getAllByText("未知状态")).toHaveLength(2);
+    expect(dataDetail).not.toHaveTextContent(
+      /future_audit_state|new_provider_state/,
+    );
+
+    await user.click(screen.getByRole("button", { name: /模型训练/ }));
+    const trainingDetail = screen.getByRole("region", {
+      name: "模型训练详情",
+    });
+    expect(within(trainingDetail).getByText("未知状态")).toBeInTheDocument();
+    expect(trainingDetail).not.toHaveTextContent("artifact_uploaded_v2");
+
+    await user.click(screen.getByRole("button", { name: /模拟运行/ }));
+    const simulationDetail = screen.getByRole("region", {
+      name: "模拟运行详情",
+    });
+    expect(within(simulationDetail).getByText("预测产物").parentElement)
+      .toHaveTextContent("未知状态 · -");
+    expect(simulationDetail).not.toHaveTextContent("prediction_queued_v2");
+
+    await user.click(screen.getByRole("button", { name: /正式采用/ }));
+    const adoptionDetail = screen.getByRole("region", {
+      name: "正式采用详情",
+    });
+    expect(within(adoptionDetail).getByText("未知状态")).toBeInTheDocument();
+    expect(within(adoptionDetail).getByText("原因待系统补充"))
+      .toBeInTheDocument();
+    expect(adoptionDetail).not.toHaveTextContent(
+      /strategy_linked_v2|future_fallback_reason/,
+    );
   });
 
   it("shows a partial-status banner without hiding valid model sections", async () => {

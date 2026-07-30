@@ -11,6 +11,57 @@ import type {
   ModelResearchModel,
 } from "./workspaceTypes";
 
+const statusLabels: Record<string, string> = {
+  active: "正式启用",
+  available: "可用",
+  complete: "已完成",
+  declared: "已声明",
+  empty: "暂无数据",
+  failed: "失败",
+  fallback: "规则策略兜底",
+  fresh: "数据新鲜",
+  missing: "缺失",
+  not_recorded: "未记录",
+  not_used: "未使用",
+  observe: "继续观察",
+  observing: "观察中",
+  partial: "部分可用",
+  passed: "已通过",
+  pending: "等待中",
+  ready: "已就绪",
+  research: "研究中",
+  running: "运行中",
+  shadow: "影子观察",
+  source_unavailable: "数据源不可用",
+  stale: "已过期",
+  success: "成功",
+  unavailable: "状态不可用",
+  waiting: "等待中",
+  waiting_schedule: "等待计划时间",
+  waiting_upstream: "等待上游",
+};
+
+const fallbackReasonLabels: Record<string, string> = {
+  declared_horizon_unavailable_or_ineligible: "策略所需预测周期尚未就绪或未通过验收",
+  decision_lineage_missing: "决策链路证据缺失",
+  no_champion: "尚无可用的 Champion 模型",
+  prediction_application_evidence_missing: "预测应用证据缺失",
+  prediction_artifact_missing: "预测产物缺失",
+  prediction_horizon_missing: "所需预测周期缺失",
+};
+
+function statusLabel(status: string | null | undefined): string {
+  const normalized = String(status ?? "").trim().toLowerCase();
+  if (!normalized) return "未记录";
+  return statusLabels[normalized] ?? "未知状态";
+}
+
+function fallbackReasonLabel(reason: string | null | undefined): string {
+  const normalized = String(reason ?? "").trim().toLowerCase();
+  if (!normalized) return "-";
+  return fallbackReasonLabels[normalized] ?? "原因待系统补充";
+}
+
 function value(input: unknown): string {
   if (input == null || input === "") return "-";
   if (typeof input === "number") return input.toFixed(4);
@@ -54,7 +105,9 @@ function ModelTable({
               {
                 key: "artifactStatus",
                 label: "产物状态",
-                render: (row: ModelResearchModel) => row.artifactStatus,
+                render: (row: ModelResearchModel) => statusLabel(
+                  row.artifactStatus,
+                ),
               },
               {
                 key: "artifactRef",
@@ -245,7 +298,7 @@ export function ModelResearchPage({
               </div>
               <div>
                 <dt>点时审计</dt>
-                <dd>{data.dataPreparation.pointInTimeAudit}</dd>
+                <dd>{statusLabel(data.dataPreparation.pointInTimeAudit)}</dd>
               </div>
             </dl>
             {(data.dataPreparation.unclassifiedFeatures ?? []).length ? (
@@ -268,7 +321,11 @@ export function ModelResearchPage({
               emptyLabel="尚无数据源健康记录"
               columns={[
                 { key: "source", label: "来源", render: (row) => row.source },
-                { key: "status", label: "状态", render: (row) => row.status },
+                {
+                  key: "status",
+                  label: "状态",
+                  render: (row) => statusLabel(row.status),
+                },
                 { key: "rows", label: "记录数", render: (row) => value(row.rows) },
                 {
                   key: "error",
@@ -298,7 +355,7 @@ export function ModelResearchPage({
             <div>
               <dt>预测产物</dt>
               <dd>
-                {data.simulation.predictionStatus} ·{" "}
+                {statusLabel(data.simulation.predictionStatus)} ·{" "}
                 {data.simulation.predictionAsOf ?? "-"}
               </dd>
             </div>
@@ -404,7 +461,7 @@ export function ModelResearchPage({
                 {
                   key: "status",
                   label: "采用状态",
-                  render: (row) => row.status,
+                  render: (row) => statusLabel(row.status),
                 },
                 {
                   key: "version",
@@ -428,7 +485,7 @@ export function ModelResearchPage({
                 {
                   key: "reason",
                   label: "未采用原因",
-                  render: (row) => row.fallback_reason || "-",
+                  render: (row) => fallbackReasonLabel(row.fallback_reason),
                 },
               ]}
             />
