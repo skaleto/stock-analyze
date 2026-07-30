@@ -80,6 +80,9 @@ class DashboardWorkspaceDeployScriptTests(unittest.TestCase):
         local_assets.mkdir(parents=True)
         (local_assets / "index.html").write_text("release-app\n", encoding="utf-8")
         (local_assets / "asset.js").write_text("release-asset\n", encoding="utf-8")
+        frontend_package = root / "frontend" / "dashboard" / "package.json"
+        frontend_package.parent.mkdir(parents=True)
+        frontend_package.write_text('{"private": true}\n', encoding="utf-8")
         remote_assets = remote_app / "reports" / "app"
         remote_assets.mkdir(parents=True)
         (remote_assets / "index.html").write_text("preimage-app\n", encoding="utf-8")
@@ -368,6 +371,32 @@ else:
             completed.stderr,
             r"(release input mismatch|release inputs must match reviewed commit)",
         )
+
+    def test_generated_asset_tree_does_not_need_to_be_tracked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = self._create_deploy_fixture(temporary_directory)
+            root = Path(fixture["root"])
+            subprocess.run(
+                ["git", "rm", "--cached", "-qr", "reports/app"],
+                cwd=root,
+                check=True,
+            )
+            (root / ".gitignore").write_text("/reports/app/\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".gitignore"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-qm", "treat dashboard assets as generated"],
+                cwd=root,
+                check=True,
+            )
+
+            completed = self._run_fixture(
+                fixture,
+                "capture-release-input",
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("TREE ", completed.stdout)
+        self.assertIn(" reports/app", completed.stdout)
 
     def test_asset_sync_failure_rolls_back_and_verifies_preimage_and_app(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

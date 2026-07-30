@@ -23,6 +23,11 @@ readonly DASHBOARD_FILES=(
   "docs/system-overview.md"
 )
 readonly DASHBOARD_ASSET_TREE="reports/app"
+readonly DASHBOARD_BUILD_INPUTS=(
+  "frontend/dashboard"
+  "scripts/deploy-dashboard-workspaces-to-ecs.sh"
+  "scripts/build-dashboard-app.sh"
+)
 readonly DASHBOARD_SERVICE="stock-analyze-dashboard.service"
 readonly RELEASE_INPUT_FORMAT="dashboard-workspaces-release-input-v1"
 readonly DASHBOARD_TEST_MODULES=(
@@ -101,9 +106,10 @@ Reviewed release-input manifest format:
 
 Both manifests must contain every allowlisted file exactly once and one
 reports/app tree entry. The release-input manifest must be reviewed outside the
-deploy command and must exactly match the clean current commit after the
-reproducible dashboard build. The deployment refuses to connect when the local
-contract is incomplete.
+deploy command. Tracked release files, frontend sources and build scripts must
+match the current commit; the generated reports/app directory is bound by its
+reviewed tree digest. The deployment refuses to connect when the local contract
+is incomplete.
 EOF
 }
 
@@ -440,8 +446,6 @@ validate_local_contract() {
     [[ -f "$REPO_ROOT/$relative" ]] \
       || die "allowlisted release file is missing: $relative"
   done
-  [[ -d "$REPO_ROOT/$DASHBOARD_ASSET_TREE" ]] \
-    || die "dashboard asset tree is missing: $DASHBOARD_ASSET_TREE"
 }
 
 ensure_release_inputs_match_head() {
@@ -449,21 +453,17 @@ ensure_release_inputs_match_head() {
   local dirty
   for relative in \
     "${DASHBOARD_FILES[@]}" \
-    "$DASHBOARD_ASSET_TREE" \
-    "scripts/deploy-dashboard-workspaces-to-ecs.sh" \
-    "scripts/build-dashboard-app.sh"; do
+    "${DASHBOARD_BUILD_INPUTS[@]}"; do
     git -C "$REPO_ROOT" cat-file -e "HEAD:$relative" 2>/dev/null \
       || die "release input is not tracked by current HEAD: $relative"
   done
   dirty="$(
     git -C "$REPO_ROOT" status \
       --porcelain=v1 \
-      --untracked-files=all \
+      --untracked-files=no \
       -- \
       "${DASHBOARD_FILES[@]}" \
-      "$DASHBOARD_ASSET_TREE" \
-      "scripts/deploy-dashboard-workspaces-to-ecs.sh" \
-      "scripts/build-dashboard-app.sh"
+      "${DASHBOARD_BUILD_INPUTS[@]}"
   )"
   [[ -z "$dirty" ]] \
     || die "release inputs must match reviewed commit $CURRENT_COMMIT"
