@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -25,6 +26,9 @@ EXPECTED_FILES = [
     "tests/test_dashboard_resource_api.py",
     "tests/test_dashboard_runtime.py",
     "tests/test_dashboard_workspace_api.py",
+    "scripts/system-audit.sh",
+    "docs/system-harness.md",
+    "docs/system-overview.md",
 ]
 
 
@@ -42,6 +46,216 @@ class DashboardWorkspaceDeployScriptTests(unittest.TestCase):
             capture_output=True,
             check=False,
         )
+
+    @staticmethod
+    def _write_executable(path: Path, source: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+        path.chmod(0o755)
+
+    def _create_deploy_fixture(self, temporary_directory: str) -> dict[str, object]:
+        root = Path(temporary_directory) / "release-repo"
+        remote_app = Path(temporary_directory) / "remote-app"
+        release_root = Path(temporary_directory) / "remote-releases"
+        fake_bin = Path(temporary_directory) / "fake-bin"
+        root.mkdir()
+        remote_app.mkdir()
+        release_root.mkdir()
+        fake_bin.mkdir()
+
+        deploy_script = root / "scripts" / DEPLOY_SCRIPT.name
+        deploy_script.parent.mkdir(parents=True)
+        shutil.copy2(DEPLOY_SCRIPT, deploy_script)
+
+        for relative in EXPECTED_FILES:
+            local_file = root / relative
+            local_file.parent.mkdir(parents=True, exist_ok=True)
+            local_file.write_text(f"release:{relative}\n", encoding="utf-8")
+
+            remote_file = remote_app / relative
+            remote_file.parent.mkdir(parents=True, exist_ok=True)
+            remote_file.write_text(f"preimage:{relative}\n", encoding="utf-8")
+
+        local_assets = root / "reports" / "app"
+        local_assets.mkdir(parents=True)
+        (local_assets / "index.html").write_text("release-app\n", encoding="utf-8")
+        (local_assets / "asset.js").write_text("release-asset\n", encoding="utf-8")
+        remote_assets = remote_app / "reports" / "app"
+        remote_assets.mkdir(parents=True)
+        (remote_assets / "index.html").write_text("preimage-app\n", encoding="utf-8")
+        (remote_assets / "asset.js").write_text("preimage-asset\n", encoding="utf-8")
+
+        self._write_executable(
+            root / "scripts" / "build-dashboard-app.sh",
+            "#!/usr/bin/env bash\nset -euo pipefail\ntest -f reports/app/index.html\n",
+        )
+        self._write_executable(
+            fake_bin / "ssh",
+            "#!/usr/bin/env bash\nset -euo pipefail\nshift\nexec \"$@\"\n",
+        )
+        self._write_executable(
+            fake_bin / "systemctl",
+            "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n",
+        )
+        self._write_executable(
+            fake_bin / "curl",
+            """#!/usr/bin/env bash
+set -euo pipefail
+if [[ " $* " == *" --write-out "* ]]; then
+  printf '200\\t128\\t0.010'
+fi
+""",
+        )
+        remote_python = fake_bin / "remote-python"
+        self._write_executable(
+            remote_python,
+            """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-m" ]]; then
+  exit "${FAKE_REMOTE_TEST_EXIT:-0}"
+fi
+exec python3 "$@"
+""",
+        )
+        self._write_executable(
+            fake_bin / "rsync",
+            """#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import shutil
+import sys
+from pathlib import Path
+
+
+def local_path(value: str) -> Path:
+    if ":" in value and not value.startswith("/"):
+        value = value.split(":", 1)[1]
+    return Path(value.rstrip("/") or "/")
+
+
+state_path = Path(os.environ["FAKE_RSYNC_STATE"])
+count = int(state_path.read_text(encoding="utf-8") or "0") if state_path.exists() else 0
+count += 1
+state_path.write_text(str(count), encoding="utf-8")
+fail_on = int(os.environ.get("FAKE_RSYNC_FAIL_ON", "0"))
+if fail_on and count == fail_on:
+    raise SystemExit(23)
+
+arguments = sys.argv[1:]
+relative_mode = "--relative" in arguments
+delete_mode = "--delete" in arguments
+paths = [argument for argument in arguments if not argument.startswith("-")]
+sources = paths[:-1]
+destination = local_path(paths[-1])
+
+if relative_mode:
+    destination.mkdir(parents=True, exist_ok=True)
+    for source_value in sources:
+        source = Path(source_value)
+        target = destination / source
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+elif len(sources) == 1 and Path(sources[0].rstrip("/")).is_dir():
+    source = Path(sources[0].rstrip("/"))
+    if delete_mode and destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+    for child in source.iterdir():
+        target = destination / child.name
+        if child.is_dir():
+            shutil.copytree(child, target, dirs_exist_ok=True)
+        else:
+            shutil.copy2(child, target)
+else:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(Path(sources[0]), destination)
+""",
+        )
+
+        subprocess.run(
+            ["git", "init", "-q"],
+            cwd=root,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "dashboard-tests@example.test"],
+            cwd=root,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Dashboard Tests"],
+            cwd=root,
+            check=True,
+        )
+        subprocess.run(["git", "add", "."], cwd=root, check=True)
+        subprocess.run(
+            ["git", "commit", "-qm", "fixture release"],
+            cwd=root,
+            check=True,
+        )
+
+        environment = os.environ.copy()
+        environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+        environment["SA_ECS_REMOTE"] = (
+            f"operator@example.test:{remote_app.as_posix()}"
+        )
+        environment["SA_DASHBOARD_RELEASES_DIR"] = release_root.as_posix()
+        environment["SA_ECS_PYTHON"] = remote_python.as_posix()
+        environment["SA_DASHBOARD_RELEASE_STAMP"] = "reviewed-test"
+        environment["SA_DASHBOARD_CANARY_BASE_URL"] = "http://127.0.0.1:8765"
+        environment["FAKE_RSYNC_STATE"] = (
+            Path(temporary_directory) / "rsync-count"
+        ).as_posix()
+
+        return {
+            "root": root,
+            "script": deploy_script,
+            "remote_app": remote_app,
+            "release_root": release_root,
+            "environment": environment,
+        }
+
+    @staticmethod
+    def _run_fixture(
+        fixture: dict[str, object],
+        *arguments: str,
+        environment: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["/bin/bash", str(fixture["script"]), *arguments],
+            cwd=fixture["root"],
+            env=environment or fixture["environment"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def _capture_review_manifests(
+        self,
+        fixture: dict[str, object],
+        temporary_directory: str,
+    ) -> tuple[Path, Path]:
+        environment = dict(fixture["environment"])
+        release_manifest = Path(temporary_directory) / "reviewed-release.manifest"
+        preimage_manifest = Path(temporary_directory) / "reviewed-preimage.manifest"
+
+        release = self._run_fixture(
+            fixture,
+            "capture-release-input",
+            environment=environment,
+        )
+        self.assertEqual(release.returncode, 0, release.stderr)
+        release_manifest.write_text(release.stdout, encoding="utf-8")
+
+        preimage = self._run_fixture(
+            fixture,
+            "capture-preimage",
+            environment=environment,
+        )
+        self.assertEqual(preimage.returncode, 0, preimage.stderr)
+        preimage_manifest.write_text(preimage.stdout, encoding="utf-8")
+        return preimage_manifest, release_manifest
 
     def test_legacy_entrypoint_only_delegates_to_dashboard_deployer(self) -> None:
         source = LEGACY_SCRIPT.read_text(encoding="utf-8")
@@ -69,6 +283,237 @@ class DashboardWorkspaceDeployScriptTests(unittest.TestCase):
 
         self.assertEqual(paths, EXPECTED_FILES)
         self.assertIn('readonly DASHBOARD_ASSET_TREE="reports/app"', source)
+
+    def test_remote_configuration_rejects_shell_metacharacters_and_overlap(
+        self,
+    ) -> None:
+        safe_environment = os.environ.copy()
+        safe_environment.update(
+            {
+                "SA_ECS_REMOTE": "operator@example.test:/opt/stock-analyze/app",
+                "SA_DASHBOARD_RELEASES_DIR": "/opt/stock-analyze/releases",
+                "SA_ECS_PYTHON": "/opt/stock-analyze/venv/bin/python",
+                "SA_DASHBOARD_CANARY_BASE_URL": "http://127.0.0.1:8765",
+            }
+        )
+        dangerous_cases = (
+            ("SA_ECS_REMOTE", "operator@example.test;touch:/opt/app", "host"),
+            ("SA_ECS_REMOTE_PATH", "/opt/app;touch", "REMOTE_PATH"),
+            (
+                "SA_DASHBOARD_RELEASES_DIR",
+                "/opt/stock-analyze/app/reports/app/releases",
+                "outside",
+            ),
+            (
+                "SA_DASHBOARD_RELEASES_DIR",
+                "/opt/stock-analyze",
+                "overlap",
+            ),
+            ("SA_ECS_PYTHON", "/opt/venv/bin/python;touch", "PYTHON"),
+            (
+                "SA_DASHBOARD_CANARY_BASE_URL",
+                "http://127.0.0.1:8765;touch",
+                "CANARY",
+            ),
+        )
+
+        accepted = self._run("validate-config", environment=safe_environment)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        for name, value, expected_error in dangerous_cases:
+            with self.subTest(name=name, value=value):
+                environment = safe_environment.copy()
+                environment[name] = value
+                rejected = self._run("validate-config", environment=environment)
+                self.assertEqual(rejected.returncode, 2)
+                self.assertIn(expected_error.lower(), rejected.stderr.lower())
+
+    def test_deploy_requires_reviewed_release_manifest_before_build(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            preimage = Path(temporary_directory) / "preimage.manifest"
+            lines = [f"FILE MISSING {path}" for path in EXPECTED_FILES]
+            lines.append("TREE MISSING reports/app")
+            preimage.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            environment = os.environ.copy()
+            environment["SA_ECS_REMOTE"] = "operator@example.test:/opt/app"
+            environment["SA_DASHBOARD_PREIMAGE_MANIFEST"] = str(preimage)
+            environment["SA_DASHBOARD_MAX_BYTES"] = "invalid"
+            environment.pop("SA_DASHBOARD_RELEASE_INPUT_MANIFEST", None)
+
+            completed = self._run("deploy", environment=environment)
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("SA_DASHBOARD_RELEASE_INPUT_MANIFEST", completed.stderr)
+
+    def test_reviewed_release_manifest_is_bound_to_clean_head(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = self._create_deploy_fixture(temporary_directory)
+            preimage, release = self._capture_review_manifests(
+                fixture,
+                temporary_directory,
+            )
+            environment = dict(fixture["environment"])
+            environment["SA_DASHBOARD_PREIMAGE_MANIFEST"] = str(preimage)
+            environment["SA_DASHBOARD_RELEASE_INPUT_MANIFEST"] = str(release)
+            overview = Path(fixture["root"]) / "docs" / "system-overview.md"
+            overview.write_text("unreviewed change\n", encoding="utf-8")
+
+            completed = self._run_fixture(
+                fixture,
+                "deploy",
+                environment=environment,
+            )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertRegex(
+            completed.stderr,
+            r"(release input mismatch|release inputs must match reviewed commit)",
+        )
+
+    def test_asset_sync_failure_rolls_back_and_verifies_preimage_and_app(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = self._create_deploy_fixture(temporary_directory)
+            preimage, release = self._capture_review_manifests(
+                fixture,
+                temporary_directory,
+            )
+            environment = dict(fixture["environment"])
+            environment["SA_DASHBOARD_PREIMAGE_MANIFEST"] = str(preimage)
+            environment["SA_DASHBOARD_RELEASE_INPUT_MANIFEST"] = str(release)
+            environment["FAKE_RSYNC_FAIL_ON"] = "4"
+
+            completed = self._run_fixture(
+                fixture,
+                "deploy",
+                environment=environment,
+            )
+
+            backup = Path(fixture["release_root"]) / (
+                "reviewed-test-dashboard-workspaces"
+            )
+            release_result = (backup / "release-manifest.txt").read_text(
+                encoding="utf-8"
+            )
+            rollback_result = (backup / "rollback-result.txt").read_text(
+                encoding="utf-8"
+            )
+            remote_cli = (
+                Path(fixture["remote_app"]) / "stock_analyze" / "cli.py"
+            ).read_text(encoding="utf-8")
+            remote_app = (
+                Path(fixture["remote_app"]) / "reports" / "app" / "index.html"
+            ).read_text(encoding="utf-8")
+            lock = Path(fixture["release_root"]) / (
+                ".dashboard-workspaces-deploy.lock"
+            )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("status=rolled_back", release_result)
+        self.assertIn("preimage_status=verified", rollback_result)
+        self.assertIn("service_status=active", rollback_result)
+        self.assertIn("app_canary_status=passed", rollback_result)
+        self.assertEqual(remote_cli, "preimage:stock_analyze/cli.py\n")
+        self.assertEqual(remote_app, "preimage-app\n")
+        self.assertFalse(lock.exists())
+
+    def test_remote_test_failure_rolls_back_and_records_verified_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = self._create_deploy_fixture(temporary_directory)
+            preimage, release = self._capture_review_manifests(
+                fixture,
+                temporary_directory,
+            )
+            environment = dict(fixture["environment"])
+            environment["SA_DASHBOARD_PREIMAGE_MANIFEST"] = str(preimage)
+            environment["SA_DASHBOARD_RELEASE_INPUT_MANIFEST"] = str(release)
+            environment["FAKE_REMOTE_TEST_EXIT"] = "9"
+
+            completed = self._run_fixture(
+                fixture,
+                "deploy",
+                environment=environment,
+            )
+
+            backup = Path(fixture["release_root"]) / (
+                "reviewed-test-dashboard-workspaces"
+            )
+            rollback_result = (backup / "rollback-result.txt").read_text(
+                encoding="utf-8"
+            )
+            remote_overview = (
+                Path(fixture["remote_app"]) / "docs" / "system-overview.md"
+            ).read_text(encoding="utf-8")
+            lock = Path(fixture["release_root"]) / (
+                ".dashboard-workspaces-deploy.lock"
+            )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("rollback_status=verified", rollback_result)
+        self.assertIn("preimage_status=verified", rollback_result)
+        self.assertIn("app_canary_status=passed", rollback_result)
+        self.assertEqual(remote_overview, "preimage:docs/system-overview.md\n")
+        self.assertFalse(lock.exists())
+
+    def test_existing_remote_lock_blocks_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = self._create_deploy_fixture(temporary_directory)
+            preimage, release = self._capture_review_manifests(
+                fixture,
+                temporary_directory,
+            )
+            lock = Path(fixture["release_root"]) / (
+                ".dashboard-workspaces-deploy.lock"
+            )
+            lock.mkdir()
+            (lock / "holder").write_text("another-release\n", encoding="utf-8")
+            environment = dict(fixture["environment"])
+            environment["SA_DASHBOARD_PREIMAGE_MANIFEST"] = str(preimage)
+            environment["SA_DASHBOARD_RELEASE_INPUT_MANIFEST"] = str(release)
+
+            completed = self._run_fixture(
+                fixture,
+                "deploy",
+                environment=environment,
+            )
+
+            backup = Path(fixture["release_root"]) / (
+                "reviewed-test-dashboard-workspaces"
+            )
+            remote_cli = (
+                Path(fixture["remote_app"]) / "stock_analyze" / "cli.py"
+            ).read_text(encoding="utf-8")
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("lock is already held", completed.stderr)
+        self.assertFalse(backup.exists())
+        self.assertEqual(remote_cli, "preimage:stock_analyze/cli.py\n")
+
+    def test_remote_resolved_release_path_cannot_reenter_app_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = self._create_deploy_fixture(temporary_directory)
+            unsafe_target = (
+                Path(fixture["remote_app"]) / "reports" / "app" / "releases"
+            )
+            unsafe_target.mkdir()
+            release_link = Path(temporary_directory) / "release-link"
+            release_link.symlink_to(unsafe_target, target_is_directory=True)
+            environment = dict(fixture["environment"])
+            environment["SA_DASHBOARD_RELEASES_DIR"] = str(release_link)
+            fixture["environment"] = environment
+            preimage, release = self._capture_review_manifests(
+                fixture,
+                temporary_directory,
+            )
+            environment["SA_DASHBOARD_PREIMAGE_MANIFEST"] = str(preimage)
+            environment["SA_DASHBOARD_RELEASE_INPUT_MANIFEST"] = str(release)
+
+            completed = self._run_fixture(
+                fixture,
+                "deploy",
+                environment=environment,
+            )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("resolved release path overlaps app", completed.stderr)
 
     def test_script_has_no_broad_deploy_or_scheduler_side_effects(self) -> None:
         source = DEPLOY_SCRIPT.read_text(encoding="utf-8")
@@ -236,12 +681,33 @@ class DashboardWorkspaceDeployScriptTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             manifest = Path(temporary_directory) / "preimage.manifest"
+            release_manifest = Path(temporary_directory) / "release.manifest"
             lines = [f"FILE MISSING {path}" for path in EXPECTED_FILES]
             lines.append("TREE MISSING reports/app")
             manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=ROOT,
+                check=True,
+                text=True,
+                capture_output=True,
+            ).stdout.strip()
+            release_lines = [
+                "FORMAT dashboard-workspaces-release-input-v1",
+                f"COMMIT {commit}",
+                *[f"FILE {'0' * 64} {path}" for path in EXPECTED_FILES],
+                f"TREE {'0' * 64} reports/app",
+            ]
+            release_manifest.write_text(
+                "\n".join(release_lines) + "\n",
+                encoding="utf-8",
+            )
             environment = os.environ.copy()
             environment["SA_ECS_REMOTE"] = "operator@example:/opt/app"
             environment["SA_DASHBOARD_PREIMAGE_MANIFEST"] = str(manifest)
+            environment["SA_DASHBOARD_RELEASE_INPUT_MANIFEST"] = str(
+                release_manifest
+            )
             environment["SA_DASHBOARD_MAX_BYTES"] = "invalid"
 
             completed = self._run("deploy", environment=environment)
@@ -279,7 +745,12 @@ class DashboardWorkspaceDeployScriptTests(unittest.TestCase):
             "./scripts/deploy-dashboard-workspaces-to-ecs.sh validate-manifest",
             harness,
         )
+        self.assertIn(
+            "./scripts/deploy-dashboard-workspaces-to-ecs.sh capture-release-input",
+            harness,
+        )
         self.assertIn("SA_DASHBOARD_PREIMAGE_MANIFEST", harness)
+        self.assertIn("SA_DASHBOARD_RELEASE_INPUT_MANIFEST", harness)
         self.assertIn("只重启 `stock-analyze-dashboard.service`", harness)
 
     def test_deploy_fails_closed_before_build_without_remote(self) -> None:
