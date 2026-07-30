@@ -9,6 +9,7 @@ import unittest
 from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -19,6 +20,7 @@ from stock_analyze.dashboard_workspace_api import (
     _structured_snapshot_coverage,
     build_dashboard_data_intelligence_data,
     build_dashboard_model_research_data,
+    build_dashboard_operations_center_data,
 )
 from stock_analyze.overlay_guard import (
     AVAILABLE_FACTORS_BY_MARKET,
@@ -1712,6 +1714,331 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertLess(
             len(json.dumps(first, ensure_ascii=False).encode("utf-8")),
+            250_000,
+        )
+
+    def test_operations_center_distinguishes_today_waiting_skip_and_partial(
+        self,
+    ) -> None:
+        runtime = {
+            "status": "available",
+            "generated_at": "2026-07-30T13:30:00+08:00",
+            "last_known_at": "2026-07-30T13:30:00+08:00",
+            "reason": None,
+            "services": {
+                "stock-analyze-intelligence.service": {
+                    "activeState": "inactive",
+                    "subState": "dead",
+                    "result": "success",
+                    "exitStatus": 0,
+                    "startedAt": "2026-07-30T04:30:00Z",
+                    "finishedAt": "Wed 2026-07-30 12:31:00 CST",
+                },
+                "stock-analyze-market-data.service": {
+                    "activeState": "inactive",
+                    "subState": "dead",
+                    "result": "success",
+                    "exitStatus": 0,
+                    "startedAt": "Tue 2026-07-29 18:30:00 CST",
+                    "finishedAt": "Tue 2026-07-29 18:31:00 CST",
+                },
+                "stock-analyze-intelligence-artifact-backfill.service": {
+                    "activeState": "inactive",
+                    "subState": "dead",
+                    "result": "success",
+                    "exitStatus": 75,
+                    "startedAt": "Wed 2026-07-30 13:20:00 CST",
+                    "finishedAt": "Wed 2026-07-30 13:20:01 CST",
+                },
+                "stock-analyze-claude-daily.service": {
+                    "activeState": "inactive",
+                    "subState": "dead",
+                    "result": "success",
+                    "exitStatus": 0,
+                    "startedAt": "Wed 2026-07-30 13:00:00 CST",
+                    "finishedAt": "Wed 2026-07-30 13:01:00 CST",
+                },
+            },
+            "timers": {
+                "stock-analyze-market-data.timer": {
+                    "activeState": "active",
+                    "lastTriggerAt": "Tue 2026-07-29 18:30:00 CST",
+                    "nextTriggerAt": "Wed 2026-07-30 18:30:00 CST",
+                },
+            },
+        }
+        intelligence = _intelligence()
+        intelligence["pipeline"]["artifactWorkers"] = {
+            "status": "available",
+            "activeLeases": 0,
+            "latestFinishedAt": "2026-07-30T13:20:01+08:00",
+        }
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+            return_value=runtime,
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            return_value=intelligence,
+        ):
+            payload = build_dashboard_operations_center_data(
+                repo_root=Path(tmp),
+                scope="all",
+                now=datetime(
+                    2026,
+                    7,
+                    30,
+                    13,
+                    30,
+                    tzinfo=ZoneInfo("Asia/Shanghai"),
+                ),
+            )
+
+        statuses = {row["key"]: row["status"] for row in payload["mainChain"]}
+        self.assertEqual(statuses["intelligence"], "success")
+        self.assertEqual(statuses["market_snapshot"], "waiting_schedule")
+        self.assertEqual(statuses["research"], "waiting_upstream")
+        self.assertEqual(statuses["simulation"], "waiting_upstream")
+        workers = {row["key"]: row for row in payload["backgroundWorkers"]}
+        self.assertEqual(workers["artifact_backfill"]["status"], "skipped")
+        market_timer = next(
+            row
+            for row in payload["schedules"]["daily"]
+            if row["unit"] == "stock-analyze-market-data.timer"
+        )
+        self.assertEqual(market_timer["status"], "active")
+        self.assertEqual(payload["interventions"], [])
+
+    def test_operations_center_partial_stage_is_not_running_without_active_unit(
+        self,
+    ) -> None:
+        success = {
+            "activeState": "inactive",
+            "subState": "dead",
+            "result": "success",
+            "exitStatus": 0,
+            "startedAt": "Wed 2026-07-30 13:00:00 CST",
+            "finishedAt": "Wed 2026-07-30 13:01:00 CST",
+        }
+        runtime = {
+            "status": "available",
+            "services": {
+                "stock-analyze-intelligence.service": success,
+                "stock-analyze-market-data.service": success,
+                "stock-analyze-research.service": success,
+                "stock-analyze-model-iteration.service": success,
+            },
+            "timers": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+            return_value=runtime,
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            return_value=_intelligence(),
+        ):
+            payload = build_dashboard_operations_center_data(
+                repo_root=Path(tmp),
+                now=datetime(2026, 7, 30, 13, 30),
+            )
+
+        statuses = {row["key"]: row["status"] for row in payload["mainChain"]}
+        self.assertEqual(statuses["simulation"], "waiting_schedule")
+
+        runtime["services"]["stock-analyze-codex-daily.service"] = {
+            **success,
+            "activeState": "active",
+        }
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+            return_value=runtime,
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            return_value=_intelligence(),
+        ):
+            active_payload = build_dashboard_operations_center_data(
+                repo_root=Path(tmp),
+                now=datetime(2026, 7, 30, 13, 30),
+            )
+        active_statuses = {
+            row["key"]: row["status"] for row in active_payload["mainChain"]
+        }
+        self.assertEqual(active_statuses["simulation"], "running")
+
+    def test_operations_center_runtime_unavailable_is_not_waiting(self) -> None:
+        runtime = {
+            "status": "unavailable",
+            "generated_at": "2026-07-30T13:30:00+08:00",
+            "last_known_at": "2026-07-30T13:20:00+08:00",
+            "reason": "runtime_status_unavailable",
+            "services": {
+                "stock-analyze-intelligence.service": {
+                    "activeState": "inactive",
+                    "result": "success",
+                    "exitStatus": 0,
+                    "startedAt": "Wed 2026-07-30 13:00:00 CST",
+                },
+            },
+            "timers": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+            return_value=runtime,
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            return_value=_intelligence(),
+        ):
+            payload = build_dashboard_operations_center_data(
+                repo_root=Path(tmp),
+                now=datetime(2026, 7, 30, 13, 30),
+            )
+
+        self.assertTrue(
+            all(row["status"] == "unavailable" for row in payload["mainChain"])
+        )
+        self.assertTrue(
+            all(
+                row["status"] == "unavailable"
+                for row in payload["backgroundWorkers"]
+            )
+        )
+
+    def test_operations_center_recent_runs_are_logical_bounded_and_redacted(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for market in competition.MARKETS:
+                for agent in ("claude", "codex"):
+                    path = root / "data" / market / agent / "runs.csv"
+                    path.parent.mkdir(parents=True)
+                    rows = [
+                        "run_id,command,as_of,started_at,finished_at,duration_ms,status,error_summary,config_hash,code_version",
+                        "000001,run-daily,2026-07-30,2026-07-30T10:00:00,,,running,,000abc,v1",
+                        "000001,run-daily,2026-07-30,2026-07-30T10:00:00,2026-07-30T10:01:00,60000,failed,Authorization: Bearer top-secret token=also-secret,000abc,v1",
+                    ]
+                    for index in range(25):
+                        rows.append(
+                            f"{agent}-{index:02d},run-weekly,2026-07-29,"
+                            f"2026-07-29T{index % 20:02d}:00:00,"
+                            f"2026-07-29T{index % 20:02d}:01:00,60000,"
+                            "success,,000abc,v1"
+                        )
+                    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+            with mock.patch(
+                "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+                return_value={
+                    "status": "available",
+                    "services": {},
+                    "timers": {},
+                },
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+                return_value=_intelligence(),
+            ):
+                payload = build_dashboard_operations_center_data(
+                    repo_root=root,
+                    scope="exceptions",
+                    now=datetime(2026, 7, 30, 13, 30),
+                )
+
+        self.assertLessEqual(len(payload["recentRuns"]), 20)
+        self.assertTrue(payload["recentRuns"])
+        self.assertTrue(
+            all(row["status"] == "failed" for row in payload["recentRuns"])
+        )
+        self.assertEqual(payload["recentRuns"][0]["runId"], "000001")
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self.assertNotIn("top-secret", serialized)
+        self.assertNotIn("also-secret", serialized)
+        self.assertLessEqual(
+            len(payload["recentRuns"][0]["errorSummary"]),
+            200,
+        )
+
+    def test_operations_center_only_raises_actionable_interventions(self) -> None:
+        intelligence = _intelligence()
+        intelligence["pipeline"]["backlog"]["total"] = 10
+        intelligence["pipeline"]["artifactWorkers"] = {
+            "status": "available",
+            "activeLeases": 0,
+            "latestFinishedAt": "2026-07-28T12:00:00+08:00",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = root / "data" / "a_share" / "codex" / "runs.csv"
+            runs.parent.mkdir(parents=True)
+            runs.write_text(
+                "\n".join(
+                    [
+                        "run_id,command,as_of,started_at,finished_at,duration_ms,status,error_summary,config_hash,code_version",
+                        "000101,run-daily,,2026-07-30T10:00:00,2026-07-30T10:01:00,1,failed,missing credential API_KEY=secret-value,h,v",
+                        "000102,run-daily,,2026-07-29T10:00:00,2026-07-29T10:01:00,1,failed,retryable timeout,h,v",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+                return_value={
+                    "status": "available",
+                    "services": {},
+                    "timers": {},
+                },
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+                return_value=intelligence,
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.shutil.disk_usage",
+                return_value=mock.Mock(total=100, used=90, free=10),
+            ):
+                payload = build_dashboard_operations_center_data(
+                    repo_root=root,
+                    now=datetime(
+                        2026,
+                        7,
+                        30,
+                        13,
+                        30,
+                        tzinfo=ZoneInfo("Asia/Shanghai"),
+                    ),
+                )
+
+        keys = {row["key"] for row in payload["interventions"]}
+        self.assertIn("disk_capacity", keys)
+        self.assertIn("artifact_worker_stale", keys)
+        self.assertTrue(any(key.startswith("credential:") for key in keys))
+        self.assertTrue(
+            any(key.startswith("consecutive_failure:") for key in keys)
+        )
+        self.assertNotIn("secret-value", json.dumps(payload, ensure_ascii=False))
+
+    def test_operations_center_locally_degrades_failed_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+            side_effect=OSError("systemctl unavailable"),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+            side_effect=OSError("sqlite unavailable"),
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.shutil.disk_usage",
+            side_effect=OSError("disk unavailable"),
+        ):
+            payload = build_dashboard_operations_center_data(
+                repo_root=Path(tmp),
+                now=datetime(2026, 7, 30, 13, 30),
+            )
+
+        self.assertEqual(payload["runtime"]["status"], "unavailable")
+        self.assertEqual(
+            {row["status"] for row in payload["mainChain"]},
+            {"unavailable"},
+        )
+        self.assertEqual(payload["background"]["status"], "unavailable")
+        self.assertEqual(payload["disk"]["status"], "unavailable")
+        self.assertLess(
+            len(json.dumps(payload, ensure_ascii=False).encode("utf-8")),
             250_000,
         )
 
