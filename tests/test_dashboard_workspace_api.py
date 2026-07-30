@@ -6,6 +6,7 @@ import json
 import math
 import tempfile
 import unittest
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -192,6 +193,7 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
                     "market": "a_share",
                     "agent": "codex",
                     "status": "active",
+                    "as_of": datetime(2026, 7, 30, 8, 30),
                     "model_versions": {"20": "A20-V005"},
                 },
                 {
@@ -232,8 +234,182 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             "A20-V005",
         )
         self.assertEqual(len(payload["adoption"]["strategyUsage"]), 1)
+        self.assertEqual(
+            payload["adoption"]["strategyUsage"][0]["as_of"],
+            "2026-07-30T08:30:00",
+        )
         self.assertEqual(len(payload["adoption"]["rollbackCandidates"]), 5)
         self.assertEqual(payload["stages"][-1]["status"], "success")
+
+    def test_adoption_requires_matching_champion_horizon_and_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_root = root / "data" / "research" / "models" / "a_share" / "20"
+            model_root.mkdir(parents=True)
+            artifact = model_root / "run-A20-V005.joblib"
+            artifact.write_bytes(b"model")
+            (model_root / "registry.json").write_text(
+                json.dumps(
+                    {
+                        "champion_model_version": "A20-V005",
+                        "models": {
+                            "A20-V005": {
+                                "status": "active",
+                                "artifact": str(artifact),
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = self._build(
+                root,
+                models={
+                    "status": "available",
+                    "models": [_model(champion=True)],
+                },
+                usage=[
+                    {
+                        "market": "a_share",
+                        "agent": "codex",
+                        "status": "active",
+                        "model_versions": {"5": "A20-V005"},
+                    }
+                ],
+            )
+
+        self.assertEqual(payload["adoption"]["strategyUsage"], [])
+        self.assertEqual(payload["stages"][-1]["status"], "waiting_upstream")
+
+    def test_datetime_sources_and_lifecycle_timestamps_are_iso_json_safe(self) -> None:
+        class PandasLikeTimestamp:
+            def isoformat(self) -> str:
+                return "2026-07-30T09:45:00+08:00"
+
+        trained_at = datetime(2026, 7, 29, 23, 0, tzinfo=timezone.utc)
+        adopted_at = datetime(2026, 7, 30, 8, 30)
+        history_at = date(2026, 7, 28)
+        model = _model()
+        model["trained_at"] = trained_at
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._build(
+                Path(tmp),
+                models={"status": "available", "models": [model]},
+                sources=[
+                    {
+                        "source": "market",
+                        "status": "available",
+                        "rows": 1000,
+                        "as_of": PandasLikeTimestamp(),
+                    }
+                ],
+                iteration=_iteration(
+                    prediction_as_of=date(2026, 7, 30),
+                    candidate={
+                        "model_version": "A20-V005",
+                        "selected_at": adopted_at,
+                        "registered_at": PandasLikeTimestamp(),
+                    },
+                    version_history=[
+                        {
+                            "model_version": "A20-V004",
+                            "ended_at": history_at,
+                        }
+                    ],
+                ),
+                usage=[
+                    {
+                        "market": "a_share",
+                        "agent": "codex",
+                        "status": "active",
+                        "as_of": adopted_at,
+                        "model_versions": {},
+                    }
+                ],
+            )
+
+        self.assertEqual(
+            payload["training"]["models"][0]["trainedAt"],
+            "2026-07-29T23:00:00+00:00",
+        )
+        self.assertEqual(
+            payload["dataPreparation"]["sources"][0]["as_of"],
+            "2026-07-30T09:45:00+08:00",
+        )
+        self.assertEqual(
+            payload["simulation"]["candidate"]["selected_at"],
+            "2026-07-30T08:30:00",
+        )
+        self.assertEqual(
+            payload["simulation"]["candidate"]["registered_at"],
+            "2026-07-30T09:45:00+08:00",
+        )
+        self.assertEqual(payload["simulation"]["predictionAsOf"], "2026-07-30")
+        self.assertEqual(
+            payload["adoption"]["rollbackCandidates"][0]["endedAt"],
+            "2026-07-28",
+        )
+        json.dumps(payload, allow_nan=False)
+
+    def test_selected_features_distinguish_structured_intelligence_and_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._build(
+                Path(tmp),
+                models={
+                    "status": "available",
+                    "models": [
+                        _model(
+                            features=[
+                                "momentum_20",
+                                "event_net_strength_5d",
+                                "future_feature_not_registered",
+                            ]
+                        )
+                    ],
+                },
+            )
+
+        preparation = payload["dataPreparation"]
+        self.assertEqual(preparation["structuredFeatureCount"], 1)
+        self.assertEqual(preparation["intelligenceFeatureCount"], 1)
+        self.assertEqual(preparation["unclassifiedFeatureCount"], 1)
+        self.assertEqual(
+            preparation["unclassifiedFeatures"],
+            ["future_feature_not_registered"],
+        )
+
+    def test_adversarial_decision_diagnostics_are_recursively_bounded(self) -> None:
+        diagnostics = {
+            f"branch-{index}": {
+                "message": "x" * 10_000,
+                "children": [
+                    {"detail": "y" * 10_000, "values": list(range(1000))}
+                    for _ in range(10)
+                ],
+            }
+            for index in range(30)
+        }
+        self.assertGreater(
+            len(json.dumps(diagnostics).encode("utf-8")),
+            300_000,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._build(
+                Path(tmp),
+                models={"status": "available", "models": [_model()]},
+                iteration=_iteration(decision_diagnostics=diagnostics),
+            )
+
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        self.assertLess(len(encoded), 250_000)
+        bounded = payload["simulation"]["decision"]["diagnostics"]
+        self.assertLess(len(bounded), len(diagnostics))
+        self.assertLessEqual(len(bounded["branch-0"]["message"]), 1_000)
+        self.assertLess(len(bounded["branch-0"]["children"]), 10)
 
     def test_initial_tables_are_bounded_and_payload_is_json_safe(self) -> None:
         models = [
