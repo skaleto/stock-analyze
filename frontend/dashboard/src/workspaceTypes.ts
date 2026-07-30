@@ -84,6 +84,7 @@ export type ModelResearchData = {
       status: string;
       rows?: number;
       failed?: boolean;
+      as_of?: string | null;
       error?: string;
     }[];
     candidateFeatureCount: number;
@@ -135,6 +136,7 @@ export type ModelResearchData = {
       endedAt?: string | null;
     }[];
     strategyUsage: {
+      agent: string;
       strategy_label: string;
       as_of?: string | null;
       status: string;

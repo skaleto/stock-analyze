@@ -313,26 +313,40 @@ def _model_rows(root: Path, market: str) -> list[dict[str, Any]]:
                 },
             }
         )
-    return sorted(rows, key=lambda row: (row["horizon"], row["modelVersion"]))
+    deduplicated: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (row["horizon"], row["modelVersion"])
+        current = deduplicated.get(key)
+        if current is None or json.dumps(
+            row, sort_keys=True, ensure_ascii=False, default=str
+        ) < json.dumps(current, sort_keys=True, ensure_ascii=False, default=str):
+            deduplicated[key] = row
+    return [deduplicated[key] for key in sorted(deduplicated)]
 
 
 def _source_rows(value: Any) -> list[dict[str, Any]]:
     bounded: list[dict[str, Any]] = []
-    for row in _rows(value)[:MAX_TABLE_ROWS]:
-        bounded.append(
-            {
-                "source": _text(row.get("source"), limit=256),
-                "status": _text(row.get("status"), limit=128),
-                "rows": _integer(row.get("rows")),
-                "failed": bool(row.get("failed")),
-                "as_of": _scalar(row.get("as_of"), text_limit=256),
-                "error": _text(
-                    row.get("error") or row.get("error_summary"),
-                    limit=MAX_TEXT_LENGTH,
-                )
-                or None,
-            }
-        )
+    seen: set[str] = set()
+    for row in _rows(value):
+        evidence = {
+            "source": _text(row.get("source"), limit=256),
+            "status": _text(row.get("status"), limit=128),
+            "rows": _integer(row.get("rows")),
+            "failed": bool(row.get("failed")),
+            "as_of": _scalar(row.get("as_of"), text_limit=256),
+            "error": _text(
+                row.get("error") or row.get("error_summary"),
+                limit=MAX_TEXT_LENGTH,
+            )
+            or None,
+        }
+        identity = json.dumps(evidence, sort_keys=True, ensure_ascii=False)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        bounded.append(evidence)
+        if len(bounded) >= MAX_TABLE_ROWS:
+            break
     return bounded
 
 
@@ -342,7 +356,7 @@ def _usage_rows(
     market: str,
     champion_models: set[tuple[int, str]],
 ) -> list[dict[str, Any]]:
-    bounded: list[dict[str, Any]] = []
+    by_agent: dict[str, dict[str, Any]] = {}
     for row in _rows(value):
         if row.get("market") != market or row.get("status") != "active":
             continue
@@ -359,29 +373,33 @@ def _usage_rows(
         }
         if not evidenced_versions:
             continue
-        bounded.append(
-            {
-                "market": market,
-                "agent": _text(row.get("agent"), limit=128),
-                "strategy_label": _text(
-                    row.get("strategy_label") or row.get("agent"),
-                    limit=256,
-                ),
-                "as_of": _scalar(row.get("as_of"), text_limit=256),
-                "status": "active",
-                "applied_candidates": _integer(row.get("applied_candidates")),
-                "candidate_coverage": _finite_number(
-                    row.get("candidate_coverage")
-                ),
-                "model_versions": evidenced_versions,
-                "fallback_reason": _text(
-                    row.get("fallback_reason"),
-                    limit=MAX_TEXT_LENGTH,
-                ),
-                "accounts": _integer(row.get("accounts")),
-            }
-        )
-    return bounded[:MAX_TABLE_ROWS]
+        agent = _text(row.get("agent"), limit=128)
+        if not agent:
+            continue
+        evidence = {
+            "market": market,
+            "agent": agent,
+            "strategy_label": _text(
+                row.get("strategy_label") or row.get("agent"),
+                limit=256,
+            ),
+            "as_of": _scalar(row.get("as_of"), text_limit=256),
+            "status": "active",
+            "applied_candidates": _integer(row.get("applied_candidates")),
+            "candidate_coverage": _finite_number(row.get("candidate_coverage")),
+            "model_versions": evidenced_versions,
+            "fallback_reason": _text(
+                row.get("fallback_reason"),
+                limit=MAX_TEXT_LENGTH,
+            ),
+            "accounts": _integer(row.get("accounts")),
+        }
+        current = by_agent.get(agent)
+        if current is None or json.dumps(
+            evidence, sort_keys=True, ensure_ascii=False
+        ) < json.dumps(current, sort_keys=True, ensure_ascii=False):
+            by_agent[agent] = evidence
+    return [by_agent[agent] for agent in sorted(by_agent)][:MAX_TABLE_ROWS]
 
 
 def _candidate(value: Any) -> dict[str, Any]:

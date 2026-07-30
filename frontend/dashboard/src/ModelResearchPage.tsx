@@ -235,6 +235,7 @@ export function ModelResearchPage({
                 row.source,
                 row.status,
                 row.rows ?? "",
+                row.as_of ?? "",
                 row.error ?? "",
               ].join(":")}
               emptyLabel="尚无数据源健康记录"
@@ -365,11 +366,7 @@ export function ModelResearchPage({
             />
             <BoundedTable
               rows={data.adoption.strategyUsage}
-              rowKey={(row) => [
-                row.strategy_label,
-                row.as_of ?? "",
-                row.status,
-              ].join(":")}
+              rowKey={(row) => row.agent}
               emptyLabel="尚无正式采用记录"
               columns={[
                 {

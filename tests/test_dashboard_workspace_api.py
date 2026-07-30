@@ -629,6 +629,99 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         )
         self.assertLess(len(encoded), 250_000)
 
+    def test_deduplicates_models_by_horizon_and_version_deterministically(self) -> None:
+        first = _model()
+        first["trained_at"] = "2026-07-30T01:00:00"
+        second = _model()
+        second["trained_at"] = "2026-07-29T23:00:00"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            forward = self._build(
+                root,
+                models={"status": "available", "models": [first, second]},
+            )
+            reverse = self._build(
+                root,
+                models={"status": "available", "models": [second, first]},
+            )
+
+        self.assertEqual(len(forward["training"]["models"]), 1)
+        self.assertEqual(
+            forward["training"]["models"],
+            reverse["training"]["models"],
+        )
+        self.assertEqual(forward["validation"]["total"], 1)
+
+    def test_deduplicates_only_identical_source_evidence_rows(self) -> None:
+        evidence = {
+            "source": "market",
+            "status": "available",
+            "rows": 1000,
+            "failed": False,
+            "as_of": "2026-07-30",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._build(
+                Path(tmp),
+                models={"status": "available", "models": [_model()]},
+                sources=[
+                    evidence,
+                    dict(evidence),
+                    {**evidence, "as_of": "2026-07-29"},
+                ],
+            )
+
+        self.assertEqual(
+            payload["dataPreparation"]["sources"],
+            [
+                {**evidence, "error": None},
+                {**evidence, "as_of": "2026-07-29", "error": None},
+            ],
+        )
+
+    def test_deduplicates_strategy_usage_by_public_agent_identity(self) -> None:
+        usage = {
+            "market": "a_share",
+            "agent": "codex",
+            "strategy_label": "Codex public account",
+            "as_of": "2026-07-30",
+            "status": "active",
+            "model_versions": {"20": "A20-V005"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_root = root / "data" / "research" / "models" / "a_share" / "20"
+            model_root.mkdir(parents=True)
+            artifact = model_root / "run-A20-V005.joblib"
+            artifact.write_bytes(b"model")
+            (model_root / "registry.json").write_text(
+                json.dumps(
+                    {
+                        "champion_model_version": "A20-V005",
+                        "models": {
+                            "A20-V005": {
+                                "status": "active",
+                                "artifact": str(artifact),
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            model = _model(champion=True)
+            payload = self._build(
+                root,
+                models={"status": "available", "models": [model]},
+                usage=[usage, dict(usage)],
+            )
+
+        self.assertEqual(len(payload["adoption"]["strategyUsage"]), 1)
+        self.assertEqual(
+            payload["adoption"]["strategyUsage"][0]["agent"],
+            "codex",
+        )
+
     def test_adversarial_scalars_are_sanitized_and_final_payload_is_pruned(self) -> None:
         models = []
         for index in range(20):

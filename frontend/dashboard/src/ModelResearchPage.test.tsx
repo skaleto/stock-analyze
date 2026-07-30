@@ -148,6 +148,7 @@ const payload = {
     rollbackCandidates: [],
     strategyUsage: [
       {
+        agent: "codex",
         strategy_label: "稳健防守",
         as_of: "2026-07-30",
         status: "fallback",
@@ -316,7 +317,37 @@ describe("ModelResearchPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("handles loading, failed loading, and malformed empty stages", async () => {
+  it("rejects a malformed stage status from a successful response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({
+        ...payload,
+        stages: [{ ...payload.stages[0], status: "done" }],
+      })),
+    );
+
+    render(<ModelResearchPage market="a_share" refreshToken={0} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Invalid model research response: stages[0].status",
+    );
+  });
+
+  it("rejects a successful response with missing core sections", async () => {
+    const { training: _training, ...missingTraining } = payload;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse(missingTraining)),
+    );
+
+    render(<ModelResearchPage market="a_share" refreshToken={0} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Invalid model research response: training",
+    );
+  });
+
+  it("handles loading and failed loading", async () => {
     let resolveFetch: ((response: Response) => void) | undefined;
     const pending = new Promise<Response>((resolve) => {
       resolveFetch = resolve;
@@ -327,10 +358,8 @@ describe("ModelResearchPage", () => {
     );
     expect(screen.getByLabelText("模型研究加载中")).toBeInTheDocument();
 
-    resolveFetch?.(jsonResponse({ ...payload, stages: [] }));
-    expect(
-      await screen.findByRole("alert", { name: "模型研究阶段不可用" }),
-    ).toBeInTheDocument();
+    resolveFetch?.(jsonResponse(payload));
+    expect(await screen.findByText("0 / 4 通过")).toBeInTheDocument();
 
     vi.stubGlobal(
       "fetch",
