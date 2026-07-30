@@ -200,7 +200,6 @@ export function WorkspaceShell({
                   ? "rail-nav-item active"
                   : "rail-nav-item"}
                 aria-expanded={strategyOpen}
-                aria-current={currentPage(strategyOpen)}
                 onClick={() => onNavigate(
                   defaultRoute("strategy", marketContext),
                 )}
