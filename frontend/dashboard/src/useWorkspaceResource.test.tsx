@@ -13,6 +13,22 @@ function deferred<T>() {
 }
 
 describe("useWorkspaceResource", () => {
+  it("reports a synchronous loader throw on initial load", async () => {
+    const loader = vi.fn(
+      (_signal: AbortSignal): Promise<{ value: number }> => {
+        throw new Error("sync unavailable");
+      },
+    );
+    const { result } = renderHook(() =>
+      useWorkspaceResource("a_share", true, loader),
+    );
+
+    await waitFor(() => expect(result.current.error).toBe("sync unavailable"));
+    expect(result.current.data).toBeNull();
+    expect(result.current.loading).toBe(false);
+    expect(result.current.stale).toBe(false);
+  });
+
   it("aborts the previous request when the key changes", async () => {
     const calls: AbortSignal[] = [];
     const loader = vi.fn((signal: AbortSignal) => {
@@ -49,6 +65,77 @@ describe("useWorkspaceResource", () => {
     await waitFor(() => expect(result.current.error).toBe("runtime unavailable"));
     expect(result.current.data).toEqual({ value: 7 });
     expect(result.current.stale).toBe(true);
+  });
+
+  it("keeps the last successful snapshot when refresh throws synchronously", async () => {
+    const loader = vi.fn()
+      .mockResolvedValueOnce({ value: 7 })
+      .mockImplementationOnce(() => {
+        throw new Error("sync refresh unavailable");
+      });
+    const { result } = renderHook(() =>
+      useWorkspaceResource("a_share", true, loader),
+    );
+
+    await waitFor(() => expect(result.current.data).toEqual({ value: 7 }));
+    act(() => result.current.refresh());
+    await waitFor(() =>
+      expect(result.current.error).toBe("sync refresh unavailable"),
+    );
+    expect(result.current.data).toEqual({ value: 7 });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.stale).toBe(true);
+  });
+
+  it("projects loading immediately for an enabled initial or new key", async () => {
+    const second = deferred<{ value: number }>();
+    let callCount = 0;
+    const loader = vi.fn(() => {
+      callCount += 1;
+      return callCount === 1
+        ? Promise.resolve({ value: 7 })
+        : second.promise;
+    });
+    const renders: Array<{
+      key: string;
+      data: { value: number } | null;
+      loading: boolean;
+      error: string | null;
+      stale: boolean;
+    }> = [];
+    const { result, rerender } = renderHook(
+      ({ key }) => {
+        const resource = useWorkspaceResource(key, true, loader);
+        renders.push({
+          key: resource.key,
+          data: resource.data,
+          loading: resource.loading,
+          error: resource.error,
+          stale: resource.stale,
+        });
+        return resource;
+      },
+      { initialProps: { key: "a_share" } },
+    );
+
+    expect(renders[0]).toEqual({
+      key: "a_share",
+      data: null,
+      loading: true,
+      error: null,
+      stale: false,
+    });
+    await waitFor(() => expect(result.current.data).toEqual({ value: 7 }));
+
+    renders.length = 0;
+    rerender({ key: "cn_qdii_etf" });
+    expect(renders[0]).toEqual({
+      key: "cn_qdii_etf",
+      data: null,
+      loading: true,
+      error: null,
+      stale: false,
+    });
   });
 
   it("clears prior-key data while the replacement request loads", async () => {
@@ -122,23 +209,37 @@ describe("useWorkspaceResource", () => {
     expect(result.current.data).toEqual({ value: 2 });
   });
 
-  it("aborts and clears the active snapshot when disabled", async () => {
+  it("keeps disabled state clear after a non-cooperative request resolves", async () => {
+    const request = deferred<{ value: number }>();
     const signals: AbortSignal[] = [];
     const loader = vi.fn((signal: AbortSignal) => {
       signals.push(signal);
-      return Promise.resolve({ value: 7 });
+      return request.promise;
     });
     const { result, rerender } = renderHook(
       ({ enabled }) => useWorkspaceResource("a_share", enabled, loader),
       { initialProps: { enabled: true } },
     );
 
-    await waitFor(() => expect(result.current.data).toEqual({ value: 7 }));
+    await waitFor(() => expect(loader).toHaveBeenCalledTimes(1));
     rerender({ enabled: false });
-    await waitFor(() => expect(result.current.data).toBeNull());
-    expect(signals[0].aborted).toBe(true);
+    await waitFor(() => expect(signals[0].aborted).toBe(true));
     expect(result.current).toMatchObject({
       key: "a_share",
+      data: null,
+      loading: false,
+      error: null,
+      stale: false,
+    });
+
+    await act(async () => {
+      request.resolve({ value: 7 });
+      await request.promise;
+      await Promise.resolve();
+    });
+    expect(result.current).toMatchObject({
+      key: "a_share",
+      data: null,
       loading: false,
       error: null,
       stale: false,
