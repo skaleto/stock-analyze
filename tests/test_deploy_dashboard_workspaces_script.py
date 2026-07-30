@@ -213,6 +213,43 @@ class DashboardWorkspaceDeployScriptTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, body)
 
+    def test_capture_preimage_executes_remote_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            bin_dir = Path(temporary_directory)
+            ssh = bin_dir / "ssh"
+            ssh.write_text("#!/bin/sh\nprintf 'capture-ok\\n'\n", encoding="utf-8")
+            ssh.chmod(0o755)
+            environment = os.environ.copy()
+            environment["PATH"] = f"{bin_dir}:{environment['PATH']}"
+            environment["SA_ECS_REMOTE"] = "operator@example:/opt/app"
+
+            completed = self._run(
+                "capture-preimage",
+                environment=environment,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout, "capture-ok\n")
+
+    def test_deploy_configuration_reaches_numeric_gate_without_building(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manifest = Path(temporary_directory) / "preimage.manifest"
+            lines = [f"FILE MISSING {path}" for path in EXPECTED_FILES]
+            lines.append("TREE MISSING reports/app")
+            manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            environment = os.environ.copy()
+            environment["SA_ECS_REMOTE"] = "operator@example:/opt/app"
+            environment["SA_DASHBOARD_PREIMAGE_MANIFEST"] = str(manifest)
+            environment["SA_DASHBOARD_MAX_BYTES"] = "invalid"
+
+            completed = self._run("deploy", environment=environment)
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("SA_DASHBOARD_MAX_BYTES", completed.stderr)
+        self.assertNotIn("bad substitution", completed.stderr)
+
     def test_remote_and_key_are_environment_driven(self) -> None:
         source = DEPLOY_SCRIPT.read_text(encoding="utf-8")
 

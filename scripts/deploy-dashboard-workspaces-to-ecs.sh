@@ -162,19 +162,19 @@ configure_remote() {
     || die "SA_ECS_REMOTE_PATH must not contain dot segments"
 
   REMOTE_TARGET="${REMOTE_HOST}:${REMOTE_PATH}"
-  REMOTE_RELEASE_ROOT="${
-    SA_DASHBOARD_RELEASES_DIR:-$(dirname "$REMOTE_PATH")/releases
-  }"
+  REMOTE_RELEASE_ROOT="$(
+    printf '%s' "${SA_DASHBOARD_RELEASES_DIR:-$(dirname "$REMOTE_PATH")/releases}"
+  )"
   [[ "$REMOTE_RELEASE_ROOT" == /* ]] \
     || die "SA_DASHBOARD_RELEASES_DIR must be absolute"
-  REMOTE_PYTHON="${
-    SA_ECS_PYTHON:-$(dirname "$REMOTE_PATH")/venv/bin/python
-  }"
+  REMOTE_PYTHON="$(
+    printf '%s' "${SA_ECS_PYTHON:-$(dirname "$REMOTE_PATH")/venv/bin/python}"
+  )"
   [[ "$REMOTE_PYTHON" == /* ]] || die "SA_ECS_PYTHON must be absolute"
 
-  RELEASE_STAMP="${
-    SA_DASHBOARD_RELEASE_STAMP:-$(date -u +%Y%m%d-%H%M%S)
-  }"
+  RELEASE_STAMP="$(
+    printf '%s' "${SA_DASHBOARD_RELEASE_STAMP:-$(date -u +%Y%m%d-%H%M%S)}"
+  )"
   [[ "$RELEASE_STAMP" =~ ^[A-Za-z0-9._-]+$ ]] \
     || die "SA_DASHBOARD_RELEASE_STAMP contains unsupported characters"
   BACKUP_DIR="${REMOTE_RELEASE_ROOT}/${RELEASE_STAMP}-dashboard-workspaces"
@@ -252,9 +252,9 @@ validate_local_contract() {
 
   MAX_BYTES="${SA_DASHBOARD_MAX_BYTES:-250000}"
   MAX_TTFB_SECONDS="${SA_DASHBOARD_MAX_TTFB_SECONDS:-0.500}"
-  CANARY_BASE_URL="${
-    SA_DASHBOARD_CANARY_BASE_URL:-http://127.0.0.1:8765
-  }"
+  CANARY_BASE_URL="$(
+    printf '%s' "${SA_DASHBOARD_CANARY_BASE_URL:-http://127.0.0.1:8765}"
+  )"
   [[ "$MAX_BYTES" =~ ^[1-9][0-9]*$ ]] \
     || die "SA_DASHBOARD_MAX_BYTES must be a positive integer"
   [[ "$MAX_TTFB_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]] \
