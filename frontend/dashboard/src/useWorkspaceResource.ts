@@ -93,13 +93,13 @@ export function useWorkspaceResource<T>(
     };
   }, [load]);
 
-  const active = state.key === key ? state : {
+  const active = !enabled || state.key !== key ? {
     key,
     data: null,
     loading: enabled,
     error: null,
     stale: false,
-  };
+  } : state;
   return {
     ...active,
     refresh: useCallback(() => load(true), [load]),
