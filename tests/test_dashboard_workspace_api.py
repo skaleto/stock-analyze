@@ -22,6 +22,7 @@ from stock_analyze.overlay_guard import (
     AVAILABLE_FACTORS_BY_MARKET,
     SENTIMENT_FACTORS,
 )
+from stock_analyze.research.feature_registry import DEFAULT_REGISTRY
 
 
 def _model(
@@ -1104,6 +1105,129 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertEqual(
             defensive["structuredData"]["evidence"],
             ["decision_lineage:20:SAME"],
+        )
+        self.assertEqual(
+            defensive["traditionalFactors"]["formalFactors"],
+            [],
+        )
+        self.assertEqual(
+            defensive["traditionalFactors"]["researchFeatures"],
+            ["momentum_20"],
+        )
+        self.assertEqual(
+            defensive["traditionalFactors"]["evidenceByNamespace"],
+            {
+                "formal": [],
+                "research": ["decision_lineage:20:SAME"],
+            },
+        )
+
+    def test_usage_preserves_overlapping_formal_and_research_namespaces(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch(
+                "stock_analyze.dashboard_workspace_api._public_strategy_profiles",
+                return_value={
+                    "defensive": {
+                        "label": "稳健防守",
+                        "factors": ["momentum_20"],
+                    },
+                    "trend": {
+                        "label": "趋势进攻",
+                        "factors": ["pb"],
+                    },
+                },
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_health",
+                return_value={
+                    "models": [
+                        {
+                            "model_version": "OVERLAP",
+                            "horizon": 20,
+                            "feature_columns": [
+                                "momentum_20",
+                                "pb",
+                                "event_net_strength_5d",
+                            ],
+                        }
+                    ]
+                },
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.agg._read_model_iteration_status",
+                return_value={},
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+                return_value=_intelligence(),
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api._latest_strategy_model_usage",
+                return_value=[
+                    {
+                        "market": "a_share",
+                        "agent": "claude",
+                        "status": "active",
+                        "model_versions": {"20": "OVERLAP"},
+                    }
+                ],
+            ):
+                payload = build_dashboard_data_intelligence_data(
+                    repo_root=Path(tmp),
+                    market="a_share",
+                )
+
+        usage = {row["consumerKey"]: row for row in payload["usageMatrix"]}
+        defensive = usage["defensive"]["traditionalFactors"]
+        self.assertEqual(defensive["formalFactors"], ["momentum_20"])
+        self.assertEqual(
+            defensive["researchFeatures"],
+            ["momentum_20", "pb"],
+        )
+        self.assertEqual(defensive["formalCount"], 1)
+        self.assertEqual(defensive["researchCount"], 2)
+        self.assertEqual(defensive["count"], 3)
+        self.assertEqual(
+            defensive["countSemantics"],
+            "formal_plus_research_namespace_items",
+        )
+        self.assertEqual(
+            defensive["evidenceByNamespace"],
+            {
+                "formal": ["strategy_overlay"],
+                "research": ["decision_lineage:20:OVERLAP"],
+            },
+        )
+
+        trend = usage["trend"]["traditionalFactors"]
+        self.assertEqual(trend["formalFactors"], ["pb"])
+        self.assertEqual(trend["researchFeatures"], [])
+        self.assertEqual(
+            trend["evidenceByNamespace"],
+            {"formal": ["strategy_overlay"], "research": []},
+        )
+
+        research = payload["structured"]["researchFeatureNamespace"]
+        expected_research_names = {
+            item.name
+            for item in DEFAULT_REGISTRY
+            if "a_share" in item.markets
+            and item.family != "market_intelligence"
+        }
+        self.assertEqual(
+            research["selectedFeatures"],
+            ["momentum_20", "pb"],
+        )
+        self.assertEqual(
+            research["definedFeatureCount"],
+            len(expected_research_names),
+        )
+        self.assertNotIn("event_net_strength_5d", research["selectedFeatures"])
+        self.assertEqual(
+            payload["intelligence"]["featureNamespace"]["selectedFeatures"],
+            ["event_net_strength_5d"],
+        )
+        self.assertEqual(
+            payload["structured"]["formalFactorNamespace"]["activeFactors"],
+            ["momentum_20", "pb"],
         )
 
     def test_latest_rule_only_lineage_supersedes_older_active_model_use(
