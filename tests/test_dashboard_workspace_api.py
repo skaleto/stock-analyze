@@ -2335,8 +2335,8 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
     ) -> None:
         known_key = "sk-proj-" + "Z9yX" * 10
         text = (
-            "credential=abcDEF123-xyz rejected; "
-            "credential:abcdef123456 rejected again; "
+            "credential=abcDEF123-xyz7890 rejected; "
+            "credential:abcdef1234567890 rejected again; "
             f"credential {known_key} rejected as known key; "
             "credential topsecret remains diagnostic; "
             "AccessKeySecret=SecretValue987654321; "
@@ -2345,8 +2345,8 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
 
         sanitized = _sanitize_run_error(text)
 
-        self.assertNotIn("abcDEF123-xyz", sanitized)
-        self.assertNotIn("abcdef123456", sanitized)
+        self.assertNotIn("abcDEF123-xyz7890", sanitized)
+        self.assertNotIn("abcdef1234567890", sanitized)
         self.assertNotIn(known_key, sanitized)
         self.assertIn("credential topsecret remains diagnostic", sanitized)
         self.assertNotIn("SecretValue987654321", sanitized)
@@ -2377,18 +2377,34 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertIn("DEEPSEEK_API_KEY=<redacted>", sanitized)
         self.assertIn("TUSHARE_TOKEN=<redacted>", sanitized)
 
+    def test_run_error_sanitizer_redacts_named_json_and_colon_fields(
+        self,
+    ) -> None:
+        cases = (
+            ('{"DEEPSEEK_API_KEY" : "lowentropy"}', "lowentropy"),
+            ('{"tushare_token": "123"}', "123"),
+            ('CUSTOM_PASSWORD : "simple"', "simple"),
+            ('"vendor_secret" = "x"', '"x"'),
+        )
+
+        for text, secret in cases:
+            with self.subTest(text=text):
+                sanitized = _sanitize_run_error(text)
+                self.assertNotIn(secret, sanitized)
+                self.assertIn("<redacted>", sanitized)
+
     def test_run_error_sanitizer_redacts_generic_key_and_contextual_credential(
         self,
     ) -> None:
         text = (
-            "HTTP 401 key:genericSecret123456; "
-            "credential plainSecretValue123456 rejected"
+            'HTTP 401 key:"genericsecret123456"; '
+            "credential plainsecretvalue123456 rejected"
         )
 
         sanitized = _sanitize_run_error(text)
 
-        self.assertNotIn("genericSecret123456", sanitized)
-        self.assertNotIn("plainSecretValue123456", sanitized)
+        self.assertNotIn("genericsecret123456", sanitized)
+        self.assertNotIn("plainsecretvalue123456", sanitized)
         self.assertIn("HTTP 401 key:<redacted>", sanitized)
         self.assertIn("credential <redacted> rejected", sanitized)
 
@@ -2400,6 +2416,10 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             "strategy sk-growth-rotation-2026 skipped",
             "credential endpoint unavailable",
             "credential resolver failed",
+            "credential=file missing",
+            "key=momentum_20",
+            "key:portfolio",
+            '"key": "instrument_id"',
             "LTAI docs unavailable; task skipped after 3 retries",
         )
 
