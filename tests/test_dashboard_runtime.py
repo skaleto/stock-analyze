@@ -64,6 +64,7 @@ class DashboardRuntimeTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(call[:2] == ["systemctl", "show"] for call in calls))
+        self.assertTrue(all("--all" in call for call in calls))
         requested = {
             value
             for call in calls
@@ -87,6 +88,31 @@ class DashboardRuntimeTests(unittest.TestCase):
             payload["services"]["stock-analyze-intelligence.service"]["result"],
             "success",
         )
+
+    def test_empty_properties_are_retained_and_projected(self) -> None:
+        def runner(command, **_kwargs):
+            result = _batch_show_result(list(command))
+            stdout = result.stdout
+            if any(value.endswith(".service") for value in command):
+                stdout = stdout.replace(
+                    "SubState=dead",
+                    "SubState=",
+                ).replace(
+                    "ExecMainStartTimestamp=Wed 2026-07-30 12:30:00 CST",
+                    "ExecMainStartTimestamp=",
+                ).replace(
+                    "ExecMainExitTimestamp=Wed 2026-07-30 12:31:00 CST",
+                    "ExecMainExitTimestamp=",
+                )
+            return subprocess.CompletedProcess(command, 0, stdout, "")
+
+        payload = read_dashboard_runtime(runner=runner, cache={})
+
+        self.assertEqual(payload["status"], "available")
+        service = payload["services"][RUNTIME_SERVICE_UNITS[0]]
+        self.assertEqual(service["subState"], "unknown")
+        self.assertIsNone(service["startedAt"])
+        self.assertIsNone(service["finishedAt"])
 
     def test_missing_systemctl_degrades_without_raising(self) -> None:
         def runner(_command, **_kwargs):

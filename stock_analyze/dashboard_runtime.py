@@ -107,6 +107,7 @@ def _show(
         "systemctl",
         "show",
         "--no-pager",
+        "--all",
         f"--property={','.join(properties)}",
         *units,
     ]
