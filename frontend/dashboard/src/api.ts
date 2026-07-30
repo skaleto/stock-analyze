@@ -1182,7 +1182,7 @@ export function fetchDataIntelligence(
 
 const OPERATIONS_RESPONSE_LIMIT = 250_000;
 const OPERATIONS_LIST_LIMIT = 20;
-const OPERATIONS_TEXT_LIMIT = 200;
+const OPERATIONS_TEXT_LIMIT = 1_000;
 const OPERATIONS_SCOPES = new Set([
   "all",
   "a_share",
@@ -1364,8 +1364,104 @@ function validateOperationsBacklog(
   }
 }
 
+function normalizeTruncatedOperations(value: unknown): unknown {
+  if (
+    value === null
+    || typeof value !== "object"
+    || Array.isArray(value)
+  ) {
+    return value;
+  }
+  const root = value as Record<string, unknown>;
+  if (root.truncated !== true) return value;
+
+  const normalizeRows = (
+    rows: unknown,
+    normalize: (row: Record<string, unknown>) => Record<string, unknown>,
+  ): unknown => {
+    if (!Array.isArray(rows)) return rows;
+    return rows.map((item) => (
+      item !== null && typeof item === "object" && !Array.isArray(item)
+        ? normalize(item as Record<string, unknown>)
+        : item
+    ));
+  };
+  const normalizeBacklog = (backlog: unknown): unknown => {
+    if (backlog === undefined || backlog === null) {
+      return { download: 0, parse: 0, semantic: 0, total: 0 };
+    }
+    return backlog;
+  };
+
+  const background: Record<string, unknown> | null = (
+    root.background !== null
+    && typeof root.background === "object"
+    && !Array.isArray(root.background)
+  ) ? root.background as Record<string, unknown> : null;
+  const schedules: Record<string, unknown> | null = (
+    root.schedules !== null
+    && typeof root.schedules === "object"
+    && !Array.isArray(root.schedules)
+  ) ? root.schedules as Record<string, unknown> : null;
+  const disk: Record<string, unknown> | null = (
+    root.disk !== null
+    && typeof root.disk === "object"
+    && !Array.isArray(root.disk)
+  ) ? root.disk as Record<string, unknown> : null;
+
+  return {
+    ...root,
+    mainChain: normalizeRows(root.mainChain, (row) => ({
+      ...row,
+      units: row.units === undefined ? [] : row.units,
+      crossMarketUnits: row.crossMarketUnits === undefined
+        ? []
+        : row.crossMarketUnits,
+    })),
+    background: background ? {
+      ...background,
+      backlog: normalizeBacklog(background.backlog),
+      artifactWorkers: background.artifactWorkers === undefined ? {
+        status: "unavailable",
+        activeLeases: 0,
+        latestFinishedAt: null,
+      } : background.artifactWorkers,
+    } : root.background,
+    backgroundWorkers: normalizeRows(root.backgroundWorkers, (row) => ({
+      ...row,
+      serviceUnit: row.serviceUnit === undefined ? "" : row.serviceUnit,
+      timerUnit: row.timerUnit === undefined ? "" : row.timerUnit,
+      backlog: row.backlog === undefined ? null : row.backlog,
+    })),
+    schedules: schedules
+      ? Object.fromEntries(
+        Object.entries(schedules).map(([cadence, rows]) => [
+          cadence,
+          normalizeRows(rows, (row) => ({
+            ...row,
+            automation: row.automation === undefined
+              ? "automatic"
+              : row.automation,
+            lastTriggerAt: row.lastTriggerAt === undefined
+              ? null
+              : row.lastTriggerAt,
+            nextTriggerAt: row.nextTriggerAt === undefined
+              ? null
+              : row.nextTriggerAt,
+          })),
+        ]),
+      )
+      : root.schedules,
+    disk: disk ? {
+      ...disk,
+      status: disk.status === undefined ? "unavailable" : disk.status,
+      usedRatio: disk.usedRatio === undefined ? null : disk.usedRatio,
+    } : root.disk,
+  };
+}
+
 function validateOperationsCenter(value: unknown): OperationsCenterData {
-  const data = operationsObject(value, "root");
+  const data = operationsObject(normalizeTruncatedOperations(value), "root");
   operationsString(data.generated_at, "generated_at");
   const scope = operationsString(data.scope, "scope");
   if (!OPERATIONS_SCOPES.has(scope)) operationsError("scope");
@@ -1499,6 +1595,7 @@ function validateOperationsCenter(value: unknown): OperationsCenterData {
     operationsOptionalString(worker.startedAt, `${path}.startedAt`);
     operationsOptionalString(worker.finishedAt, `${path}.finishedAt`);
     operationsOptionalString(worker.nextTriggerAt, `${path}.nextTriggerAt`);
+    operationsOptionalString(worker.reason, `${path}.reason`);
     if (worker.backlog !== undefined && worker.backlog !== null) {
       validateOperationsBacklog(worker.backlog, `${path}.backlog`);
     }
@@ -1536,6 +1633,7 @@ function validateOperationsCenter(value: unknown): OperationsCenterData {
       operationsOptionalString(row.loadState, `${path}.loadState`);
       operationsOptionalString(row.lastTriggerAt, `${path}.lastTriggerAt`);
       operationsOptionalString(row.nextTriggerAt, `${path}.nextTriggerAt`);
+      operationsOptionalString(row.reason, `${path}.reason`);
       if (row.automation !== "automatic") {
         operationsError(`${path}.automation`);
       }
@@ -1557,10 +1655,14 @@ function validateOperationsCenter(value: unknown): OperationsCenterData {
       "status",
       "startedAt",
       "finishedAt",
-      "errorSummary",
     ]) {
       operationsString(row[key], `${path}.${key}`);
     }
+    operationsString(
+      row.errorSummary,
+      `${path}.errorSummary`,
+      200,
+    );
     operationsOptionalString(row.asOf, `${path}.asOf`);
     operationsNumber(row.durationMs, `${path}.durationMs`);
   }

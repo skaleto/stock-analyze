@@ -138,8 +138,7 @@ export function OperationsPage({
   );
   const [selected, setSelected] = useState("intelligence");
   const [cadence, setCadence] = useState<Cadence>("daily");
-  const previousRefreshToken = useRef(refreshToken);
-  const refreshMounted = useRef(false);
+  const previousRequest = useRef({ scope, refreshToken });
 
   useEffect(() => {
     setSelected("intelligence");
@@ -147,16 +146,15 @@ export function OperationsPage({
   }, [scope]);
 
   useEffect(() => {
-    if (!refreshMounted.current) {
-      refreshMounted.current = true;
-      previousRefreshToken.current = refreshToken;
-      return;
-    }
-    if (previousRefreshToken.current !== refreshToken) {
-      previousRefreshToken.current = refreshToken;
+    const previous = previousRequest.current;
+    previousRequest.current = { scope, refreshToken };
+    if (
+      previous.scope === scope
+      && previous.refreshToken !== refreshToken
+    ) {
       resource.refresh();
     }
-  }, [refreshToken, resource.refresh]);
+  }, [scope, refreshToken, resource.refresh]);
 
   useEffect(() => {
     if (

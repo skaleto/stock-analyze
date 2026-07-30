@@ -301,6 +301,7 @@ export type OperationsBackgroundWorker = {
   startedAt?: string | null;
   finishedAt?: string | null;
   nextTriggerAt?: string | null;
+  reason?: string | null;
   backlog?: OperationsBacklog | null;
 };
 
@@ -311,6 +312,7 @@ export type OperationsSchedule = {
   loadState?: string | null;
   lastTriggerAt?: string | null;
   nextTriggerAt?: string | null;
+  reason?: string | null;
   automation: "automatic";
 };
 
