@@ -1,5 +1,6 @@
 import unittest
 
+import numpy as np
 import pandas as pd
 
 from stock_analyze.research.strategy_ensemble import (
@@ -47,11 +48,105 @@ class ResearchStrategyEnsembleTest(unittest.TestCase):
 
     def test_weight_optimizer_falls_back_to_current_top_n(self):
         weights = risk_adjusted_target_weights(
-            self.candidates.assign(expected_excess_return=[None, None], prediction_confidence=[None, None]),
+            self.candidates.assign(
+                expected_excess_return=[None, None],
+                prediction_confidence=[None, None],
+                low_volatility_60=[None, None],
+            ),
             top_n=2,
             max_single_weight=0.6,
         )
         self.assertEqual(weights, {"000001": 0.5, "000002": 0.5})
+
+    def test_weight_optimizer_uses_volatility_when_predictions_are_absent(self):
+        candidates = pd.DataFrame([
+            {"code": "000001", "score": 1.0, "low_volatility_60": 0.10},
+            {"code": "000002", "score": 0.9, "low_volatility_60": 0.30},
+        ])
+
+        weights = risk_adjusted_target_weights(
+            candidates,
+            top_n=2,
+            max_single_weight=0.80,
+        )
+
+        self.assertGreater(weights["000001"], weights["000002"])
+        self.assertAlmostEqual(sum(weights.values()), 1.0)
+        self.assertLessEqual(max(weights.values()), 0.80)
+
+    def test_weight_optimizer_blends_toward_current_portfolio(self):
+        candidates = pd.DataFrame([
+            {
+                "code": "000001", "score": 1.0, "low_volatility_60": 0.20,
+                "expected_excess_return": 0.12, "prediction_confidence": 0.90,
+                "prediction_applied": True,
+            },
+            {
+                "code": "000002", "score": 0.9, "low_volatility_60": 0.20,
+                "expected_excess_return": 0.01, "prediction_confidence": 0.75,
+                "prediction_applied": True,
+            },
+        ])
+        unconstrained = risk_adjusted_target_weights(
+            candidates,
+            top_n=2,
+            max_single_weight=0.80,
+            turnover_penalty=0.0,
+        )
+        sticky = risk_adjusted_target_weights(
+            candidates,
+            top_n=2,
+            max_single_weight=0.80,
+            current_weights={"000001": 0.20, "000002": 0.80},
+            turnover_penalty=0.75,
+        )
+
+        self.assertLess(abs(sticky["000001"] - 0.20), abs(unconstrained["000001"] - 0.20))
+        self.assertAlmostEqual(sum(sticky.values()), 1.0)
+
+    def test_covariance_optimizer_diversifies_correlated_assets(self):
+        dates = pd.date_range("2026-01-02", periods=80, freq="B")
+        shared = pd.Series(np.sin(np.arange(len(dates)) / 4.0) * 0.02, index=dates)
+        returns = pd.DataFrame({
+            "000001": shared,
+            "000002": shared * 0.98,
+            "000003": pd.Series(np.cos(np.arange(len(dates)) / 5.0) * 0.012, index=dates),
+        })
+        candidates = pd.DataFrame([
+            {"code": "000001", "score": 1.00, "low_volatility_60": 0.20},
+            {"code": "000002", "score": 0.99, "low_volatility_60": 0.20},
+            {"code": "000003", "score": 0.95, "low_volatility_60": 0.20},
+        ])
+
+        weights = risk_adjusted_target_weights(
+            candidates,
+            top_n=3,
+            max_single_weight=0.60,
+            return_history=returns,
+            risk_aversion=1.5,
+        )
+
+        self.assertGreater(weights["000003"], min(weights["000001"], weights["000002"]))
+        self.assertAlmostEqual(sum(weights.values()), 1.0)
+
+    def test_optimizer_honors_gross_and_group_caps(self):
+        candidates = pd.DataFrame([
+            {"code": "000001", "score": 1.0, "industry": "科技"},
+            {"code": "000002", "score": 0.9, "industry": "科技"},
+            {"code": "000003", "score": 0.8, "industry": "消费"},
+            {"code": "000004", "score": 0.7, "industry": "医药"},
+        ])
+
+        weights = risk_adjusted_target_weights(
+            candidates,
+            top_n=4,
+            max_single_weight=0.35,
+            gross_exposure=0.80,
+            group_constraints={"industry": 0.35},
+        )
+
+        self.assertAlmostEqual(sum(weights.values()), 0.80)
+        self.assertLessEqual(weights["000001"] + weights["000002"], 0.35 + 1e-8)
 
 
 if __name__ == "__main__":

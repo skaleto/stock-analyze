@@ -40,6 +40,20 @@ class ResearchLabelsTest(unittest.TestCase):
         self.assertAlmostEqual(row["excess_return"], expected_absolute - expected_benchmark)
         self.assertEqual(row["label"], "up")
 
+    def test_required_benchmark_rejects_missing_or_partial_history(self):
+        with self.assertRaisesRegex(ValueError, "label_benchmark_missing"):
+            build_forward_labels(self.prices, require_benchmark=True)
+
+        partial = self.benchmark.iloc[10:].copy()
+        labels = build_forward_labels(
+            self.prices,
+            benchmark=partial,
+            require_benchmark=True,
+        )
+
+        self.assertTrue(labels["benchmark_return"].notna().all())
+        self.assertGreaterEqual(labels["trade_date"].min(), partial.iloc[0]["trade_date"])
+
     def test_label_endpoint_prevents_future_prices_from_affecting_results(self):
         endpoint = self.prices.iloc[20]["trade_date"]
         baseline = build_forward_labels(self.prices, benchmark=self.benchmark, label_end=endpoint)

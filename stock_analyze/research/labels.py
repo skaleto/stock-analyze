@@ -31,6 +31,7 @@ def build_forward_labels(
     prices: pd.DataFrame,
     *,
     benchmark: pd.DataFrame | None = None,
+    require_benchmark: bool = False,
     horizons: Iterable[int] = (3, 5, 10, 20),
     round_trip_cost: float = 0.0015,
     label_end: str | None = None,
@@ -44,6 +45,8 @@ def build_forward_labels(
     missing = required.difference(prices.columns)
     if missing:
         raise ValueError(f"label_missing_columns:{','.join(sorted(missing))}")
+    if require_benchmark and (benchmark is None or benchmark.empty):
+        raise ValueError("label_benchmark_missing")
 
     available = prices.copy()
     available["code"] = available["code"].astype("string")
@@ -115,7 +118,10 @@ def build_forward_labels(
                     "max_adverse_excursion": future_min / close - 1.0,
                 }
             )
-            parts.append(part.loc[future_close.notna()])
+            eligible = future_close.notna()
+            if benchmark is not None and not benchmark.empty:
+                eligible &= benchmark_return.notna()
+            parts.append(part.loc[eligible])
     if not parts:
         return pd.DataFrame()
     return pd.concat(parts, ignore_index=True).sort_values(

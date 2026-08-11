@@ -5,8 +5,45 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pandas as pd
+
 
 class DashboardFinanceTests(unittest.TestCase):
+    def test_qdii_history_resolves_suffixless_code_from_fund_catalog(self) -> None:
+        from stock_analyze.dashboard_finance import read_instrument_history
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "data" / "cn_qdii_etf" / "shared" / "cache"
+            cache.mkdir(parents=True)
+            pd.DataFrame(
+                [{"ts_code": "501018.SH", "name": "南方原油"}]
+            ).to_csv(cache / "fund_basic_E_v2.csv", index=False)
+            pd.DataFrame(
+                [
+                    {
+                        "ts_code": "501018.SH",
+                        "trade_date": "20260717",
+                        "open": 1.85,
+                        "high": 1.88,
+                        "low": 1.84,
+                        "close": 1.86,
+                        "vol": 1000,
+                        "amount": 2000,
+                    }
+                ]
+            ).to_csv(cache / "fund_daily_501018_SH_20260717.csv", index=False)
+
+            normalized, candles, warning = read_instrument_history(
+                root,
+                "cn_qdii_etf",
+                "501018",
+            )
+
+        self.assertEqual(normalized, "501018.SH")
+        self.assertEqual(len(candles), 1)
+        self.assertIsNone(warning)
+
     def test_qdii_metadata_uses_underlying_exposure_and_theme(self) -> None:
         from stock_analyze.dashboard_finance import instrument_metadata
 
@@ -58,6 +95,43 @@ class DashboardFinanceTests(unittest.TestCase):
         self.assertEqual(metadata["theme"], "纳斯达克科技")
         self.assertEqual(metadata["index_key"], "nasdaq_technology")
         self.assertEqual(metadata["sector"], "信息技术")
+
+    def test_qdii_metadata_matches_six_digit_code_to_snapshot_ts_code(self) -> None:
+        from stock_analyze.dashboard_finance import instrument_metadata
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shared = root / "data" / "cn_qdii_etf" / "shared"
+            shared.mkdir(parents=True)
+            (shared / "universe_latest.json").write_text(
+                json.dumps(
+                    {
+                        "scopes": {
+                            "hk_exposure": [
+                                {
+                                    "code": "159545.SZ",
+                                    "exposure_group": "香港市场",
+                                    "theme": "港股高股息低波",
+                                    "index_key": "hang_seng_connect_high_dividend_low_vol",
+                                    "country": "香港",
+                                    "sector": "红利",
+                                }
+                            ]
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            metadata = instrument_metadata(
+                "cn_qdii_etf",
+                "159545",
+                repo_root=root,
+            )
+
+        self.assertEqual(metadata["exposure_group"], "香港市场")
+        self.assertEqual(metadata["theme"], "港股高股息低波")
 
     def test_a_share_metadata_uses_industry(self) -> None:
         from stock_analyze.dashboard_finance import instrument_metadata

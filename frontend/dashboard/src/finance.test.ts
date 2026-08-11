@@ -8,12 +8,15 @@ describe("finance field dictionary", () => {
     expect(fieldMeta("roe").explanation).toContain("股东投入");
     expect(fieldMeta("gross_margin").label).toBe("毛利率");
     expect(fieldMeta("debt_ratio").label).toBe("资产负债率");
+    expect(fieldMeta("index_key").label).toBe("底层指数标识");
+    expect(formatFieldValue("index_key", "unknown")).toBe("未知");
   });
 
   it("translates account and order vocabulary", () => {
     expect(sideLabel("buy")).toBe("买入");
     expect(sideLabel("sell")).toBe("卖出");
     expect(accountLabel("us_exposure")).toBe("美国市场ETF账户");
+    expect(accountLabel("model_shadow")).toBe("候选模型模拟组合");
   });
 
   it("formats ratio and money fields by meaning", () => {

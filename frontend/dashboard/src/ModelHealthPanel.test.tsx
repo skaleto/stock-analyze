@@ -37,7 +37,7 @@ describe("ModelHealthPanel", () => {
       />,
     );
 
-    expect(screen.getAllByText("研究中")).toHaveLength(5);
+    expect(screen.getAllByText("研究候选")).toHaveLength(5);
     expect(screen.queryByText("已校准")).not.toBeInTheDocument();
     for (const horizon of [3, 5, 10, 20]) expect(screen.getByText(`${horizon}日`)).toBeInTheDocument();
     expect(screen.getAllByText("0/4")).toHaveLength(4);
@@ -47,5 +47,35 @@ describe("ModelHealthPanel", () => {
     expect(screen.getByText("复苏")).toBeInTheDocument();
     expect(screen.getByText("科技")).toBeInTheDocument();
     expect(screen.getAllByText("风险偏好")).toHaveLength(2);
+  });
+
+  it("renders calibration and realized prediction diagnostics", () => {
+    render(
+      <ModelHealthPanel
+        health={{
+          status: "available",
+          accuracy: { evaluated: 42, hit_rate: 0.619, mean_brier_score: 0.31 },
+          prediction_diagnostics: { invalidated: 3, max_psi: 0.27 },
+          models: [{
+            horizon: 5,
+            model_version: "m5",
+            status: "research",
+            metrics: {
+              log_loss: 1.01,
+              brier_score: 0.62,
+              reliability_curve: [
+                { class: "up", bin: 5, count: 20, predicted: 0.56, observed: 0.60 },
+                { class: "up", bin: 6, count: 12, predicted: 0.66, observed: 0.58 },
+              ],
+            },
+          }],
+        }}
+      />,
+    );
+
+    expect(screen.getByText("42")).toBeInTheDocument();
+    expect(screen.getByText("61.9%")).toBeInTheDocument();
+    expect(screen.getByText("0.270")).toBeInTheDocument();
+    expect(screen.getByLabelText("5日上行概率校准曲线")).toBeInTheDocument();
   });
 });

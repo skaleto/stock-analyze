@@ -22,6 +22,7 @@ from .notifier import (
     send_lark_card,
     send_lark_dm,
 )
+from .model_iteration import lifecycle_label
 from .strategy_registry import StrategyRegistryInvalid, strategy_display_name
 from .utils import today as _today
 
@@ -296,6 +297,89 @@ def _strategy_lines(
     return lines
 
 
+def _model_iteration_pending_count(path: Path) -> int:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if not isinstance(payload, list):
+        return 0
+    total = 0
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        orders = item.get("orders")
+        candidates = orders if isinstance(orders, list) else [item]
+        total += sum(
+            isinstance(order, dict)
+            and str(order.get("status") or "pending").lower()
+            not in {"filled", "cancelled", "canceled", "expired"}
+            for order in candidates
+        )
+    return int(total)
+
+
+def _model_iteration_lines(repo_root: Path, *, on_or_before: str) -> list[str]:
+    lines: list[str] = []
+    for market in competition.MARKETS:
+        market_root = repo_root / "data" / "model_iterations" / market
+        status_paths = sorted(market_root.glob("*/current_status.json"))
+        status_path = status_paths[-1] if status_paths else None
+        if status_path is None:
+            legacy_dir = repo_root / "data" / "model_shadow" / market
+            legacy_status = legacy_dir / "shadow_status.json"
+            if not legacy_status.exists():
+                continue
+            status_path = legacy_status
+        try:
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        try:
+            horizon = int(status.get("horizon") or status_path.parent.name or 0)
+        except (TypeError, ValueError):
+            horizon = 0
+        model_version = str(status.get("model_version") or "")
+        if model_version and status_path.name == "current_status.json":
+            data_dir = status_path.parent / model_version
+        else:
+            data_dir = status_path.parent
+        nav_path = data_dir / "daily_nav.csv"
+        nav = _read_csv(nav_path, _NAV_DTYPE)
+        latest: float | None = None
+        if not nav.empty and {"date", "total_value"}.issubset(nav.columns):
+            values = pd.to_numeric(nav["total_value"], errors="coerce")
+            work = pd.DataFrame({"date": nav["date"].astype(str), "value": values})
+            work = work.loc[work["date"].le(on_or_before)].dropna(subset=["value"])
+            if not work.empty:
+                latest = float(work.groupby("date")["value"].sum().sort_index().iloc[-1])
+        positions = _read_csv(
+            data_dir / "positions.csv",
+            {"account_id": str, "code": str},
+        )
+        holding_count = int(len(positions)) if not positions.empty else 0
+        pending_count = _model_iteration_pending_count(data_dir / "pending_orders.json")
+        prediction_date = status.get("prediction_as_of") or "待生成"
+        posture = "，保持现金" if status.get("cash_only") else ""
+        display_version = status.get("display_version") or model_version or "待选择"
+        lifecycle = status.get("lifecycle_status_label") or {
+            "research": "研究候选",
+            "shadow": "模拟验证",
+            "active": "正式使用",
+        }.get(str(status.get("lifecycle_status") or ""), "待验证")
+        cycles = int(status.get("shadow_cycles") or 0)
+        required = cycles + int(status.get("shadow_cycles_remaining") or 0)
+        progress = f" {cycles}/{required}" if required else ""
+        nav_text = f"¥{latest:,.0f}" if latest is not None else "净值待生成"
+        lines.append(
+            f"{MARKET_LABELS.get(market, market)}: {display_version}（{lifecycle}{progress}），"
+            f"{nav_text}，"
+            f"持仓 {holding_count}，待执行 {pending_count}，"
+            f"{horizon}日模型 {prediction_date}{posture}"
+        )
+    return lines
+
+
 def _qdii_research_alerts(repo_root: Path, today_d: date) -> list[str]:
     from .markets.cn_qdii_etf.fund_events import active_event_state, load_event_store
 
@@ -355,6 +439,8 @@ def collect_prediction_notifications(
             except Exception:  # noqa: BLE001 - failures are reported by pipeline health
                 continue
             for row in frame.to_dict(orient="records"):
+                if row.get("invalidated") in (True, 1, "true", "True"):
+                    continue
                 confidence = float(row.get("confidence") or 0.0)
                 p_up = float(row.get("p_up") or 0.0)
                 p_down = float(row.get("p_down") or 0.0)
@@ -388,22 +474,28 @@ def collect_prediction_notifications(
 
 
 def _model_research_lines(repo_root: Path) -> list[str]:
+    from .dashboard_aggregator import DashboardDataError, _read_model_health
+
     lines: list[str] = []
     for market in competition.MARKETS:
-        root = repo_root / "data" / "research" / "models" / market
-        metadata = sorted(root.glob("*/*.metadata.json")) if root.exists() else []
-        if not metadata:
-            continue
         try:
-            payload = json.loads(metadata[-1].read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            health = _read_model_health(repo_root, market)
+        except DashboardDataError:
             lines.append(f"{MARKET_LABELS.get(market, market)}：模型元数据不可读")
             continue
+        models = health.get("models") or []
+        if not models:
+            continue
+        payload = next(
+            (model for model in models if int(model.get("horizon") or 0) == 5),
+            models[0],
+        )
         metrics = payload.get("metrics") or {}
+        status_label = lifecycle_label(str(payload.get("status") or "research"))
         lines.append(
             f"{MARKET_LABELS.get(market, market)}：{payload.get('horizon', '-')}日模型，"
             f"Brier {float(metrics.get('brier_score', 0.0)):.3f}，"
-            f"LogLoss {float(metrics.get('log_loss', 0.0)):.3f}，状态 challenger"
+            f"LogLoss {float(metrics.get('log_loss', 0.0)):.3f}，状态 {status_label}"
         )
     return lines
 
@@ -441,6 +533,12 @@ def build_workflow_summary(
             )
             lines[-1] += f"，待执行订单 {pending}"
             lines.extend(["", "策略总览:", *_strategy_lines(repo_root, on_or_before=target)])
+            model_iteration_lines = _model_iteration_lines(
+                repo_root,
+                on_or_before=target,
+            )
+            if model_iteration_lines:
+                lines.extend(["", "模型迭代:", *model_iteration_lines])
             ledger = _read_delivery_ledger(repo_root)
             seen_alert_ids = set(ledger.get("alert_ids") or [])
             _, prediction_lines = collect_prediction_notifications(

@@ -4,7 +4,11 @@ import numpy as np
 import pandas as pd
 import talib
 
-from stock_analyze.research.feature_registry import FeatureDefinition, registry_hash
+from stock_analyze.research.feature_registry import (
+    DEFAULT_REGISTRY,
+    FeatureDefinition,
+    registry_hash,
+)
 from stock_analyze.research.technical_features import compute_technical_features
 
 
@@ -32,6 +36,20 @@ class FeatureRegistryTest(unittest.TestCase):
         second = FeatureDefinition("roe_ttm", "fundamental", 0, 1, "v1")
 
         self.assertEqual(registry_hash([second, first]), registry_hash([first, second]))
+
+    def test_registry_includes_industry_chain_and_value_creation_features(self):
+        definitions = {item.name: item for item in DEFAULT_REGISTRY}
+
+        self.assertTrue({
+            "profit_pool_concentration",
+            "high_value_add_proxy",
+            "declining_marginal_cost_proxy",
+            "pricing_power_persistence",
+            "industry_cycle_score",
+        }.issubset(definitions))
+        self.assertEqual(definitions["high_value_add_proxy"].family, "industry_chain")
+        self.assertEqual(definitions["high_value_add_proxy"].direction, "high")
+        self.assertIn("a_share", definitions["high_value_add_proxy"].markets)
 
 
 class TechnicalFeaturesTest(unittest.TestCase):

@@ -107,7 +107,7 @@ export default function InstrumentDrawer({
           ) : null}
           {preferredPrediction ? (
             <section className="drawer-prediction">
-              <div className="drawer-section-title"><Layers3 size={15} aria-hidden="true" /><h3>{preferredPrediction.horizon}日概率预测</h3><span>{preferredPrediction.active_status === "active" ? "已激活" : "研究中"}</span></div>
+              <div className="drawer-section-title"><Layers3 size={15} aria-hidden="true" /><h3>{preferredPrediction.horizon}日概率预测</h3><span>{agent === "model_shadow" ? "验证版输入" : preferredPrediction.active_status === "active" ? "已激活" : "研究中"}</span></div>
               <div className="drawer-probability-grid">
                 <div><span>上涨</span><strong>{formatPercent(preferredPrediction.p_up)}</strong></div>
                 <div><span>震荡</span><strong>{formatPercent(preferredPrediction.p_flat)}</strong></div>

@@ -76,6 +76,8 @@ function mergeDetail(
       name: agent,
       factors: [],
     },
+    model_iteration: overview?.model_iteration,
+    model_shadow: overview?.model_shadow,
     nav: performance?.nav ?? {
       latest: overview?.latest_nav ?? null,
       series: [],
@@ -98,7 +100,7 @@ function mergeDetail(
   };
 }
 
-export function useDashboardData(market: string, agent: string) {
+export function useDashboardData(market: string, agent: string, enabled = true) {
   const key = `${market}:${agent}`;
   const [snapshot, setSnapshot] = useState<Snapshot>({ key: "", resources: {}, errors: {} });
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
@@ -106,6 +108,13 @@ export function useDashboardData(market: string, agent: string) {
   const abortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async (preserve: boolean) => {
+    if (!enabled) {
+      abortRef.current?.abort();
+      requestIdRef.current += 1;
+      setLoadingKey(null);
+      setSnapshot({ key: "", resources: {}, errors: {} });
+      return;
+    }
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -163,7 +172,7 @@ export function useDashboardData(market: string, agent: string) {
     ];
     const deferredTasks = deferred.map(([name, resource]) => request(name, resource, false));
     await Promise.all([...primaryTasks, ...deferredTasks]);
-  }, [agent, key, market]);
+  }, [agent, enabled, key, market]);
 
   useEffect(() => {
     void load(false);

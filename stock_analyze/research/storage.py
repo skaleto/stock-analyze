@@ -66,6 +66,70 @@ class ResearchStore:
         frame = pd.read_parquet(self.label_snapshot_path(market, as_of))
         return self._normalize_identifiers(frame)
 
+    def latest_common_snapshot_date(self, market: str, *, as_of: str) -> str:
+        cutoff = str(as_of).replace("-", "")[:8]
+        feature_dates = self._snapshot_dates("features", market, cutoff=cutoff)
+        label_dates = self._snapshot_dates("labels", market, cutoff=cutoff)
+        common_dates = feature_dates.intersection(label_dates)
+        if not common_dates:
+            raise FileNotFoundError(
+                f"research_snapshot_missing:{market}:as_of={cutoff}"
+            )
+        return max(common_dates)
+
+    def prune_dated_artifacts(
+        self,
+        market: str,
+        *,
+        categories: tuple[str, ...],
+        keep_recent: int = 3,
+        keep_monthly: int = 3,
+    ) -> int:
+        removed = 0
+        for category in categories:
+            directory = self.root / category / market
+            paths = {
+                path.stem: path
+                for path in directory.glob("*.parquet")
+                if len(path.stem) == 8 and path.stem.isdigit()
+            }
+            dates = sorted(paths)
+            if not dates:
+                continue
+            recent = set(dates[-max(0, keep_recent):]) if keep_recent else set()
+            current_month = dates[-1][:6]
+            monthly_checkpoints: dict[str, str] = {}
+            for snapshot_date in dates:
+                month = snapshot_date[:6]
+                if month == current_month:
+                    continue
+                monthly_checkpoints[month] = snapshot_date
+            retained_months = sorted(monthly_checkpoints)[-max(0, keep_monthly):]
+            retained = recent.union(
+                monthly_checkpoints[month] for month in retained_months
+            )
+            for snapshot_date, path in paths.items():
+                if snapshot_date not in retained:
+                    path.unlink(missing_ok=True)
+                    removed += 1
+        return removed
+
+    def _snapshot_dates(
+        self,
+        category: str,
+        market: str,
+        *,
+        cutoff: str | None = None,
+    ) -> set[str]:
+        dates = {
+            path.stem
+            for path in (self.root / category / market).glob("*.parquet")
+            if len(path.stem) == 8 and path.stem.isdigit()
+        }
+        if cutoff is not None:
+            dates = {snapshot_date for snapshot_date in dates if snapshot_date <= cutoff}
+        return dates
+
     def write_parquet_atomic(self, path: str | Path, frame: pd.DataFrame) -> Path:
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)

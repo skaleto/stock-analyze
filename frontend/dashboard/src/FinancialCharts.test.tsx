@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const chartMocks = vi.hoisted(() => {
   const setData = vi.fn();
   const applyPriceScaleOptions = vi.fn();
-  const addSeries = vi.fn((_seriesType: { type?: string }, _options?: unknown) => ({
+  const addSeries = vi.fn((_seriesType: { type?: string }, _options?: unknown, _paneIndex?: number) => ({
     setData,
     priceScale: () => ({ applyOptions: applyPriceScaleOptions }),
   }));
@@ -12,16 +12,44 @@ const chartMocks = vi.hoisted(() => {
   const subscribeCrosshairMove = vi.fn();
   const fitContent = vi.fn();
   const setVisibleRange = vi.fn();
+  const subscribeVisibleTimeRangeChange = vi.fn();
+  const unsubscribeVisibleTimeRangeChange = vi.fn();
+  const setStretchFactor = vi.fn();
+  const panes = vi.fn(() => [
+    { setStretchFactor: vi.fn() },
+    { setStretchFactor },
+  ]);
+  const timeScaleApi = {
+    fitContent,
+    setVisibleRange,
+    subscribeVisibleTimeRangeChange,
+    unsubscribeVisibleTimeRangeChange,
+  };
   const detachMarkers = vi.fn();
   const createSeriesMarkers = vi.fn((_series: unknown, _markers: unknown[]) => ({ detach: detachMarkers }));
   const createChart = vi.fn(() => ({
     addSeries,
     remove,
     subscribeCrosshairMove,
-    timeScale: () => ({ fitContent, setVisibleRange }),
+    timeScale: () => timeScaleApi,
+    panes,
     applyOptions: vi.fn(),
   }));
-  return { setData, addSeries, remove, subscribeCrosshairMove, fitContent, setVisibleRange, createChart, createSeriesMarkers, detachMarkers };
+  return {
+    setData,
+    addSeries,
+    remove,
+    subscribeCrosshairMove,
+    fitContent,
+    setVisibleRange,
+    subscribeVisibleTimeRangeChange,
+    unsubscribeVisibleTimeRangeChange,
+    setStretchFactor,
+    panes,
+    createChart,
+    createSeriesMarkers,
+    detachMarkers,
+  };
 });
 
 vi.mock("lightweight-charts", () => ({
@@ -52,7 +80,7 @@ describe("financial charts", () => {
       <PerformanceChart
         points={[
           { date: "2026-07-09", return: 0, benchmark_return: 0 },
-          { date: "2026-07-10", return: 0.01, benchmark_return: 0.005 },
+          { date: "2026-07-10", return: 0.01, daily_return: 0.01, benchmark_return: 0.005 },
         ]}
         benchmarkLabel="组合基准"
       />
@@ -62,6 +90,7 @@ describe("financial charts", () => {
     expect(chartMocks.addSeries).toHaveBeenCalledTimes(2);
     expect(screen.getByText("组合净值")).toBeInTheDocument();
     expect(screen.getByText("组合基准")).toBeInTheDocument();
+    expect(screen.getByText((_, element) => element?.textContent === "当日 1.00%")).toBeInTheDocument();
     expect(chartMocks.subscribeCrosshairMove).toHaveBeenCalledTimes(1);
   });
 
@@ -96,6 +125,68 @@ describe("financial charts", () => {
     expect(chartMocks.remove).toHaveBeenCalled();
   });
 
+  it("renders K-line and MACD in one chart with a shared time pane", () => {
+    render(
+      <CandlestickChart
+        candles={[
+          { date: "2026-07-10", open: 2.0, high: 2.1, low: 1.9, close: 2.05, volume: 1000 },
+          { date: "2026-07-13", open: 2.05, high: 2.2, low: 2.0, close: 2.15, volume: 1200 },
+          { date: "2026-07-14", open: 2.15, high: 2.3, low: 2.1, close: 2.25, volume: 1400 },
+        ]}
+      />
+    );
+
+    expect(chartMocks.createChart).toHaveBeenCalledTimes(1);
+    const macdPaneCalls = chartMocks.addSeries.mock.calls.filter(([, , paneIndex]) => paneIndex === 1);
+    expect(macdPaneCalls).toHaveLength(3);
+    expect(chartMocks.panes).toHaveBeenCalled();
+    expect(chartMocks.setStretchFactor).toHaveBeenCalled();
+    expect(screen.getByLabelText("日K线、成交量与MACD联动图")).toBeInTheDocument();
+  });
+
+  it("updates K-line and MACD readings to the same crosshair date", () => {
+    render(
+      <CandlestickChart
+        candles={[
+          { date: "2026-07-10", open: 2.0, high: 2.1, low: 1.9, close: 2.05, volume: 1000 },
+          { date: "2026-07-13", open: 2.05, high: 2.2, low: 2.0, close: 2.15, volume: 1200 },
+          { date: "2026-07-14", open: 2.15, high: 2.3, low: 2.1, close: 2.25, volume: 1400 },
+        ]}
+      />
+    );
+
+    act(() => {
+      chartMocks.subscribeCrosshairMove.mock.calls[0]?.[0]({ time: "2026-07-10" });
+    });
+
+    expect(screen.getByText("2026-07-10")).toBeInTheDocument();
+    expect(screen.getByText((_, node) => node?.textContent === "DIF 0.0000")).toBeInTheDocument();
+    expect(screen.getByText((_, node) => node?.textContent === "DEA 0.0000")).toBeInTheDocument();
+    expect(screen.getByText((_, node) => node?.textContent === "MACD柱 0.0000")).toBeInTheDocument();
+  });
+
+  it("preserves a panned time range when indicator panes are rebuilt", () => {
+    render(
+      <CandlestickChart
+        candles={[
+          { date: "2026-07-10", open: 2.0, high: 2.1, low: 1.9, close: 2.05 },
+          { date: "2026-07-13", open: 2.05, high: 2.2, low: 2.0, close: 2.15 },
+          { date: "2026-07-14", open: 2.15, high: 2.3, low: 2.1, close: 2.25 },
+        ]}
+      />
+    );
+    const pannedRange = { from: "2026-07-10", to: "2026-07-13" };
+
+    act(() => {
+      chartMocks.subscribeVisibleTimeRangeChange.mock.calls[0]?.[0](pannedRange);
+    });
+    fireEvent.click(screen.getByRole("checkbox", { name: "MA60" }));
+
+    expect(chartMocks.createChart).toHaveBeenCalledTimes(2);
+    expect(chartMocks.setVisibleRange).toHaveBeenLastCalledWith(pannedRange);
+    expect(chartMocks.unsubscribeVisibleTimeRangeChange).toHaveBeenCalled();
+  });
+
   it("shows the latest month by default and allows the full history", () => {
     render(
       <CandlestickChart
@@ -127,7 +218,7 @@ describe("financial charts", () => {
     for (const label of ["MA5", "MA10", "MA20", "MA60", "成交量", "MACD"]) {
       expect(screen.getByRole("checkbox", { name: label })).toBeChecked();
     }
-    expect(screen.getByLabelText("MACD指标图")).toBeInTheDocument();
+    expect(screen.getByLabelText("日K线、成交量与MACD联动图")).toBeInTheDocument();
     expect(screen.getByText("量价阶段")).toBeInTheDocument();
     const ma5Data = chartMocks.setData.mock.calls
       .map(([rows]) => rows)
@@ -144,12 +235,13 @@ describe("financial charts", () => {
     expect(
       chartMocks.addSeries.mock.calls
         .slice(callCountBeforeVolumeToggle)
-        .some(([seriesType]) => seriesType?.type === "histogram")
+        .some(([seriesType, , paneIndex]) => seriesType?.type === "histogram" && paneIndex !== 1)
     ).toBe(false);
 
     fireEvent.click(screen.getByRole("checkbox", { name: "MACD" }));
     expect(screen.getByRole("checkbox", { name: "MACD" })).not.toBeChecked();
-    expect(screen.queryByLabelText("MACD指标图")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("日K线、成交量与MACD联动图")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("日K线和成交量图")).toBeInTheDocument();
   });
 
   it("marks all instrument trades covered by the visible candle history", () => {

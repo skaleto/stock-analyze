@@ -1,8 +1,10 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 import pandas as pd
 
-from stock_analyze.research.events import detect_events
+from stock_analyze.research.events import detect_events, write_events_incremental
 
 
 class ResearchEventsTest(unittest.TestCase):
@@ -48,6 +50,8 @@ class ResearchEventsTest(unittest.TestCase):
             }.issubset(names)
         )
         self.assertEqual(len(events["event_id"]), events["event_id"].nunique())
+        self.assertEqual(events["event"].dtype.storage, "pyarrow")
+        self.assertEqual(events["context"].dtype.storage, "pyarrow")
 
     def test_same_input_produces_stable_event_ids(self):
         frame = pd.DataFrame(
@@ -56,6 +60,32 @@ class ResearchEventsTest(unittest.TestCase):
         first = detect_events(frame, market="a_share")
         second = detect_events(frame, market="a_share")
         self.assertEqual(first.iloc[0]["event_id"], second.iloc[0]["event_id"])
+
+    def test_incremental_writer_matches_detection_and_applies_regime(self):
+        frame = pd.DataFrame({
+            "code": ["000001", "000001", "000002", "000002"],
+            "trade_date": ["20260709", "20260710", "20260709", "20260710"],
+            "macd_cross": [0.0, 1.0, 0.0, -1.0],
+            "industry": ["银行", "银行", "科技", "科技"],
+        })
+        expected = detect_events(frame, market="a_share")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "events.parquet"
+            rows = write_events_incremental(
+                frame,
+                market="a_share",
+                destination=destination,
+                regime_by_date={"20260710": "risk_on"},
+                groups_per_batch=1,
+            )
+            actual = pd.read_parquet(destination)
+            temporary_files = list(destination.parent.glob(".events.parquet.*"))
+
+        self.assertEqual(rows, len(expected))
+        self.assertEqual(set(actual["event_id"]), set(expected["event_id"]))
+        self.assertEqual(set(actual["regime"]), {"risk_on"})
+        self.assertEqual(temporary_files, [])
 
 
 if __name__ == "__main__":

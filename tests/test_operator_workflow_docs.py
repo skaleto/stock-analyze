@@ -68,6 +68,11 @@ class OperatorWorkflowDocsTests(unittest.TestCase):
         self.assertIn("训练完成后自动执行 `research -> shadow` 门禁", runbook)
         self.assertIn("第四个有效影子周后自动执行 `shadow -> active` 门禁", runbook)
         self.assertIn("未通过时保持原状态", runbook)
+        self.assertIn("Champion", runbook)
+        self.assertIn("Challenger", runbook)
+        self.assertIn("data/model_iterations/<market>/<horizon>/<version>/", runbook)
+        self.assertIn("run-model-iteration", runbook)
+        self.assertNotIn("### 模型影子账户", runbook)
 
 
 if __name__ == "__main__":

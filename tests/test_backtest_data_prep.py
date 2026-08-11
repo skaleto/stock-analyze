@@ -18,7 +18,7 @@ from stock_analyze.markets.a_share.backtest import data_prep
 
 def _stub_pro(daily_df=None, daily_basic_df=None, stock_basic_df=None,
               fina_df=None, adj_df=None, index_weight_df=None,
-              trade_cal_df=None):
+              index_daily_df=None, trade_cal_df=None):
     """Build a MagicMock that mimics a Tushare pro_api instance."""
     pro = MagicMock()
     pro.daily.return_value = daily_df if daily_df is not None else pd.DataFrame()
@@ -27,6 +27,7 @@ def _stub_pro(daily_df=None, daily_basic_df=None, stock_basic_df=None,
     pro.fina_indicator.return_value = fina_df if fina_df is not None else pd.DataFrame()
     pro.adj_factor.return_value = adj_df if adj_df is not None else pd.DataFrame()
     pro.index_weight.return_value = index_weight_df if index_weight_df is not None else pd.DataFrame()
+    pro.index_daily.return_value = index_daily_df if index_daily_df is not None else pd.DataFrame()
     pro.trade_cal.return_value = trade_cal_df if trade_cal_df is not None else pd.DataFrame()
     return pro
 
@@ -241,6 +242,31 @@ class PrepareBacktestDataTests(unittest.TestCase):
         self.assertTrue((self.cache_root / 'index_weight' / '000300_2021-02.csv').exists())
         self.assertTrue((self.cache_root / 'index_weight' / '000905_2021-01.csv').exists())
         self.assertTrue((self.cache_root / 'index_weight' / '000905_2021-02.csv').exists())
+
+    def test_writes_dedicated_benchmark_history(self):
+        benchmark = pd.DataFrame({
+            "ts_code": ["000300.SH", "000300.SH"],
+            "trade_date": ["20210105", "20210104"],
+            "close": [5010.0, 5000.0],
+        })
+        pro = _stub_pro(
+            stock_basic_df=_stock_basic([]),
+            index_daily_df=benchmark,
+            trade_cal_df=_trade_cal(["20210104", "20210105"]),
+        )
+
+        with patch('stock_analyze.markets.a_share.backtest.data_prep._make_pro_client', return_value=pro):
+            data_prep.prepare_backtest_data(
+                start=date(2021, 1, 4), end=date(2021, 1, 5),
+                cache_root=self.cache_root,
+            )
+
+        for code in ("000300", "000905"):
+            path = self.cache_root / "benchmark_daily" / f"{code}.csv"
+            self.assertTrue(path.exists())
+            saved = pd.read_csv(path, dtype={"trade_date": str, "ts_code": str})
+            self.assertEqual(saved["trade_date"].tolist(), ["20210104", "20210105"])
+        self.assertEqual(pro.index_daily.call_count, 2)
 
     def test_writes_trade_cal(self):
         pro = _stub_pro(trade_cal_df=_trade_cal(['20210104', '20210105']))

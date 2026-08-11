@@ -30,6 +30,7 @@ class PredictionRecord:
     feature_snapshot_id: str = ""
     research_status: str = "research"
     active_status: str = "inactive"
+    invalidated: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

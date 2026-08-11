@@ -9,7 +9,10 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from stock_analyze import evolution_writer
-from stock_analyze.markets.a_share.backtest.exceptions import BacktestFloorBreach
+from stock_analyze.markets.a_share.backtest.exceptions import (
+    BacktestDataUnavailable,
+    BacktestFloorBreach,
+)
 from stock_analyze.markets.a_share.backtest.types import BacktestMetrics
 
 
@@ -121,6 +124,29 @@ class EvolutionWriterBacktestGateTests(unittest.TestCase):
         diff_data = json.loads(diff_path.read_text())
         self.assertIn("backtest_metrics", diff_data)
         self.assertAlmostEqual(diff_data["backtest_metrics"]["sharpe"], 0.8)
+
+    def test_missing_backtest_data_blocks_evolution(self):
+        original_yaml = self.overlay_path.read_text()
+        failure = BacktestDataUnavailable("benchmark_history_incomplete")
+
+        with patch(
+            "stock_analyze.markets.a_share.backtest.gate.validate_overlay_via_backtest",
+            side_effect=failure,
+        ):
+            with self.assertRaises(BacktestDataUnavailable):
+                evolution_writer.write_evolution(
+                    agent_id="claude",
+                    old_overlay=self.old_overlay,
+                    new_overlay=self.new_overlay,
+                    reasoning_md="# unavailable",
+                    repo_root=self.root,
+                    month="2026-06",
+                )
+
+        self.assertEqual(self.overlay_path.read_text(), original_yaml)
+        self.assertFalse(
+            (self.root / "data" / "a_share" / "claude" / "evolution_log" / "2026-06.md").exists()
+        )
 
 
 if __name__ == "__main__":

@@ -38,6 +38,7 @@ class HKOrder:
     account_id: str = ""
     score: float | None = None
     reason: str = ""
+    name: str = ""
 
 
 # Module singleton bound to HK mechanics. The settlement days, fee rates,

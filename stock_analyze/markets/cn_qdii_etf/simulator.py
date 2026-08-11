@@ -20,6 +20,8 @@ class ETFOrder:
     account_id: str = ""
     score: float | None = None
     reason: str = ""
+    name: str = ""
+    impact_bps: float | None = None
 
 
 _SIM = SettlementSimulatorBase(
@@ -56,6 +58,7 @@ def generate_rebalance_orders(
     hold_buffer_pct: float = 0.0,
     max_holding_days: int | None = None,
     cash_reserve_pct: float = 0.0,
+    min_trade_weight: float = 0.0,
 ) -> list[dict[str, Any]]:
     return _SIM.generate_rebalance_orders(
         store,
@@ -68,6 +71,7 @@ def generate_rebalance_orders(
         hold_buffer_pct=hold_buffer_pct,
         max_holding_days=max_holding_days,
         cash_reserve_pct=cash_reserve_pct,
+        min_trade_weight=min_trade_weight,
     )
 
 

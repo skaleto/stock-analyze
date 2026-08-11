@@ -6,7 +6,7 @@ const percent = (value?: number | null) => value == null ? "-" : `${(value * 100
 const REGIME_LABELS: Record<string, string> = { risk_on: "风险偏好", risk_off: "风险规避", mixed: "多空交错", unknown: "状态未知" };
 const regimeLabel = (value?: string) => REGIME_LABELS[value ?? "unknown"] ?? value;
 
-export default function PredictionPanel({ summary }: { summary?: PredictionSummary }) {
+export default function PredictionPanel({ summary, modelDriven = false }: { summary?: PredictionSummary; modelDriven?: boolean }) {
   const horizons = summary?.horizons ?? [];
   const preferred = horizons.includes(5) ? 5 : horizons[0] ?? 5;
   const [horizon, setHorizon] = useState(preferred);
@@ -21,7 +21,7 @@ export default function PredictionPanel({ summary }: { summary?: PredictionSumma
         <div>
           <span className="section-kicker"><Activity size={14} aria-hidden="true" />PREDICTION RESEARCH</span>
           <h2>概率预测</h2>
-          <p>上涨概率与可信度独立计算，研究态不会改变模拟订单</p>
+          <p>{modelDriven ? "候选版本以预测形成模拟订单，正式策略仍只读取已晋级版本" : "上涨概率与可信度独立计算，研究态不会改变模拟订单"}</p>
         </div>
         <span className={`research-status ${summary?.status === "available" ? "available" : "unavailable"}`}>
           {summary?.status === "available" ? <ShieldCheck size={14} aria-hidden="true" /> : <CircleAlert size={14} aria-hidden="true" />}
@@ -44,7 +44,7 @@ export default function PredictionPanel({ summary }: { summary?: PredictionSumma
               <article key={`${row.code}-${row.horizon}`} className="prediction-row">
                 <div className="prediction-security">
                   <strong>{row.name || row.code}</strong><span>{row.code}</span>
-                  <small className={row.active_status === "active" ? "active" : "research"}>{row.active_status === "active" ? "已激活" : "研究中"}</small>
+                  <small className={modelDriven || row.active_status === "active" ? "active" : "research"}>{modelDriven ? "验证版输入" : row.active_status === "active" ? "已激活" : "研究中"}</small>
                 </div>
                 <div className="probability-stack">
                   <div className="probability-labels"><span>上涨概率 <b>{percent(row.p_up)}</b></span><span>震荡 {percent(row.p_flat)}</span><span>下跌 {percent(row.p_down)}</span></div>

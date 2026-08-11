@@ -1,11 +1,4 @@
-"""Tests for backtest engine main loop.
-
-The engine drives ``simulator.execute_due_orders`` and ``simulator.update_nav``
-day by day over a historical window, reading market data via
-``PointInTimeView``. Signals on Fridays are computed by a simple top-N rule
-(low PE first) — MVP simplification; full overlay-driven signals are future
-work.
-"""
+"""Tests for the point-in-time A-share backtest engine."""
 from __future__ import annotations
 
 import unittest
@@ -16,6 +9,7 @@ from tempfile import TemporaryDirectory
 import pandas as pd
 
 from stock_analyze.markets.a_share.backtest import engine
+from stock_analyze.markets.a_share.backtest.exceptions import BacktestDataUnavailable
 
 
 class _CacheBuilder:
@@ -40,6 +34,11 @@ class _CacheBuilder:
     def add_daily_basic(self, iso_date: str, rows: list[dict]) -> None:
         pd.DataFrame(rows).to_csv(self.root / "daily_basic" / f"{iso_date}.csv",
                                     index=False)
+
+    def add_benchmark(self, code: str, rows: list[dict]) -> None:
+        out = self.root / "benchmark_daily" / f"{code}.csv"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(rows).to_csv(out, index=False)
 
     def add_index_weight(self, idx_short: str, ym: str, codes: list[str]) -> None:
         if codes:
@@ -81,6 +80,10 @@ def _minimal_overlay() -> dict:
             "slippage_rate": 0.0,
             "max_single_weight": 0.5,
         },
+        "schedule": {
+            "signal_day": "every_trading_day",
+            "execution": "next_trading_day_open",
+        },
     }
 
 
@@ -117,6 +120,15 @@ class RunBacktestSmokeTests(unittest.TestCase):
                  "pe_ttm": 12.0, "pb": 1.8, "dv_ttm": 2.0,
                  "total_mv": 250_000, "circ_mv": 200_000},
             ])
+
+        builder.add_benchmark("000300", [
+            {
+                "ts_code": "000300.SH",
+                "trade_date": raw,
+                "close": 4000.0 + index,
+            }
+            for index, raw in enumerate(trade_dates)
+        ])
 
         builder.add_index_weight("000300", "2023-06", ["000001.SZ", "000002.SZ"])
         builder.add_index_weight("000905", "2023-06", [])
@@ -166,7 +178,7 @@ class RunBacktestSmokeTests(unittest.TestCase):
         unique_dates = nav["date"].nunique()
         self.assertEqual(unique_dates, 5)
 
-    def test_run_backtest_signal_generated_on_friday(self):
+    def test_run_backtest_signal_generated_every_trading_day(self):
         engine.run_backtest(
             overlay=_minimal_overlay(),
             start=date(2023, 6, 26),
@@ -176,9 +188,7 @@ class RunBacktestSmokeTests(unittest.TestCase):
             out_dir=self.out,
         )
         signals = pd.read_csv(self.out / "signals.csv")
-        # 2023-06-30 is a Friday → one signal batch
-        friday_signals = signals[signals["signal_date"] == "2023-06-30"]
-        self.assertGreater(len(friday_signals), 0)
+        self.assertEqual(signals["signal_date"].nunique(), 5)
 
     def test_run_backtest_respects_in_memory(self):
         result = engine.run_backtest(
@@ -250,6 +260,14 @@ class TradeDayOrderingTests(unittest.TestCase):
             builder.add_index_weight("000300", "2023-07", ["000001.SZ", "000002.SZ"])
             builder.add_index_weight("000905", "2023-06", [])
             builder.add_index_weight("000905", "2023-07", [])
+            builder.add_benchmark("000300", [
+                {
+                    "ts_code": "000300.SH",
+                    "trade_date": r,
+                    "close": 4000.0 + index,
+                }
+                for index, r in enumerate(raw)
+            ])
             builder.add_stock_basic([
                 {"ts_code": "000001.SZ", "name": "平安银行",
                  "list_date": "19910403", "delist_date": "", "industry": "银行"},
@@ -265,6 +283,74 @@ class TradeDayOrderingTests(unittest.TestCase):
             trades = pd.read_csv(out / "trades.csv")
             self.assertGreater(len(trades), 0,
                                "descending trade_cal must still produce trades")
+
+
+class BacktestIntegrityTests(unittest.TestCase):
+    def test_empty_trade_calendar_fails_closed(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaisesRegex(BacktestDataUnavailable, "trade_calendar_empty"):
+                engine.run_backtest(
+                    overlay=_minimal_overlay(),
+                    start=date(2023, 6, 26),
+                    end=date(2023, 6, 30),
+                    universe=["hs300"],
+                    market_data_root=root / "cache",
+                    out_dir=root / "out",
+                )
+
+    def test_missing_benchmark_history_fails_closed(self):
+        with TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache"
+            out = Path(tmp) / "out"
+            cache.mkdir(parents=True)
+            builder = _CacheBuilder(cache)
+            builder.add_trade_cal(["20230626"])
+            builder.add_daily("2023-06-26", [
+                {"ts_code": "000001.SZ", "trade_date": "20230626", "open": 10.0, "close": 10.0},
+            ])
+            builder.add_daily_basic("2023-06-26", [
+                {"ts_code": "000001.SZ", "trade_date": "20230626", "pe_ttm": 8.0},
+            ])
+            builder.add_index_weight("000300", "2023-06", ["000001.SZ"])
+            builder.add_stock_basic([
+                {"ts_code": "000001.SZ", "name": "测试", "list_date": "20000101", "delist_date": "", "industry": "测试"},
+            ])
+
+            with self.assertRaisesRegex(BacktestDataUnavailable, "benchmark_history_incomplete"):
+                engine.run_backtest(
+                    overlay=_minimal_overlay(),
+                    start=date(2023, 6, 26),
+                    end=date(2023, 6, 26),
+                    universe=["hs300"],
+                    market_data_root=cache,
+                    out_dir=out,
+                )
+
+    def test_information_ratio_uses_benchmark_active_returns(self):
+        dates = ["2023-01-02", "2023-01-03", "2023-01-04", "2023-01-05"]
+        portfolio_returns = pd.Series([0.01, -0.005, 0.02])
+        benchmark_returns = pd.Series([0.002, 0.004, -0.001])
+        portfolio = [1_000_000.0]
+        benchmark = [4000.0]
+        for ret in portfolio_returns:
+            portfolio.append(portfolio[-1] * (1.0 + ret))
+        for ret in benchmark_returns:
+            benchmark.append(benchmark[-1] * (1.0 + ret))
+        nav = pd.DataFrame({
+            "date": dates,
+            "account_id": ["main"] * len(dates),
+            "total_value": portfolio,
+            "benchmark_code": ["000300"] * len(dates),
+            "benchmark_close": benchmark,
+        })
+
+        metrics = engine._compute_metrics(nav)
+        active = portfolio_returns - benchmark_returns
+        expected_ir = float(active.mean() / active.std(ddof=1) * (252 ** 0.5))
+
+        self.assertAlmostEqual(metrics.information_ratio, expected_ir)
+        self.assertNotAlmostEqual(metrics.information_ratio, metrics.sharpe)
 
 
 class CrossAccountPositionBookTests(unittest.TestCase):

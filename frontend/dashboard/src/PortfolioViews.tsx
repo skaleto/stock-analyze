@@ -14,11 +14,13 @@ export function PortfolioSection({
   planned,
   currency,
   onSelect,
+  heading,
 }: {
   positions: OrderRow[];
   planned: OrderRow[];
   currency: string;
   onSelect: SelectHandler;
+  heading?: string;
 }) {
   const isPlanned = positions.length === 0;
   const rows = isPlanned ? planned.filter((row) => row.side !== "sell") : positions;
@@ -40,7 +42,7 @@ export function PortfolioSection({
       <header className="section-heading">
         <div>
           <span className="section-kicker"><Layers3 size={14} aria-hidden="true" />PORTFOLIO</span>
-          <h2>{isPlanned ? "计划持仓" : "当前持仓"}</h2>
+          <h2>{heading ?? (isPlanned ? "计划持仓" : "当前持仓")}</h2>
           <p>{isPlanned ? "等待下一交易日模拟成交" : "按底层市场与行业分组，点击证券查看行情"}</p>
         </div>
         <div className="section-stat">

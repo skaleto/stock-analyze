@@ -289,11 +289,79 @@ const aShareDetail = {
   }
 };
 
+const modelShadowDetail = {
+  ...detailPayload,
+  agent: "model_shadow",
+  strategy: {
+    agent: "model_shadow",
+    agent_label: "模型迭代",
+    strategy_id: "model_iteration_cn_qdii_etf_v1",
+    name: "候选模型模拟验证 · 5日",
+    factors: [
+      { key: "expected_excess_return", label: "预期超额收益", explanation: "只接受正值。", weight: 0.45, direction: "high", direction_label: "偏好高值" }
+    ]
+  },
+  model_iteration: {
+    status: "available",
+    label: "模型迭代",
+    portfolio_label: "候选模型模拟组合",
+    isolation: "完全隔离，不计入双策略竞赛",
+    source_agent: "codex",
+    as_of: "2026-07-17",
+    prediction_as_of: "2026-07-17",
+    horizon: 5,
+    candidate: {
+      market: "cn_qdii_etf",
+      horizon: 5,
+      model_version: "model-v3",
+      display_version: "Q5-V003",
+      status: "shadow",
+      status_label: "模拟验证",
+      champion_model_version: "model-v2",
+      shadow_cycles: 2,
+      shadow_cycles_remaining: 2,
+    },
+    champion: {
+      market: "cn_qdii_etf",
+      horizon: 5,
+      model_version: "model-v2",
+      display_version: "Q5-V002",
+      status: "active",
+      status_label: "正式使用",
+      champion_model_version: "model-v2",
+      shadow_cycles: 4,
+      shadow_cycles_remaining: 0,
+    },
+    version_history: [{ model_version: "model-v1", display_version: "Q5-V001", outcome: "retired", ended_at: "2026-07-10" }],
+    model_versions: ["model-v3"],
+    eligible_rows: 21,
+    selected_count: 5,
+    cash_only: false,
+    pending_orders: 5,
+    trades_executed: 0,
+  },
+  runs: {
+    summary: { total: 1 },
+    rows: [
+      {
+        run_id: "run-model-iteration-20260717",
+        command: "run-model-iteration",
+        as_of: "2026-07-17",
+        started_at: "2026-07-17T18:00:00",
+        duration_ms: 1200,
+        status: "success"
+      }
+    ]
+  },
+  weekly_report: { exists: false, href: null, markdown: "" },
+};
+
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), { status });
 }
 
-function resourcePayload(url: string, detail = detailPayload): unknown {
+function resourcePayload(url: string, detail: typeof detailPayload | typeof modelShadowDetail | typeof aShareDetail = detailPayload): unknown {
+  if (url.includes("agent=model_shadow")) detail = modelShadowDetail;
   if (url.includes("/overview.json")) return {
     generated_at: detail.generated_at,
     market: detail.market,
@@ -302,6 +370,8 @@ function resourcePayload(url: string, detail = detailPayload): unknown {
     agent: detail.agent,
     strategy: detail.strategy,
     latest_nav: detail.nav.latest,
+    model_iteration: "model_iteration" in detail ? detail.model_iteration : undefined,
+    model_shadow: "model_iteration" in detail ? detail.model_iteration : undefined,
   };
   if (url.includes("/performance.json")) return {
     generated_at: detail.generated_at,
@@ -354,11 +424,247 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function setRoute(view: "compare" | "detail" | "model-iteration" | "model-shadow" = "detail", market = "cn_qdii_etf", strategy: "defensive" | "trend" = "trend") {
+  const params = new URLSearchParams({ market, view });
+  if (view === "detail") params.set("strategy", strategy);
+  window.history.replaceState({ strategy }, "", `/?${params.toString()}`);
+}
+
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  window.history.replaceState({}, "", "/");
 });
 
 describe("Dashboard app", () => {
+  it("opens the model iteration workbench with champion and challenger lifecycle", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("summary")) return Promise.resolve(jsonResponse(summaryPayload));
+      return Promise.resolve(jsonResponse(resourcePayload(url)));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    setRoute("model-iteration");
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "模型迭代工作台" })).toBeInTheDocument();
+    const lifecycle = screen.getByRole("region", { name: "模型版本生命周期" });
+    expect(within(lifecycle).getByText("当前正式版")).toBeInTheDocument();
+    expect(within(lifecycle).getByText("当前验证版")).toBeInTheDocument();
+    expect(within(lifecycle).getByText("Q5-V002")).toBeInTheDocument();
+    expect(within(lifecycle).getByText("Q5-V003")).toBeInTheDocument();
+    expect(within(lifecycle).getByText("验证进度 2 / 4")).toBeInTheDocument();
+    expect(screen.getByText("候选模型模拟组合")).toBeInTheDocument();
+    expect(screen.getByText("完全隔离，不计入双策略竞赛")).toBeInTheDocument();
+    expect(screen.getByText("候选版本以预测形成模拟订单，正式策略仍只读取已晋级版本")).toBeInTheDocument();
+    expect(screen.queryByText("上涨概率与可信度独立计算，研究态不会改变模拟订单")).not.toBeInTheDocument();
+    expect(screen.getByText(/模型订单穿透/)).toBeInTheDocument();
+    const navigation = screen.getByRole("navigation", { name: "分析导航" });
+    expect(within(navigation).getByRole("button", { name: "模型迭代" })).toHaveAttribute("aria-current", "page");
+    expect(within(navigation).getByRole("button", { name: "单策略分析" })).toHaveAttribute("aria-expanded", "false");
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get("view")).toBe("model-iteration");
+    expect(params.has("agent")).toBe(false);
+    expect(params.has("strategy")).toBe(false);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/overview.json?market=cn_qdii_etf&agent=model_shadow"))).toBe(true);
+    expect(screen.queryByText("模型影子账户")).not.toBeInTheDocument();
+  });
+
+  it("canonicalizes the legacy model-shadow URL without exposing the internal agent", async () => {
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("summary")) return Promise.resolve(jsonResponse(summaryPayload));
+      return Promise.resolve(jsonResponse(resourcePayload(url)));
+    }));
+    setRoute("model-shadow");
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "模型迭代工作台" })).toBeInTheDocument();
+    await waitFor(() => expect(new URLSearchParams(window.location.search).get("view")).toBe("model-iteration"));
+    expect(new URLSearchParams(window.location.search).has("agent")).toBe(false);
+  });
+
+  it("opens in comparison mode without loading single-strategy resources", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("summary")) return Promise.resolve(jsonResponse(summaryPayload));
+      return Promise.resolve(jsonResponse(resourcePayload(url)));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    setRoute("compare");
+
+    render(<App />);
+
+    expect(await screen.findByRole("region", { name: "双策略竞技场" })).toBeInTheDocument();
+    expect(screen.getByText("双策略对抗 · 赛季1")).toBeInTheDocument();
+    const analysisNavigation = screen.getByRole("navigation", { name: "分析导航" });
+    expect(analysisNavigation.closest("aside")).toHaveClass("left-rail");
+    expect(within(analysisNavigation).getByRole("button", { name: "策略对比" })).toHaveAttribute("aria-current", "page");
+    expect(within(analysisNavigation).getByRole("button", { name: "单策略分析" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("region", { name: "账户总览" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "目标订单" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "策略对象" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "分析模式" })).not.toBeInTheDocument();
+    expect(new URLSearchParams(window.location.search).has("agent")).toBe(false);
+    expect(new URLSearchParams(window.location.search).has("strategy")).toBe(false);
+    expect(fetchMock.mock.calls.some(([input]) => /\/(overview|performance|portfolio|predictions|research|operations)\.json/.test(String(input)))).toBe(false);
+  });
+
+  it("enters a strategy detail from the comparison and keeps the context in the URL", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("summary")) return Promise.resolve(jsonResponse(summaryPayload));
+      return Promise.resolve(jsonResponse(resourcePayload(url)));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    setRoute("compare");
+    const user = userEvent.setup();
+
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "查看趋势进攻明细" }));
+
+    expect(await screen.findByRole("region", { name: "账户总览" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "目标订单" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "双策略竞技场" })).not.toBeInTheDocument();
+    const analysisNavigation = screen.getByRole("navigation", { name: "分析导航" });
+    const strategyNavigation = screen.getByRole("navigation", { name: "策略对象" });
+    expect(analysisNavigation).toContainElement(strategyNavigation);
+    expect(within(analysisNavigation).getByRole("button", { name: "单策略分析" })).toHaveAttribute("aria-expanded", "true");
+    expect(within(strategyNavigation).getByRole("button", { name: "稳健防守" })).not.toHaveAttribute("aria-current");
+    expect(within(strategyNavigation).getByRole("button", { name: "趋势进攻" })).toHaveAttribute("aria-current", "page");
+    expect(new URLSearchParams(window.location.search).get("view")).toBe("detail");
+    expect(new URLSearchParams(window.location.search).get("strategy")).toBe("trend");
+    expect(new URLSearchParams(window.location.search).has("agent")).toBe(false);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/portfolio.json?market=cn_qdii_etf&agent=codex"))).toBe(true);
+  });
+
+  it("keeps the selected strategy while switching between analysis modes", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("summary")) return Promise.resolve(jsonResponse(summaryPayload));
+      return Promise.resolve(jsonResponse(resourcePayload(url)));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    setRoute("compare", "cn_qdii_etf", "defensive");
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByRole("region", { name: "双策略竞技场" });
+    await user.click(screen.getByRole("button", { name: "单策略分析" }));
+
+    expect(await screen.findByRole("heading", { name: "稳健防守 策略工作台" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "稳健防守" })).toHaveAttribute("aria-current", "page");
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("agent=claude"))).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "策略对比" }));
+    await user.click(screen.getByRole("button", { name: "单策略分析" }));
+    expect(await screen.findByRole("heading", { name: "稳健防守 策略工作台" })).toBeInTheDocument();
+  });
+
+  it("switches workbench tabs and restores the view from browser history state", async () => {
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("summary")) return Promise.resolve(jsonResponse(summaryPayload));
+      return Promise.resolve(jsonResponse(resourcePayload(url)));
+    }));
+    setRoute("compare");
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByRole("region", { name: "双策略竞技场" });
+    await user.click(screen.getByRole("button", { name: "单策略分析" }));
+    await user.click(await screen.findByRole("button", { name: "稳健防守" }));
+    expect(await screen.findByRole("heading", { name: "稳健防守 策略工作台" })).toBeInTheDocument();
+    expect(new URLSearchParams(window.location.search).get("view")).toBe("detail");
+    expect(new URLSearchParams(window.location.search).get("strategy")).toBe("defensive");
+    expect(new URLSearchParams(window.location.search).has("agent")).toBe(false);
+
+    act(() => {
+      window.history.pushState({}, "", "/?market=cn_qdii_etf&view=compare");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+
+    expect(await screen.findByRole("region", { name: "双策略竞技场" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "策略对比" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("normalizes an invalid browser history route before loading detail resources", async () => {
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("summary")) return Promise.resolve(jsonResponse(summaryPayload));
+      return Promise.resolve(jsonResponse(resourcePayload(url)));
+    }));
+    setRoute("compare");
+
+    render(<App />);
+    await screen.findByRole("region", { name: "双策略竞技场" });
+
+    act(() => {
+      window.history.pushState({}, "", "/?market=unknown&view=detail&strategy=unknown&agent=unknown");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+
+    expect(await screen.findByRole("heading", { name: "趋势进攻 策略工作台" })).toBeInTheDocument();
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get("market")).toBe("cn_qdii_etf");
+    expect(params.get("view")).toBe("detail");
+    expect(params.get("strategy")).toBe("trend");
+    expect(params.has("agent")).toBe(false);
+  });
+
+  it("canonicalizes a legacy agent link to a public strategy link", async () => {
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("summary")) return Promise.resolve(jsonResponse(summaryPayload));
+      return Promise.resolve(jsonResponse(resourcePayload(url)));
+    }));
+    window.history.replaceState({}, "", "/?market=cn_qdii_etf&view=detail&agent=claude");
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "稳健防守 策略工作台" })).toBeInTheDocument();
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get("strategy")).toBe("defensive");
+    expect(params.has("agent")).toBe(false);
+  });
+
+  it("removes legacy identity parameters from comparison links", async () => {
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("summary")) return Promise.resolve(jsonResponse(summaryPayload));
+      return Promise.resolve(jsonResponse(resourcePayload(url)));
+    }));
+    window.history.replaceState({}, "", "/?market=cn_qdii_etf&view=compare&agent=codex");
+
+    render(<App />);
+
+    expect(await screen.findByRole("region", { name: "双策略竞技场" })).toBeInTheDocument();
+    const params = new URLSearchParams(window.location.search);
+    expect(params.has("strategy")).toBe(false);
+    expect(params.has("agent")).toBe(false);
+  });
+
+  it("does not add browser history entries when the active mode or strategy is clicked again", async () => {
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("summary")) return Promise.resolve(jsonResponse(summaryPayload));
+      return Promise.resolve(jsonResponse(resourcePayload(url)));
+    }));
+    setRoute("detail");
+    const pushState = vi.spyOn(window.history, "pushState");
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByRole("region", { name: "账户总览" });
+    pushState.mockClear();
+    await user.click(screen.getByRole("button", { name: "单策略分析" }));
+    await user.click(screen.getByRole("button", { name: "趋势进攻" }));
+
+    expect(pushState).not.toHaveBeenCalled();
+  });
+
   it("loads independent dashboard resources without the legacy detail endpoint", async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -372,6 +678,7 @@ describe("Dashboard app", () => {
       return Promise.resolve(jsonResponse(resourcePayload(url)));
     });
     vi.stubGlobal("fetch", fetchMock);
+    setRoute("detail");
 
     render(<App />);
 
@@ -389,10 +696,8 @@ describe("Dashboard app", () => {
     expect(screen.getByRole("region", { name: "ETF候选与底层暴露" })).toBeInTheDocument();
     expect(screen.getByText("shared-hash")).toBeInTheDocument();
 
-    const arena = screen.getByRole("region", { name: "双策略竞技场" });
-    const accountOverview = screen.getByRole("region", { name: "账户总览" });
-    expect(arena.compareDocumentPosition(accountOverview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByText("双策略对抗 · 赛季1")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "双策略竞技场" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "趋势进攻" })).toHaveAttribute("aria-current", "page");
     expect(screen.queryByText(/Claude|Codex/i)).not.toBeInTheDocument();
 
     const portfolio = screen.getByRole("region", { name: "持仓组合" });
@@ -414,6 +719,7 @@ describe("Dashboard app", () => {
       return Promise.resolve(jsonResponse(resourcePayload(url)));
     }));
     const user = userEvent.setup();
+    setRoute("detail");
     render(<App />);
 
     const ordersPanel = await screen.findByRole("region", { name: "目标订单" });
@@ -444,6 +750,7 @@ describe("Dashboard app", () => {
       return Promise.reject(new Error(`unexpected url: ${url}`));
     }));
     const user = userEvent.setup();
+    setRoute("detail");
     render(<App />);
 
     await user.click(await screen.findByRole("button", { name: "A股" }));
@@ -468,6 +775,7 @@ describe("Dashboard app", () => {
       return Promise.resolve(jsonResponse(resourcePayload(url)));
     }));
 
+    setRoute("detail");
     render(<App />);
 
     expect((await screen.findAllByText("513100.SH")).length).toBeGreaterThan(0);
@@ -490,6 +798,7 @@ describe("Dashboard app", () => {
       return Promise.reject(new Error(`unexpected url: ${url}`));
     }));
     const user = userEvent.setup();
+    setRoute("detail");
     render(<App />);
 
     expect((await screen.findAllByText("纳指ETF")).length).toBeGreaterThan(0);
@@ -521,6 +830,7 @@ describe("Dashboard app", () => {
       return Promise.resolve(jsonResponse(resourcePayload(url)));
     }));
     const user = userEvent.setup();
+    setRoute("detail");
     render(<App />);
 
     expect((await screen.findAllByText("纳指ETF")).length).toBeGreaterThan(0);

@@ -11,6 +11,7 @@ from stock_analyze.dashboard_aggregator import (
     build_dashboard_detail_data,
     build_dashboard_instrument_data,
 )
+from stock_analyze.dashboard_api import build_dashboard_predictions_data
 
 
 class DashboardPredictionsTest(unittest.TestCase):
@@ -46,6 +47,69 @@ class DashboardPredictionsTest(unittest.TestCase):
         self.assertTrue(payload["alerts"])
         self.assertEqual(payload["regimes"]["current"]["composite_regime"], "risk_on")
         self.assertEqual({item["source"] for item in payload["source_health"]}, {"news", "announcement", "policy"})
+
+    def test_invalidated_prediction_does_not_emit_dashboard_alert(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            prediction_dir = root / "data" / "cn_qdii_etf" / "codex" / "predictions"
+            prediction_dir.mkdir(parents=True)
+            pd.DataFrame([{
+                "as_of": "2026-07-10", "code": "513100", "horizon": 5,
+                "p_up": 0.80, "p_flat": 0.10, "p_down": 0.10,
+                "confidence": 0.90, "invalidated": True,
+            }]).to_parquet(prediction_dir / "20260710.parquet", index=False)
+
+            payload = build_dashboard_detail_data(repo_root=root, market="cn_qdii_etf", agent="codex")
+
+        self.assertEqual(payload["alerts"], [])
+        self.assertEqual(payload["prediction_summary"]["diagnostics"]["invalidated"], 1)
+
+    def test_model_health_includes_realized_accuracy_ledger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            accuracy_path = root / "data" / "cn_qdii_etf" / "codex" / "prediction_accuracy.csv"
+            accuracy_path.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame([
+                {"as_of": "20260701", "code": "513100", "horizon": 5, "model_version": "m1", "correct": True, "brier_score": 0.14, "return_error": -0.01},
+                {"as_of": "20260702", "code": "513100", "horizon": 5, "model_version": "m1", "correct": False, "brier_score": 0.54, "return_error": 0.03},
+            ]).to_csv(accuracy_path, index=False)
+
+            payload = build_dashboard_detail_data(repo_root=root, market="cn_qdii_etf", agent="codex")
+
+        self.assertEqual(payload["model_health"]["accuracy"]["evaluated"], 2)
+        self.assertEqual(payload["model_health"]["accuracy"]["hit_rate"], 0.5)
+        self.assertAlmostEqual(payload["model_health"]["accuracy"]["mean_brier_score"], 0.34)
+
+    def test_split_predictions_resource_includes_accuracy_and_drift_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            prediction_dir = root / "data" / "cn_qdii_etf" / "codex" / "predictions"
+            prediction_dir.mkdir(parents=True)
+            pd.DataFrame([{
+                "as_of": "2026-07-10", "code": "513100", "horizon": 5,
+                "p_up": 0.50, "p_flat": 0.30, "p_down": 0.20,
+                "confidence": 0.60, "invalidated": True,
+                "metadata": json.dumps({"feature_drift_max_psi": 0.42}),
+            }]).to_parquet(prediction_dir / "20260710.parquet", index=False)
+            accuracy_path = root / "data" / "cn_qdii_etf" / "codex" / "prediction_accuracy.csv"
+            pd.DataFrame([{
+                "as_of": "20260701", "code": "513100", "horizon": 5,
+                "model_version": "m1", "correct": True,
+                "brier_score": 0.20, "return_error": 0.01,
+            }]).to_csv(accuracy_path, index=False)
+
+            payload = build_dashboard_predictions_data(
+                repo_root=root,
+                market="cn_qdii_etf",
+                agent="codex",
+            )
+
+        self.assertEqual(payload["model_health"]["accuracy"]["evaluated"], 1)
+        self.assertEqual(payload["model_health"]["prediction_diagnostics"]["invalidated"], 1)
+        self.assertEqual(payload["model_health"]["prediction_diagnostics"]["max_psi"], 0.42)
 
     def test_regime_summary_keeps_market_current_and_lists_industries(self):
         with tempfile.TemporaryDirectory() as tmp:

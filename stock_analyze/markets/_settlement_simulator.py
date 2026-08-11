@@ -23,6 +23,7 @@ from math import ceil, isnan
 from pathlib import Path
 from typing import Any, Protocol
 
+from ..research.execution_policy import estimate_market_impact_bps
 from ..utils import read_json, write_json
 
 
@@ -209,7 +210,7 @@ class SettlementSimulatorBase:
         return value
 
     def _coerce_order(self, raw: dict[str, Any]):
-        return self.order_cls(
+        values = dict(
             code=raw["code"],
             side=raw["side"],
             shares=int(raw.get("shares", 0)),
@@ -218,7 +219,11 @@ class SettlementSimulatorBase:
             account_id=raw.get("account_id", ""),
             score=raw.get("score"),
             reason=raw.get("reason", ""),
+            name=str(raw.get("name") or ""),
         )
+        if "impact_bps" in getattr(self.order_cls, "__dataclass_fields__", {}):
+            values["impact_bps"] = raw.get("impact_bps")
+        return self.order_cls(**values)
 
     def _execute_order(
         self,
@@ -237,6 +242,11 @@ class SettlementSimulatorBase:
             return None, quote.reason or "no quote"
 
         px = float(quote.price)
+        baseline_bps = max(float(getattr(self.mechanics, "SLIPPAGE_BPS", 0.0)), 0.0)
+        impact_bps = max(float(getattr(order, "impact_bps", 0.0) or 0.0), baseline_bps)
+        additional_impact = max(impact_bps - baseline_bps, 0.0) / 10_000.0
+        if additional_impact > 0.0:
+            px *= 1.0 + additional_impact if self._quote_side(order.side) == "buy" else 1.0 - additional_impact
         settle_date = self._next_business_day(as_of, self.mechanics.SETTLEMENT_DAYS).isoformat()
         stamp_rate = self.mechanics.STAMP_TAX_RATE
         commission_rate = self.mechanics.COMMISSION_RATE
@@ -260,6 +270,7 @@ class SettlementSimulatorBase:
             old_cost_basis = float(existing.get("avg_cost", 0.0)) * int(existing.get("shares", 0))
             new_cost_basis = old_cost_basis + cost
             positions[order.code] = {
+                "name": existing.get("name") or order.name,
                 "shares": new_shares,
                 "avg_cost": new_cost_basis / new_shares if new_shares != 0 else 0.0,
                 "last_buy_date": as_of.isoformat(),
@@ -336,6 +347,7 @@ class SettlementSimulatorBase:
             old_cost_basis = abs(prior_shares) * float(existing.get("avg_cost", 0.0))
             new_cost_basis = old_cost_basis + gross
             positions[order.code] = {
+                "name": existing.get("name") or order.name,
                 "shares": new_shares,
                 "avg_cost": new_cost_basis / abs(new_shares) if new_shares != 0 else 0.0,
                 "last_buy_date": as_of.isoformat(),
@@ -418,24 +430,52 @@ class SettlementSimulatorBase:
         net_amount: float,
         cash_after: float,
     ) -> dict[str, Any]:
+        slippage = self._slippage_cost(
+            price,
+            order.shares,
+            side_label,
+            impact_bps=float(getattr(order, "impact_bps", 0.0) or 0.0),
+        )
         return {
             "trade_date": execution_date.isoformat(),
             "settle_date": settle_date,
             "account_id": order.account_id,
             "code": order.code,
-            "name": "",
+            "name": order.name,
             "side": side_label,
             "shares": order.shares,
             "price": price,
             "gross_amount": gross,
             "commission": commission,
             "stamp_tax": stamp,
-            "slippage": 0.0,
+            "slippage": slippage,
             "net_amount": net_amount,
             "cash_after": cash_after,
             "score": order.score,
             "reason": order.reason,
         }
+
+    def _slippage_cost(
+        self,
+        execution_price: float,
+        shares: int,
+        side: str,
+        *,
+        impact_bps: float = 0.0,
+    ) -> float:
+        """Recover the cash slippage embedded in a provider execution quote."""
+        rate = max(
+            float(getattr(self.mechanics, "SLIPPAGE_BPS", 0.0)),
+            float(impact_bps),
+            0.0,
+        ) / 10_000.0
+        if rate <= 0.0:
+            return 0.0
+        divisor = 1.0 + rate if side in {"buy", "cover"} else 1.0 - rate
+        if divisor <= 0.0:
+            return 0.0
+        reference_price = float(execution_price) / divisor
+        return abs(float(execution_price) - reference_price) * int(shares)
 
     # --- update NAV --------------------------------------------------
 
@@ -464,6 +504,9 @@ class SettlementSimulatorBase:
                     continue
                 quote = provider.price_snapshot(code, as_of=as_of.isoformat())
                 px = quote.close or float(pos.get("avg_cost", 0.0))
+                quote_name = str(getattr(quote, "name", "") or "")
+                if quote_name and not pos.get("name"):
+                    pos["name"] = quote_name
                 if shares > 0:
                     market_value = shares * px
                 else:
@@ -521,6 +564,7 @@ class SettlementSimulatorBase:
         hold_buffer_pct: float = 0.0,
         max_holding_days: int | None = None,
         cash_reserve_pct: float = 0.0,
+        min_trade_weight: float = 0.0,
     ) -> list[dict[str, Any]]:
         """Generate buy/sell orders to bring portfolio toward the top-N of ``scored``."""
         as_of = as_of or date.today()
@@ -588,8 +632,15 @@ class SettlementSimulatorBase:
                     new_orders.append({
                         "code": code, "side": "sell", "shares": shares,
                         "trade_date": trade_date, "account_id": account_id,
+                        "name": pos.get("name") or "",
                         "target_value": 0.0,
                         "reason": "max_holding_days" if expired_outside_target else "not_in_top_n",
+                        "impact_bps": estimate_market_impact_bps(
+                            order_value=shares * float(pos.get("last_price") or pos.get("avg_cost") or 0.0),
+                            avg_daily_amount=pos.get("avg_daily_amount"),
+                            volatility=pos.get("expected_volatility"),
+                            baseline_bps=float(getattr(self.mechanics, "SLIPPAGE_BPS", 0.0)),
+                        ),
                     })
 
             # Buy / top-up for target
@@ -601,9 +652,45 @@ class SettlementSimulatorBase:
                     continue
                 lot = self.mechanics.lot_size_for(code)
                 current_shares = int(account_state.get("positions", {}).get(code, {}).get("shares", 0))
-                target_shares = max(int(per_target / (px * lot)), 0) * lot
+                try:
+                    requested_weight = float(r.get("target_weight"))
+                except (TypeError, ValueError):
+                    requested_weight = 0.0
+                target_value = (
+                    min(investable_value * requested_weight, investable_value * max_single_weight)
+                    if requested_weight > 0.0
+                    else per_target
+                )
+                target_shares = max(int(target_value / (px * lot)), 0) * lot
                 delta = target_shares - current_shares
                 order_key = (str(account_id), str(code))
+                actual_target_weight = target_shares * px / account_value if account_value > 0 else 0.0
+                impact_bps = estimate_market_impact_bps(
+                    order_value=abs(delta) * px,
+                    avg_daily_amount=r.get("avg_amount_20"),
+                    volatility=r.get("expected_volatility", r.get("low_volatility_60")),
+                    baseline_bps=float(getattr(self.mechanics, "SLIPPAGE_BPS", 0.0)),
+                )
+                if (
+                    account_value > 0
+                    and abs(delta) * px / account_value < max(float(min_trade_weight), 0.0)
+                ):
+                    continue
+                if delta < 0 and order_key not in existing_keys:
+                    new_orders.append({
+                        "code": code,
+                        "side": "sell",
+                        "shares": abs(delta),
+                        "trade_date": trade_date,
+                        "account_id": account_id,
+                        "name": r.get("name") or getattr(quote, "name", "") or "",
+                        "target_value": target_shares * px,
+                        "target_weight": actual_target_weight,
+                        "score": float(r.get("score", 0.0)),
+                        "reason": "risk_adjusted_rebalance",
+                        "impact_bps": impact_bps,
+                    })
+                    continue
                 estimated_share_cost = px * (
                     1.0 + self.mechanics.STAMP_TAX_RATE + self.mechanics.COMMISSION_RATE
                 )
@@ -617,9 +704,12 @@ class SettlementSimulatorBase:
                     new_orders.append({
                         "code": code, "side": "buy", "shares": buy_shares,
                         "trade_date": trade_date, "account_id": account_id,
+                        "name": r.get("name") or getattr(quote, "name", "") or "",
                         "target_value": buy_shares * px,
+                        "target_weight": actual_target_weight,
                         "score": float(r.get("score", 0.0)),
                         "reason": r.get("reason", "top_n"),
+                        "impact_bps": impact_bps,
                     })
                     remaining_buying_power -= buy_shares * estimated_share_cost
 

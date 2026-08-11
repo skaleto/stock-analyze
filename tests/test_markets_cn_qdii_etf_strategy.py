@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import date
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -138,6 +138,43 @@ class ETFStrategyTests(unittest.TestCase):
         rows = build_signals(config, provider, as_of=date(2026, 7, 9))
 
         self.assertEqual([row["code"] for row in rows], ["FULL"])
+
+    def test_build_signals_preserves_prediction_fields_for_portfolio_sizing(self):
+        provider = MagicMock()
+        provider.spot.return_value = pd.DataFrame({
+            "code": ["513100.SH"],
+            "momentum_20": [0.10],
+            "low_volatility_60": [0.02],
+            "avg_amount_20": [100_000_000],
+            "listing_age_days": [500],
+            "paused": [False],
+            "industry": ["us_exposure"],
+        })
+        config = {
+            "agent_id": "codex",
+            "accounts": [{"id": "us_exposure", "scope": "us_exposure", "top_n": 1}],
+            "factors": {"momentum_20": {"weight": 1.0, "direction": "high"}},
+            "factor_processing": {"neutralize_industry": False, "min_factor_coverage": 0.0},
+            "filters": {"min_avg_amount_20_yuan": 0, "min_listing_days": 0},
+        }
+
+        def attach(frame, **_kwargs):
+            return frame.assign(
+                prediction_applied=True,
+                prediction_confidence=0.90,
+                expected_excess_return=0.08,
+            )
+
+        with patch(
+            "stock_analyze.markets.cn_qdii_etf.strategy.load_and_attach_predictions",
+            side_effect=attach,
+        ):
+            rows = build_signals(config, provider, as_of=date(2026, 7, 9))
+
+        self.assertTrue(rows[0]["prediction_applied"])
+        self.assertEqual(rows[0]["prediction_confidence"], 0.90)
+        self.assertEqual(rows[0]["expected_excess_return"], 0.08)
+        self.assertEqual(rows[0]["low_volatility_60"], 0.02)
 
     def test_legacy_liquidity_threshold_is_migrated_from_thousand_yuan(self):
         self.assertEqual(resolve_min_amount_yuan({"min_avg_amount_20": 50_000}), 50_000_000.0)

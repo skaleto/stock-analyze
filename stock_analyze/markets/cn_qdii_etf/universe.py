@@ -142,6 +142,11 @@ def _text(value: Any) -> str:
     return str(value).strip()
 
 
+def _code_key(value: Any) -> str:
+    code = _text(value).upper().split(".", 1)[0]
+    return code.zfill(6) if code.isdigit() else code
+
+
 def _date_key(value: Any) -> str:
     return _text(value).replace("-", "")[:8]
 
@@ -311,7 +316,7 @@ def _latest_snapshot_metadata(repo_root: Path, code: str) -> dict[str, Any] | No
         if not isinstance(rows, list):
             continue
         for row in rows:
-            if isinstance(row, dict) and str(row.get("code") or "").upper() == code:
+            if isinstance(row, dict) and _code_key(row.get("code")) == _code_key(code):
                 return row
     return None
 
@@ -326,6 +331,12 @@ def metadata_for_code(
     normalized = str(code).upper()
     dynamic = _latest_snapshot_metadata(Path(repo_root), normalized) if repo_root else None
     metadata = dynamic or ETF_METADATA.get(normalized)
+    if metadata is None:
+        key = _code_key(normalized)
+        metadata = next(
+            (value for candidate, value in ETF_METADATA.items() if _code_key(candidate) == key),
+            None,
+        )
     if metadata is None:
         return {
             "exposure_group": "全球市场",

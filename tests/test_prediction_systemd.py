@@ -15,10 +15,20 @@ class PredictionSystemdTest(unittest.TestCase):
         self.assertIn("prepare-research-data --offline", service)
         self.assertIn("run-prediction-research --offline", service)
         self.assertIn(" predict --offline", service)
+        self.assertIn("run-model-iteration --offline", service)
+        self.assertLess(service.index(" predict --offline"), service.index("run-model-iteration --offline"))
+        self.assertNotIn("run-model-shadow --offline", service)
         self.assertNotIn("EnvironmentFile=/etc/stock-analyze/secrets.env", service)
         self.assertIn("EnvironmentFile=/etc/stock-analyze/secrets.env", market_data)
         self.assertIn("stock-analyze-research.service", market_data)
         self.assertIn("OnFailure=stock-analyze-pipeline-failure@%n.service", service)
+        for daily_service in (
+            "stock-analyze-claude-daily.service",
+            "stock-analyze-codex-daily.service",
+            "stock-analyze-claude-cn-qdii-etf-daily.service",
+            "stock-analyze-codex-cn-qdii-etf-daily.service",
+        ):
+            self.assertIn(daily_service, service)
 
     def test_monthly_training_only_registers_challengers(self):
         service = (UNIT_DIR / "stock-analyze-model-training.service").read_text(encoding="utf-8")

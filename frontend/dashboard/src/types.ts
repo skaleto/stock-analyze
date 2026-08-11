@@ -244,6 +244,8 @@ export type NavPoint = {
   total_value_display?: string;
   return?: number | null;
   return_display?: string;
+  daily_return?: number | null;
+  daily_return_display?: string;
   benchmark_code?: string | null;
   benchmark_codes?: string[];
   benchmark_close?: number | null;
@@ -304,6 +306,54 @@ export type StrategyProfile = {
   factors: StrategyFactor[];
 };
 
+export type ModelVersionSummary = {
+  market?: string;
+  horizon?: number;
+  model_version?: string;
+  display_version?: string;
+  status?: string;
+  status_label?: string;
+  champion_model_version?: string | null;
+  shadow_cycles?: number;
+  shadow_cycles_remaining?: number;
+  registered_at?: string | null;
+  selected_at?: string | null;
+};
+
+export type ModelIterationHistory = ModelVersionSummary & {
+  outcome?: string;
+  ended_at?: string | null;
+};
+
+export type ModelIterationStatus = {
+  status?: string;
+  label?: string;
+  portfolio_label?: string;
+  isolation?: string;
+  source_agent?: string;
+  source_type?: string;
+  as_of?: string;
+  prediction_as_of?: string | null;
+  horizon?: number;
+  model_versions?: string[];
+  decision_changed?: boolean;
+  candidate_rows?: number;
+  eligible_rows?: number;
+  selected_count?: number;
+  invalidated_rows?: number;
+  minimum_confidence?: number;
+  cash_only?: boolean;
+  cash_reason?: string | null;
+  trades_executed?: number;
+  pending_orders?: number;
+  updated_at?: string;
+  candidate?: ModelVersionSummary | null;
+  champion?: ModelVersionSummary | null;
+  version_history?: ModelIterationHistory[];
+};
+
+export type ModelShadowStatus = ModelIterationStatus;
+
 export type Candle = {
   date: string;
   open: number;
@@ -363,13 +413,26 @@ export type PredictionAlert = {
 
 export type ModelHealth = {
   status: "available" | "unavailable" | string;
+  accuracy?: {
+    status?: string;
+    evaluated?: number;
+    hit_rate?: number | null;
+    mean_brier_score?: number | null;
+    mean_absolute_return_error?: number | null;
+  };
+  prediction_diagnostics?: {
+    invalidated?: number;
+    mean_out_of_distribution_ratio?: number;
+    max_out_of_distribution_ratio?: number;
+    max_psi?: number;
+  };
   models: {
     model_version?: string;
     horizon?: number;
     calibration_method?: string;
     use_boosting?: boolean;
     sample_support?: number;
-    metrics?: Record<string, number>;
+    metrics?: Record<string, unknown>;
     split_dates?: Record<string, string>;
     status?: string;
     is_champion?: boolean;
@@ -419,6 +482,8 @@ export type DashboardDetail = {
   currency: string;
   agent: string;
   strategy: StrategyProfile;
+  model_iteration?: ModelIterationStatus | null;
+  model_shadow?: ModelShadowStatus | null;
   selection?: SelectionSnapshot;
   lookthrough?: PortfolioLookthrough | Record<string, never>;
   research?: QDIIResearch;
@@ -469,6 +534,8 @@ export type DashboardOverview = {
   agent: string;
   strategy: StrategyProfile;
   latest_nav: NavPoint | null;
+  model_iteration?: ModelIterationStatus | null;
+  model_shadow?: ModelShadowStatus | null;
 };
 
 export type DashboardPerformance = Pick<DashboardDetail, "generated_at" | "market" | "agent" | "nav">;

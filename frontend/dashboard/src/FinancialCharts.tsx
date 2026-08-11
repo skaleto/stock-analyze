@@ -8,6 +8,7 @@ import {
   createChart,
   createSeriesMarkers,
   type IChartApi,
+  type IRange,
   type SeriesMarker,
   type Time,
 } from "lightweight-charts";
@@ -121,7 +122,8 @@ export function PerformanceChart({
       </div>
       <div className="chart-readout" aria-live="polite">
         <span>{hovered?.date ?? "-"}</span>
-        <strong className={(hovered?.return ?? 0) >= 0 ? "positive" : "negative"}>{formatPercent(hovered?.return)}</strong>
+        <span>累计 <b className={(hovered?.return ?? 0) >= 0 ? "positive" : "negative"}>{formatPercent(hovered?.return)}</b></span>
+        <span>当日 <b className={(hovered?.daily_return ?? 0) >= 0 ? "positive" : "negative"}>{formatPercent(hovered?.daily_return)}</b></span>
         <span>基准 {formatPercent(hovered?.benchmark_return)}</span>
         <span>超额 <b className={(excess ?? 0) >= 0 ? "positive" : "negative"}>{formatPercent(excess)}</b></span>
       </div>
@@ -464,81 +466,6 @@ function buildTradeMarkerBundle(trades: OrderRow[], strategyLabel: string): {
   return { markers, details };
 }
 
-function MacdPanel({
-  points,
-  visibleRange,
-}: {
-  points: MacdPoint[];
-  visibleRange: { from: Time; to: Time } | null;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const latest = points[points.length - 1];
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || points.length === 0) return undefined;
-    const chart = createChart(container, {
-      width: Math.max(container.clientWidth, 320),
-      height: 156,
-      layout: chartLayout,
-      grid: {
-        vertLines: { color: "#182230" },
-        horzLines: { color: "#182230" },
-      },
-      rightPriceScale: { borderColor: "#2a3748", scaleMargins: { top: 0.15, bottom: 0.12 } },
-      timeScale: { borderColor: "#2a3748", rightOffset: 3 },
-      crosshair: { mode: CrosshairMode.Normal },
-    });
-    const histogram = chart.addSeries(HistogramSeries, {
-      priceLineVisible: false,
-      lastValueVisible: false,
-      priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
-    });
-    const dif = chart.addSeries(LineSeries, {
-      color: "#facc15",
-      lineWidth: 1,
-      title: "DIF",
-      priceLineVisible: false,
-      lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    const dea = chart.addSeries(LineSeries, {
-      color: "#60a5fa",
-      lineWidth: 1,
-      title: "DEA",
-      priceLineVisible: false,
-      lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    histogram.setData(points.map((point) => ({
-      time: point.date as Time,
-      value: point.histogram,
-      color: point.histogram >= 0 ? "rgba(239,68,68,0.58)" : "rgba(34,197,94,0.58)",
-    })));
-    dif.setData(points.map((point) => ({ time: point.date as Time, value: point.dif })));
-    dea.setData(points.map((point) => ({ time: point.date as Time, value: point.dea })));
-    if (visibleRange) chart.timeScale().setVisibleRange(visibleRange);
-    else chart.timeScale().fitContent();
-    const stopObserving = observeChart(container, chart);
-    return () => {
-      stopObserving();
-      chart.remove();
-    };
-  }, [points, visibleRange]);
-
-  return (
-    <div className="macd-panel">
-      <div className="macd-readout">
-        <strong>MACD (12, 26, 9)</strong>
-        <span>DIF <b>{latest?.dif.toFixed(4) ?? "-"}</b></span>
-        <span>DEA <b>{latest?.dea.toFixed(4) ?? "-"}</b></span>
-        <span>柱 <b>{latest?.histogram.toFixed(4) ?? "-"}</b></span>
-      </div>
-      <div ref={containerRef} className="macd-canvas" aria-label="MACD指标图" />
-    </div>
-  );
-}
-
 export function CandlestickChart({
   candles,
   trades = [],
@@ -549,11 +476,15 @@ export function CandlestickChart({
   strategyLabel?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const lastVisibleRangeRef = useRef<IRange<Time> | null>(null);
+  const candleDataKeyRef = useRef("");
   const [range, setRange] = useState<CandleRange>(30);
   const [visibleIndicators, setVisibleIndicators] = useState<IndicatorVisibility>(DEFAULT_INDICATORS);
-  const [hovered, setHovered] = useState<Candle | null>(candles[candles.length - 1] ?? null);
-  const [hoveredTrade, setHoveredTrade] = useState<TradeMarkerDetail | null>(null);
   const macdPoints = useMemo(() => calculateMacd(candles), [candles]);
+  const [hovered, setHovered] = useState<Candle | null>(candles[candles.length - 1] ?? null);
+  const [hoveredMacd, setHoveredMacd] = useState<MacdPoint | null>(macdPoints[macdPoints.length - 1] ?? null);
+  const [hoveredTrade, setHoveredTrade] = useState<TradeMarkerDetail | null>(null);
   const macdStatus = useMemo(() => macdReading(macdPoints), [macdPoints]);
   const volumePriceStatus = useMemo(() => volumePriceReading(candles), [candles]);
   const visibleTrades = useMemo(
@@ -565,15 +496,25 @@ export function CandlestickChart({
     [strategyLabel, visibleTrades],
   );
   const visibleRange = useMemo(() => candleVisibleRange(candles, range), [candles, range]);
+  const candleDataKey = `${candles[0]?.date ?? ""}:${candles[candles.length - 1]?.date ?? ""}:${candles.length}`;
   const buyCount = visibleTrades.filter((trade) => BUY_SIDES.has(String(trade.side ?? "").toLowerCase())).length;
   const sellCount = visibleTrades.length - buyCount;
 
   useEffect(() => {
+    setHovered(candles[candles.length - 1] ?? null);
+    setHoveredMacd(macdPoints[macdPoints.length - 1] ?? null);
+  }, [candles, macdPoints]);
+
+  useEffect(() => {
     const container = containerRef.current;
     if (!container || candles.length === 0) return undefined;
+    if (candleDataKeyRef.current !== candleDataKey) {
+      candleDataKeyRef.current = candleDataKey;
+      lastVisibleRangeRef.current = null;
+    }
     const chart = createChart(container, {
       width: Math.max(container.clientWidth, 320),
-      height: 340,
+      height: visibleIndicators.macd ? 502 : 340,
       layout: chartLayout,
       grid: {
         vertLines: { color: "#182230" },
@@ -625,23 +566,80 @@ export function CandlestickChart({
       });
       series.setData(movingAverageData(candles, average.period));
     }
+    if (visibleIndicators.macd) {
+      const histogram = chart.addSeries(HistogramSeries, {
+        priceLineVisible: false,
+        lastValueVisible: false,
+        priceFormat: { type: "price", precision: 4, minMove: 0.0001 },
+      }, 1);
+      const dif = chart.addSeries(LineSeries, {
+        color: "#facc15",
+        lineWidth: 1,
+        title: "DIF",
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      }, 1);
+      const dea = chart.addSeries(LineSeries, {
+        color: "#60a5fa",
+        lineWidth: 1,
+        title: "DEA",
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      }, 1);
+      histogram.priceScale().applyOptions({ scaleMargins: { top: 0.15, bottom: 0.12 } });
+      histogram.setData(macdPoints.map((point) => ({
+        time: point.date as Time,
+        value: point.histogram,
+        color: point.histogram >= 0 ? "rgba(239,68,68,0.58)" : "rgba(34,197,94,0.58)",
+      })));
+      dif.setData(macdPoints.map((point) => ({ time: point.date as Time, value: point.dif })));
+      dea.setData(macdPoints.map((point) => ({ time: point.date as Time, value: point.dea })));
+      const panes = chart.panes();
+      panes[0]?.setStretchFactor(3);
+      panes[1]?.setStretchFactor(1.15);
+    }
     const markerPlugin = markerBundle.markers.length ? createSeriesMarkers(priceSeries, markerBundle.markers) : null;
     const candleByDate = new Map(candles.map((candle) => [candle.date, candle]));
+    const macdByDate = new Map(macdPoints.map((point) => [point.date, point]));
     chart.subscribeCrosshairMove((parameter) => {
       const date = typeof parameter.time === "string" ? parameter.time : null;
       setHovered((date && candleByDate.get(date)) || candles[candles.length - 1] || null);
+      setHoveredMacd((date && macdByDate.get(date)) || macdPoints[macdPoints.length - 1] || null);
       const objectId = parameter.hoveredInfo?.objectId ?? parameter.hoveredObjectId;
       setHoveredTrade(typeof objectId === "string" ? markerBundle.details.get(objectId) ?? null : null);
     });
-    if (visibleRange) chart.timeScale().setVisibleRange(visibleRange);
-    else chart.timeScale().fitContent();
+    const timeScale = chart.timeScale();
+    const rememberVisibleRange = (nextRange: IRange<Time> | null) => {
+      if (nextRange) lastVisibleRangeRef.current = nextRange;
+    };
+    timeScale.subscribeVisibleTimeRangeChange(rememberVisibleRange);
+    chartRef.current = chart;
+    const initialVisibleRange = lastVisibleRangeRef.current ?? visibleRange;
+    if (initialVisibleRange) timeScale.setVisibleRange(initialVisibleRange);
+    else timeScale.fitContent();
     const stopObserving = observeChart(container, chart);
     return () => {
       stopObserving();
+      timeScale.unsubscribeVisibleTimeRangeChange(rememberVisibleRange);
+      if (chartRef.current === chart) chartRef.current = null;
       markerPlugin?.detach();
       chart.remove();
     };
-  }, [candles, markerBundle, visibleIndicators, visibleRange]);
+  }, [candles, candleDataKey, macdPoints, markerBundle, visibleIndicators]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    if (visibleRange) {
+      lastVisibleRangeRef.current = visibleRange;
+      chart.timeScale().setVisibleRange(visibleRange);
+    } else {
+      lastVisibleRangeRef.current = null;
+      chart.timeScale().fitContent();
+    }
+  }, [visibleRange]);
 
   if (candles.length === 0) return <div className="chart-empty">暂无历史行情缓存</div>;
   const change = hovered ? hovered.close - hovered.open : 0;
@@ -721,6 +719,14 @@ export function CandlestickChart({
         {visibleIndicators.volume ? <span>量 <b>{formatVolume(hovered?.volume)}</b></span> : null}
         <span>成交额 <b>{formatMoney(hovered?.amount)}</b></span>
       </div>
+      {visibleIndicators.macd ? (
+        <div className="macd-readout" aria-live="polite">
+          <strong>MACD (12, 26, 9)</strong>
+          <span>DIF <b>{hoveredMacd?.dif.toFixed(4) ?? "-"}</b></span>
+          <span>DEA <b>{hoveredMacd?.dea.toFixed(4) ?? "-"}</b></span>
+          <span>MACD柱 <b>{hoveredMacd?.histogram.toFixed(4) ?? "-"}</b></span>
+        </div>
+      ) : null}
       {visibleIndicators.macd || visibleIndicators.volume ? (
         <div className="technical-analysis" aria-label="技术指标解读">
           {visibleIndicators.macd ? (
@@ -755,8 +761,11 @@ export function CandlestickChart({
           </div>
         </div>
       ) : null}
-      <div ref={containerRef} className="chart-canvas candle-canvas" aria-label="日K线和成交量图" />
-      {visibleIndicators.macd ? <MacdPanel points={macdPoints} visibleRange={visibleRange} /> : null}
+      <div
+        ref={containerRef}
+        className={`chart-canvas candle-canvas${visibleIndicators.macd ? " with-macd" : ""}`}
+        aria-label={visibleIndicators.macd ? "日K线、成交量与MACD联动图" : "日K线和成交量图"}
+      />
     </div>
   );
 }

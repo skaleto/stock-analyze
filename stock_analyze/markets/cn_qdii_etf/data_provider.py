@@ -193,8 +193,8 @@ class CNQDIETFProvider:
         start_key = (end - timedelta(days=370)).strftime("%Y%m%d")
         observed = observed_at or datetime.now().astimezone().isoformat(timespec="seconds")
         calls = {
-            "fund_nav": [lambda code=normalize_ts_code(code): self._fund_nav(code, as_of_key) for code in codes],
-            "fund_share": [lambda code=normalize_ts_code(code): self._fund_share(code, as_of_key) for code in codes],
+            "fund_nav": [lambda code=code: self._fund_nav(self.resolve_ts_code(code), as_of_key) for code in codes],
+            "fund_share": [lambda code=code: self._fund_share(self.resolve_ts_code(code), as_of_key) for code in codes],
             "index_global": [
                 lambda code=code: self.pro.index_global(ts_code=code, start_date=start_key, end_date=as_of_key)
                 for code in ("SPX", "IXIC", "HSI")
@@ -202,6 +202,20 @@ class CNQDIETFProvider:
             "fx_daily": [lambda: self.pro.fx_daily(ts_code="USDCNH.FXCM", start_date=start_key, end_date=as_of_key)],
         }
         return collect_source_calls(calls, observed_at=observed)
+
+    def resolve_ts_code(self, code: str) -> str:
+        """Resolve a suffixless fund code from the authoritative fund catalog."""
+
+        normalized = normalize_ts_code(code)
+        if "." in normalized:
+            return normalized
+        basic = self._fund_basic()
+        if basic.empty or "ts_code" not in basic.columns:
+            return normalized
+        base_code = str(normalized).zfill(6)
+        ts_codes = basic["ts_code"].dropna().astype(str).str.upper()
+        matches = ts_codes.loc[ts_codes.str.split(".", n=1).str[0] == base_code]
+        return str(matches.iloc[0]) if not matches.empty else normalized
 
     def _build_pro_client(self, token: str | None):
         resolved = token or os.environ.get(TUSHARE_TOKEN_ENV)
@@ -647,7 +661,7 @@ class CNQDIETFProvider:
         return pd.DataFrame([dict(row) for row in snapshot["scopes"].get(scope, [])])
 
     def price_snapshot(self, code: str, as_of: str | None = None) -> ETFPriceSnapshot:
-        ts_code = normalize_ts_code(code)
+        ts_code = self.resolve_ts_code(code)
         as_of_key = _yyyymmdd(as_of or self.as_of)
         hist = self._fund_daily(ts_code, as_of_key)
         name, list_date = self._fund_metadata(ts_code)
@@ -790,7 +804,7 @@ class CNQDIETFProvider:
         side: str,
         as_of: str | None = None,
     ) -> ETFExecutionQuote:
-        ts_code = normalize_ts_code(code)
+        ts_code = self.resolve_ts_code(code)
         target = _yyyymmdd(execute_after)
         as_of_key = _yyyymmdd(as_of or self.as_of or execute_after)
         hist = self._fund_daily(ts_code, max(as_of_key, target))
@@ -824,7 +838,7 @@ class CNQDIETFProvider:
         )
 
     def fund_adj(self, code: str, as_of: str | None = None) -> pd.DataFrame:
-        ts_code = normalize_ts_code(code)
+        ts_code = self.resolve_ts_code(code)
         as_of_key = _yyyymmdd(as_of or self.as_of)
         cache_name = self._cache_name("fund_adj", ts_code, as_of_key)
         cached = self._read_cache(cache_name)
@@ -842,6 +856,27 @@ class CNQDIETFProvider:
         df = self._normalize_adj(df)
         self.record_health("fund_adj", "ok", rows=len(df))
         return self._write_cache(cache_name, df)
+
+    def return_history(
+        self,
+        codes: list[str] | tuple[str, ...],
+        *,
+        as_of: str | None = None,
+        days: int = 90,
+    ) -> pd.DataFrame:
+        as_of_key = _yyyymmdd(as_of or self.as_of)
+        series: list[pd.Series] = []
+        for code in codes:
+            ts_code = self.resolve_ts_code(code)
+            history = self._fund_daily(ts_code, as_of_key).sort_values("trade_date")
+            if history.empty:
+                continue
+            close = pd.to_numeric(history["close"], errors="coerce")
+            values = close.pct_change()
+            values.index = history["trade_date"].astype(str)
+            values.name = str(ts_code).split(".")[0].zfill(6)
+            series.append(values.tail(max(int(days), 1)))
+        return pd.concat(series, axis=1).sort_index().tail(max(int(days), 1)) if series else pd.DataFrame()
 
     def _fund_daily_liquidity(self, ts_code: str, as_of_key: str) -> pd.DataFrame:
         """Fetch a small window for catalog-wide liquidity ranking."""

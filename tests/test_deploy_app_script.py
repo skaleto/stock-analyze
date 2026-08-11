@@ -23,9 +23,7 @@ class DeployAppScriptTests(unittest.TestCase):
             "DEPLOY_VERSION",
             "python -m unittest",
             "systemctl daemon-reload",
-            "systemctl enable --now stock-analyze-claude-cn-qdii-etf-daily.timer",
             "systemctl enable --now stock-analyze-claude-cn-qdii-etf-weekly.timer",
-            "systemctl enable --now stock-analyze-codex-cn-qdii-etf-daily.timer",
             "systemctl enable --now stock-analyze-codex-cn-qdii-etf-weekly.timer",
             "systemctl enable --now stock-analyze-qdii-research.timer",
             "systemctl enable --now stock-analyze-daily-summary.timer",
@@ -36,6 +34,25 @@ class DeployAppScriptTests(unittest.TestCase):
         ]
         for token in required:
             self.assertIn(token, script)
+        self.assertIn(
+            "systemctl disable --now stock-analyze-claude-cn-qdii-etf-daily.timer",
+            script,
+        )
+        self.assertIn(
+            "systemctl disable --now stock-analyze-codex-cn-qdii-etf-daily.timer",
+            script,
+        )
+        self.assertNotIn(
+            "systemctl enable --now stock-analyze-claude-cn-qdii-etf-daily.timer",
+            script,
+        )
+        self.assertNotIn(
+            "systemctl enable --now stock-analyze-codex-cn-qdii-etf-daily.timer",
+            script,
+        )
+        self.assertIn("git status --porcelain", script)
+        self.assertIn("git hash-object --stdin", script)
+        self.assertIn("-worktree.", script)
         self.assertLess(script.index("build-dashboard-app.sh"), script.index("rsync"))
         self.assertLess(script.index("python -m unittest"), script.index("systemctl enable --now"))
         self.assertIn("/var/lib/systemd/timers/stamp-$timer", script)
@@ -62,11 +79,14 @@ class DeployAppScriptTests(unittest.TestCase):
         self.assertIn("tests.test_operator_workflow_docs", script)
         self.assertIn("tests.test_check_ecs_timers", script)
         self.assertIn("tests.test_prediction_systemd", script)
+        self.assertIn("tests.test_model_shadow", script)
+        self.assertIn("tests.test_dashboard_model_shadow", script)
         self.assertIn("tests.test_prediction_notifications", script)
         self.assertIn("tests.test_research_activation", script)
         self.assertIn("tests.test_research_models", script)
         self.assertIn("pip install -r requirements.txt", script)
         self.assertIn("stock-analyze-research.service", script)
+        self.assertIn("./configs/model_shadow.json", script)
         self.assertIn("stock-analyze-market-data.service", script)
         self.assertIn("stock-analyze-model-training.service", script)
         self.assertIn("./archive/direct-overseas/", script)
@@ -82,6 +102,10 @@ class DeployAppScriptTests(unittest.TestCase):
         self.assertIn("systemctl disable --now", script)
         self.assertIn("stock-analyze-codex-hk-daily.timer", script)
         self.assertIn("stock-analyze-codex-us-weekly.timer", script)
+        self.assertIn("stock-analyze-intelligence.timer", script)
+        self.assertIn("stock-analyze-intelligence.service", script)
+        self.assertIn('rm -f "/etc/systemd/system/$obsolete_unit"', script)
+        self.assertIn("systemctl reset-failed stock-analyze-market-data.service", script)
         self.assertNotIn("--delete data/", script)
 
 

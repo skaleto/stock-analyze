@@ -183,6 +183,45 @@ class WorkflowSummaryTests(unittest.TestCase):
         self.assertIn("1 只基金存在公告硬阻断", text)
         self.assertIn("影子研究尚未生成", text)
 
+    def test_weekly_model_research_uses_registry_lifecycle_status(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_registry(root)
+            model_dir = root / "data" / "research" / "models" / "a_share" / "5"
+            model_dir.mkdir(parents=True)
+            (model_dir / "20260717-model-v1.metadata.json").write_text(
+                json.dumps(
+                    {
+                        "model_version": "model-v1",
+                        "horizon": 5,
+                        "metrics": {"brier_score": 0.64, "log_loss": 1.02},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (model_dir / "registry.json").write_text(
+                json.dumps(
+                    {
+                        "champion_model_version": None,
+                        "models": {
+                            "model-v1": {
+                                "status": "research",
+                                "registered_at": "2026-07-18T00:00:00+00:00",
+                                "gate_history": [],
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            text = build_workflow_summary(
+                "weekly", root, today_d=date(2026, 7, 18), target="2026-07-17"
+            )
+
+        self.assertIn("状态 研究候选", text)
+        self.assertNotIn("状态 challenger", text)
+
     def test_daily_strategy_total_is_not_computed_from_one_market_only(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

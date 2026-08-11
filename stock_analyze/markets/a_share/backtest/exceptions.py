@@ -4,6 +4,16 @@ from __future__ import annotations
 from .types import BacktestMetrics
 
 
+class BacktestDataUnavailable(RuntimeError):
+    """Raised when a requested backtest cannot be evaluated faithfully."""
+
+    def __init__(self, reason: str, detail: dict | None = None) -> None:
+        self.reason = reason
+        self.detail = detail or {}
+        suffix = f":{self.detail}" if self.detail else ""
+        super().__init__(f"backtest_data_unavailable:{reason}{suffix}")
+
+
 class BacktestFloorBreach(Exception):
     """Raised when an overlay's validation-window backtest fails a floor threshold.
 

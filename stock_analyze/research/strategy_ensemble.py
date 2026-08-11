@@ -8,6 +8,7 @@ from typing import Mapping
 
 import numpy as np
 import pandas as pd
+from sklearn.covariance import LedoitWolf
 
 
 @dataclass(frozen=True)
@@ -147,19 +148,91 @@ def load_and_attach_predictions(
     return attach_active_predictions(candidates, predictions, profile=profile)
 
 
+def load_provider_return_history(
+    provider: object,
+    codes: list[str] | tuple[str, ...],
+    *,
+    as_of: object,
+    days: int = 90,
+) -> pd.DataFrame | None:
+    normalized_codes = [_normalize_code(code) for code in codes]
+    if hasattr(provider, "return_history"):
+        try:
+            frame = provider.return_history(codes, as_of=str(as_of), days=days)
+            if isinstance(frame, pd.DataFrame) and not frame.empty:
+                frame = frame.copy()
+                frame.columns = [_normalize_code(column) for column in frame.columns]
+                return frame.reindex(columns=normalized_codes)
+        except Exception:  # noqa: BLE001 - covariance is an optional sizing input
+            pass
+    series: dict[str, pd.Series] = {}
+    if not hasattr(provider, "price_history"):
+        return None
+    for raw_code, code in zip(codes, normalized_codes):
+        try:
+            history = provider.price_history(raw_code, as_of=str(as_of), days=days + 1)
+        except Exception:  # noqa: BLE001 - one unavailable instrument should fail closed to fallback sizing
+            return None
+        if not isinstance(history, pd.DataFrame) or history.empty or "close" not in history.columns:
+            return None
+        dates = history.get("trade_date", history.index).astype(str)
+        close = pd.to_numeric(history["close"], errors="coerce")
+        series[code] = pd.Series(close.pct_change().to_numpy(), index=dates, name=code)
+    combined = pd.concat(series.values(), axis=1).sort_index().tail(days)
+    return combined if not combined.empty else None
+
+
 def _capped_normalize(weights: pd.Series, cap: float) -> pd.Series:
+    return _project_weight_budget(weights, cap=cap, budget=1.0)
+
+
+def _project_weight_budget(
+    weights: pd.Series,
+    *,
+    cap: float,
+    budget: float,
+    candidates: pd.DataFrame | None = None,
+    group_constraints: Mapping[str, float] | None = None,
+) -> pd.Series:
     output = pd.Series(0.0, index=weights.index)
-    remaining = weights.clip(lower=0.0).copy()
-    budget = 1.0
-    while budget > 1e-10 and remaining.sum() > 0:
-        allocation = remaining / remaining.sum() * budget
-        over = allocation > cap
-        if not over.any():
-            output += allocation
+    desired = weights.clip(lower=0.0).fillna(0.0)
+    budget = min(max(float(budget), 0.0), 1.0)
+    cap = min(max(float(cap), 0.0), 1.0)
+    active = pd.Series(True, index=weights.index)
+    constraints = {
+        column: min(max(float(group_cap), 0.0), 1.0)
+        for column, group_cap in (group_constraints or {}).items()
+        if candidates is not None and column in candidates.columns
+    }
+    while budget - float(output.sum()) > 1e-10 and active.any():
+        remaining_budget = budget - float(output.sum())
+        active_desired = desired.where(active, 0.0)
+        if active_desired.sum() <= 0.0:
+            active_desired = active.astype(float)
+        proposal = active_desired / active_desired.sum() * remaining_budget
+        scale = 1.0
+        for index in proposal.index[active]:
+            if proposal.loc[index] > 0.0:
+                scale = min(scale, max(cap - output.loc[index], 0.0) / proposal.loc[index])
+        for column, group_cap in constraints.items():
+            groups = candidates.loc[proposal.index, column].fillna("unclassified").astype(str)
+            for group_name in groups.loc[active].unique():
+                group_mask = groups.eq(group_name)
+                proposed = float(proposal.loc[group_mask].sum())
+                if proposed <= 0.0:
+                    continue
+                headroom = max(group_cap - float(output.loc[group_mask].sum()), 0.0)
+                scale = min(scale, headroom / proposed)
+        if scale <= 1e-12:
             break
-        output.loc[over] = cap
-        budget = 1.0 - float(output.sum())
-        remaining.loc[over] = 0.0
+        output += proposal * min(scale, 1.0)
+        active &= output.lt(cap - 1e-10)
+        for column, group_cap in constraints.items():
+            groups = candidates.loc[output.index, column].fillna("unclassified").astype(str)
+            for group_name in groups.unique():
+                group_mask = groups.eq(group_name)
+                if float(output.loc[group_mask].sum()) >= group_cap - 1e-10:
+                    active.loc[group_mask] = False
     return output
 
 
@@ -170,26 +243,148 @@ def risk_adjusted_target_weights(
     max_single_weight: float,
     current_weights: Mapping[str, float] | None = None,
     turnover_penalty: float = 0.20,
+    min_trade_weight: float = 0.0,
+    return_history: pd.DataFrame | None = None,
+    gross_exposure: float = 1.0,
+    group_constraints: Mapping[str, float] | None = None,
+    risk_aversion: float = 1.0,
+    cost_aversion: float = 1.0,
 ) -> dict[str, float]:
-    selected = candidates.sort_values("score", ascending=False).head(top_n).copy()
+    """Build long-only, capped targets from risk and active model evidence.
+
+    Inverse volatility is the stable base allocation. Active, high-confidence
+    forecasts tilt that base rather than replacing it, which keeps one noisy
+    forecast from collapsing diversification. Existing holdings are blended
+    back in to penalize turnover, and a weight-level no-trade band suppresses
+    immaterial changes before the final cap normalization.
+    """
+
+    ranked = (
+        candidates.sort_values("score", ascending=False)
+        if "score" in candidates.columns
+        else candidates
+    )
+    selected = ranked.head(top_n).copy()
     if selected.empty:
         return {}
-    expected = pd.to_numeric(selected.get("expected_excess_return"), errors="coerce")
-    confidence = pd.to_numeric(selected.get("prediction_confidence"), errors="coerce")
+    selected["_code"] = selected["code"].map(_normalize_code)
+    expected = pd.to_numeric(
+        selected.get("expected_excess_return", pd.Series(np.nan, index=selected.index)),
+        errors="coerce",
+    )
+    confidence = pd.to_numeric(
+        selected.get("prediction_confidence", pd.Series(np.nan, index=selected.index)),
+        errors="coerce",
+    )
     volatility = pd.to_numeric(
         selected.get("expected_volatility", selected.get("low_volatility_60", pd.Series(0.20, index=selected.index))),
         errors="coerce",
-    ).abs().clip(lower=0.05)
-    utility = (expected * confidence / volatility).clip(lower=0.0)
-    if utility.notna().sum() == 0 or utility.fillna(0.0).sum() <= 0:
-        equal = 1.0 / len(selected)
-        return {_normalize_code(code): equal for code in selected["code"]}
-    utility = utility.fillna(0.0)
+    ).abs()
+    valid_volatility = volatility[volatility.gt(0.0) & volatility.notna()]
+    if valid_volatility.empty:
+        base_utility = pd.Series(1.0, index=selected.index)
+        volatility = pd.Series(0.20, index=selected.index)
+    else:
+        fallback_volatility = float(valid_volatility.median())
+        volatility = volatility.where(volatility.gt(0.0), fallback_volatility).fillna(fallback_volatility)
+        volatility = volatility.clip(
+            lower=max(fallback_volatility * 0.25, 1e-4),
+            upper=max(fallback_volatility * 4.0, 1e-4),
+        )
+        inverse_volatility = 1.0 / volatility
+        median_inverse = float(inverse_volatility.median()) or 1.0
+        base_utility = (inverse_volatility / median_inverse).clip(lower=0.50, upper=2.00)
+
+    if "prediction_applied" in selected.columns:
+        applied = selected["prediction_applied"].fillna(False).astype(bool)
+    else:
+        applied = expected.notna() & confidence.notna()
+    alpha_utility = expected * confidence / volatility
+    usable_alpha = alpha_utility.loc[applied & alpha_utility.notna()]
+    tilt = pd.Series(1.0, index=selected.index)
+    if not usable_alpha.empty:
+        center = float(usable_alpha.median())
+        mad = float((usable_alpha - center).abs().median())
+        scale = mad * 1.4826
+        if scale <= 1e-12:
+            scale = max(float(usable_alpha.abs().max()), 1e-12)
+        standardized = ((alpha_utility - center) / scale).clip(lower=-1.5, upper=1.5)
+        tilt.loc[applied] = np.exp(0.45 * standardized.loc[applied].fillna(0.0))
+
+    budget = min(max(float(gross_exposure), 0.0), 1.0)
+    desired = _project_weight_budget(
+        base_utility * tilt,
+        cap=max_single_weight,
+        budget=budget,
+        candidates=selected,
+        group_constraints=group_constraints,
+    )
+
+    if return_history is not None and len(selected) > 1:
+        history = return_history.copy()
+        history.columns = [_normalize_code(column) for column in history.columns]
+        code_order = selected["_code"].tolist()
+        available = [code for code in code_order if code in history.columns]
+        numeric_history = history.loc[:, available].apply(pd.to_numeric, errors="coerce")
+        if len(available) == len(code_order) and len(numeric_history.dropna(how="all")) >= 20:
+            numeric_history = numeric_history.replace([np.inf, -np.inf], np.nan)
+            numeric_history = numeric_history.fillna(numeric_history.median()).fillna(0.0)
+            covariance = LedoitWolf().fit(numeric_history.to_numpy(dtype=float)).covariance_ * 252.0
+            diagonal_scale = float(np.median(np.diag(covariance)))
+            if diagonal_scale > 1e-12:
+                covariance /= diagonal_scale
+                anchor = desired.to_numpy(dtype=float)
+                optimized = anchor.copy()
+                for _ in range(40):
+                    marginal_risk = np.maximum(covariance @ optimized, 0.0)
+                    risk_utility = (anchor + 1e-8) / np.sqrt(np.diag(covariance) + marginal_risk + 1e-8)
+                    risk_weights = _project_weight_budget(
+                        pd.Series(risk_utility, index=selected.index),
+                        cap=max_single_weight,
+                        budget=budget,
+                        candidates=selected,
+                        group_constraints=group_constraints,
+                    ).to_numpy(dtype=float)
+                    blend = min(max(float(risk_aversion), 0.0) / (1.0 + max(float(risk_aversion), 0.0)), 0.85)
+                    optimized = (1.0 - blend) * anchor + blend * risk_weights
+                desired = _project_weight_budget(
+                    pd.Series(optimized, index=selected.index),
+                    cap=max_single_weight,
+                    budget=budget,
+                    candidates=selected,
+                    group_constraints=group_constraints,
+                )
+    normalized_current: dict[str, float] = {}
     if current_weights:
-        current = selected["code"].map(_normalize_code).map(current_weights).fillna(0.0)
-        utility = (1.0 - turnover_penalty) * utility + turnover_penalty * current
-    weights = _capped_normalize(utility, max_single_weight)
+        normalized_current = {
+            _normalize_code(code): max(float(weight), 0.0)
+            for code, weight in current_weights.items()
+        }
+        current = selected["_code"].map(normalized_current).fillna(0.0)
+        penalty = min(max(float(turnover_penalty) * max(float(cost_aversion), 0.0), 0.0), 0.95)
+        blended = (1.0 - penalty) * desired + penalty * current
+        band = max(float(min_trade_weight), 0.0)
+        if band > 0.0:
+            keep = (desired - current).abs().lt(band)
+            blended.loc[keep] = current.loc[keep]
+        desired = _project_weight_budget(
+            blended,
+            cap=max_single_weight,
+            budget=budget,
+            candidates=selected,
+            group_constraints=group_constraints,
+        )
+
+    weights = desired
     if weights.sum() <= 0:
-        equal = 1.0 / len(selected)
-        return {_normalize_code(code): equal for code in selected["code"]}
-    return {_normalize_code(code): float(weight) for code, weight in zip(selected["code"], weights)}
+        weights = _project_weight_budget(
+            pd.Series(1.0, index=selected.index),
+            cap=max_single_weight,
+            budget=budget,
+            candidates=selected,
+            group_constraints=group_constraints,
+        )
+    return {
+        code: float(weight)
+        for code, weight in zip(selected["_code"], weights)
+    }

@@ -10,6 +10,7 @@ import pandas as pd
 from stock_analyze.cli import _is_dashboard_api_path
 from stock_analyze.competition import UnknownAgent
 from stock_analyze.dashboard_aggregator import DashboardDataError, build_dashboard_detail_data
+from stock_analyze.dashboard_api import build_dashboard_portfolio_data
 
 
 def _seed_detail_repo(root: Path) -> None:
@@ -168,6 +169,45 @@ class DashboardAppApiTests(unittest.TestCase):
 
         self.assertEqual(payload["orders"]["rows"][0]["name"], "新版纳指ETF")
 
+    def test_portfolio_resource_enriches_six_digit_codes_with_fund_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_detail_repo(root)
+            data_dir = root / "data" / "cn_qdii_etf" / "codex"
+            (data_dir / "pending_orders.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "account_id": "us_exposure",
+                            "code": "513100",
+                            "side": "buy",
+                            "shares": 100,
+                            "trade_date": "2026-07-13",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            positions = pd.read_csv(data_dir / "positions.csv", dtype=str, keep_default_na=False)
+            positions.loc[0, ["code", "name"]] = ["513100", ""]
+            positions.to_csv(data_dir / "positions.csv", index=False)
+            trades = pd.read_csv(data_dir / "trades.csv", dtype=str, keep_default_na=False)
+            trades.loc[0, ["code", "name", "slippage"]] = ["513100", "", "0"]
+            trades.to_csv(data_dir / "trades.csv", index=False)
+
+            payload = build_dashboard_portfolio_data(
+                repo_root=root,
+                market="cn_qdii_etf",
+                agent="codex",
+            )
+
+        self.assertEqual(payload["orders"]["rows"][0]["name"], "纳指ETF")
+        self.assertEqual(payload["positions"]["rows"][0]["name"], "纳指ETF")
+        self.assertEqual(payload["trades"]["rows"][0]["name"], "纳指ETF")
+        self.assertGreater(payload["trades"]["rows"][0]["slippage"], 0.0)
+        self.assertEqual(payload["positions"]["rows"][0]["exposure_group"], "美国市场")
+        self.assertEqual(payload["positions"]["rows"][0]["theme"], "纳斯达克100")
+
     def test_detail_payload_reads_runtime_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -184,6 +224,7 @@ class DashboardAppApiTests(unittest.TestCase):
             self.assertEqual(payload["nav"]["latest"]["date"], "2026-07-10")
             self.assertEqual(payload["nav"]["latest"]["benchmark_code"], "513100.SH")
             self.assertEqual(len(payload["nav"]["series"]), 2)
+            self.assertAlmostEqual(payload["nav"]["series"][1]["daily_return"], 0.0005)
             self.assertEqual(payload["orders"]["summary"]["total"], 2)
             self.assertEqual(payload["orders"]["summary"]["buy"], 1)
             self.assertEqual(payload["orders"]["summary"]["sell"], 1)

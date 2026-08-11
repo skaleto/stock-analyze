@@ -1,6 +1,8 @@
+import gc
 import json
 import tempfile
 import unittest
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -48,28 +50,152 @@ class ResearchPipelineTest(unittest.TestCase):
             }
         ).to_csv(cache / f"history_{code}_20260710_1098.csv", index=False)
 
+    @staticmethod
+    def _write_benchmarks(root: Path, dates: pd.DatetimeIndex) -> None:
+        raw = root / "data" / "research" / "raw" / "a_share" / "20260710"
+        raw.mkdir(parents=True, exist_ok=True)
+        for code, end_value in (("000300", 112.0), ("000905", 106.0)):
+            pd.DataFrame({
+                "ts_code": [f"{code}.SH"] * len(dates),
+                "trade_date": dates.strftime("%Y%m%d"),
+                "close": np.linspace(100.0, end_value, len(dates)),
+            }).to_parquet(raw / f"benchmark_{code}.parquet", index=False)
+
     def test_prepare_is_idempotent_and_research_runs_in_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._write_history(root)
+            self._write_benchmarks(root, pd.date_range("2026-01-01", periods=140, freq="B"))
             pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10", offline=True)
 
             first = pipeline.prepare_data()
             second = pipeline.prepare_data()
             research = pipeline.run_research()
             snapshot = pipeline.store.read_feature_snapshot("a_share", "2026-07-10")
+            labels = pipeline.store.read_label_snapshot("a_share", "2026-07-10")
+            feature_metadata = json.loads(
+                (pipeline.store.feature_snapshot_path("a_share", "2026-07-10").with_suffix(".metadata.json"))
+                .read_text(encoding="utf-8")
+            )
 
         self.assertEqual(first["status"], "built")
         self.assertEqual(second["status"], "cached")
         self.assertEqual(snapshot.iloc[0]["code"], "000001")
+        float_columns = snapshot.select_dtypes(include=["floating"]).columns
+        self.assertTrue(float_columns.any())
+        self.assertTrue(all(snapshot[column].dtype.itemsize <= 4 for column in float_columns))
         self.assertGreater(research["labels_rows"], 0)
         self.assertGreater(research["events_rows"], 0)
+        self.assertGreaterEqual(research["benchmark_coverage"], 0.95)
         self.assertEqual(research["stages"], ["features", "labels", "events", "regimes", "event_study"])
+
+        self.assertTrue(labels["benchmark_return"].notna().all())
+        self.assertFalse(np.allclose(labels["absolute_return"], labels["excess_return"]))
+        self.assertEqual(len(feature_metadata["registry_hash"]), 16)
+        self.assertIn("high_value_add_proxy", feature_metadata["registered_features"])
+
+    def test_prepare_batches_history_feature_concatenation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index in range(5):
+                self._write_history(root, rows=40, code=f"{index + 1:06d}")
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="codex",
+                as_of="2026-07-10",
+                offline=True,
+            )
+            history_batch_sizes = []
+            real_concat = pd.concat
+
+            def observed_concat(frames, *args, **kwargs):
+                materialized = list(frames)
+                if materialized and all("history_role" in frame.columns for frame in materialized):
+                    history_batch_sizes.append(len(materialized))
+                return real_concat(materialized, *args, **kwargs)
+
+            with (
+                patch.object(ResearchPipeline, "_FEATURE_BATCH_SIZE", 2, create=True),
+                patch("stock_analyze.research.pipeline.pd.concat", side_effect=observed_concat),
+            ):
+                result = pipeline.prepare_data(force=True)
+
+        self.assertEqual(result["instruments"], 5)
+        self.assertTrue(history_batch_sizes)
+        self.assertLessEqual(max(history_batch_sizes), 2)
+
+    def test_research_releases_stage_frames_before_next_large_stage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_history(root)
+            dates = pd.date_range("2026-01-01", periods=140, freq="B")
+            self._write_benchmarks(root, dates)
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="codex",
+                as_of="2026-07-10",
+                offline=True,
+            )
+            pipeline.prepare_data()
+            label_ref: dict[str, weakref.ReferenceType[pd.DataFrame]] = {}
+            feature_ref: dict[str, weakref.ReferenceType[pd.DataFrame]] = {}
+
+            def fake_labels(prices, **_kwargs):
+                latest = prices.sort_values("trade_date").iloc[-1]
+                frame = pd.DataFrame([{
+                    "code": latest["code"],
+                    "trade_date": latest["trade_date"],
+                    "horizon": 5,
+                    "label": "up",
+                    "excess_return": 0.01,
+                }])
+                label_ref["value"] = weakref.ref(frame)
+                return frame
+
+            def fake_event_writer(features, *, market, destination, regime_by_date):
+                gc.collect()
+                self.assertIsNone(label_ref["value"]())
+                feature_ref["value"] = weakref.ref(features)
+                latest = features.sort_values("trade_date").iloc[-1]
+                self.assertIn(str(latest["trade_date"]), regime_by_date)
+                Path(destination).parent.mkdir(parents=True, exist_ok=True)
+                pd.DataFrame([{
+                    "event_id": "event-1",
+                    "event": "macd_golden_cross",
+                    "market": market,
+                    "code": latest["code"],
+                    "trade_date": latest["trade_date"],
+                    "direction": "up",
+                    "regime": "unknown",
+                    "industry": "unclassified",
+                    "context": "{}",
+                }]).to_parquet(destination, index=False)
+                return 1
+
+            def fake_event_study(events_path, labels_path):
+                gc.collect()
+                self.assertIsNone(feature_ref["value"]())
+                self.assertTrue(Path(events_path).exists())
+                self.assertTrue(Path(labels_path).exists())
+                return pd.DataFrame()
+
+            with (
+                patch("stock_analyze.research.pipeline.build_forward_labels", new=fake_labels),
+                patch("stock_analyze.research.pipeline.write_events_incremental", new=fake_event_writer),
+                patch("stock_analyze.research.pipeline.build_event_study_from_parquet", new=fake_event_study),
+            ):
+                result = pipeline.run_research()
+
+        self.assertEqual(result["labels_rows"], 1)
+        self.assertEqual(result["events_rows"], 1)
 
     def test_prediction_model_failure_writes_fallback_health(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._write_history(root)
+            self._write_benchmarks(root, pd.date_range("2026-01-01", periods=140, freq="B"))
             pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10", offline=True)
             pipeline.prepare_data()
             with patch("stock_analyze.research.pipeline.load_model_bundle", side_effect=ValueError("bad model")):
@@ -77,6 +203,41 @@ class ResearchPipelineTest(unittest.TestCase):
 
             self.assertEqual(result["status"], "fallback")
             self.assertTrue(Path(result["health_path"]).exists())
+
+    def test_prediction_accuracy_backfill_is_idempotent_and_uses_realized_labels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10", offline=True)
+            pipeline.store.write_label_snapshot(
+                "a_share",
+                "2026-07-10",
+                pd.DataFrame([{
+                    "code": "000001", "trade_date": "20260701", "horizon": 5,
+                    "label": "up", "excess_return": 0.04, "label_end_date": "20260708",
+                }]),
+            )
+            prediction_dir = root / "data" / "a_share" / "codex" / "predictions"
+            prediction_dir.mkdir(parents=True)
+            pd.DataFrame([{
+                "as_of": "2026-07-01", "code": "000001", "horizon": 5,
+                "p_down": 0.10, "p_flat": 0.20, "p_up": 0.70,
+                "expected_excess_return": 0.03, "confidence": 0.80,
+                "model_version": "m1", "active_status": "inactive",
+            }]).to_parquet(prediction_dir / "20260701.parquet", index=False)
+
+            first = pipeline.backfill_prediction_accuracy()
+            second = pipeline.backfill_prediction_accuracy()
+            accuracy = pd.read_csv(
+                root / "data" / "a_share" / "codex" / "prediction_accuracy.csv",
+                dtype={"code": str, "as_of": str, "model_version": str},
+            )
+
+        self.assertEqual(first["evaluated"], 1)
+        self.assertEqual(second["evaluated"], 1)
+        self.assertEqual(len(accuracy), 1)
+        self.assertTrue(bool(accuracy.iloc[0]["correct"]))
+        self.assertAlmostEqual(float(accuracy.iloc[0]["brier_score"]), 0.14)
+        self.assertAlmostEqual(float(accuracy.iloc[0]["return_error"]), -0.01)
 
     def test_prediction_writes_all_four_horizons_atomically(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -142,11 +303,12 @@ class ResearchPipelineTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._write_history(root)
+            self._write_benchmarks(root, pd.date_range("2026-01-01", periods=140, freq="B"))
             pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10", offline=True)
             pipeline.prepare_data()
             a_raw = root / "data" / "research" / "raw" / "a_share" / "20260710"
             qdii_raw = root / "data" / "research" / "raw" / "cn_qdii_etf" / "20260710"
-            a_raw.mkdir(parents=True)
+            a_raw.mkdir(parents=True, exist_ok=True)
             qdii_raw.mkdir(parents=True)
             pd.DataFrame([
                 {"MONTH": "202604", "PMI010000": 49.0},
@@ -190,6 +352,10 @@ class ResearchPipelineTest(unittest.TestCase):
                         "industry": industry,
                     })
             pipeline.store.write_feature_snapshot("a_share", "2026-07-10", pd.DataFrame(rows))
+            self._write_benchmarks(
+                root,
+                pd.date_range("2026-05-25", periods=35, freq="B"),
+            )
 
             pipeline.run_research()
             regimes = pd.read_parquet(pipeline._artifact_path("regimes"))
@@ -262,10 +428,16 @@ class ResearchPipelineTest(unittest.TestCase):
             ):
                 result = pipeline.train_models()
             registry = json.loads((root / "data" / "research" / "models" / "a_share" / "3" / "registry.json").read_text())
+            trials = (
+                root / "data" / "research" / "models" / "a_share" / "3" / "trials.jsonl"
+            ).read_text(encoding="utf-8").splitlines()
 
         self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["snapshot_date"], "20260710")
         self.assertEqual(registry["models"]["m3"]["status"], "shadow")
         self.assertTrue(registry["models"]["m3"]["gate_history"][-1]["passed"])
+        self.assertEqual(len(trials), 1)
+        self.assertIn("governance", registry["models"]["m3"])
 
     def test_fourth_shadow_prediction_cycle_promotes_model_for_next_run(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -299,7 +471,7 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(registry["champion_model_version"], "m5")
         self.assertEqual(registry["models"]["m5"]["status"], "active")
 
-    def test_shadow_challenger_runs_alongside_existing_champion(self):
+    def test_pinned_iteration_candidate_runs_alongside_existing_champion(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             pipeline = ResearchPipeline(root, market="a_share", agent="codex", as_of="2026-07-10", offline=True)
@@ -335,12 +507,32 @@ class ResearchPipelineTest(unittest.TestCase):
             ):
                 pipeline.predict(horizon=5)
             main = pd.read_parquet(root / "data" / "a_share" / "codex" / "predictions" / "20260710.parquet")
-            shadow = pd.read_parquet(root / "data" / "research" / "shadow_predictions" / "a_share" / "5" / "challenger" / "20260710.parquet")
+            challenger = pd.read_parquet(
+                root
+                / "data"
+                / "research"
+                / "iteration_predictions"
+                / "a_share"
+                / "5"
+                / "challenger"
+                / "20260710.parquet"
+            )
             cycles = json.loads((model_root / "shadow_cycles.json").read_text())
+            iteration_state = json.loads(
+                (
+                    root
+                    / "data"
+                    / "model_iterations"
+                    / "a_share"
+                    / "5"
+                    / "iteration_state.json"
+                ).read_text()
+            )
 
         self.assertEqual(main.iloc[0]["model_version"], "champion")
-        self.assertEqual(shadow.iloc[0]["model_version"], "challenger")
+        self.assertEqual(challenger.iloc[0]["model_version"], "challenger")
         self.assertEqual(len(cycles["models"]["challenger"]["cycles"]), 1)
+        self.assertEqual(iteration_state["current_candidate"]["model_version"], "challenger")
 
     def test_online_prepare_persists_normalized_source_frames(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -413,6 +605,52 @@ class ResearchPipelineTest(unittest.TestCase):
 
         self.assertEqual(len(collect.call_args.kwargs["codes"]), 40)
 
+    def test_persisted_sources_accumulate_instrument_coverage_across_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for run_key, code in (("20260709", "000001.SZ"), ("20260710", "000002.SZ")):
+                raw = root / "data" / "research" / "raw" / "a_share" / run_key
+                raw.mkdir(parents=True)
+                pd.DataFrame([
+                    {
+                        "ts_code": code,
+                        "ann_date": "20260425",
+                        "end_date": "20260331",
+                        "roe": 10.0,
+                        "observed_at": f"{run_key}T18:00:00+08:00",
+                    }
+                ]).to_parquet(raw / "fina_indicator.parquet", index=False)
+            pipeline = ResearchPipeline(
+                root, market="a_share", agent="codex", as_of="2026-07-10", offline=True
+            )
+
+            frames = pipeline._load_persisted_source_frames()
+
+        self.assertEqual(
+            set(frames["fina_indicator"]["ts_code"].astype(str)),
+            {"000001.SZ", "000002.SZ"},
+        )
+
+    def test_research_source_batch_prioritizes_missing_financial_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "data" / "research" / "raw" / "a_share" / "20260709"
+            raw.mkdir(parents=True)
+            pd.DataFrame([
+                {"ts_code": "000001.SZ", "ann_date": "20260425", "end_date": "20260331", "roe": 10.0}
+            ]).to_parquet(raw / "fina_indicator.parquet", index=False)
+            pipeline = ResearchPipeline(
+                root, market="a_share", agent="codex", as_of="2026-07-10", offline=True
+            )
+
+            ordered = pipeline._research_source_codes(
+                ["000001", "000002", "000003"],
+                {"000001", "000002", "000003"},
+            )
+
+        self.assertEqual(ordered[:2], ["000002", "000003"])
+        self.assertEqual(ordered[-1], "000001")
+
     def test_a_share_keeps_full_history_sample_and_latest_row_for_all_codes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -483,11 +721,11 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertTrue(selected[0].name.endswith("_1098.csv"))
 
-    def test_default_a_share_full_history_budget_is_sixty_instruments(self):
+    def test_default_a_share_keeps_full_history_for_every_instrument(self):
         with tempfile.TemporaryDirectory() as tmp:
             pipeline = ResearchPipeline(Path(tmp), market="a_share", agent="codex")
             selected = pipeline._full_history_codes([f"{index:06d}" for index in range(100)])
-        self.assertEqual(len(selected), 60)
+        self.assertEqual(len(selected), 100)
 
 
 if __name__ == "__main__":

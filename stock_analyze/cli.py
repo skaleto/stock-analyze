@@ -407,6 +407,24 @@ def build_parser() -> argparse.ArgumentParser:
         research.add_argument("--repo-root", type=Path, default=Path("."))
         research.add_argument("--force", action="store_true", help="Rebuild an existing feature snapshot.")
 
+    for command, help_text in (
+        (
+            "run-model-iteration",
+            "Run the pinned Challenger model paper portfolio for one market.",
+        ),
+        (
+            "run-model-shadow",
+            "Compatibility alias for run-model-iteration.",
+        ),
+    ):
+        model_iteration = sub.add_parser(command, help=help_text)
+        model_iteration.add_argument(
+            "--offline",
+            action="store_true",
+            help="Use only point-in-time market caches.",
+        )
+        model_iteration.add_argument("--repo-root", type=Path, default=Path("."))
+
     return parser
 
 
@@ -635,6 +653,9 @@ def main(argv: list[str] | None = None) -> int:
     }:
         ensure_dirs(args.logs_dir)
         return _command_research_workflow(args)
+    if args.command in {"run-model-iteration", "run-model-shadow"}:
+        ensure_dirs(args.logs_dir)
+        return _command_run_model_iteration(args)
 
     try:
         config, data_dir, reports_dir, cache_dir, market = _resolve_runtime(args)
@@ -753,6 +774,24 @@ def _command_research_workflow(args: argparse.Namespace) -> int:
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result.get("status") not in {"failed"} else 2
+
+
+def _command_run_model_iteration(args: argparse.Namespace) -> int:
+    from .model_shadow import run_model_iteration
+
+    as_of = args.as_of or date.today().isoformat()
+    try:
+        result = run_model_iteration(
+            repo_root=args.repo_root,
+            market=args.market,
+            as_of=as_of,
+            offline=bool(args.offline),
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI reports a bounded failure
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
 
 
 def _command_competition_init() -> int:
