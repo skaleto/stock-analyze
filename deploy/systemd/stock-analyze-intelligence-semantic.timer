@@ -1,0 +1,11 @@
+[Unit]
+Description=Prepare or execute the daily announcement semantic batch
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 22:10:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=2m
+Unit=stock-analyze-intelligence-semantic.service
+
+[Install]
+WantedBy=timers.target

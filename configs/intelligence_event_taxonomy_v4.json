@@ -1,0 +1,1881 @@
+{
+  "schema_version": 2,
+  "taxonomy_version": "cn-announcement-taxonomy-v4",
+  "events": [
+    {
+      "event_type": "earnings_forecast",
+      "allowed_lifecycle": [
+        "approved",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "period",
+            "yoy_lower",
+            "yoy_upper"
+          ],
+          "one_of_sets": [
+            [
+              "net_profit_lower",
+              "net_profit_upper"
+            ],
+            [
+              "revenue_lower",
+              "revenue_upper"
+            ]
+          ],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [
+              "period"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "previous_period_net_profit",
+        "forecast_reason",
+        "currency"
+      ],
+      "direction_rule": "earnings_forecast_midpoint_growth_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "fact:period"
+      ],
+      "default_horizon_days": 20,
+      "fact_specs": {
+        "currency": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "forecast_reason": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "net_profit_lower": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "net_profit_upper": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "period": {
+          "value_type": "period",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "previous_period_net_profit": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "revenue_lower": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "revenue_upper": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "yoy_lower": {
+          "value_type": "ratio",
+          "allowed_unit_kinds": [
+            "ratio"
+          ],
+          "evidence_terms_any": []
+        },
+        "yoy_upper": {
+          "value_type": "ratio",
+          "allowed_unit_kinds": [
+            "ratio"
+          ],
+          "evidence_terms_any": []
+        }
+      }
+    },
+    {
+      "event_type": "earnings_flash",
+      "allowed_lifecycle": [
+        "completed",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "period",
+            "revenue",
+            "net_profit"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "completed": {
+            "all_of": [
+              "period",
+              "revenue",
+              "net_profit"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "never",
+            "unmatched_fallback": "not_applicable"
+          },
+          "revised": {
+            "all_of": [
+              "period"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "revenue_yoy",
+        "net_profit_yoy",
+        "total_assets",
+        "net_assets",
+        "currency"
+      ],
+      "direction_rule": "earnings_flash_profit_growth_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "fact:period"
+      ],
+      "default_horizon_days": 20,
+      "fact_specs": {
+        "currency": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "net_assets": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency",
+            "price"
+          ],
+          "evidence_terms_any": []
+        },
+        "net_profit": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "net_profit_yoy": {
+          "value_type": "ratio",
+          "allowed_unit_kinds": [
+            "ratio"
+          ],
+          "evidence_terms_any": []
+        },
+        "period": {
+          "value_type": "period",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "revenue": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "revenue_yoy": {
+          "value_type": "ratio",
+          "allowed_unit_kinds": [
+            "ratio"
+          ],
+          "evidence_terms_any": []
+        },
+        "total_assets": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        }
+      }
+    },
+    {
+      "event_type": "buyback",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "price_cap"
+          ],
+          "one_of_sets": [
+            [
+              "amount_lower"
+            ],
+            [
+              "amount_upper"
+            ],
+            [
+              "share_count_lower"
+            ],
+            [
+              "share_count_upper"
+            ]
+          ],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "share_ratio_lower",
+        "share_ratio_upper",
+        "funding_source",
+        "purpose",
+        "implementation_period",
+        "executed_amount",
+        "executed_share_count"
+      ],
+      "direction_rule": "buyback_completion_materiality_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "date:approval_date",
+        "fact:price_cap"
+      ],
+      "default_horizon_days": 60,
+      "fact_specs": {
+        "amount_lower": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "amount_upper": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "executed_amount": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "executed_share_count": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "shares"
+          ],
+          "evidence_terms_any": []
+        },
+        "funding_source": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "implementation_period": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "price_cap": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "price",
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "purpose": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "share_count_lower": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "shares"
+          ],
+          "evidence_terms_any": []
+        },
+        "share_count_upper": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "shares"
+          ],
+          "evidence_terms_any": []
+        },
+        "share_ratio_lower": {
+          "value_type": "ratio",
+          "allowed_unit_kinds": [
+            "ratio"
+          ],
+          "evidence_terms_any": []
+        },
+        "share_ratio_upper": {
+          "value_type": "ratio",
+          "allowed_unit_kinds": [
+            "ratio"
+          ],
+          "evidence_terms_any": []
+        }
+      }
+    },
+    {
+      "event_type": "shareholder_change",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer",
+        "holder"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "action"
+          ],
+          "one_of_sets": [
+            [
+              "share_count"
+            ],
+            [
+              "share_ratio"
+            ]
+          ],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [
+              "action"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [
+              "action"
+            ],
+            "one_of_sets": [
+              [
+                "share_count"
+              ],
+              [
+                "share_ratio"
+              ]
+            ],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [
+              "action"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [
+              "action"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "price_lower",
+        "price_upper",
+        "holding_after",
+        "change_period",
+        "change_method"
+      ],
+      "direction_rule": "shareholder_net_change_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "subject:holder",
+        "fact:action",
+        "date:change_date"
+      ],
+      "default_horizon_days": 20,
+      "fact_specs": {
+        "action": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "change_method": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "change_period": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "holding_after": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "shares"
+          ],
+          "evidence_terms_any": []
+        },
+        "price_lower": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "price",
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "price_upper": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "price",
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "share_count": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "shares"
+          ],
+          "evidence_terms_any": []
+        },
+        "share_ratio": {
+          "value_type": "ratio",
+          "allowed_unit_kinds": [
+            "ratio"
+          ],
+          "evidence_terms_any": []
+        }
+      }
+    },
+    {
+      "event_type": "dividend",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "distribution_plan"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "completed": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [
+              "record_date"
+            ],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "distribution_period",
+        "cash_per_share",
+        "stock_per_share",
+        "tax_included"
+      ],
+      "direction_rule": "dividend_yield_lifecycle_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "fact:distribution_period",
+        "date:record_date"
+      ],
+      "default_horizon_days": 60,
+      "fact_specs": {
+        "cash_per_share": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "price",
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "distribution_period": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "distribution_plan": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "stock_per_share": {
+          "value_type": "ratio",
+          "allowed_unit_kinds": [
+            "ratio"
+          ],
+          "evidence_terms_any": []
+        },
+        "tax_included": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        }
+      }
+    },
+    {
+      "event_type": "major_contract",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer",
+        "counterparty"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "contract_amount",
+            "contract_period"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "contract_subject",
+        "currency",
+        "performance_conditions",
+        "recognized_revenue"
+      ],
+      "direction_rule": "contract_revenue_materiality_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "subject:counterparty",
+        "fact:contract_subject",
+        "fact:contract_amount"
+      ],
+      "default_horizon_days": 60,
+      "fact_specs": {
+        "contract_amount": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "contract_period": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "contract_subject": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "currency": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "performance_conditions": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "recognized_revenue": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        }
+      }
+    },
+    {
+      "event_type": "merger_restructuring",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer",
+        "target"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "transaction_type",
+            "consideration"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "cash_consideration",
+        "share_consideration",
+        "issue_price",
+        "dilution_ratio",
+        "regulatory_approval"
+      ],
+      "direction_rule": "restructuring_lifecycle_dilution_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "fact:transaction_type",
+        "subject:target"
+      ],
+      "default_horizon_days": 60,
+      "fact_specs": {
+        "cash_consideration": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": [
+            "现金对价",
+            "支付现金",
+            "现金支付"
+          ]
+        },
+        "consideration": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": [
+            "交易对价",
+            "交易作价",
+            "作价",
+            "支付金额",
+            "支付对价"
+          ]
+        },
+        "dilution_ratio": {
+          "value_type": "ratio",
+          "allowed_unit_kinds": [
+            "ratio"
+          ],
+          "evidence_terms_any": []
+        },
+        "issue_price": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "price",
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "regulatory_approval": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "share_consideration": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "shares"
+          ],
+          "evidence_terms_any": [
+            "股份对价",
+            "发行股份",
+            "股份支付"
+          ]
+        },
+        "transaction_type": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        }
+      }
+    },
+    {
+      "event_type": "equity_financing",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "financing_method",
+            "use_of_proceeds"
+          ],
+          "one_of_sets": [
+            [
+              "amount"
+            ],
+            [
+              "amount_lower",
+              "amount_upper"
+            ]
+          ],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "issue_price",
+        "issue_price_lower",
+        "issue_price_upper",
+        "share_count",
+        "dilution_ratio",
+        "lockup_period",
+        "net_proceeds"
+      ],
+      "direction_rule": "equity_financing_dilution_use_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "fact:financing_method",
+        "date:board_approval_date"
+      ],
+      "default_horizon_days": 60,
+      "fact_specs": {
+        "amount": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "amount_lower": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "amount_upper": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "dilution_ratio": {
+          "value_type": "ratio",
+          "allowed_unit_kinds": [
+            "ratio"
+          ],
+          "evidence_terms_any": []
+        },
+        "financing_method": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "issue_price": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "price",
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "issue_price_lower": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "price",
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "issue_price_upper": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "price",
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "lockup_period": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "net_proceeds": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "share_count": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "shares"
+          ],
+          "evidence_terms_any": []
+        },
+        "use_of_proceeds": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        }
+      }
+    },
+    {
+      "event_type": "guarantee",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer",
+        "beneficiary"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "guarantee_amount"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "guarantee_balance",
+        "net_asset_ratio",
+        "related_party",
+        "guarantee_period",
+        "counter_guarantee"
+      ],
+      "direction_rule": "guarantee_net_asset_risk_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "subject:beneficiary",
+        "date:guarantee_date",
+        "fact:guarantee_amount"
+      ],
+      "default_horizon_days": 60,
+      "fact_specs": {
+        "counter_guarantee": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "guarantee_amount": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "guarantee_balance": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "guarantee_period": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "net_asset_ratio": {
+          "value_type": "ratio",
+          "allowed_unit_kinds": [
+            "ratio"
+          ],
+          "evidence_terms_any": []
+        },
+        "related_party": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        }
+      }
+    },
+    {
+      "event_type": "pledge_freeze",
+      "allowed_lifecycle": [
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer",
+        "holder"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "action"
+          ],
+          "one_of_sets": [
+            [
+              "share_count"
+            ],
+            [
+              "share_ratio"
+            ]
+          ],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [
+              "action"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [
+              "action"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [
+              "action"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [
+              "action"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "cumulative_share_count",
+        "cumulative_share_ratio",
+        "purpose"
+      ],
+      "direction_rule": "pledge_freeze_action_risk_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "subject:holder",
+        "fact:action",
+        "date:start_date"
+      ],
+      "default_horizon_days": 20,
+      "fact_specs": {
+        "action": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "cumulative_share_count": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "shares"
+          ],
+          "evidence_terms_any": []
+        },
+        "cumulative_share_ratio": {
+          "value_type": "ratio",
+          "allowed_unit_kinds": [
+            "ratio"
+          ],
+          "evidence_terms_any": []
+        },
+        "purpose": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "share_count": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "shares"
+          ],
+          "evidence_terms_any": []
+        },
+        "share_ratio": {
+          "value_type": "ratio",
+          "allowed_unit_kinds": [
+            "ratio"
+          ],
+          "evidence_terms_any": []
+        }
+      }
+    },
+    {
+      "event_type": "litigation_arbitration",
+      "allowed_lifecycle": [
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer",
+        "counterparty"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "issuer_role",
+            "case_amount",
+            "case_stage"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [
+              "case_stage"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [
+              "issuer_role",
+              "case_stage"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [
+              "case_stage"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [
+              "case_stage"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "case_number",
+        "claim",
+        "judgment_amount",
+        "provision_amount"
+      ],
+      "direction_rule": "litigation_role_stage_loss_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "subject:counterparty",
+        "fact:case_amount"
+      ],
+      "default_horizon_days": 60,
+      "fact_specs": {
+        "case_amount": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "case_number": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "case_stage": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "claim": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "issuer_role": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "judgment_amount": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "provision_amount": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        }
+      }
+    },
+    {
+      "event_type": "investigation_penalty",
+      "allowed_lifecycle": [
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer",
+        "authority"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "action_type"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [
+              "action_type"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [
+              "action_type"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [
+              "action_type"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [
+              "action_type"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "document_number",
+        "reason",
+        "penalty_amount",
+        "remediation"
+      ],
+      "direction_rule": "regulatory_action_stage_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "subject:authority",
+        "fact:document_number"
+      ],
+      "default_horizon_days": 60,
+      "fact_specs": {
+        "action_type": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "document_number": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "penalty_amount": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "reason": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "remediation": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        }
+      }
+    },
+    {
+      "event_type": "risk_warning_delisting",
+      "allowed_lifecycle": [
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "risk_type",
+            "trigger"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [
+              "risk_type"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [
+              "risk_type"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [
+              "risk_type"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [
+              "risk_type"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "removal_conditions",
+        "exchange_decision",
+        "security_name_change"
+      ],
+      "direction_rule": "listing_risk_state_transition_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "fact:risk_type",
+        "date:effective_date"
+      ],
+      "default_horizon_days": 60,
+      "fact_specs": {
+        "exchange_decision": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "removal_conditions": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "risk_type": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "security_name_change": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "trigger": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        }
+      }
+    },
+    {
+      "event_type": "capacity_project",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "project_type",
+            "expected_operation_date"
+          ],
+          "one_of_sets": [
+            [
+              "capex"
+            ],
+            [
+              "capacity"
+            ]
+          ],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "project_location",
+        "funding_source",
+        "construction_period",
+        "expected_revenue",
+        "expected_profit"
+      ],
+      "direction_rule": "capacity_lifecycle_asset_materiality_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "fact:project_type"
+      ],
+      "default_horizon_days": 120,
+      "fact_specs": {
+        "capacity": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "mass",
+            "mass_rate",
+            "count",
+            "count_rate",
+            "area",
+            "area_rate",
+            "power",
+            "energy"
+          ],
+          "evidence_terms_any": []
+        },
+        "capex": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": []
+        },
+        "construction_period": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "expected_operation_date": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "expected_profit": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": [
+            "利润",
+            "净利润"
+          ]
+        },
+        "expected_revenue": {
+          "value_type": "number",
+          "allowed_unit_kinds": [
+            "currency"
+          ],
+          "evidence_terms_any": [
+            "营业收入",
+            "销售收入",
+            "收入"
+          ]
+        },
+        "funding_source": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "project_location": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "project_type": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        }
+      }
+    },
+    {
+      "event_type": "control_change",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer",
+        "old_controller",
+        "new_controller"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "change_method"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "share_ratio_before",
+        "share_ratio_after",
+        "consideration",
+        "approval_conditions"
+      ],
+      "direction_rule": "control_change_completion_financing_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "subject:old_controller",
+        "subject:new_controller",
+        "fact:change_method"
+      ],
+      "default_horizon_days": 60,
+      "fact_specs": {
+        "approval_conditions": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "change_method": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": []
+        },
+        "consideration": {
+          "value_type": "text",
+          "allowed_unit_kinds": [],
+          "evidence_terms_any": [
+            "转让价款",
+            "交易对价",
+            "收购价款",
+            "作价",
+            "支付金额",
+            "无偿划转"
+          ]
+        },
+        "share_ratio_after": {
+          "value_type": "ratio",
+          "allowed_unit_kinds": [
+            "ratio"
+          ],
+          "evidence_terms_any": []
+        },
+        "share_ratio_before": {
+          "value_type": "ratio",
+          "allowed_unit_kinds": [
+            "ratio"
+          ],
+          "evidence_terms_any": []
+        }
+      }
+    }
+  ]
+}

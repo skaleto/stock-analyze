@@ -1,0 +1,46 @@
+{
+  "season_id": "dual_strategy_2026_s1",
+  "name": "双策略对抗 · 赛季1",
+  "effective_date": "2026-07-11",
+  "rule_changes": [
+    {
+      "effective_date": "2026-07-13",
+      "decision_cadence": "daily_after_close",
+      "execution": "next_trading_day_open",
+      "note": "Current-season change: daily decisions replace calendar weekly rebalancing; weekly jobs are review-only."
+    }
+  ],
+  "factor_distance_floor": 0.45,
+  "model_policy": {
+    "defensive": {
+      "required_role": "ranker",
+      "horizon_weights": {
+        "10": 0.4,
+        "20": 0.6
+      },
+      "max_prediction_age_days": 5,
+      "missing_behavior": "rule_only"
+    },
+    "trend": {
+      "required_role": "ranker",
+      "horizon_weights": {
+        "3": 0.5,
+        "5": 0.5
+      },
+      "max_prediction_age_days": 3,
+      "missing_behavior": "rule_only"
+    }
+  },
+  "slots": {
+    "claude": {
+      "label": "稳健防守",
+      "description": "价值质量、低波与低换手",
+      "color": "#d6a84b"
+    },
+    "codex": {
+      "label": "趋势进攻",
+      "description": "动量成长与主动换仓",
+      "color": "#22d3ee"
+    }
+  }
+}

@@ -91,7 +91,8 @@ curl -s 'http://127.0.0.1:8765/api/dashboard/governance.json?market=a_share&agen
 ```
 
 `run-daily` 顺序固定为执行到期订单、更新净值、生成下一交易日目标。`run-weekly` 不下单。
-候选模型由 `stock-analyze-model-iteration.service` 独立运行；即使候选预测缺失或
+候选模型在四个正式 daily 账本全部成功后由 `stock-analyze-model-iteration.service`
+独立运行；即使候选预测缺失或
 模型组合失败，四个正式账户仍会按 Active 模型或固定规则路径继续执行。
 
 历史公告 PDF 下载和解析可以交给本机有界 worker，但 ECS SQLite 始终是唯一
@@ -148,6 +149,15 @@ npm run build
 - PDF 回填以退出码 75 且 `Result=success` 结束，表示 reconcile 锁占用了 worker 槽位，页面显示为“已跳过”。
 - 运行中心最多读取 20 行运行账本，不读取完整 journal；模型研究、数据与情报、运行中心三个接口的 UTF-8 JSON 都必须小于 250 KB。
 - 单个资源读取失败只写入稳定的 `errors[].resource/reason`，其余有效阶段、矩阵、计划和历史继续展示；异常文本、文件路径与凭据不得进入响应。
+
+## Classical Model Economic Contract
+
+- QDII Tushare `amount` 只能在研究面板边界从千元转换一次；下游统一消费 `amount_yuan` / `amount_unit=yuan`，单位不匹配必须失败关闭。
+- 回放与模型模拟共用结构化执行成本证据：基准滑点、冲击成本、参与率、流动性状态、封顶标记及 p50/p90 汇总。流动性缺失成交额超过 5% 或成本封顶成交额超过 10% 时，排序/组合模型不得晋升。
+- 模型可每日评分，但普通调仓只有在预期超额覆盖往返成本、安全倍数和预测不确定性后才部分执行；持仓缓冲区、小目标变化和每日换手上限不影响硬风险退出。
+- Dashboard 的“模型训练/测试验收”展示每个周期最新的终态版本；“模拟运行”独立展示当前 Challenger。两者不允许混成一个版本，也不能把 `rejected` 版本标成 Shadow/Active。
+- Dashboard 发布后必须用真实 ECS 响应验证 A 股和跨境 ETF 模型接口，并在桌面与 390px 手机视口检查：页面无错误横幅、无控制台错误、关键表格有行、宽表只在自身容器内横向滚动。
+- 未出现 Active Champion 时，正式策略保持 `rule_only`，模型重训和模型模拟不得修改正式订单、持仓或竞赛净值。
 
 ## 7. ECS 检查
 

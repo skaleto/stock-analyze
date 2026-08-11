@@ -1,0 +1,39 @@
+schema_version: 1
+production_extraction_profile: a-share-announcement-mentions-v1
+
+availability:
+  historical_cutoff: "2026-07-17T23:59:59+08:00"
+  missing_rec_time_policy: next_trading_day_open
+
+artifact_store:
+  production_kind: oss
+  development_kind: local
+  download_workers: 4
+  download_max_attempts: 2
+  download_connect_timeout_seconds: 5
+  download_read_timeout_seconds: 15
+  download_total_timeout_seconds: 30
+  minimum_ecs_free_bytes: 5368709120
+  endpoint: https://oss-cn-hangzhou-internal.aliyuncs.com
+  bucket: stock-analyze-hz
+  access_point_alias: stock-analyze-hz-9c905c5c1755f4d81c452a8e6347839f1a-ossalias
+  key_prefix: announcements
+  credential_env:
+    access_key_id_file: INTELLIGENCE_OSS_ACCESS_KEY_ID_FILE
+    access_key_secret_file: INTELLIGENCE_OSS_ACCESS_KEY_SECRET_FILE
+  local_root: data/shared/intelligence/artifacts
+  max_pdf_bytes: 52428800
+  allowed_hosts:
+    - static.cninfo.com.cn
+    - www.cninfo.com.cn
+    - dataclouds.cninfo.com.cn
+
+parser:
+  version: announcement-layout-v1
+  workers: 1
+  min_text_characters_per_page: 20
+  ocr_engine: tesseract
+  ocr_languages: chi_sim+eng
+  ocr_render_dpi: 300
+  extract_tables: true
+  preserve_page_coordinates: true

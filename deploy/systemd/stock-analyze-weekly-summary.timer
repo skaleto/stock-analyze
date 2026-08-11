@@ -1,0 +1,11 @@
+[Unit]
+Description=Send weekly pipeline status and Codex review reminder
+
+[Timer]
+OnCalendar=Sat *-*-* 10:45:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=stock-analyze-weekly-summary.service
+
+[Install]
+WantedBy=timers.target

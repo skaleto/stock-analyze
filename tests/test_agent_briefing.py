@@ -77,7 +77,7 @@ class WeeklyBriefingTests(unittest.TestCase):
             text = build_weekly_briefing("claude", as_of="2026-05-22", repo_root=root)
             for header in ("# 角色", "# 数据快照", "# 任务", "# 输出契约", "# 可选参考"):
                 self.assertIn(header, text)
-            self.assertIn("data/claude/notes/2026-05-22-weekly-review.md", text)
+            self.assertIn("data/a_share/claude/notes/2026-05-22-weekly-review.md", text)
             self.assertIn("**本周不要修改任何 `configs/`", text)
 
     def test_write_briefing_to_canonical_path(self) -> None:
@@ -103,10 +103,10 @@ class MonthlyBriefingTests(unittest.TestCase):
             text = build_monthly_briefing("claude", "2026-05", repo_root=root)
             for path in BASELINE_LOCKED_PATHS:
                 self.assertIn(path, text)
-            self.assertIn("data/claude/notes/2026-05-monthly-review.md", text)
+            self.assertIn("data/a_share/claude/notes/2026-05-monthly-review.md", text)
             # New LLM-direct flow writes evolution_log + edits overlay directly,
             # not a JSON proposal.
-            self.assertIn("data/claude/evolution_log/2026-05.md", text)
+            self.assertIn("data/a_share/claude/evolution_log/2026-05.md", text)
             self.assertIn("configs/agents/claude_a_share.yaml", text)
             self.assertIn("evolution_writer.write_evolution", text)
             self.assertIn("validate-overlay", text)

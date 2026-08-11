@@ -1,0 +1,22 @@
+{
+  "profile_id": "a-share-announcement-remediation-v6",
+  "profile_version": 6,
+  "document_kind": "listed_company_announcement",
+  "market": "a_share",
+  "included_security_suffixes": [
+    ".SH",
+    ".SZ",
+    ".BJ"
+  ],
+  "excluded_security_prefixes": [
+    "200",
+    "900"
+  ],
+  "prompt_version": "semantic-extract-v11",
+  "schema_version": "announcement-events-v1-lite",
+  "taxonomy_version": "cn-announcement-taxonomy-v2",
+  "taxonomy_path": "configs/intelligence_event_taxonomy_v2.json",
+  "evidence_contract": "typed-unique-verbatim-quote-v2",
+  "decision_use": "research_feature_only",
+  "repair_only": true
+}

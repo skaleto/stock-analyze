@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "research_only": true,
+  "model_family": "dl-d1-temporal-context",
+  "market": "a_share",
+  "horizons": [3, 5, 10, 20],
+  "intelligence_lifecycle_path": "configs/intelligence_factors.json",
+  "data": {
+    "sequence_length": 60,
+    "minimum_sequence_observations": 45,
+    "min_coverage": 0.55,
+    "min_nonzero_rows": 100,
+    "min_nonzero_ratio": 0.001,
+    "max_static_features": 32
+  },
+  "training": {
+    "seed": 20260729,
+    "epochs": 16,
+    "patience": 4,
+    "batch_size": 2048,
+    "hidden_dim": 64,
+    "context_dim": 32,
+    "gru_layers": 2,
+    "dropout": 0.15,
+    "learning_rate": 0.0007,
+    "weight_decay": 0.0001,
+    "return_scale": 100.0,
+    "classification_weight": 0.45,
+    "regression_weight": 0.35,
+    "ranking_weight": 0.2,
+    "max_training_rows": 120000,
+    "device": "auto"
+  }
+}

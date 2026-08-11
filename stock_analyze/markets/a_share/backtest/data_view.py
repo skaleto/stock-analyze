@@ -19,7 +19,7 @@ investment logic or transforms data. It exists so that downstream code
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import List, Optional
@@ -36,6 +36,12 @@ class PointInTimeView:
 
     as_of: date
     cache_root: Path
+    _benchmark_cache: dict[str, pd.DataFrame] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _daily_close_panel: pd.DataFrame | None = field(default=None, init=False, repr=False)
 
     # ------------------------------------------------------------------
     # Daily-frequency endpoints
@@ -56,6 +62,119 @@ class PointInTimeView:
         if not path.exists():
             return pd.DataFrame()
         return pd.read_csv(path, dtype={"ts_code": str, "trade_date": str})
+
+    def return_history(
+        self,
+        codes: List[str],
+        *,
+        as_of: Optional[date] = None,
+        days: int = 90,
+    ) -> pd.DataFrame:
+        """Return point-in-time close returns without re-reading the panel."""
+
+        d = as_of if as_of is not None else self.as_of
+        if self._daily_close_panel is None:
+            rows: list[pd.DataFrame] = []
+            for path in sorted((self.cache_root / "daily").glob("*.csv")):
+                try:
+                    frame = pd.read_csv(path, usecols=["ts_code", "close"], dtype={"ts_code": str})
+                except (OSError, ValueError, pd.errors.EmptyDataError):
+                    continue
+                frame["trade_date"] = path.stem
+                rows.append(frame)
+            if rows:
+                combined = pd.concat(rows, ignore_index=True)
+                combined["close"] = pd.to_numeric(combined["close"], errors="coerce")
+                self._daily_close_panel = combined.pivot_table(
+                    index="trade_date",
+                    columns="ts_code",
+                    values="close",
+                    aggfunc="last",
+                ).sort_index()
+            else:
+                self._daily_close_panel = pd.DataFrame()
+        panel = self._daily_close_panel
+        if panel.empty:
+            return pd.DataFrame()
+        available = [str(code) for code in codes if str(code) in panel.columns]
+        if len(available) != len(codes):
+            return pd.DataFrame()
+        visible = panel.loc[panel.index <= d.isoformat(), available].tail(max(int(days), 1) + 1)
+        return visible.pct_change().tail(max(int(days), 1))
+
+    def benchmark_close(
+        self,
+        code: str,
+        as_of: Optional[date] = None,
+    ) -> tuple[float | None, str | None]:
+        """Return the latest index close visible on or before ``as_of``."""
+
+        d = as_of if as_of is not None else self.as_of
+        short_code = str(code).split(".", 1)[0].zfill(6)
+        path = self.cache_root / "benchmark_daily" / f"{short_code}.csv"
+        if not path.exists():
+            return None, None
+        if short_code not in self._benchmark_cache:
+            try:
+                frame = pd.read_csv(
+                    path,
+                    dtype={"ts_code": str, "trade_date": str},
+                )
+            except (pd.errors.EmptyDataError, OSError):
+                frame = pd.DataFrame()
+            self._benchmark_cache[short_code] = frame
+        frame = self._benchmark_cache[short_code]
+        if frame.empty or not {"trade_date", "close"}.issubset(frame.columns):
+            return None, None
+        trade_dates = pd.to_datetime(
+            frame["trade_date"].astype(str).str.replace("-", "", regex=False),
+            format="%Y%m%d",
+            errors="coerce",
+        )
+        closes = pd.to_numeric(frame["close"], errors="coerce")
+        visible = frame.assign(_date=trade_dates, _close=closes)
+        visible = visible[
+            visible["_date"].notna()
+            & visible["_close"].notna()
+            & visible["_date"].dt.date.le(d)
+        ].sort_values("_date")
+        if visible.empty:
+            return None, None
+        latest = visible.iloc[-1]
+        return float(latest["_close"]), latest["_date"].date().isoformat()
+
+    def benchmark_return_history(
+        self,
+        code: str,
+        *,
+        as_of: Optional[date] = None,
+        days: int = 60,
+    ) -> pd.Series:
+        d = as_of if as_of is not None else self.as_of
+        short_code = str(code).split(".", 1)[0].zfill(6)
+        path = self.cache_root / "benchmark_daily" / f"{short_code}.csv"
+        if not path.exists():
+            return pd.Series(dtype=float)
+        if short_code not in self._benchmark_cache:
+            try:
+                self._benchmark_cache[short_code] = pd.read_csv(
+                    path,
+                    dtype={"ts_code": str, "trade_date": str},
+                )
+            except (pd.errors.EmptyDataError, OSError):
+                self._benchmark_cache[short_code] = pd.DataFrame()
+        frame = self._benchmark_cache[short_code]
+        if frame.empty or not {"trade_date", "close"}.issubset(frame.columns):
+            return pd.Series(dtype=float)
+        dates = pd.to_datetime(
+            frame["trade_date"].astype(str).str.replace("-", "", regex=False),
+            format="%Y%m%d",
+            errors="coerce",
+        )
+        close = pd.to_numeric(frame["close"], errors="coerce")
+        visible = pd.DataFrame({"date": dates, "close": close}).dropna()
+        visible = visible.loc[visible["date"].dt.date.le(d)].sort_values("date").tail(max(int(days), 1) + 1)
+        return visible.set_index("date")["close"].pct_change().dropna()
 
     # ------------------------------------------------------------------
     # Financial indicators (ann_date-filtered)

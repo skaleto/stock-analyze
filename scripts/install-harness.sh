@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
-# One-time harness install: drop pre-approve + statusLine into .claude/settings.local.json.
+# Optional compatibility harness for Claude Code clients.
 #
 # Why this exists:
-#   Claude Code's auto-mode hard-blocks ANY tool (Write/Edit/Bash) from
-#   modifying .claude/settings.local.json — even with explicit user
-#   authorization. This is by design (防止 prompt injection 让 LLM 自我提权).
-#
-#   So the operator runs this once manually. After that, Claude can run
-#   ./scripts/weekly.sh and ./scripts/monthly.sh without permission prompts,
-#   and the IDE statusline shows live NAV + pending counts.
+# The production operating contract is docs/system-harness.md. This helper only
+# installs safe repository entry points and a local-data status line.
 #
 # Usage:
 #   bash scripts/install-harness.sh
@@ -18,7 +13,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 mkdir -p .claude
-cat > .claude/settings.local.json <<'JSON'
+STATUSLINE_CMD="bash $(printf '%q' "$(pwd)/scripts/statusline.sh")"
+cat > .claude/settings.local.json <<JSON
 {
   "permissions": {
     "allow": [
@@ -32,23 +28,24 @@ cat > .claude/settings.local.json <<'JSON'
       "Bash(./scripts/sync-to-ecs.sh:*)",
       "Bash(bash ./scripts/sync-from-ecs.sh:*)",
       "Bash(bash ./scripts/sync-to-ecs.sh:*)",
-      "Bash(ssh ai-baby-aliyun:*)",
+      "Bash(./scripts/system-audit.sh)",
+      "Bash(./scripts/system-audit.sh:*)",
+      "Bash(bash ./scripts/system-audit.sh:*)",
       "Bash(./scripts/statusline.sh)"
     ]
   },
   "statusLine": {
     "type": "command",
-    "command": "$HOME/Documents/stock/stock-analyze/scripts/statusline.sh"
+    "command": "$STATUSLINE_CMD"
   }
 }
 JSON
 
-echo "✓ .claude/settings.local.json installed"
+echo "OK: .claude/settings.local.json installed"
 echo ""
 echo "Next steps:"
-echo "  1. Restart Claude Code (or run /config in IDE to reload settings)"
-echo "  2. You should see statusLine appear at the IDE bottom:"
+echo "  1. Restart the client or reload settings."
+echo "  2. The status line reads the latest locally synced canonical data:"
 ./scripts/statusline.sh
 echo ""
-echo "  3. From now on, when you say '跑本周复盘' / '跑月度演化' to Claude,"
-echo "     it will run weekly.sh / monthly.sh without asking for permission."
+echo "  3. Use docs/system-harness.md as the command reference."

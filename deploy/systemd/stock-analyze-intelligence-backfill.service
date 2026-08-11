@@ -1,0 +1,18 @@
+[Unit]
+Description=Stock Analyze manual resumable announcement history backfill
+After=network-online.target
+Wants=network-online.target
+OnFailure=stock-analyze-pipeline-failure@%n.service
+
+[Service]
+Type=oneshot
+SuccessExitStatus=3
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+EnvironmentFile=-/etc/stock-analyze/secrets.env
+EnvironmentFile=/etc/stock-analyze/intelligence-backfill.env
+ExecStart=/usr/bin/flock --nonblock /run/stock-analyze-intelligence-backfill.lock /opt/stock-analyze/venv/bin/python -m stock_analyze.cli intelligence-backfill --repo-root /opt/stock-analyze/app --source tushare_announcement --start-date ${SA_INTELLIGENCE_BACKFILL_START_DATE} --end-date ${SA_INTELLIGENCE_BACKFILL_END_DATE} --max-partitions ${SA_INTELLIGENCE_BACKFILL_MAX_PARTITIONS} --resume
+ExecStartPost=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli intelligence-semantic-status --repo-root /opt/stock-analyze/app
+TimeoutStartSec=infinity
+StandardOutput=append:/opt/stock-analyze/logs/intelligence-backfill.log
+StandardError=append:/opt/stock-analyze/logs/intelligence-backfill.err

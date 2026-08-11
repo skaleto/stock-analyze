@@ -15,6 +15,10 @@ from stock_analyze.evolution_writer import (
     write_evolution,
 )
 from stock_analyze.overlay_guard import OverlayBaselineLocked
+from stock_analyze.markets.a_share.backtest.types import BacktestMetrics
+
+
+GOOD_BACKTEST_METRICS = BacktestMetrics(0.05, 0.04, 0.8, -0.10, 0.6)
 
 
 BASELINE_CONFIG = {
@@ -88,6 +92,7 @@ class WriteEvolutionTests(unittest.TestCase):
                 reasoning_md="# 2026-06 claude 演化\n\n本月加 pe 权重。",
                 repo_root=root,
                 month="2026-06",
+                validated_backtest_metrics=GOOD_BACKTEST_METRICS,
             )
             # 1. Live overlay updated
             updated = json.loads(
@@ -178,6 +183,7 @@ class WriteEvolutionTests(unittest.TestCase):
                 reasoning_md="bump min_avg_amount_20",
                 repo_root=root,
                 month="2026-06",
+                validated_backtest_metrics=GOOD_BACKTEST_METRICS,
             )
             csv_path = root / "data" / "a_share" / "claude" / "config_evolution.csv"
             with csv_path.open(encoding="utf-8-sig") as handle:
@@ -204,6 +210,7 @@ class WriteEvolutionTests(unittest.TestCase):
                 reasoning_md="x",
                 repo_root=root,
                 month="2026-06",
+                validated_backtest_metrics=GOOD_BACKTEST_METRICS,
             )
             # Sentinel content preserved — write_evolution did not overwrite
             preserved = json.loads(history.read_text(encoding="utf-8"))
@@ -240,6 +247,7 @@ class WriteEvolutionTests(unittest.TestCase):
                 reasoning_md="x",
                 repo_root=root,
                 month="2026-06",
+                validated_backtest_metrics=GOOD_BACKTEST_METRICS,
             )
             with csv_path.open(encoding="utf-8-sig") as handle:
                 reader = csv.DictReader(handle)

@@ -26,6 +26,7 @@ class PortfolioLimits:
     min_cash_weight: float = 0.0
     max_turnover: float = 1.0
     group_caps: Mapping[str, float] = field(default_factory=dict)
+    exposure_caps: Mapping[str, float] = field(default_factory=dict)
     liquidity_cap_column: str = "liquidity_cap"
     required_exposures: tuple[str, ...] = ()
     max_tracking_error: float | None = None
@@ -325,13 +326,19 @@ def _prepare_problem(
     if covariance is None:
         return None, covariance_reason
 
+    constrained_exposures = tuple(
+        dict.fromkeys((*limits.required_exposures, *limits.exposure_caps))
+    )
     exposures, exposure_reason = _aligned_exposures(
         problem.exposure_matrix,
         codes,
-        limits.required_exposures,
+        constrained_exposures,
     )
     if exposures is None:
         return None, exposure_reason
+    for column in limits.exposure_caps:
+        if (exposures[column] < 0.0).any():
+            return None, f"invalid_capped_exposure:{column}"
 
     current, current_reason = _aligned_weights(
         problem.current_weights,
@@ -427,6 +434,13 @@ def _validate_limits(limits: PortfolioLimits) -> str | None:
             or not 0.0 <= float(cap) <= 1.0
         ):
             return f"invalid_group_cap:{column}"
+    for column, cap in limits.exposure_caps.items():
+        if (
+            not str(column)
+            or not math.isfinite(float(cap))
+            or not 0.0 <= float(cap) <= 1.0
+        ):
+            return f"invalid_exposure_cap:{column}"
     return None
 
 
@@ -652,6 +666,13 @@ def _project_basic(
         if group_weight > constraint.cap and group_weight > 0.0:
             weights[mask] *= constraint.cap / group_weight
 
+    for column in sorted(limits.exposure_caps):
+        coefficients = problem.exposures[column].to_numpy(dtype=float)
+        exposure = float(coefficients @ weights)
+        cap = float(limits.exposure_caps[column])
+        if exposure > cap and exposure > 0.0:
+            weights[coefficients > 0.0] *= cap / exposure
+
     budget = min(
         float(limits.max_gross_exposure),
         1.0 - float(limits.min_cash_weight),
@@ -846,6 +867,12 @@ def _binding_constraints(
     for constraint in problem.group_constraints:
         if float(weights[constraint.mask].sum()) >= constraint.cap - tolerance:
             bindings.add(f"group:{constraint.column}:{constraint.value}")
+    for column, cap in limits.exposure_caps.items():
+        exposure = float(
+            problem.exposures[column].to_numpy(dtype=float) @ weights
+        )
+        if exposure >= float(cap) - tolerance:
+            bindings.add(f"exposure:{column}")
     return tuple(sorted(bindings))
 
 

@@ -1,20 +1,11 @@
-"""Operator notification layer.
+"""Lark transport and legacy notification formatting helpers.
 
-Pushes a daily summary of ECS automation + per-agent NAV/positions/sanity
-state + pending operator actions to the operator's Lark DM via the Lark
-Open API. Designed to run via systemd ``ExecStartPost=`` on
-``stock-analyze-aggregate-dashboard.service`` so it fires once per day
-right after the daily simulation pipeline closes out.
+Production status cards are assembled by :mod:`stock_analyze.workflow_notifications`
+and sent from fixed daily, weekly, and monthly systemd timers. Immediate
+pipeline failures continue through ``stock-analyze-pipeline-failure@.service``.
 
-This sits *next to* (not in place of) the existing PIPELINE_FAILURES.log
-+ ``SA_LARK_WEBHOOK`` failure-only path:
-
-  - Failure path (already in place): systemd OnFailure= → group webhook
-  - Success/status path (this module): aggregate-dashboard.ExecStartPost=
-    → user open_id DM
-
-The two channels are independent. Failure of one does not affect the
-other.
+The legacy daily formatter remains available for compatibility and tests, but
+it is no longer attached to every aggregate-dashboard refresh.
 
 Required environment variables (typically loaded from
 ``/etc/stock-analyze/secrets.env``):
@@ -51,6 +42,7 @@ from typing import Any
 import pandas as pd
 
 from .sanity_check import Anomaly, check_agent, max_severity
+from .strategy_registry import StrategyRegistryInvalid, strategy_display_name
 from .utils import today as _today
 
 
@@ -66,6 +58,31 @@ COMPETITION_INITIAL_CASH = 1_000_000.0
 #: baseline this is 50 + 50 = 100. Used purely for the "X / 100" display
 #: so the operator can spot the Tier-1+2 sizing gap at a glance.
 TARGET_HOLDINGS_PER_AGENT = 100
+
+
+def _strategy_label(repo_root: Path, agent_id: str) -> str:
+    try:
+        return strategy_display_name(agent_id, repo_root)
+    except StrategyRegistryInvalid:
+        return agent_id
+
+
+def _uses_sentiment_factor(repo_root: Path, agent_id: str) -> bool:
+    path = repo_root / "configs" / "agents" / f"{agent_id}_a_share.yaml"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    for key, raw in (payload.get("factors") or {}).items():
+        if "sentiment" not in str(key):
+            continue
+        value = raw.get("weight") if isinstance(raw, dict) else raw
+        try:
+            if float(value) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 @dataclass
@@ -219,22 +236,18 @@ _NAV_DTYPE = {
 }
 
 
-# Per-market display config. Phase 2/3 added 'hk' + 'us'; A-share's
-# entry preserves the prior behavior (¥ currency, ¥1M starting cash).
+# Display config for the two active mainland-tradeable markets.
 MARKET_LABELS: dict[str, str] = {
     "a_share": "A股",
-    "hk": "港股",
-    "us": "美股",
+    "cn_qdii_etf": "跨境ETF",
 }
 MARKET_CURRENCY: dict[str, str] = {
     "a_share": "¥",
-    "hk": "HK$",
-    "us": "$",
+    "cn_qdii_etf": "¥",
 }
 MARKET_INITIAL_CASH: dict[str, float] = {
     "a_share": 1_000_000.0,
-    "hk": 1_000_000.0,   # HK$1M
-    "us": 150_000.0,
+    "cn_qdii_etf": 1_000_000.0,
 }
 
 
@@ -251,17 +264,18 @@ def _format_nav_section(
 
     lines = [f"💰 {label} NAV:"]
     for agent in agent_ids:
+        display = _strategy_label(repo_root, agent)
         nav_path = repo_root / "data" / market / agent / "daily_nav.csv"
         if not nav_path.exists():
-            lines.append(f"  {agent:<7} (尚未初始化)")
+            lines.append(f"  {display:<7} (尚未初始化)")
             continue
         try:
             df = pd.read_csv(nav_path, dtype=_NAV_DTYPE)
         except Exception as exc:  # noqa: BLE001
-            lines.append(f"  {agent:<7} (读取失败: {exc.__class__.__name__})")
+            lines.append(f"  {display:<7} (读取失败: {exc.__class__.__name__})")
             continue
         if df.empty or "total_value" not in df.columns:
-            lines.append(f"  {agent:<7} (NAV 数据为空)")
+            lines.append(f"  {display:<7} (NAV 数据为空)")
             continue
         per_day = df.groupby("date")["total_value"].sum().sort_index()
         latest = per_day.iloc[-1]
@@ -273,7 +287,7 @@ def _format_nav_section(
                 pct_1d = (latest / prev - 1.0) * 100
                 delta_line = f"  Δ {pct_1d:+.2f}%"
         lines.append(
-            f"  {agent:<7} {currency}{latest:>11,.0f}  ({pct_vs_baseline:+.2f}% vs {baseline_disp}){delta_line}"
+            f"  {display:<7} {currency}{latest:>11,.0f}  ({pct_vs_baseline:+.2f}% vs {baseline_disp}){delta_line}"
         )
     return lines
 
@@ -287,18 +301,19 @@ def _format_positions_section(
     label = MARKET_LABELS.get(market, market)
     lines = [f"📈 {label} 持仓:"]
     for agent in agent_ids:
+        display = _strategy_label(repo_root, agent)
         pos_path = repo_root / "data" / market / agent / "positions.csv"
         if not pos_path.exists():
-            lines.append(f"  {agent:<7} (尚未初始化)")
+            lines.append(f"  {display:<7} (尚未初始化)")
             continue
         try:
             df = pd.read_csv(pos_path, dtype={"code": str})
         except Exception as exc:  # noqa: BLE001
-            lines.append(f"  {agent:<7} (读取失败: {exc.__class__.__name__})")
+            lines.append(f"  {display:<7} (读取失败: {exc.__class__.__name__})")
             continue
         n = len(df)
         if n == 0:
-            lines.append(f"  {agent:<7} (0 持仓)")
+            lines.append(f"  {display:<7} (0 持仓)")
             continue
         if "account_id" in df.columns:
             by_acct = df.groupby("account_id").size().sort_index()
@@ -307,7 +322,7 @@ def _format_positions_section(
             breakdown = f"total={n}"
         tag = " ✓" if n >= TARGET_HOLDINGS_PER_AGENT else " ⚠️"
         lines.append(
-            f"  {agent:<7} {breakdown}  (={n}/{TARGET_HOLDINGS_PER_AGENT}){tag}"
+            f"  {display:<7} {breakdown}  (={n}/{TARGET_HOLDINGS_PER_AGENT}){tag}"
         )
     return lines
 
@@ -321,21 +336,17 @@ def _format_sanity_section(
     label = MARKET_LABELS.get(market, market)
     lines = [f"✅ {label} Sanity-check:"]
     for agent in agent_ids:
+        display = _strategy_label(repo_root, agent)
         try:
-            # sanity_check.check_agent gained a `market` kwarg in Phase 1 T8
-            # but the body currently still reads a_share paths. We pass
-            # market explicitly so future-proof; today's behavior is
-            # equivalent for a_share, and for hk/us the check gracefully
-            # treats missing data as info-level.
             findings = check_agent(agent, repo_root=repo_root, market=market)
         except TypeError:
             # Fallback for older sanity_check that didn't accept `market`
             findings = check_agent(agent, repo_root=repo_root)
         except Exception as exc:  # noqa: BLE001
-            lines.append(f"  {agent:<7} (sanity-check 抛错: {exc.__class__.__name__})")
+            lines.append(f"  {display:<7} (sanity-check 抛错: {exc.__class__.__name__})")
             continue
         if not findings:
-            lines.append(f"  {agent:<7} ✓ no anomalies")
+            lines.append(f"  {display:<7} ✓ no anomalies")
             continue
         critical_count = sum(1 for f in findings if f.severity == "critical")
         warn_count = sum(1 for f in findings if f.severity == "warn")
@@ -347,7 +358,7 @@ def _format_sanity_section(
             bucket_strs.append(f"{warn_count} warn")
         if info_count:
             bucket_strs.append(f"{info_count} info")
-        lines.append(f"  {agent:<7} {', '.join(bucket_strs)}")
+        lines.append(f"  {display:<7} {', '.join(bucket_strs)}")
         for f in findings:
             if f.severity in ("warn", "critical"):
                 msg = f.message
@@ -400,12 +411,15 @@ def collect_pending_actions(
     if today_d.weekday() >= 5:  # Saturday=5, Sunday=6
         this_friday = _most_recent_friday_on_or_before(today_d)
         for agent in agent_ids:
+            if not _uses_sentiment_factor(repo_root, agent):
+                continue
+            display = _strategy_label(repo_root, agent)
             sentiment_csv = (
                 repo_root / "data" / "a_share" / agent / "alt_factors" / "market_sentiment.csv"
             )
             if not sentiment_csv.exists():
                 actions.append(
-                    f"sentiment 未记录过 ({agent}) — 周末跑 weekly.sh 把 {this_friday.isoformat()} 那周补上"
+                    f"sentiment 未记录过 ({display}) — 周末跑 weekly.sh 把 {this_friday.isoformat()} 那周补上"
                 )
                 continue
             try:
@@ -415,7 +429,7 @@ def collect_pending_actions(
                 continue
             if this_friday.isoformat() not in recorded_weeks:
                 actions.append(
-                    f"sentiment 缺 week_end={this_friday.isoformat()} ({agent}) — 跑 weekly.sh 或 record-sentiment"
+                    f"sentiment 缺 week_end={this_friday.isoformat()} ({display}) — 跑 weekly.sh 或 record-sentiment"
                 )
 
     # 2. Monthly-review countdown
@@ -425,7 +439,7 @@ def collect_pending_actions(
         weekday_cn = "一二三四五六日"[next_first.weekday()]
         actions.append(
             f"{next_first.isoformat()} (周{weekday_cn}) monthly-review timer 触发"
-            f"，提前看看 sentiment 历史 + 对手 overlay"
+            f"，提前检查双策略配置与演进记录"
         )
 
     return actions
@@ -532,9 +546,8 @@ def build_daily_summary(
     a hand-crafted ``repo_root`` directory.
 
     ``markets`` defaults to ``["a_share"]`` for backward compatibility.
-    Phase 2/3 callers pass ``["a_share", "hk", "us"]`` for the cross-market
-    summary; each market gets its own NAV / 持仓 / Sanity blocks with
-    market-label prefixes (``💰 A股 NAV``, ``💰 港股 NAV``, ``💰 美股 NAV``).
+    Production callers pass both active markets; each receives its own NAV,
+    holdings, and sanity sections.
     """
     repo_root = Path(repo_root) if repo_root else Path.cwd()
     today_d = today_d or _today()
@@ -773,7 +786,7 @@ def cli_send_daily_summary(repo_root: Path | None = None) -> int:
 
     # Card-first: ship the interactive card. If it fails for any reason
     # (card schema / render / API), fall back to the plain-text DM so the
-    # operator always gets the summary. Mirrors scripts/overseas_summary.py.
+    # operator always gets the summary.
     try:
         card = build_daily_summary_card(
             ["claude", "codex"],

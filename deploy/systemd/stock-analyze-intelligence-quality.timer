@@ -1,0 +1,11 @@
+[Unit]
+Description=Build the full intelligence quality report weekly off peak
+
+[Timer]
+OnCalendar=Sun *-*-* 03:15:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=5m
+Unit=stock-analyze-intelligence-quality.service
+
+[Install]
+WantedBy=timers.target
