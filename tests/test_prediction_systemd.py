@@ -69,6 +69,24 @@ class PredictionSystemdTest(unittest.TestCase):
         self.assertNotIn("stock-analyze-codex-daily.service", model_iteration)
         self.assertIn("MemoryMax=1250M", model_iteration)
 
+    def test_optional_prediction_fallback_does_not_block_formal_daily_services(self):
+        research = (UNIT_DIR / "stock-analyze-research.service").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            'if ! /opt/stock-analyze/venv/bin/python -m stock_analyze.cli '
+            '--market "$market" --agent "$agent" predict --offline',
+            research,
+        )
+        self.assertIn("optional prediction unavailable", research)
+        self.assertNotIn(
+            'for agent in claude codex; do /opt/stock-analyze/venv/bin/python '
+            '-m stock_analyze.cli --market "$market" --agent "$agent" predict '
+            '--offline; done',
+            research,
+        )
+
     def test_downstream_oneshots_do_not_restart_completed_upstream_stages(self):
         research = (UNIT_DIR / "stock-analyze-research.service").read_text(
             encoding="utf-8"
