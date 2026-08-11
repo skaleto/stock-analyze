@@ -15,13 +15,13 @@ const legacyRouteCases = [
     view: "strategy", mode: "detail", market: "a_share", strategy: "defensive",
   }],
   ["?view=model-shadow&market=cn_qdii_etf&agent=model_shadow", {
-    view: "model-research", market: "cn_qdii_etf",
+    view: "model-research", focus: "cn_qdii_etf",
   }],
   ["?view=model-iteration&market=a_share", {
-    view: "model-research", market: "a_share",
+    view: "model-research", focus: "a_share",
   }],
   ["?view=intelligence&market=a_share&agent=model_shadow", {
-    view: "data-intelligence", market: "a_share",
+    view: "data-intelligence", focus: "a_share",
   }],
 ] as const satisfies ReadonlyArray<readonly [string, WorkspaceRoute]>;
 
@@ -39,11 +39,17 @@ const canonicalRouteCases = [
     view: "strategy", mode: "detail", market: "cn_qdii_etf", strategy: "trend",
   }, "view=strategy&mode=detail&market=cn_qdii_etf&strategy=trend"],
   ["model research", {
-    view: "model-research", market: "a_share",
-  }, "view=model-research&market=a_share"],
+    view: "model-research",
+  }, "view=model-research"],
+  ["model research detail", {
+    view: "model-research", focus: "a_share",
+  }, "view=model-research&focus=a_share"],
   ["data intelligence", {
-    view: "data-intelligence", market: "cn_qdii_etf",
-  }, "view=data-intelligence&market=cn_qdii_etf"],
+    view: "data-intelligence",
+  }, "view=data-intelligence"],
+  ["data intelligence detail", {
+    view: "data-intelligence", focus: "cn_qdii_etf",
+  }, "view=data-intelligence&focus=cn_qdii_etf"],
   ["operations", {
     view: "operations", scope: "exceptions",
   }, "view=operations&scope=exceptions"],
@@ -64,19 +70,15 @@ const defaultMarketCases = [
   }],
   ["?view=model-research&market=hk", {
     view: "model-research",
-    market: "cn_qdii_etf",
   }],
   ["?view=model-shadow", {
     view: "model-research",
-    market: "cn_qdii_etf",
   }],
   ["?view=data-intelligence", {
     view: "data-intelligence",
-    market: "cn_qdii_etf",
   }],
   ["?view=intelligence&market=us", {
     view: "data-intelligence",
-    market: "cn_qdii_etf",
   }],
 ] as const satisfies ReadonlyArray<readonly [string, WorkspaceRoute]>;
 
@@ -145,7 +147,7 @@ describe("workspace route contract", () => {
   });
 
   it.each(defaultMarketCases)(
-    "defaults market-required route %s to cn_qdii_etf",
+    "normalizes invalid or absent detail market for %s",
     (search, expected) => {
       expect(parseWorkspaceRoute(search)).toEqual(expected);
     },
@@ -154,6 +156,8 @@ describe("workspace route contract", () => {
   it.each([
     "?view=operations&scope=broken",
     "?view=operations",
+    "?view=operations&scope=a_share",
+    "?view=operations&scope=cn_qdii_etf",
   ])("defaults invalid operations scope in %s to all", (search) => {
     expect(parseWorkspaceRoute(search)).toEqual({
       view: "operations",

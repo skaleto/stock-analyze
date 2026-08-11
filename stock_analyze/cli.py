@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import http.server
 import json
+import re
 import socketserver
 import sys
 import time
@@ -22,7 +23,10 @@ from .agent_briefing import (
 )
 from .competition import CompetitionBaselineLocked
 from .config import load_config
-from .dashboard_aggregator import generate_competition_dashboard
+from .dashboard_aggregator import (
+    PUBLIC_STRATEGY_KEYS,
+    generate_competition_dashboard,
+)
 # Per-market run primitives (make_provider / initialize / generate_rebalance_orders
 # / execute_due_orders / update_nav) are dispatched at call time via
 # competition.get_market_module(market); see main(). compute_pending_forward_ic
@@ -138,7 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     prep_bt = sub.add_parser(
         "prepare-backtest-data",
-        help="One-time batch fetch of 5y A-share market data from Tushare into backtest_cache/",
+        help="Incrementally fetch point-in-time A-share history from Tushare into backtest_cache/",
     )
     prep_bt.add_argument("--start", type=_parse_iso_date, required=True,
                           help="Start date (YYYY-MM-DD).")
@@ -155,6 +159,48 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Re-fetch even if already cached.",
     )
+    prep_bt.add_argument(
+        "--phases",
+        help=(
+            "Comma-separated phases: calendar,universe,daily,fundamentals,statements,"
+            "adjustments,status,benchmark. Defaults to the legacy preparation set."
+        ),
+    )
+    prep_bt.add_argument(
+        "--code-scope",
+        choices=["all", "historical-index-union"],
+        default="all",
+        help="Limit code-scoped endpoints to the historical HS300/ZZ500 union.",
+    )
+    prep_bt.add_argument(
+        "--code-offset",
+        type=int,
+        default=0,
+        help="Zero-based offset into the sorted code scope.",
+    )
+    prep_bt.add_argument(
+        "--code-limit",
+        type=int,
+        help="Maximum number of sorted scope codes processed by this batch.",
+    )
+    prep_bt.add_argument(
+        "--status-provider",
+        choices=["auto", "tushare", "baostock"],
+        default="auto",
+        help="Historical ST provider; suspension data always comes from Tushare.",
+    )
+
+    materialize_a_share = sub.add_parser(
+        "materialize-a-share-research-data",
+        help="Build deterministic point-in-time research inputs from backtest_cache.",
+    )
+    materialize_a_share.add_argument("--start", type=_parse_iso_date, required=True)
+    materialize_a_share.add_argument("--end", type=_parse_iso_date, required=True)
+    materialize_a_share.add_argument("--as-of", required=True)
+    materialize_a_share.add_argument(
+        "--cache-root", type=Path, default=Path("data/shared/backtest_cache")
+    )
+    materialize_a_share.add_argument("--repo-root", type=Path, default=Path("."))
 
     bt = sub.add_parser(
         "backtest",
@@ -399,6 +445,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the summary without sending or marking it delivered.",
     )
+    workflow_notify.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="Return 75 without sending until every formal task succeeded.",
+    )
+    workflow_notify.add_argument(
+        "--wait-seconds",
+        type=int,
+        default=0,
+        help="Maximum time to wait for required task completion.",
+    )
+    workflow_notify.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=5.0,
+        help="Completion polling interval used with --require-complete.",
+    )
 
     for command, help_text in (
         ("prepare-research-data", "Build immutable feature snapshots from market caches."),
@@ -414,6 +477,140 @@ def build_parser() -> argparse.ArgumentParser:
             "--max-full-history-instruments", type=int, default=500,
             help="A-share instruments retaining full history; all others keep the latest row.",
         )
+
+    moneyflow_backfill = sub.add_parser(
+        "backfill-a-share-moneyflow",
+        help="Backfill resumable point-in-time Tushare money-flow history.",
+    )
+    moneyflow_backfill.add_argument("--repo-root", type=Path, default=Path("."))
+    moneyflow_backfill.add_argument("--start-date", default="20180102")
+    moneyflow_backfill.add_argument("--end-date", default=None)
+    moneyflow_backfill.add_argument("--code", action="append", default=[])
+    moneyflow_backfill.add_argument("--codes-file", type=Path, default=None)
+    moneyflow_backfill.add_argument("--max-workers", type=int, default=4)
+    moneyflow_backfill.add_argument("--retries", type=int, default=3)
+    moneyflow_backfill.add_argument("--requests-per-minute", type=float, default=180)
+    moneyflow_backfill.add_argument("--max-codes", type=int, default=None)
+    moneyflow_backfill.add_argument("--force", action="store_true")
+
+    tournament = sub.add_parser(
+        "run-classical-tournament",
+        help="Run one sealed account-scoped classical model tournament.",
+    )
+    tournament.add_argument("--offline", action="store_true", help="Use local research snapshots only.")
+    tournament.add_argument("--repo-root", type=Path, default=Path("."))
+    tournament.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
+    tournament.add_argument("--max-full-history-instruments", type=int, default=500)
+    tournament.add_argument("--account-scope", default=None)
+    tournament.add_argument("--horizon", type=int, default=None)
+
+    cross_sectional_repair = sub.add_parser(
+        "run-cross-sectional-alpha-repair",
+        help="Run the frozen development-only H20 target ablation.",
+    )
+    cross_sectional_repair.add_argument(
+        "--offline", action="store_true", help="Use local research snapshots only."
+    )
+    cross_sectional_repair.add_argument("--repo-root", type=Path, default=Path("."))
+    cross_sectional_repair.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
+    cross_sectional_repair.add_argument("--max-full-history-instruments", type=int, default=500)
+    cross_sectional_repair.add_argument("--account-scope", default=None)
+    cross_sectional_repair.add_argument("--horizon", type=int, default=20)
+
+    regime_tabular = sub.add_parser(
+        "run-regime-tabular-alpha",
+        help="Run the frozen ZZ500 regime-aware LightGBM development evaluation.",
+    )
+    regime_tabular.add_argument(
+        "--offline", action="store_true", help="Use immutable local research snapshots only."
+    )
+    regime_tabular.add_argument("--repo-root", type=Path, default=Path("."))
+    regime_tabular.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
+    regime_tabular.add_argument("--max-full-history-instruments", type=int, default=500)
+    regime_tabular.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/research/classical_model.yaml"),
+        help="Frozen research-only tabular model contract.",
+    )
+
+    tabular_forward_freeze = sub.add_parser(
+        "freeze-regime-tabular-forward",
+        help="Freeze the best ZZ500 tabular candidate for future-only observation.",
+    )
+    tabular_forward_freeze.add_argument("--offline", action="store_true")
+    tabular_forward_freeze.add_argument("--repo-root", type=Path, default=Path("."))
+    tabular_forward_freeze.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
+    tabular_forward_freeze.add_argument("--max-full-history-instruments", type=int, default=500)
+    tabular_forward_freeze.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/research/classical_model.yaml"),
+    )
+    tabular_forward_freeze.add_argument(
+        "--source-report",
+        type=Path,
+        required=True,
+        help="Immutable development report that selected this candidate.",
+    )
+    tabular_forward_freeze.add_argument(
+        "--observation-start",
+        required=True,
+        help="First future-only signal date in YYYYMMDD form.",
+    )
+
+    tabular_forward_run = sub.add_parser(
+        "run-regime-tabular-forward",
+        help="Score one new market day with the frozen research observer.",
+    )
+    tabular_forward_run.add_argument("--offline", action="store_true")
+    tabular_forward_run.add_argument("--repo-root", type=Path, default=Path("."))
+    tabular_forward_run.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
+    tabular_forward_run.add_argument("--max-full-history-instruments", type=int, default=500)
+    tabular_forward_run.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/research/classical_model.yaml"),
+    )
+
+    rule_core = sub.add_parser(
+        "run-rule-core-diagnostic",
+        help="Falsify the two predeclared rule cores on the oldest 60%% of research data.",
+    )
+    rule_core.add_argument("--offline", action="store_true", help="Use immutable local snapshots only.")
+    rule_core.add_argument(
+        "--as-of",
+        default=argparse.SUPPRESS,
+        help="Snapshot cutoff in YYYYMMDD or YYYY-MM-DD form.",
+    )
+    rule_core.add_argument("--repo-root", type=Path, default=Path("."))
+    rule_core.add_argument("--output-root", type=Path, default=None)
+
+    training_bundle_export = sub.add_parser(
+        "research-training-bundle-export",
+        help="Export checksummed research snapshots for local CPU training.",
+    )
+    training_bundle_export.add_argument("--repo-root", type=Path, default=Path("."))
+    training_bundle_export.add_argument("--output", type=Path, required=True)
+    training_bundle_import = sub.add_parser(
+        "research-training-bundle-import",
+        help="Verify and install research snapshots on the local trainer.",
+    )
+    training_bundle_import.add_argument("--repo-root", type=Path, default=Path("."))
+    training_bundle_import.add_argument("--bundle", type=Path, required=True)
+    model_bundle_export = sub.add_parser(
+        "research-model-bundle-export",
+        help="Export a checksummed Shadow or Rejected tournament result.",
+    )
+    model_bundle_export.add_argument("--repo-root", type=Path, default=Path("."))
+    model_bundle_export.add_argument("--report", type=Path, required=True)
+    model_bundle_export.add_argument("--output", type=Path, required=True)
+    model_bundle_import = sub.add_parser(
+        "research-model-bundle-import",
+        help="Merge a local research model result without changing champions.",
+    )
+    model_bundle_import.add_argument("--repo-root", type=Path, default=Path("."))
+    model_bundle_import.add_argument("--bundle", type=Path, required=True)
 
     for command, help_text in (
         (
@@ -511,12 +708,45 @@ def build_parser() -> argparse.ArgumentParser:
         "--repo-root", type=Path, default=Path(".")
     )
     semantic_prepare.add_argument(
-        "--profile", default="a-share-announcement-v1"
+        "--profile", default="a-share-announcement-mentions-v1"
     )
     semantic_prepare.add_argument("--limit", type=int, default=50)
     semantic_prepare.add_argument(
         "--max-input-characters", type=int, default=40_000
     )
+    semantic_prepare.add_argument(
+        "--executor-mode", choices=["api", "coding_plan"], default=None
+    )
+    semantic_prepare.add_argument("--provider", default=None)
+    semantic_prepare.add_argument("--model", default=None)
+    semantic_prepare.add_argument("--client-version", default=None)
+
+    semantic_repair_prepare = sub.add_parser(
+        "intelligence-semantic-repair-prepare",
+        help="Prepare an explicit versioned semantic remediation job.",
+    )
+    semantic_repair_prepare.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    semantic_repair_prepare.add_argument(
+        "--profile", default="a-share-announcement-remediation-v1"
+    )
+    semantic_repair_prepare.add_argument(
+        "--document-id", type=int, action="append", required=True
+    )
+    semantic_repair_prepare.add_argument("--reason", required=True)
+    semantic_repair_prepare.add_argument(
+        "--max-input-characters", type=int, default=40_000
+    )
+
+    semantic_repair_rollback = sub.add_parser(
+        "intelligence-semantic-repair-rollback",
+        help="Roll back one semantic repair without deleting lineage.",
+    )
+    semantic_repair_rollback.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    semantic_repair_rollback.add_argument("--repair-id", required=True)
 
     semantic_run = sub.add_parser(
         "intelligence-semantic-run",
@@ -554,7 +784,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--repo-root", type=Path, default=Path(".")
     )
     semantic_daily.add_argument(
-        "--profile", default="a-share-announcement-v1"
+        "--profile", default="a-share-announcement-mentions-v1"
     )
     semantic_daily.add_argument("--limit", type=int, default=50)
     semantic_daily.add_argument(
@@ -727,7 +957,7 @@ def _parse_iso_date(s: str) -> date:
 
 
 def _resolve_offline_as_of(cache_dir: Path) -> str | None:
-    """Find the latest ``spot_<YYYYMMDD>.csv`` in ``cache_dir`` and return its date.
+    """Resolve the latest dated market snapshot in ``cache_dir``.
 
     Returns YYYY-MM-DD or None if no cache yet. Mirrors
     ``DataProvider._resolve_default_date`` but produces an ISO date the
@@ -738,14 +968,44 @@ def _resolve_offline_as_of(cache_dir: Path) -> str | None:
     if not cache_path.exists():
         return None
     today = date.today().strftime("%Y%m%d")
-    latest: str | None = None
-    for path in cache_path.glob("spot_*.csv"):
-        stem = path.stem  # spot_20260529
-        parts = stem.split("_")
-        if len(parts) != 2 or not parts[1].isdigit() or len(parts[1]) != 8:
+
+    snapshot_pattern = re.compile(
+        r"market_snapshot_(\d{4})-(\d{2})-(\d{2})\.json"
+    )
+    latest_snapshot: str | None = None
+    for path in cache_path.parent.glob("market_snapshot_*.json"):
+        match = snapshot_pattern.fullmatch(path.name)
+        if not match:
             continue
-        if parts[1] <= today and (latest is None or parts[1] > latest):
-            latest = parts[1]
+        snapshot_date = "".join(match.groups())
+        if snapshot_date <= today and (
+            latest_snapshot is None or snapshot_date > latest_snapshot
+        ):
+            latest_snapshot = snapshot_date
+    if latest_snapshot:
+        return (
+            f"{latest_snapshot[:4]}-{latest_snapshot[4:6]}-"
+            f"{latest_snapshot[6:]}"
+        )
+
+    latest: str | None = None
+    dated_patterns = (
+        ("spot_*.csv", re.compile(r"spot_(\d{8})\.csv")),
+        (
+            "fund_daily_*.csv",
+            re.compile(r"fund_daily_\d{6}_[A-Z]+_(\d{8})\.csv"),
+        ),
+    )
+    for glob_pattern, filename_pattern in dated_patterns:
+        for path in cache_path.glob(glob_pattern):
+            match = filename_pattern.fullmatch(path.name)
+            if not match:
+                continue
+            snapshot_date = match.group(1)
+            if snapshot_date <= today and (
+                latest is None or snapshot_date > latest
+            ):
+                latest = snapshot_date
     if not latest:
         return None
     return f"{latest[:4]}-{latest[4:6]}-{latest[6:]}"
@@ -916,6 +1176,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "prepare-backtest-data":
         ensure_dirs(args.logs_dir)
         return _command_prepare_backtest_data(args)
+    if args.command == "materialize-a-share-research-data":
+        ensure_dirs(args.logs_dir)
+        return _command_materialize_a_share_research_data(args)
+    if args.command == "backfill-a-share-moneyflow":
+        ensure_dirs(args.logs_dir)
+        return _command_backfill_a_share_moneyflow(args)
     if args.command == "backtest":
         ensure_dirs(args.logs_dir)
         return _command_backtest(args)
@@ -953,10 +1219,26 @@ def main(argv: list[str] | None = None) -> int:
         "prepare-research-data",
         "run-prediction-research",
         "train-prediction-models",
+        "run-classical-tournament",
+        "run-cross-sectional-alpha-repair",
+        "run-regime-tabular-alpha",
+        "freeze-regime-tabular-forward",
+        "run-regime-tabular-forward",
         "predict",
     }:
         ensure_dirs(args.logs_dir)
         return _command_research_workflow(args)
+    if args.command == "run-rule-core-diagnostic":
+        ensure_dirs(args.logs_dir)
+        return _command_rule_core_diagnostic(args)
+    if args.command in {
+        "research-training-bundle-export",
+        "research-training-bundle-import",
+        "research-model-bundle-export",
+        "research-model-bundle-import",
+    }:
+        ensure_dirs(args.logs_dir)
+        return _command_local_training_transfer(args)
     if args.command in {"run-model-iteration", "run-model-shadow"}:
         ensure_dirs(args.logs_dir)
         return _command_run_model_iteration(args)
@@ -971,6 +1253,8 @@ def main(argv: list[str] | None = None) -> int:
         return _command_intelligence_model_effect(args)
     if args.command in {
         "intelligence-semantic-prepare",
+        "intelligence-semantic-repair-prepare",
+        "intelligence-semantic-repair-rollback",
         "intelligence-semantic-run",
         "intelligence-semantic-import",
         "intelligence-semantic-job-status",
@@ -1153,6 +1437,46 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _classical_tournament_cli_summary(result: dict) -> dict:
+    items = result.get("results")
+    reports = items if isinstance(items, list) else [result]
+    summaries = []
+    for report in reports:
+        candidates = report.get("candidates") or []
+        best = max(
+            candidates,
+            key=lambda item: float((item.get("metrics") or {}).get("rank_ic") or 0.0),
+            default={},
+        )
+        best_metrics = best.get("metrics") or {}
+        summaries.append({
+            "account_scope": report.get("account_scope"),
+            "status": report.get("status"),
+            "report_path": report.get("report_path"),
+            "candidate_count": len(candidates),
+            "shadow_model_versions": report.get("shadow_model_versions") or [],
+            "best_candidate": {
+                "spec_id": best.get("spec_id"),
+                "model_version": best.get("model_version"),
+                "rank_ic": best_metrics.get("rank_ic"),
+                "icir": best_metrics.get("icir"),
+                "net_excess_return": best_metrics.get("net_excess_return"),
+                "trade_count": best_metrics.get("trade_count"),
+                "reasons": best.get("reasons") or [],
+            },
+        })
+    return {
+        "status": result.get("status"),
+        "snapshot_date": result.get("snapshot_date"),
+        "market": result.get("market"),
+        "horizon": result.get("horizon"),
+        "account_scopes": result.get("account_scopes") or [
+            item.get("account_scope") for item in summaries
+        ],
+        "results": summaries,
+    }
+
+
 def _command_research_workflow(args: argparse.Namespace) -> int:
     from .research.pipeline import ResearchPipeline
 
@@ -1171,13 +1495,137 @@ def _command_research_workflow(args: argparse.Namespace) -> int:
             result = pipeline.run_research()
         elif args.command == "train-prediction-models":
             result = pipeline.train_models()
+        elif args.command == "run-classical-tournament":
+            result = pipeline.run_classical_tournament(
+                account_scope=args.account_scope,
+                horizon=args.horizon,
+            )
+        elif args.command == "run-cross-sectional-alpha-repair":
+            result = pipeline.run_cross_sectional_alpha_repair(
+                account_scope=args.account_scope,
+                horizon=args.horizon,
+            )
+        elif args.command == "run-regime-tabular-alpha":
+            result = pipeline.run_regime_tabular_alpha(config_path=args.config)
+        elif args.command == "freeze-regime-tabular-forward":
+            result = pipeline.freeze_regime_tabular_forward(
+                config_path=args.config,
+                source_report=args.source_report,
+                observation_start=args.observation_start,
+            )
+        elif args.command == "run-regime-tabular-forward":
+            result = pipeline.run_regime_tabular_forward(config_path=args.config)
         else:
             result = pipeline.predict()
     except Exception as exc:  # noqa: BLE001
         print(f"error: {args.command} failed: {exc}", file=sys.stderr)
         return 2
+    output = (
+        _classical_tournament_cli_summary(result)
+        if args.command == "run-classical-tournament"
+        else result
+    )
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0 if result.get("status") not in {"failed", "fallback"} else 2
+
+
+def _command_backfill_a_share_moneyflow(args: argparse.Namespace) -> int:
+    import pandas as pd
+
+    from .research.moneyflow import backfill_moneyflow_history
+
+    try:
+        codes = list(args.code or [])
+        if args.codes_file is not None:
+            raw = args.codes_file.read_text(encoding="utf-8")
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                payload = [line.strip() for line in raw.splitlines() if line.strip()]
+            if isinstance(payload, dict):
+                payload = payload.get("codes")
+            if not isinstance(payload, list):
+                raise ValueError("moneyflow_codes_file_invalid")
+            codes.extend(str(value) for value in payload)
+        end_date = str(
+            args.end_date or args.as_of or date.today().isoformat()
+        ).replace("-", "")[:8]
+        if not codes:
+            feature_root = args.repo_root / "data" / "research" / "features" / "a_share"
+            snapshots = sorted(
+                path for path in feature_root.glob("*.parquet")
+                if path.stem.isdigit() and path.stem <= end_date
+            )
+            if not snapshots:
+                raise FileNotFoundError("moneyflow_feature_snapshot_missing")
+            codes = (
+                pd.read_parquet(snapshots[-1], columns=["code"])["code"]
+                .dropna()
+                .astype("string")
+                .drop_duplicates()
+                .astype(str)
+                .tolist()
+            )
+        codes = sorted(set(codes))
+        if args.max_codes is not None:
+            codes = codes[:max(1, int(args.max_codes))]
+        result = backfill_moneyflow_history(
+            args.repo_root,
+            codes=codes,
+            start_date=args.start_date,
+            end_date=end_date,
+            max_workers=args.max_workers,
+            retries=args.retries,
+            requests_per_minute=args.requests_per_minute,
+            force=bool(args.force),
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI reports bounded source failures
+        print(f"error: backfill-a-share-moneyflow failed: {exc}", file=sys.stderr)
+        return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0 if result.get("status") not in {"failed"} else 2
+    return 0 if result.get("status") in {"complete", "cached"} else 2
+
+
+def _command_local_training_transfer(args: argparse.Namespace) -> int:
+    from .research.local_training import (
+        export_model_bundle,
+        export_training_bundle,
+        import_model_bundle,
+        install_training_bundle,
+    )
+
+    try:
+        if args.command == "research-training-bundle-export":
+            result = export_training_bundle(
+                args.repo_root,
+                market=args.market,
+                as_of=args.as_of or date.today().isoformat(),
+                destination=args.output,
+            )
+        elif args.command == "research-training-bundle-import":
+            result = install_training_bundle(args.repo_root, args.bundle)
+        elif args.command == "research-model-bundle-export":
+            result = export_model_bundle(args.repo_root, args.report, args.output)
+        else:
+            result = import_model_bundle(args.repo_root, args.bundle)
+    except Exception as exc:  # noqa: BLE001 - transfer contracts fail closed
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _command_rule_core_diagnostic(args: argparse.Namespace) -> int:
+    from .research.rule_core_diagnostic import run_rule_core_diagnostic
+
+    result = run_rule_core_diagnostic(
+        args.repo_root,
+        as_of=args.as_of or date.today().isoformat(),
+        offline=bool(args.offline),
+        output_root=args.output_root,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0
 
 
 def _command_run_model_iteration(args: argparse.Namespace) -> int:
@@ -1297,18 +1745,47 @@ def _command_intelligence_exchange(args: argparse.Namespace) -> int:
         import_job,
         job_status,
         prepare_job,
+        prepare_repair_job,
+        rollback_repair,
         run_daily,
         run_job,
     )
 
     try:
         if args.command == "intelligence-semantic-prepare":
-            result = prepare_job(
+            prepare_kwargs = {
+                "profile_id": args.profile,
+                "limit": args.limit,
+                "max_input_characters": args.max_input_characters,
+            }
+            if any(
+                value is not None
+                for value in (
+                    args.executor_mode,
+                    args.provider,
+                    args.model,
+                    args.client_version,
+                )
+            ):
+                prepare_kwargs.update(
+                    {
+                        "executor_mode": args.executor_mode,
+                        "executor_provider": args.provider,
+                        "executor_model": args.model,
+                        "executor_client_version": args.client_version,
+                    }
+                )
+            result = prepare_job(args.repo_root, **prepare_kwargs)
+        elif args.command == "intelligence-semantic-repair-prepare":
+            result = prepare_repair_job(
                 args.repo_root,
+                document_ids=args.document_id,
+                reason=args.reason,
                 profile_id=args.profile,
-                limit=args.limit,
                 max_input_characters=args.max_input_characters,
             )
+        elif args.command == "intelligence-semantic-repair-rollback":
+            result = rollback_repair(args.repo_root, args.repair_id)
         elif args.command == "intelligence-semantic-run":
             result = run_job(
                 args.repo_root,
@@ -1763,24 +2240,56 @@ def _command_prepare_qdii_market_data(args: argparse.Namespace) -> int:
 
 
 def _command_prepare_backtest_data(args: argparse.Namespace) -> int:
-    """One-time batch fetch of historical market data from Tushare into backtest_cache/."""
+    """Incrementally fetch historical Tushare data into backtest_cache/."""
     from .markets.a_share.backtest import data_prep
 
     try:
-        data_prep.prepare_backtest_data(
+        phases = None
+        if args.phases:
+            phases = {
+                phase.strip()
+                for phase in args.phases.split(",")
+                if phase.strip()
+            }
+        summary = data_prep.prepare_backtest_data(
             start=args.start,
             end=args.end,
             cache_root=args.cache_root,
             force=args.force,
+            phases=phases,
+            code_scope=args.code_scope,
+            code_offset=args.code_offset,
+            code_limit=args.code_limit,
+            status_provider=args.status_provider,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"error: prepare-backtest-data failed: {exc}", file=sys.stderr)
         return 2
-    print(
-        f"Prepare backtest-data: "
-        f"start={args.start.isoformat()} end={args.end.isoformat()} "
-        f"cache_root={args.cache_root} done"
-    )
+    if isinstance(summary, dict):
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        print(
+            f"Prepare backtest-data: start={args.start.isoformat()} "
+            f"end={args.end.isoformat()} cache_root={args.cache_root} done"
+        )
+    return 0
+
+
+def _command_materialize_a_share_research_data(args: argparse.Namespace) -> int:
+    from .research.a_share_materializer import materialize_a_share_research_data
+
+    try:
+        result = materialize_a_share_research_data(
+            repo_root=args.repo_root,
+            cache_root=args.cache_root,
+            start=args.start,
+            end=args.end,
+            as_of=args.as_of,
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI contract fails closed
+        print(f"error: materialize-a-share-research-data failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -2234,6 +2743,9 @@ def _command_notify_workflow_summary(args: argparse.Namespace) -> int:
         target=args.target,
         force=args.force,
         preview=args.preview,
+        require_complete=args.require_complete,
+        wait_seconds=args.wait_seconds,
+        poll_seconds=args.poll_seconds,
     )
 
 
@@ -2294,6 +2806,33 @@ def _resolve_dashboard_route(path: str, directory: Path) -> str | None:
             _, pro, market, agent = parts
             if pro == "pro" and market in competition.MARKETS and agent:
                 target = f"/{market}/{agent}/dashboard.html"
+    if target is None:
+        parts = path.split("/")
+        if (
+            len(parts) == 5
+            and parts[1] == "strategy-reports"
+            and parts[2] in competition.MARKETS
+            and parts[4] == "weekly_report.md"
+        ):
+            market = parts[2]
+            strategy_key = parts[3]
+            agent = next(
+                (
+                    slot
+                    for slot, public_key in PUBLIC_STRATEGY_KEYS.items()
+                    if public_key == strategy_key
+                ),
+                None,
+            )
+            if agent is not None:
+                target = f"/{market}/{agent}/weekly_report.md"
+                if (
+                    not (directory / target.lstrip("/")).exists()
+                    and market == "a_share"
+                ):
+                    legacy_target = f"/{agent}/weekly_report.md"
+                    if (directory / legacy_target.lstrip("/")).exists():
+                        target = legacy_target
     if target is None:
         return None
     candidate = directory / target.lstrip("/")

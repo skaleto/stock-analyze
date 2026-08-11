@@ -19,6 +19,7 @@ import type {
 } from "./types";
 import { fetchIntelligenceDocument } from "./api";
 import { useIntelligenceData } from "./useDashboardData";
+import { termMeta } from "./terminology";
 
 const eventLabels: Record<string, string> = {
   earnings_forecast: "业绩预告",
@@ -87,16 +88,6 @@ const reasonLabels: Record<string, string> = {
   no_factor_passed_gate: "暂无情报因子通过采用门槛",
 };
 
-const sourceLabels: Record<string, string> = {
-  tushare_anns_d: "Tushare 全量公告",
-  tushare_announcement: "Tushare 全量公告",
-  ifind: "iFinD 资讯",
-  ifind_announcement: "iFinD 交叉核验",
-  cninfo: "巨潮资讯",
-  gov_policy: "国家政策",
-  ndrc_policy: "发改委政策",
-};
-
 const freshnessLabels: Record<string, string> = {
   fresh: "新鲜",
   aging: "临近过期",
@@ -121,17 +112,6 @@ const batchQualityLabels: Record<string, string> = {
   degraded: "需关注",
   awaiting_executor: "等待执行器",
   idle: "无待处理",
-};
-
-const factorLabels: Record<string, string> = {
-  event_net_strength_5d: "事件净强度（5日）",
-  event_net_materiality_20d: "事件净重要性（20日）",
-  event_relevance_20d: "事件相关性（20日）",
-  event_certainty_20d: "事件确定性（20日）",
-  event_revision_risk_20d: "事件修订风险（20日）",
-  announcement_novelty_20d: "公告新颖度（20日）",
-  event_source_confirmation: "多源确认度",
-  event_data_coverage: "事件数据覆盖率",
 };
 
 const factorStateLabels: Record<string, string> = {
@@ -466,11 +446,13 @@ export function IntelligencePanel({
               <small>待下载 {integer(summary.pipeline.backlog.download)} · 待解析 {integer(summary.pipeline.backlog.parse)} · 待抽取 {integer(summary.pipeline.backlog.semantic)}</small>
             </header>
             <div className="source-freshness-list">
-              {summary.pipeline.sources.length ? summary.pipeline.sources.map((source) => (
-                <article key={source.source}>
+              {summary.pipeline.sources.length ? summary.pipeline.sources.map((source) => {
+                const sourceMeta = termMeta(source.source, "source");
+                return (
+                <article key={source.source} title={sourceMeta.explanation}>
                   <div>
-                    <strong>{sourceLabels[source.source] ?? source.source}</strong>
-                    <small>{integer(source.documents)} 篇 · 游标 {source.cursor ?? "-"}</small>
+                    <strong>{sourceMeta.label}</strong>
+                    <small>{source.source} · {integer(source.documents)} 篇 · 游标 {source.cursor ?? "-"}</small>
                   </div>
                   <dl>
                     <div><dt>最近入库</dt><dd>{shortTime(source.lastIngestedAt)}</dd></div>
@@ -482,7 +464,8 @@ export function IntelligencePanel({
                     <small>{runStatusLabels[source.latestRunStatus] ?? operationalState(source.latestRunStatus)}</small>
                   </span>
                 </article>
-              )) : <p className="intelligence-empty">尚无数据源运行记录。</p>}
+                );
+              }) : <p className="intelligence-empty">尚无数据源运行记录。</p>}
             </div>
             {summary.pipeline.artifactWorkers?.status === "available" ? (
               <article className="artifact-worker-strip">
@@ -571,11 +554,13 @@ export function IntelligencePanel({
                 <div><span>可入模因子</span><strong>{integer(summary.factorSupply.modelEligibleFactors.length)}</strong></div>
               </div>
               <div className="factor-list">
-                {summary.factorSupply.factors.length ? summary.factorSupply.factors.slice(0, 8).map((factor) => (
-                  <article key={factor.name}>
+                {summary.factorSupply.factors.length ? summary.factorSupply.factors.slice(0, 8).map((factor) => {
+                  const factorMeta = termMeta(factor.name, "factor");
+                  return (
+                  <article key={factor.name} title={factorMeta.explanation}>
                     <div>
-                      <strong>{factorLabels[factor.name] ?? factor.name}</strong>
-                      <small>{factorStateLabels[factor.state] ?? operationalState(factor.state)}</small>
+                      <strong>{factorMeta.label}</strong>
+                      <small>{factor.name} · {factorStateLabels[factor.state] ?? operationalState(factor.state)}</small>
                     </div>
                     <dl>
                       <div><dt>覆盖率</dt><dd>{percent(factor.coverage)}</dd></div>
@@ -583,7 +568,8 @@ export function IntelligencePanel({
                       <div><dt>Rank IC</dt><dd>{factor.meanRankIc == null ? "-" : factor.meanRankIc.toFixed(3)}</dd></div>
                     </dl>
                   </article>
-                )) : <p className="intelligence-empty">尚无因子验证结果。</p>}
+                  );
+                }) : <p className="intelligence-empty">尚无因子验证结果。</p>}
               </div>
             </section>
 

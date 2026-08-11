@@ -1,7 +1,7 @@
 export const dashboardMarkets = ["a_share", "cn_qdii_etf"] as const;
 export type DashboardMarket = typeof dashboardMarkets[number];
 export type StrategyKey = "defensive" | "trend";
-export type WorkspaceScope = "all" | DashboardMarket | "exceptions";
+export type WorkspaceScope = "all" | "exceptions";
 export type WorkspaceView =
   | "system"
   | "strategy"
@@ -23,8 +23,8 @@ export type WorkspaceRoute =
       mode: "detail";
       strategy: StrategyKey;
     }
-  | { view: "model-research"; market: DashboardMarket }
-  | { view: "data-intelligence"; market: DashboardMarket }
+  | { view: "model-research"; focus?: DashboardMarket }
+  | { view: "data-intelligence"; focus?: DashboardMarket }
   | { view: "operations"; scope: WorkspaceScope };
 
 const strategyAgents: Record<StrategyKey, "claude" | "codex"> = {
@@ -88,16 +88,29 @@ export function parseWorkspaceRoute(search: string): WorkspaceRoute {
   if (rawView === "model-research"
     || rawView === "model-iteration"
     || rawView === "model-shadow") {
-    return { view: "model-research", market };
+    const focus = isMarket(params.get("focus"))
+      ? params.get("focus") as DashboardMarket
+      : isMarket(params.get("market"))
+        ? params.get("market") as DashboardMarket
+        : null;
+    return focus
+      ? { view: "model-research", focus }
+      : { view: "model-research" };
   }
   if (rawView === "data-intelligence" || rawView === "intelligence") {
-    return { view: "data-intelligence", market };
+    const focus = isMarket(params.get("focus"))
+      ? params.get("focus") as DashboardMarket
+      : isMarket(params.get("market"))
+        ? params.get("market") as DashboardMarket
+        : null;
+    return focus
+      ? { view: "data-intelligence", focus }
+      : { view: "data-intelligence" };
   }
   if (rawView === "operations") {
     const rawScope = params.get("scope");
     const scope: WorkspaceScope = rawScope === "exceptions"
       || rawScope === "all"
-      || isMarket(rawScope)
       ? rawScope
       : "all";
     return { view: "operations", scope };
@@ -115,7 +128,7 @@ export function serializeWorkspaceRoute(route: WorkspaceRoute): string {
     }
   } else if (route.view === "model-research"
     || route.view === "data-intelligence") {
-    params.set("market", route.market);
+    if (route.focus) params.set("focus", route.focus);
   } else if (route.view === "operations") {
     params.set("scope", route.scope);
   }

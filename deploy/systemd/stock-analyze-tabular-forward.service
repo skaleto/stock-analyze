@@ -1,0 +1,18 @@
+[Unit]
+Description=Stock Analyze frozen tabular forward research observer
+After=stock-analyze-market-data.service
+OnFailure=stock-analyze-pipeline-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+ExecStart=/usr/bin/flock --nonblock /run/stock-analyze-tabular-forward.lock /opt/stock-analyze/venv/bin/python -m stock_analyze.cli --market a_share --agent codex run-regime-tabular-forward --offline --repo-root /opt/stock-analyze/app
+Nice=10
+CPUQuota=100%
+MemoryHigh=1400M
+MemoryMax=1600M
+TimeoutStartSec=45min
+StandardOutput=append:/opt/stock-analyze/logs/tabular-forward.log
+StandardError=append:/opt/stock-analyze/logs/tabular-forward.err
+

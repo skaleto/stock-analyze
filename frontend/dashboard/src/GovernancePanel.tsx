@@ -9,6 +9,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import type { DashboardGovernance } from "./types";
+import { TermDisplay } from "./TermDisplay";
 
 type Tab = "decision" | "risk" | "attribution" | "evidence";
 
@@ -244,7 +245,7 @@ function EvidenceView({ data }: { data: DashboardGovernance }) {
           <h3>情报因子证据</h3>
           <div className="evidence-list">
             {Object.keys(factors).length === 0 ? <p className="governance-empty">尚未形成可晋级的情报因子证据</p> : Object.entries(factors).slice(0, 8).map(([name, row]) => (
-              <div key={name}><span>{name}</span><strong>{row.recommendation === "model_iteration" ? "可进入模型迭代" : "继续观察"}</strong><small>覆盖 {percent(row.coverage)} · IC {fixed(row.mean_rank_ic)} · 稳定 {percent(row.ic_sign_stability)}</small></div>
+              <div key={name}><TermDisplay code={name} kind="factor" /><strong>{row.recommendation === "model_iteration" ? "可进入模型迭代" : "继续观察"}</strong><small>覆盖 {percent(row.coverage)} · 排序相关性 {fixed(row.mean_rank_ic)} · 稳定 {percent(row.ic_sign_stability)}</small></div>
             ))}
           </div>
         </section>

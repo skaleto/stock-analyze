@@ -339,6 +339,7 @@ def metadata_for_code(
         )
     if metadata is None:
         return {
+            "scope": "unclassified",
             "exposure_group": "全球市场",
             "theme": "跨境ETF",
             "index_key": "unknown",
@@ -349,6 +350,7 @@ def metadata_for_code(
         key: value
         for key, value in metadata.items()
         if key in {
+            "scope",
             "exposure_group",
             "theme",
             "index_key",

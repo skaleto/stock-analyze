@@ -29,10 +29,10 @@ describe("WorkspaceShell", () => {
     const nav = screen.getByRole("navigation", { name: "工作区" });
     const topLevelLabels = [
       "决策总览",
-      "策略工作台",
       "模型研究",
       "数据与情报",
       "运行中心",
+      "策略工作台",
     ];
     const renderedTopLevelLabels = within(nav)
       .getAllByRole("button")
@@ -127,9 +127,7 @@ describe("WorkspaceShell", () => {
     expectExactCurrentPage("策略对比");
   });
 
-  it("navigates to the exact operations exception scope", async () => {
-    const onNavigate = vi.fn();
-    const user = userEvent.setup();
+  it("does not expose a global market selector outside the strategy branch", () => {
     render(
       <WorkspaceShell
         route={{ view: "operations", scope: "all" }}
@@ -138,7 +136,7 @@ describe("WorkspaceShell", () => {
         subtitle="全部市场"
         busy={false}
         autoRefresh
-        onNavigate={onNavigate}
+        onNavigate={vi.fn()}
         onRefresh={vi.fn()}
         onToggleAutoRefresh={vi.fn()}
       >
@@ -146,23 +144,14 @@ describe("WorkspaceShell", () => {
       </WorkspaceShell>,
     );
 
-    const scope = screen.getByRole("navigation", { name: "市场范围" });
-    expect(scope.querySelector(".segmented")).toHaveClass(
-      "segmented-operations",
-    );
     expect(
-      within(scope).getAllByRole("button").map((button) => button.textContent),
-    ).toEqual(["全部", "A股", "跨境ETF", "仅异常"]);
-    await user.click(
-      within(scope).getByRole("button", { name: "仅异常" }),
-    );
-    expect(onNavigate).toHaveBeenCalledWith({
-      view: "operations",
-      scope: "exceptions",
-    });
+      screen.queryByRole("navigation", { name: "市场范围" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("投资市场")).not.toBeInTheDocument();
+    expect(screen.queryByText("运行范围")).not.toBeInTheDocument();
   });
 
-  it("preserves the selected A-share market across aware workspaces", async () => {
+  it("navigates from a strategy market to global model research", async () => {
     const onNavigate = vi.fn();
     const user = userEvent.setup();
     render(
@@ -184,7 +173,6 @@ describe("WorkspaceShell", () => {
     await user.click(screen.getByRole("button", { name: "模型研究" }));
     expect(onNavigate).toHaveBeenCalledWith({
       view: "model-research",
-      market: "a_share",
     });
   });
 
@@ -212,7 +200,10 @@ describe("WorkspaceShell", () => {
       </WorkspaceShell>,
     );
 
-    const scope = screen.getByRole("navigation", { name: "市场范围" });
+    const scope = screen.getByRole("navigation", { name: "策略市场" });
+    expect(
+      screen.queryByRole("navigation", { name: "市场范围" }),
+    ).not.toBeInTheDocument();
     await user.click(
       within(scope).getByRole("button", { name: "跨境ETF" }),
     );
@@ -243,7 +234,7 @@ describe("WorkspaceShell", () => {
       </WorkspaceShell>,
     );
 
-    const scope = screen.getByRole("navigation", { name: "市场范围" });
+    const scope = screen.getByRole("navigation", { name: "策略市场" });
     await user.click(
       within(scope).getByRole("button", { name: "跨境ETF" }),
     );
@@ -254,9 +245,7 @@ describe("WorkspaceShell", () => {
     });
   });
 
-  it("drills from the system market scope into strategy comparison", async () => {
-    const onNavigate = vi.fn();
-    const user = userEvent.setup();
+  it("keeps the system overview market-neutral", () => {
     render(
       <WorkspaceShell
         route={{ view: "system" }}
@@ -265,7 +254,7 @@ describe("WorkspaceShell", () => {
         subtitle="双市场"
         busy={false}
         autoRefresh
-        onNavigate={onNavigate}
+        onNavigate={vi.fn()}
         onRefresh={vi.fn()}
         onToggleAutoRefresh={vi.fn()}
       >
@@ -273,16 +262,11 @@ describe("WorkspaceShell", () => {
       </WorkspaceShell>,
     );
 
-    const scope = screen.getByRole("navigation", { name: "市场范围" });
     expect(
-      within(scope).getAllByRole("button").map((button) => button.textContent),
-    ).toEqual(["A股", "跨境ETF"]);
-    await user.click(within(scope).getByRole("button", { name: "A股" }));
-    expect(onNavigate).toHaveBeenCalledWith({
-      view: "strategy",
-      mode: "compare",
-      market: "a_share",
-    });
+      screen.queryByRole("navigation", { name: "策略市场" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("全局工作区")).toBeInTheDocument();
+    expect(screen.getByText("模拟策略")).toBeInTheDocument();
   });
 
   it("renders header and rail slots with working refresh controls", async () => {
@@ -291,7 +275,7 @@ describe("WorkspaceShell", () => {
     const user = userEvent.setup();
     render(
       <WorkspaceShell
-        route={{ view: "model-research", market: "a_share" }}
+        route={{ view: "model-research" }}
         marketContext="a_share"
         title="模型研究"
         subtitle="A股"
@@ -329,10 +313,10 @@ describe("WorkspaceShell", () => {
     expect(onToggleAutoRefresh).toHaveBeenCalledOnce();
   });
 
-  it("keeps market scope and workspace navigation in stable rail containers", () => {
+  it("keeps workspace navigation in a stable rail container", () => {
     render(
       <WorkspaceShell
-        route={{ view: "model-research", market: "a_share" }}
+        route={{ view: "model-research" }}
         marketContext="a_share"
         title="模型研究"
         subtitle="A股"
@@ -346,9 +330,9 @@ describe("WorkspaceShell", () => {
       </WorkspaceShell>,
     );
 
-    expect(screen.getByRole("navigation", { name: "市场范围" })).toHaveClass(
-      "workspace-scope-slot",
-    );
+    expect(
+      screen.queryByRole("navigation", { name: "市场范围" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "工作区" })).toHaveClass(
       "rail-analysis-nav",
     );
@@ -377,9 +361,6 @@ describe("WorkspaceShell", () => {
     const workspace = shell.querySelector(".workspace");
     expect(rail).not.toBeNull();
     expect(workspace).not.toBeNull();
-    expect(rail).toContainElement(
-      screen.getByRole("navigation", { name: "市场范围" }),
-    );
     expect(rail).toContainElement(
       screen.getByRole("navigation", { name: "工作区" }),
     );

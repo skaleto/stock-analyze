@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh market intelligence at decision-relevant times
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09,12,16,23:30:00 Asia/Shanghai
+OnCalendar=Mon..Fri *-*-* 21:45:00 Asia/Shanghai
+RandomizedDelaySec=45
+Persistent=true
+Unit=stock-analyze-intelligence.service
+
+[Install]
+WantedBy=timers.target

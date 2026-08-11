@@ -100,12 +100,14 @@ class CrossLLMComparisonPanelTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_comparison_panel_shows_both_agents(self):
+    def test_comparison_panel_shows_both_strategy_labels(self):
         html = dashboard_aggregator.render_sentiment_comparison_panel(
             repo_root=self.repo,
         )
-        self.assertIn("claude", html.lower())
-        self.assertIn("codex", html.lower())
+        self.assertIn("稳健防守", html)
+        self.assertIn("趋势进攻", html)
+        self.assertNotIn("claude", html.lower())
+        self.assertNotIn("codex", html.lower())
 
     def test_comparison_panel_shows_latest_diff(self):
         html = dashboard_aggregator.render_sentiment_comparison_panel(

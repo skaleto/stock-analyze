@@ -19,26 +19,11 @@ function payload(
     dailyFreshness: {
       asOfDate: "2026-07-30",
       status: "waiting",
+      lastCompleteDate: "2026-07-29",
+      completedTasks: 0,
+      expectedTasks: 2,
     },
     mainChain: [
-      {
-        key: "intelligence",
-        label: "情报增量",
-        status: "success",
-        primary: "1 / 1 个任务完成",
-        secondary: "下次 16:30",
-        units: [{
-          unit: "stock-analyze-intelligence.service",
-          status: "success",
-          activeState: "inactive",
-          subState: "dead",
-          result: "success",
-          exitStatus: 0,
-          startedAt: "2026-07-30T13:00:00+08:00",
-          finishedAt: "2026-07-30T13:01:00+08:00",
-        }],
-        crossMarketUnits: [],
-      },
       {
         key: "market_snapshot",
         label: "行情与研究快照",
@@ -74,12 +59,7 @@ function payload(
           status: "running",
           activeState: "active",
         }],
-        crossMarketUnits: [{
-          unit: "stock-analyze-model-iteration.service",
-          status: "failed",
-          result: "exit-code",
-          reason: "cross_market_service_result_not_attributable_to_single_market",
-        }],
+        crossMarketUnits: [],
       },
       {
         key: "publish",
@@ -109,8 +89,32 @@ function payload(
         activeLeases: 2,
         latestFinishedAt: "2026-07-30T13:20:00+08:00",
       },
+      localBackfill: {
+        status: "success",
+        phase: "a",
+        reason: null,
+        updatedAt: "2026-07-30T13:20:00+08:00",
+      },
     },
     backgroundWorkers: [
+      {
+        key: "intelligence_refresh",
+        label: "情报增量采集",
+        status: "success",
+        serviceUnit: "stock-analyze-intelligence.service",
+        timerUnit: "stock-analyze-intelligence.timer",
+        lastResult: "success",
+        backlog: null,
+      },
+      {
+        key: "model_iteration",
+        label: "候选模型模拟",
+        status: "failed",
+        serviceUnit: "stock-analyze-model-iteration.service",
+        timerUnit: "",
+        lastResult: "exit-code",
+        backlog: null,
+      },
       {
         key: "artifact_backfill",
         label: "PDF 下载与解析回填",
@@ -140,6 +144,14 @@ function payload(
         timerUnit: "stock-analyze-intelligence-semantic.timer",
         backlog: { semantic: 10 },
       },
+      {
+        key: "quality",
+        label: "情报全库质量检查",
+        status: "waiting_schedule",
+        serviceUnit: "stock-analyze-intelligence-quality.service",
+        timerUnit: "stock-analyze-intelligence-quality.timer",
+        backlog: null,
+      },
     ],
     schedules: {
       daily: [
@@ -162,6 +174,7 @@ function payload(
         automation: "automatic" as const,
       })),
       weekly: [
+        ["stock-analyze-intelligence-quality.timer", "情报全库质量检查"],
         [
           "stock-analyze-claude-cn-qdii-etf-weekly.timer",
           "跨境ETF稳健防守周度复盘",
@@ -240,6 +253,7 @@ function backendMinimalTruncatedPayload(): Record<string, unknown> {
       status: source.background.status,
       snapshotGeneratedAt: source.background.snapshotGeneratedAt,
       backlog: source.background.backlog,
+      localBackfill: source.background.localBackfill,
     },
     backgroundWorkers: source.backgroundWorkers.map((row) => ({
       key: row.key,
@@ -308,6 +322,12 @@ describe("fetchOperationsCenter", () => {
           activeLeases: 0,
           latestFinishedAt: null,
         },
+        localBackfill: {
+          status: "unavailable",
+          phase: null,
+          reason: null,
+          updatedAt: null,
+        },
       },
       backgroundWorkers: [],
     });
@@ -359,6 +379,25 @@ describe("fetchOperationsCenter", () => {
     await expect(fetchOperationsCenter("a_share")).rejects.toThrow(
       /Invalid operations center response/,
     );
+  });
+
+  it("accepts a background service without a timer unit", async () => {
+    const value = payload();
+    const modelIteration = value.backgroundWorkers.find(
+      (worker) => worker.key === "model_iteration",
+    );
+    if (!modelIteration) throw new Error("missing model_iteration fixture");
+    (modelIteration as unknown as { timerUnit: string | null }).timerUnit = null;
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(value));
+
+    await expect(fetchOperationsCenter("all")).resolves.toMatchObject({
+      backgroundWorkers: expect.arrayContaining([
+        expect.objectContaining({
+          key: "model_iteration",
+          timerUnit: null,
+        }),
+      ]),
+    });
   });
 
   it.each([
@@ -441,6 +480,26 @@ describe("OperationsPage", () => {
     vi.restoreAllMocks();
   });
 
+  it("keeps all versus exception filtering inside the page", async () => {
+    const onScopeChange = vi.fn();
+    render(
+      <OperationsPage
+        scope="all"
+        refreshToken={0}
+        onScopeChange={onScopeChange}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: "运行中心" });
+    const filter = screen.getByRole("group", { name: "运行过滤" });
+    expect(within(filter).getByRole("button", { name: "全部" }))
+      .toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(
+      within(filter).getByRole("button", { name: "仅异常" }),
+    );
+    expect(onScopeChange).toHaveBeenCalledWith("exceptions");
+  });
+
   it("shows Chinese task states and drill-down without service controls", async () => {
     const user = userEvent.setup();
     render(<OperationsPage scope="a_share" refreshToken={0} />);
@@ -456,8 +515,8 @@ describe("OperationsPage", () => {
 
     await user.click(screen.getByRole("button", { name: /正式策略模拟/ }));
     expect(screen.getByText("稳健防守")).toBeInTheDocument();
-    expect(screen.getByText("跨市场候选模型证据")).toBeInTheDocument();
-    expect(screen.getByText(/不能归属到单一市场/)).toBeInTheDocument();
+    expect(screen.queryByText("跨市场候选模型证据")).not.toBeInTheDocument();
+    expect(screen.getByText("候选模型模拟")).toBeInTheDocument();
     expect(screen.queryByRole("button", {
       name: /^(启动|停止|重跑|执行|立即执行)$/,
     })).not.toBeInTheDocument();
@@ -603,7 +662,7 @@ describe("OperationsPage", () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
   });
 
-  it("aborts the old scope, resets selection, and avoids duplicate scope requests", async () => {
+  it("resets selection and avoids duplicate scope requests", async () => {
     const signals: AbortSignal[] = [];
     vi.mocked(fetch).mockImplementation((input, init) => {
       signals.push(init?.signal as AbortSignal);
@@ -621,8 +680,8 @@ describe("OperationsPage", () => {
 
     rerender(<OperationsPage scope="cn_qdii_etf" refreshToken={0} />);
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
-    expect(signals[0].aborted).toBe(true);
-    expect(screen.getByRole("button", { name: /情报增量/ }))
+    expect(signals[0].aborted).toBe(false);
+    expect(screen.getByRole("button", { name: /行情与研究快照/ }))
       .toHaveAttribute("aria-pressed", "true");
   });
 
@@ -702,7 +761,7 @@ describe("OperationsPage", () => {
     );
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     expect(signals).toHaveLength(2);
-    expect(signals[0].aborted).toBe(true);
+    expect(signals[0].aborted).toBe(false);
     expect(signals[1].aborted).toBe(false);
   });
 });

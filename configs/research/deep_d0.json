@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "research_only": true,
+  "model_family": "dl-d0-tabular-dual-head",
+  "market": "a_share",
+  "horizon": 20,
+  "intelligence_lifecycle_path": "configs/intelligence_factors.json",
+  "data": {
+    "train_fraction": 0.7,
+    "calibration_fraction": 0.15,
+    "min_coverage": 0.55,
+    "min_nonzero_rows": 100,
+    "min_nonzero_ratio": 0.001,
+    "max_features": 48,
+    "winsor_lower": 0.01,
+    "winsor_upper": 0.99
+  },
+  "training": {
+    "seed": 20260729,
+    "epochs": 20,
+    "patience": 4,
+    "batch_size": 4096,
+    "hidden_dim": 128,
+    "bottleneck_dim": 64,
+    "dropout": 0.15,
+    "learning_rate": 0.0007,
+    "weight_decay": 0.0001,
+    "return_scale": 100.0,
+    "classification_weight": 0.45,
+    "regression_weight": 0.35,
+    "ranking_weight": 0.2,
+    "max_training_rows": 180000,
+    "device": "auto"
+  }
+}

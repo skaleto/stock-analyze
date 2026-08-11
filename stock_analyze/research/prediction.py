@@ -1,0 +1,266 @@
+"""Prediction records, confidence scoring, and interpretable reasons."""
+
+from __future__ import annotations
+
+from typing import Mapping
+
+import numpy as np
+import pandas as pd
+
+from .models import ModelBundle
+from .schemas import PredictionRecord
+
+
+_PORTFOLIO_METADATA_FIELDS = (
+    "account_id",
+    "research_scope",
+    "benchmark_code",
+    "index_key",
+    "country",
+    "theme",
+    "sector",
+    "asset_class",
+    "exposure_group",
+)
+
+
+def _metadata_value(row: pd.Series, field: str):
+    value = row.get(field)
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value.item() if hasattr(value, "item") else value
+
+
+_FEATURE_LABELS = {
+    "sma_5": "5日均线", "sma_10": "10日均线", "sma_20": "20日均线", "sma_60": "60日均线",
+    "ema_12": "12日指数均线", "ema_26": "26日指数均线",
+    "macd_dif": "MACD快线", "macd_dea": "MACD慢线", "macd_hist": "MACD柱",
+    "macd_cross": "MACD交叉", "macd_hist_slope": "MACD柱变化",
+    "macd_hist_acceleration": "MACD柱加速度", "macd_zero_state": "MACD零轴位置",
+    "macd_cross_age": "MACD交叉距今天数", "rsi_14": "RSI强弱", "adx_14": "ADX趋势强度",
+    "atr_14": "真实波幅", "natr_14": "标准化波幅", "bollinger_position": "布林带位置",
+    "bollinger_width": "布林带宽度", "bollinger_upper": "布林带上轨",
+    "bollinger_middle": "布林带中轨", "bollinger_lower": "布林带下轨",
+    "return_1": "单日涨跌", "momentum_5": "5日动量",
+    "momentum_20": "20日动量", "momentum_60": "60日动量",
+    "realized_volatility_20": "20日波动率", "price_slope_5": "5日价格斜率",
+    "gap_return": "跳空幅度", "relative_strength_20": "20日相对强弱",
+    "volume_ratio_5_20": "短中期量比", "volume_zscore_20": "成交量异常度",
+    "obv": "能量潮OBV", "ad": "累积派发指标", "mfi_14": "资金流量指标MFI",
+    "amount_ratio_5_20": "成交额量比", "turnover_percentile_60": "换手率分位",
+    "turnover_change_5": "换手率变化", "pe_ttm": "滚动市盈率", "pb": "市净率",
+    "roe": "净资产收益率", "gross_margin": "毛利率", "roic": "投入资本回报率",
+    "net_profit_margin": "净利率", "debt_ratio": "资产负债率", "revenue_growth": "收入增速",
+    "profit_growth": "利润增速", "cash_conversion": "经营现金转化率", "accrual_ratio": "应计比率",
+    "high_value_add_proxy": "高附加值代理", "declining_marginal_cost_proxy": "边际成本递减代理",
+    "profit_pool_concentration": "业务集中度", "largest_business_share": "最大业务收入占比",
+    "business_profit_margin": "主营业务利润率", "asset_turnover": "资产周转率",
+    "current_ratio": "流动比率", "quick_ratio": "速动比率", "cost_growth": "营业成本增速",
+    "operating_margin": "经营利润率", "operating_profit_growth": "经营利润增速",
+    "operating_cashflow_growth": "经营现金流增速", "operating_leverage_proxy": "经营杠杆代理",
+    "growth_acceleration": "成长加速度", "earnings_stability": "盈利稳定性",
+    "pricing_power_persistence": "定价能力稳定性", "rd_intensity": "研发强度",
+    "free_cashflow_to_assets": "自由现金流资产比", "gross_profit_to_assets": "毛利润资产比",
+    "industry_relative_momentum_20": "行业相对动量", "industry_momentum_20": "行业20日动量",
+    "industry_volatility_20": "行业20日波动", "industry_breadth": "行业上涨宽度",
+    "industry_profitability": "行业盈利能力", "industry_earnings_diffusion": "行业盈利扩散",
+    "industry_cycle_score": "行业周期得分",
+    "discount_premium": "折溢价率", "premium_persistence_20": "20日平均折溢价",
+    "tracking_difference_20": "20日跟踪差", "tracking_error_20": "20日跟踪误差",
+    "fund_share_change_20": "20日基金份额变化", "unit_nav": "单位净值",
+    "nav_return_1": "净值单日涨跌", "nav_momentum_20": "净值20日动量",
+    "overseas_close_gap_proxy": "海外收盘时差代理", "global_index_momentum": "全球指数动量",
+    "global_volatility": "全球市场波动", "rmb_depreciation": "人民币汇率变化",
+    "pmi_change": "PMI变化", "m2_change": "M2增速变化", "cpi_change": "CPI变化",
+    "ppi_change": "PPI变化", "yield_curve_slope": "收益率曲线斜率", "shibor_change": "Shibor变化",
+    "us_yield_change": "美债收益率变化",
+}
+
+
+def compute_confidence(
+    *,
+    calibration_quality: float,
+    sample_support: int,
+    model_agreement: float,
+    data_quality: float,
+    regime_stability: float,
+    out_of_distribution: bool = False,
+) -> float:
+    support_score = min(1.0, max(0.0, sample_support / 500.0))
+    confidence = (
+        0.30 * calibration_quality
+        + 0.20 * support_score
+        + 0.20 * model_agreement
+        + 0.15 * data_quality
+        + 0.15 * regime_stability
+    )
+    if sample_support < 100 or out_of_distribution:
+        confidence = min(confidence, 0.49)
+    return float(np.clip(confidence, 0.0, 1.0))
+
+
+def _reason_text(contributions: list[tuple[str, float]]) -> tuple[str, ...]:
+    reasons = []
+    for name, value in contributions[:3]:
+        direction = "正向" if value >= 0 else "负向"
+        reasons.append(f"{_FEATURE_LABELS.get(name, name)} {direction}贡献 {abs(value):.3f}")
+    return tuple(reasons)
+
+
+def generate_predictions(
+    bundle: ModelBundle,
+    features: pd.DataFrame,
+    *,
+    as_of: str,
+    horizon: int,
+    regime: str,
+    data_quality: float,
+    regime_stability: float,
+    feature_snapshot_id: str,
+    active_status: str = "inactive",
+    role_status: Mapping[str, str] | None = None,
+) -> list[PredictionRecord]:
+    if horizon != bundle.horizon:
+        raise ValueError("prediction_model_horizon")
+    account_scope = str(
+        getattr(bundle, "account_scope", "")
+        or bundle.metrics.get("account_scope", "")
+        or ""
+    ).strip()
+    if account_scope:
+        scope_column = (
+            "research_scope"
+            if "research_scope" in features.columns
+            else "account_id" if "account_id" in features.columns else ""
+        )
+        if not scope_column:
+            raise ValueError("model_scope_missing")
+        observed_scopes = {
+            str(value).strip()
+            for value in features[scope_column].dropna().astype(str).tolist()
+            if str(value).strip()
+        }
+        if observed_scopes != {account_scope}:
+            raise ValueError("model_scope_mismatch")
+    probabilities = bundle.predict_proba(features)
+    expected_excess_returns = bundle.predict_excess_return(features)
+    prediction_uncertainty = bundle.predict_excess_uncertainty(features)
+    edge_calibrator = getattr(bundle, "edge_calibrator", None)
+    calibration_available = bool(
+        edge_calibrator is not None
+        and edge_calibrator.available
+        and getattr(edge_calibrator, "calibration_version", "")
+        == "clustered-date-mean-se-v2"
+    )
+    logistic, boosting = bundle.component_probabilities(features)
+    out_of_distribution = bundle.out_of_distribution_ratios(features)
+    drift = bundle.feature_drift(features)
+    statuses = {
+        role: str((role_status or {}).get(role, active_status if role == "ranker" else "inactive"))
+        for role in ("classifier", "ranker", "portfolio")
+    }
+    active_roles = tuple(role for role, status in statuses.items() if status == "active")
+    records: list[PredictionRecord] = []
+    for index, (_, row) in enumerate(features.iterrows()):
+        probability_by_class = dict(zip(bundle.class_order, probabilities[index]))
+        agreement = float(1.0 - np.abs(logistic[index] - boosting[index]).sum() / 2.0)
+        row_quality = float(data_quality) * float(row.loc[list(bundle.feature_columns)].notna().mean())
+        row_ood = float(out_of_distribution[index])
+        invalidated = row_quality < 0.70 or row_ood > 0.20 or not calibration_available
+        confidence = compute_confidence(
+            calibration_quality=bundle.metrics.get("calibration_quality", 0.0),
+            sample_support=bundle.sample_support,
+            model_agreement=agreement,
+            data_quality=row_quality,
+            regime_stability=regime_stability,
+            out_of_distribution=row_ood > 0.20,
+        )
+        expected = float(expected_excess_returns[index])
+        uncertainty = max(float(prediction_uncertainty[index]), 0.0)
+        lower_confidence_edge = expected - 1.645 * uncertainty
+        quantiles = {
+            key: sum(probability_by_class[name] * bundle.return_stats[name][key] for name in bundle.class_order)
+            for key in ("q10", "q50", "q90")
+        }
+        code = str(row.get("code", row.get("ts_code", ""))).split(".")[0]
+        reasons = _reason_text(bundle.logistic_contributions(row, "up"))
+        invalidation_items = []
+        if row_quality < 0.70:
+            invalidation_items.append("数据完整度低于 70%")
+        if row_ood > 0.20:
+            invalidation_items.append("超过 20% 特征超出训练分布")
+        if not calibration_available:
+            invalidation_items.append("模型分数无法映射为可靠的预期超额收益")
+        invalidation_items.extend(("模型状态或市场状态发生变化", "下行概率超过上行概率"))
+        records.append(
+            PredictionRecord(
+                code=code,
+                as_of=as_of,
+                horizon=horizon,
+                p_up=float(probability_by_class["up"]),
+                p_flat=float(probability_by_class["flat"]),
+                p_down=float(probability_by_class["down"]),
+                confidence=confidence,
+                expected_absolute_return=float(expected),
+                expected_excess_return=float(expected),
+                return_q10=float(quantiles["q10"]),
+                return_q50=float(quantiles["q50"]),
+                return_q90=float(quantiles["q90"]),
+                regime=regime,
+                reasons=reasons,
+                invalidation=tuple(invalidation_items),
+                model_version=bundle.model_version,
+                account_scope=account_scope,
+                feature_snapshot_id=feature_snapshot_id,
+                active_status=statuses["ranker"],
+                classifier_status=statuses["classifier"],
+                ranker_status=statuses["ranker"],
+                portfolio_status=statuses["portfolio"],
+                active_roles=active_roles,
+                invalidated=invalidated,
+                metadata={
+                    "model_agreement": agreement,
+                    "data_quality": row_quality,
+                    "out_of_distribution_ratio": row_ood,
+                    "feature_drift_mean_psi": drift["mean_psi"],
+                    "feature_drift_max_psi": drift["max_psi"],
+                    "prediction_std": uncertainty,
+                    "prediction_uncertainty_bps": uncertainty * 10_000.0,
+                    "lower_confidence_edge": lower_confidence_edge,
+                    "alpha_half_life_days": (
+                        float(edge_calibrator.alpha_half_life_days)
+                        if edge_calibrator is not None else 0.0
+                    ),
+                    "edge_calibration_available": calibration_available,
+                    "edge_calibration_reason": (
+                        str(edge_calibrator.reason)
+                        if edge_calibrator is not None else "legacy_raw_score"
+                    ),
+                    "calibration_version": (
+                        str(edge_calibrator.calibration_version)
+                        if edge_calibrator is not None else "legacy_raw_score"
+                    ),
+                    "calibrator_hash": (
+                        str(edge_calibrator.calibrator_hash)
+                        if edge_calibrator is not None else ""
+                    ),
+                    "feature_schema_hash": str(
+                        bundle.metrics.get("feature_schema_hash") or ""
+                    ),
+                    "model_artifact_hash": str(bundle.model_version),
+                    "ranking_head": "ridge_hgbr"
+                    if getattr(bundle, "linear_ranking_model", None) is not None
+                    else "legacy_probability_buckets",
+                    "role_status": statuses,
+                    "account_scope": account_scope or None,
+                    **{
+                        field: _metadata_value(row, field)
+                        for field in _PORTFOLIO_METADATA_FIELDS
+                    },
+                },
+            )
+        )
+    return records

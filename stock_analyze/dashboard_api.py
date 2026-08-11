@@ -1399,6 +1399,25 @@ def build_dashboard_overview_data(
     return agg._json_safe(payload)
 
 
+_SYSTEM_ITERATION_FIELDS = (
+    "status",
+    "as_of",
+    "display_version",
+    "candidate",
+    "champion",
+)
+
+
+def _system_iteration_summary(status: dict[str, Any]) -> dict[str, Any]:
+    """Keep the global overview bounded to its public summary contract."""
+
+    return {
+        key: status[key]
+        for key in _SYSTEM_ITERATION_FIELDS
+        if key in status
+    }
+
+
 def build_dashboard_system_overview_data(
     *,
     repo_root: str | Path | None = None,
@@ -1447,7 +1466,7 @@ def build_dashboard_system_overview_data(
             {
                 "market": market,
                 "market_label": agg.MARKET_LABELS.get(market, market),
-                "iteration": status,
+                "iteration": _system_iteration_summary(status),
             }
         )
     try:

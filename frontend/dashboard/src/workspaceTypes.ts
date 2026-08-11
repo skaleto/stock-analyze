@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 export type WorkspaceStatus =
   | "success"
   | "running"
@@ -33,11 +35,12 @@ export type WorkspacePartialError = {
 export type BoundedColumn<T> = {
   key: string;
   label: string;
-  render: (row: T) => string;
+  render: (row: T) => ReactNode;
 };
 
 export type ModelResearchModel = {
   modelVersion: string;
+  accountScope: string;
   horizon: number;
   algorithmFamily: string;
   trainedAt?: string | null;
@@ -46,6 +49,7 @@ export type ModelResearchModel = {
   featureColumns: string[];
   artifactRef?: string | null;
   artifactStatus: string;
+  lifecycleStatus?: string;
   gatePassed: boolean;
   gateReasons: string[];
   shadowCycles: number;
@@ -53,7 +57,24 @@ export type ModelResearchModel = {
   isChampion: boolean;
   pointInTimeAudit?: boolean | null;
   candidateFeatureCount: number;
+  baselineComparison?: Record<string, Record<string, number | string | boolean | null>>;
+  accountMetrics?: Record<string, Record<string, number | string | boolean | null>>;
+  noTradeReasonCounts?: Record<string, number>;
   metrics: Record<string, number | string | boolean | null>;
+};
+
+export type ModelResearchAccountSummary = {
+  accountScope: string;
+  accountLabel: string;
+  candidateCount: number;
+  shadowCount: number;
+  rejectedCount: number;
+  latestStatus: string;
+  bestModelVersion: string;
+  bestRankIc?: number | null;
+  bestNetExcessReturn?: number | null;
+  bestTradeCount: number;
+  bestEdgeCalibrationAvailable: boolean;
 };
 
 export type ModelResearchCandidate = {
@@ -74,6 +95,158 @@ export type ModelResearchSimulationAccount = {
   isolation: string;
   navRows: number;
   portfolioRef: string | null;
+};
+
+export type ModelResearchTabularRun = {
+  status: string;
+  protocolVersion: string;
+  configHash: string;
+  accountScope: string;
+  asOf: string;
+  estimator: string;
+  target: string;
+  selectedFeatureCount: number;
+  developmentStart: string;
+  developmentEnd: string;
+  oosStart: string;
+  oosEnd: string;
+  formalOrderSource: boolean;
+  registryMutated: boolean;
+  metrics: {
+    rankIc: number | null;
+    icir: number | null;
+    rawRankIc: number | null;
+    rawIcir: number | null;
+    portfolioCagr: number | null;
+    benchmarkCagr: number | null;
+    netExcessReturn: number | null;
+    maxDrawdown: number | null;
+    activeMaxDrawdown: number | null;
+    annualTurnover: number | null;
+    capitalUtilization: number | null;
+    portfolioSharpe: number | null;
+    informationRatio: number | null;
+    deflatedSharpeProbability: number | null;
+    probabilityOfBacktestOverfit: number | null;
+  };
+  gate: {
+    passed: boolean;
+    reasons: string[];
+    checks: Record<string, boolean>;
+    positiveFolds: number;
+    bucketSpearman: number | null;
+  };
+  buckets: {
+    bucket: number;
+    meanExcessReturn: number | null;
+    observations: number;
+  }[];
+  calibration?: {
+    enabled: boolean;
+    foldCount: number;
+    economicPredictionCoverage: number | null;
+    positiveLowerBoundCoverage: number | null;
+    uncertaintyBpsP50: number | null;
+    uncertaintyBpsP90: number | null;
+    optimizerTrackingErrorP50: number | null;
+    optimizerTrackingErrorP90: number | null;
+    noTradeReasons: {
+      reason: string;
+      count: number;
+    }[];
+  };
+};
+
+export type ModelResearchTabularEvidence = {
+  status: string;
+  formalStrategyWeight: number;
+  formalOrderSource: boolean;
+  latest: ModelResearchTabularRun | null;
+  best: ModelResearchTabularRun | null;
+  experiments: ModelResearchTabularRun[];
+  forwardObservation?: {
+    status: string;
+    lifecycleStatus: string;
+    modelId: string;
+    configHash: string;
+    accountScope: string;
+    horizon: number;
+    observationStart: string;
+    latestPredictionDate: string | null;
+    observationDays: number;
+    predictionRows: number;
+    latestCandidates: number;
+    latestSelected: number;
+    maturedEvidence: {
+      status: string;
+      maturedRows: number;
+      maturedDays: number;
+      latestLabelEnd: string | null;
+      rankIc: number | null;
+      icir: number | null;
+      rawRankIc: number | null;
+      rawIcir: number | null;
+      topBottomSpread: number | null;
+      buckets: {
+        bucket: number;
+        meanExcessReturn: number | null;
+        observations: number;
+      }[];
+    };
+    portfolio: {
+      status: string;
+      periods: number;
+      rebalancePeriods: number;
+      trades: number;
+      netReturn: number | null;
+      benchmarkReturn: number | null;
+      netExcessReturn: number | null;
+      maxDrawdown: number | null;
+      activeMaxDrawdown: number | null;
+      informationRatio: number | null;
+      annualTurnover: number | null;
+      capitalUtilization: number | null;
+      executionCostBps: number | null;
+    };
+    drift: {
+      status: string;
+      medianFeatureCoverage: number | null;
+      medianOutOfRangeRatio: number | null;
+    };
+    promotion: {
+      status: string;
+      passedChecks: number;
+      totalChecks: number;
+      checks: { key: string; passed: boolean }[];
+      automaticPromotion: boolean;
+    };
+    formalStrategyWeight: number;
+    formalOrderSource: boolean;
+    updatedAt: string | null;
+  } | null;
+  closure?: {
+    status: string;
+    asOf: string;
+    decision: string;
+    bestConfigHash: string;
+    officialImmutableTrials: number;
+    diagnosticExperiments: number;
+    passedChecks: number;
+    totalChecks: number;
+    formalStrategyWeight: number | null;
+    blockers: {
+      code: string;
+      measured: number | null;
+      required: number | null;
+      evidence: string;
+    }[];
+    nextRunConditions: {
+      code: string;
+      measured: number | null;
+      required: number | null;
+      evidence: string;
+    }[];
+  } | null;
 };
 
 export type ModelResearchData = {
@@ -103,23 +276,83 @@ export type ModelResearchData = {
     pointInTimeAudit: string;
     gaps: string[];
   };
-  training: { models: ModelResearchModel[] };
+  training: {
+    models: ModelResearchModel[];
+    accounts?: ModelResearchAccountSummary[];
+  };
   validation: {
     passed: number;
     total: number;
     models: ModelResearchModel[];
+    accounts?: ModelResearchAccountSummary[];
   };
+  tabularResearch?: ModelResearchTabularEvidence;
   simulation: {
     status: string;
     candidate: ModelResearchCandidate | null;
     account: ModelResearchSimulationAccount | null;
+    accounts?: {
+      accountId: string;
+      scope: string;
+      benchmark: string;
+      selectedCount: number;
+      date?: string | null;
+      cash?: number | null;
+      marketValue?: number | null;
+      totalValue?: number | null;
+      benchmarkClose?: number | null;
+    }[];
+    evaluation?: {
+      status: string;
+      modelVersion?: string | null;
+      simulatorVersion?: string | null;
+      grossReturn?: number | null;
+      netReturn?: number | null;
+      benchmarkReturn?: number | null;
+      netExcessReturn?: number | null;
+      maxDrawdown?: number | null;
+      annualTurnover?: number | null;
+      capitalUtilization?: number | null;
+      cashRatio?: number | null;
+      rebalanceFrequency?: string | null;
+      scheduledRebalancePeriods?: number;
+      sharpe?: number | null;
+      executionCost?: number | null;
+      executionCostBps?: number | null;
+      impactBpsP50?: number | null;
+      impactBpsP90?: number | null;
+      impactCappedNotionalRatio?: number | null;
+      missingLiquidityNotionalRatio?: number | null;
+      executionEvidenceStatus?: string | null;
+      executionPolicyVersion?: string | null;
+      edgeCalibrationVersion?: string | null;
+      allocationContract?: string | null;
+      modelTiltCap?: number | null;
+      decisionCount?: number;
+      tradeAllowedCount?: number;
+      noTradeCount?: number;
+      noTradeReasonCounts?: Record<string, number>;
+      effectivePeriods?: number;
+      validTrialCount?: number;
+      trialEvidenceStatus?: string;
+      baselineComparison: Record<
+        string,
+        Record<string, number | string | boolean | null>
+      >;
+      accountMetrics: Record<
+        string,
+        Record<string, number | string | boolean | null>
+      >;
+    };
     predictionAsOf?: string | null;
     predictionStatus: string;
     cyclesCompleted: number;
     cyclesRequired: number;
     decision: {
       candidateRows: number;
+      modelEligibleRows: number;
       eligibleRows: number;
+      scopeRejectedRows: number;
       selectedCount: number;
       tradesExecuted: number;
       pendingOrders: number;
@@ -151,6 +384,27 @@ export type ModelResearchData = {
       model_versions: Record<string, string>;
       fallback_reason: string;
       accounts?: number;
+    }[];
+  };
+  attribution?: {
+    status: string;
+    formalModelApplied: boolean;
+    completeCount: number;
+    totalCount: number;
+    rows: {
+      asOf?: string | null;
+      strategyId: string;
+      accountId: string;
+      status: string;
+      modelPolicyStatus: string;
+      modelVersions: Record<string, string>;
+      netPnl?: number | null;
+      modelSelectionPnl?: number | null;
+      explainedRatio?: number | null;
+      residualRatio?: number | null;
+      positiveDrivers: unknown[];
+      negativeDrivers: unknown[];
+      unavailableInputs: string[];
     }[];
   };
 };
@@ -302,7 +556,7 @@ export type OperationsBackgroundWorker = {
   label: string;
   status: WorkspaceStatus;
   serviceUnit: string;
-  timerUnit: string;
+  timerUnit: string | null;
   loadState?: string | null;
   lastResult?: string | null;
   startedAt?: string | null;
@@ -337,6 +591,9 @@ export type OperationsCenterData = {
   dailyFreshness: {
     asOfDate: string;
     status: "waiting" | WorkspaceStatus;
+    lastCompleteDate?: string | null;
+    completedTasks?: number;
+    expectedTasks?: number;
   };
   mainChain: OperationsChainStage[];
   background: {
@@ -347,6 +604,12 @@ export type OperationsCenterData = {
       status: OperationsRuntimeStatus;
       activeLeases: number;
       latestFinishedAt?: string | null;
+    };
+    localBackfill: {
+      status: string;
+      phase?: string | null;
+      reason?: string | null;
+      updatedAt?: string | null;
     };
   };
   backgroundWorkers: OperationsBackgroundWorker[];

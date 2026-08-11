@@ -13,6 +13,37 @@ function deferred<T>() {
 }
 
 describe("useWorkspaceResource", () => {
+  it("deduplicates concurrent observers for the same resource key", async () => {
+    const loader = vi.fn(() => Promise.resolve({ value: 7 }));
+    const { result } = renderHook(() => [
+      useWorkspaceResource("shared:overview", true, loader),
+      useWorkspaceResource("shared:overview", true, loader),
+    ]);
+
+    await waitFor(() => {
+      expect(result.current[0].data).toEqual({ value: 7 });
+      expect(result.current[1].data).toEqual({ value: 7 });
+    });
+    expect(loader).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses a fresh snapshot after unmount and remount", async () => {
+    const loader = vi.fn(() => Promise.resolve({ value: 11 }));
+    const first = renderHook(() =>
+      useWorkspaceResource("shared:model", true, loader),
+    );
+    await waitFor(() => expect(first.result.current.data).toEqual({ value: 11 }));
+    first.unmount();
+
+    const second = renderHook(() =>
+      useWorkspaceResource("shared:model", true, loader),
+    );
+
+    expect(second.result.current.data).toEqual({ value: 11 });
+    expect(second.result.current.loading).toBe(false);
+    expect(loader).toHaveBeenCalledTimes(1);
+  });
+
   it("reports a synchronous loader throw on initial load", async () => {
     const loader = vi.fn(
       (_signal: AbortSignal): Promise<{ value: number }> => {
@@ -31,9 +62,12 @@ describe("useWorkspaceResource", () => {
 
   it("aborts the previous request when the key changes", async () => {
     const calls: AbortSignal[] = [];
+    const first = deferred<{ value: number }>();
     const loader = vi.fn((signal: AbortSignal) => {
       calls.push(signal);
-      return Promise.resolve({ value: calls.length });
+      return calls.length === 1
+        ? first.promise
+        : Promise.resolve({ value: calls.length });
     });
     const { rerender } = renderHook(
       ({ key }) => useWorkspaceResource(key, true, loader),
@@ -58,7 +92,7 @@ describe("useWorkspaceResource", () => {
     await waitFor(() => expect(result.current.data).toEqual({ value: 7 }));
     act(() => result.current.refresh());
     expect(result.current.data).toEqual({ value: 7 });
-    expect(result.current.loading).toBe(true);
+    await waitFor(() => expect(result.current.loading).toBe(true));
     expect(result.current.error).toBeNull();
     expect(result.current.stale).toBe(false);
     second.reject(new Error("runtime unavailable"));

@@ -43,6 +43,23 @@ FORWARD_IC_COLUMNS = [
     "computed_at",
 ]
 
+TRADES_COLUMNS = [
+    "trade_date",
+    "account_id",
+    "code",
+    "name",
+    "side",
+    "shares",
+    "price",
+    "gross_amount",
+    "commission",
+    "stamp_tax",
+    "slippage",
+    "net_amount",
+    "cash_after",
+    "reason",
+]
+
 
 class PortfolioStore:
     def __init__(self, data_dir: str | Path) -> None:
@@ -107,25 +124,15 @@ class PortfolioStore:
         return write_dataframe_csv_atomic(df, path, index=False)
 
     def append_trades(self, rows: list[dict[str, Any]]) -> None:
-        append_csv(
+        append_csv(self.data_dir / TRADES_FILE, rows, TRADES_COLUMNS)
+
+    def write_trades(self, rows: list[dict[str, Any]]) -> None:
+        """Atomically replace the trade ledger with a complete snapshot."""
+
+        write_dataframe_csv_atomic(
+            pd.DataFrame(rows, columns=TRADES_COLUMNS),
             self.data_dir / TRADES_FILE,
-            rows,
-            [
-                "trade_date",
-                "account_id",
-                "code",
-                "name",
-                "side",
-                "shares",
-                "price",
-                "gross_amount",
-                "commission",
-                "stamp_tax",
-                "slippage",
-                "net_amount",
-                "cash_after",
-                "reason",
-            ],
+            index=False,
         )
 
     def append_nav(self, rows: list[dict[str, Any]]) -> None:
@@ -135,6 +142,7 @@ class PortfolioStore:
             "date",
             "account_id",
             "cash",
+            "settlement_receivable",
             "market_value",
             "total_value",
             "benchmark_code",
@@ -151,7 +159,7 @@ class PortfolioStore:
         else:
             existing = pd.DataFrame(columns=columns)
         new_rows = pd.DataFrame(rows, columns=columns)
-        combined = pd.concat([existing, new_rows], ignore_index=True)
+        combined = new_rows.copy() if existing.empty else pd.concat([existing, new_rows], ignore_index=True)
         combined = combined.drop_duplicates(["date", "account_id"], keep="last")
         combined = combined.sort_values(["date", "account_id"])
         write_dataframe_csv_atomic(combined, path, index=False)

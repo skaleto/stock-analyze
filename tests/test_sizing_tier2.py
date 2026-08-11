@@ -1,4 +1,4 @@
-"""Tests for build_target_orders Tier 1 (1-lot fallback) + Tier 2 (skip-down fill).
+"""Tests for build_target_orders lot sizing and allocation-boundary safety.
 
 Bug history (2026-05-26): under baseline (cash=¥500k per account, top_n=50,
 max_single_weight=0.05), the original sizing logic produced 0 lots for any
@@ -7,7 +7,8 @@ costs ¥11k > ¥10k → integer-divides to 0). This left 7-13 slots per agent
 permanently empty whenever the strategy ranked high-priced stocks into top-50.
 
 Tier 1: bump to 1 lot when 1 lot fits under max_single_weight cap.
-Tier 2: walk fallback_pool to fill any still-empty slots in score-rank order.
+The order materializer must never add a security outside the approved
+allocation, even when a legacy caller still supplies ``fallback_pool``.
 """
 from __future__ import annotations
 
@@ -85,11 +86,11 @@ class Tier1OneLotFallbackTests(unittest.TestCase):
                           "Stocks above 5% cap stay excluded (no order)")
 
 
-class Tier2SkipDownFillTests(unittest.TestCase):
-    """When selected leaves slots empty, fallback_pool fills next-ranked candidates."""
+class AllocationBoundaryTests(unittest.TestCase):
+    """Order materialization cannot re-run selection after portfolio controls."""
 
-    def test_fallback_fills_when_high_priced_selected_drops_out(self):
-        """3 selected, top 2 are too expensive → slots filled from rank 4+ of fallback.
+    def test_fallback_pool_cannot_add_unallocated_securities(self):
+        """Unbuyable allocations stay empty instead of bypassing controls.
 
         Note: build_target_orders only emits orders for codes where
         target_shares != current_shares. Codes with target=0 AND no current
@@ -123,22 +124,12 @@ class Tier2SkipDownFillTests(unittest.TestCase):
             fallback_pool=fallback_pool,
         )
         by_code = _orders_by_code(orders)
-        # 999003 (selected #3) + 999004/5 (fallback) — 3 buy orders produced
+        # Only the security approved by allocation and affordable is emitted.
         codes_with_shares = {c for c, o in by_code.items() if o["target_shares"] > 0}
-        self.assertEqual(len(codes_with_shares), 3,
-                          f"expected 3 filled slots, got {codes_with_shares}")
-        self.assertIn("999003", codes_with_shares)
-        self.assertIn("999004", codes_with_shares)
-        self.assertIn("999005", codes_with_shares)
-        # 999001 / 999002 (target_shares=0, current_shares=0) → no order emitted
-        self.assertNotIn("999001", by_code)
-        self.assertNotIn("999002", by_code)
-        # Verify fallback marker on the rescued codes
-        self.assertIn("fallback_fill", by_code["999004"]["reason"])
-        self.assertIn("fallback_fill", by_code["999005"]["reason"])
+        self.assertEqual(codes_with_shares, {"999003"})
+        self.assertTrue({"999001", "999002", "999004", "999005"}.isdisjoint(by_code))
 
-    def test_fallback_skips_codes_already_in_selected(self):
-        """fallback should not re-add codes that are in selected."""
+    def test_legacy_fallback_argument_is_ignored(self):
         # top_n=2, target = min(500k/2, 25k) = 25k
         # ¥30 stock: 25k // (30*100) = 8 → 800 shares
         selected = _selected([
@@ -160,16 +151,11 @@ class Tier2SkipDownFillTests(unittest.TestCase):
             fallback_pool=fallback_pool,
         )
         by_code = _orders_by_code(orders)
-        # 999003 pulled in via fallback (since 999001 dropped out)
-        self.assertIn("999003", by_code,
-                       "fallback should pull in 999003 to compensate for 999001")
-        # 25k // (30*100) = 8 → 800 shares
-        self.assertEqual(by_code["999003"]["target_shares"], 800)
-        # 999001 has 0 shares + no current position → no order emitted
+        self.assertNotIn("999003", by_code)
         self.assertNotIn("999001", by_code)
+        self.assertEqual(set(by_code), {"999002"})
 
-    def test_fallback_marks_reason_as_fallback_fill(self):
-        """Fallback-filled orders should carry a `fallback_fill` marker in reason."""
+    def test_unallocated_candidate_never_receives_fallback_reason(self):
         selected = _selected([
             {"code": "999001", "name": "Too", "industry": "X",
              "latest_price": 300.0, "score": 0.9, "score_detail": "pe:1.0:0.5"},
@@ -185,8 +171,7 @@ class Tier2SkipDownFillTests(unittest.TestCase):
             fallback_pool=fallback_pool,
         )
         by_code = _orders_by_code(orders)
-        self.assertIn("999002", by_code)
-        self.assertIn("fallback_fill", by_code["999002"]["reason"])
+        self.assertNotIn("999002", by_code)
 
     def test_no_fallback_when_pool_is_none_backward_compat(self):
         """When fallback_pool=None (old callers), no skip-down occurs."""

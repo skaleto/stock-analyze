@@ -971,6 +971,40 @@ class DashboardResourceApiTests(unittest.TestCase):
         self.assertNotIn("rowsByDecision", serialized)
         self.assertNotIn("raw_content", serialized)
 
+    def test_system_overview_projects_model_iteration_to_its_public_contract(
+        self,
+    ) -> None:
+        rich_iteration = {
+            "status": "available",
+            "market": "a_share",
+            "candidate_rows": 800,
+            "model_eligible_rows": 12,
+            "eligible_rows": 9,
+            "scope_rejected_rows": 3,
+            "selected_count": 0,
+            "candidate": None,
+            "champion": None,
+            "accounts": [{"account_id": "hs300", "optimizer_diagnostics": {}}],
+            "scope_routing": {"source_rows": 12, "eligible_rows": 9},
+            "private_debug_payload": {"rows": [1, 2, 3]},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_repo(root)
+            with mock.patch(
+                "stock_analyze.dashboard_api.agg._read_model_iteration_status",
+                return_value=rich_iteration,
+            ):
+                payload = build_dashboard_system_overview_data(repo_root=root)
+
+        iteration = payload["models"][0]["iteration"]
+        self.assertEqual(set(iteration), {"status", "candidate", "champion"})
+        self.assertNotIn("model_eligible_rows", iteration)
+        self.assertNotIn("scope_rejected_rows", iteration)
+        self.assertNotIn("accounts", iteration)
+        self.assertNotIn("scope_routing", iteration)
+        self.assertNotIn("private_debug_payload", iteration)
+
     def test_system_overview_redacts_intelligence_ingestion_errors(self) -> None:
         sensitive_path = "/opt/stock-analyze/secrets/intelligence.env"
         sensitive_key = "DEEPSEEK_API_KEY=plainsecretvalue123456"

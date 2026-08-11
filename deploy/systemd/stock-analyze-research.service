@@ -1,0 +1,21 @@
+[Unit]
+Description=Stock Analyze daily feature, event, regime, and prediction research
+After=stock-analyze-market-data.service
+OnFailure=stock-analyze-pipeline-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+Environment=MALLOC_ARENA_MAX=2
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=NUMEXPR_NUM_THREADS=1
+ExecStart=/usr/bin/flock --nonblock /run/stock-analyze-research.lock /bin/bash -lc 'set -euo pipefail; for market in a_share cn_qdii_etf; do /opt/stock-analyze/venv/bin/python -m stock_analyze.cli --market "$market" --agent codex prepare-research-data --offline; /opt/stock-analyze/venv/bin/python -m stock_analyze.cli --market "$market" --agent codex run-prediction-research --offline; /opt/stock-analyze/venv/bin/python -m stock_analyze.cli intelligence-evaluate --repo-root /opt/stock-analyze/app --market "$market"; for agent in claude codex; do /opt/stock-analyze/venv/bin/python -m stock_analyze.cli --market "$market" --agent "$agent" predict --offline; done; done'
+ExecStartPost=/bin/systemctl start --no-block stock-analyze-claude-daily.service
+ExecStartPost=/bin/systemctl start --no-block stock-analyze-codex-daily.service
+ExecStartPost=/bin/systemctl start --no-block stock-analyze-claude-cn-qdii-etf-daily.service
+ExecStartPost=/bin/systemctl start --no-block stock-analyze-codex-cn-qdii-etf-daily.service
+StandardOutput=append:/opt/stock-analyze/logs/research.log
+StandardError=append:/opt/stock-analyze/logs/research.err

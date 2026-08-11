@@ -1,0 +1,11 @@
+[Unit]
+Description=Send monthly review status and Codex evolution reminder
+
+[Timer]
+OnCalendar=*-*-01 09:30:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=stock-analyze-monthly-summary.service
+
+[Install]
+WantedBy=timers.target

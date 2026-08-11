@@ -1,0 +1,12 @@
+[Unit]
+Description=Observe the frozen tabular research model after each trading day
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 19:20:00 Asia/Shanghai
+Persistent=true
+AccuracySec=1min
+Unit=stock-analyze-tabular-forward.service
+
+[Install]
+WantedBy=timers.target
+

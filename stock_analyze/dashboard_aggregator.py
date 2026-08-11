@@ -82,6 +82,10 @@ AGENT_COLORS = {
     "codex": "#06b6d4",
 }
 DEFAULT_AGENT_ORDER = ("claude", "codex")
+PUBLIC_STRATEGY_KEYS = {
+    "claude": "defensive",
+    "codex": "trend",
+}
 DEFAULT_MARKETS = tuple(competition.MARKETS)
 MARKET_LABELS = {
     "a_share": "A股",
@@ -1513,15 +1517,26 @@ def _read_regime_summary(root: Path, market: str) -> dict[str, Any]:
 
 def _read_model_health(root: Path, market: str) -> dict[str, Any]:
     model_root = root / "data" / "research" / "models" / market
-    horizon_dirs = sorted(
-        (path for path in model_root.iterdir() if path.is_dir()),
-        key=lambda path: int(path.name) if path.name.isdigit() else 10_000,
-    ) if model_root.exists() else []
-    if not horizon_dirs:
+    model_dirs: list[tuple[str, Path]] = []
+    if model_root.exists():
+        for path in model_root.iterdir():
+            if not path.is_dir():
+                continue
+            if path.name.isdigit():
+                model_dirs.append(("", path))
+                continue
+            model_dirs.extend(
+                (path.name, horizon_dir)
+                for horizon_dir in path.iterdir()
+                if horizon_dir.is_dir() and horizon_dir.name.isdigit()
+            )
+    model_dirs.sort(key=lambda item: (int(item[1].name), item[0]))
+    if not model_dirs:
         return {"status": "unavailable", "models": []}
     models: list[dict[str, Any]] = []
-    for horizon_dir in horizon_dirs:
-        metadata_files = sorted(horizon_dir.glob("*.metadata.json"))
+    latest_models: list[dict[str, Any]] = []
+    for account_scope, horizon_dir in model_dirs:
+        metadata_files = sorted(horizon_dir.rglob("*.metadata.json"))
         if not metadata_files:
             continue
         metadata_by_version: dict[str, dict[str, Any]] = {}
@@ -1542,22 +1557,75 @@ def _read_model_health(root: Path, market: str) -> dict[str, Any]:
         champion = str(registry.get("champion_model_version") or "")
         selected = select_registry_model(registry, available_versions=set(metadata_by_version))
         version = selected[0] if selected is not None else next(reversed(metadata_by_version))
-        payload = metadata_by_version[version]
-        model_state = registry_models.get(version) or {}
-        gate_history = model_state.get("gate_history") or []
-        latest_gate = gate_history[-1] if gate_history else {}
-        model_cycles = ((cycles.get("models") or {}).get(version) or {}).get("cycles") or []
-        payload["status"] = model_state.get("status", "research")
-        payload["is_champion"] = champion == version
-        payload["gate_passed"] = latest_gate.get("passed")
-        payload["gate_reasons"] = latest_gate.get("reasons") or []
-        payload["gate_target"] = latest_gate.get("target_status")
-        payload["shadow_cycles"] = len(model_cycles)
-        payload["shadow_cycles_remaining"] = max(
-            0, REQUIRED_SHADOW_CYCLES - len(model_cycles)
+        insertion_order = {
+            candidate: index for index, candidate in enumerate(metadata_by_version)
+        }
+        latest_version = max(
+            metadata_by_version,
+            key=lambda candidate: (
+                str((registry_models.get(candidate) or {}).get("registered_at") or ""),
+                str(metadata_by_version[candidate].get("trained_at") or ""),
+                str(metadata_by_version[candidate].get("created_at") or ""),
+                insertion_order[candidate],
+            ),
         )
-        models.append(payload)
-    return {"status": "available" if models else "unavailable", "models": models}
+
+        def health_payload(candidate: str) -> dict[str, Any]:
+            payload = dict(metadata_by_version[candidate])
+            payload["account_scope"] = str(
+                payload.get("account_scope") or account_scope
+            )
+            model_state = registry_models.get(candidate) or {}
+            gate_history = model_state.get("gate_history") or []
+            latest_gate = gate_history[-1] if gate_history else {}
+            latest_role_gates: dict[str, dict[str, Any]] = {}
+            for gate in gate_history:
+                role = str(gate.get("model_role") or "")
+                if role:
+                    latest_role_gates[role] = gate
+            evidence_gate = (
+                latest_role_gates.get("portfolio")
+                or latest_role_gates.get("ranker")
+                or latest_gate
+            )
+            model_cycles = (
+                ((cycles.get("models") or {}).get(candidate) or {}).get("cycles")
+                or []
+            )
+            payload["status"] = model_state.get("status", "research")
+            payload["is_champion"] = champion == candidate
+            payload["gate_passed"] = latest_gate.get("passed")
+            payload["gate_reasons"] = latest_gate.get("reasons") or []
+            payload["gate_target"] = latest_gate.get("target_status")
+            payload["gate_metrics"] = evidence_gate.get("metrics") or {}
+            payload["role_gates"] = {
+                role: {
+                    "passed": gate.get("passed") is True,
+                    "target_status": gate.get("target_status"),
+                    "reasons": gate.get("reasons") or [],
+                    "evaluated_at": gate.get("evaluated_at"),
+                }
+                for role, gate in sorted(latest_role_gates.items())
+            }
+            payload["rejection_reasons"] = (
+                model_state.get("rejection_reasons") or []
+            )
+            payload["research_evaluation"] = (
+                model_state.get("research_evaluation") or {}
+            )
+            payload["shadow_cycles"] = len(model_cycles)
+            payload["shadow_cycles_remaining"] = max(
+                0, REQUIRED_SHADOW_CYCLES - len(model_cycles)
+            )
+            return payload
+
+        models.append(health_payload(version))
+        latest_models.append(health_payload(latest_version))
+    return {
+        "status": "available" if models else "unavailable",
+        "models": models,
+        "latest_models": latest_models,
+    }
 
 
 def _read_prediction_accuracy(root: Path, market: str, agent: str) -> dict[str, Any]:

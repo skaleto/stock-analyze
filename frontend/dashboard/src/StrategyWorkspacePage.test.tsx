@@ -291,11 +291,13 @@ describe("StrategyWorkspacePage", () => {
     );
     await screen.findByRole("region", { name: "当前持仓" });
 
-    const detailUrls = fetchMock.mock.calls
-      .map(([input]) => String(input))
-      .filter((url) => !url.includes("/summary.json"));
-    expect(detailUrls).toHaveLength(7);
-    expect(detailUrls.every((url) => url.includes("agent=codex"))).toBe(true);
+    await waitFor(() => {
+      const detailUrls = fetchMock.mock.calls
+        .map(([input]) => String(input))
+        .filter((url) => !url.includes("/summary.json"));
+      expect(detailUrls).toHaveLength(7);
+      expect(detailUrls.every((url) => url.includes("agent=codex"))).toBe(true);
+    });
   });
 
   it("does not double load when first mounted with a non-zero refresh token", async () => {

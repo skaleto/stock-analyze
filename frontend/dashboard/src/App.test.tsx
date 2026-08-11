@@ -33,32 +33,32 @@ vi.mock("./StrategyWorkspacePage", () => ({
 }));
 vi.mock("./ModelResearchPage", () => ({
   ModelResearchPage: ({
-    market,
+    focus,
     refreshToken,
   }: {
-    market: string;
+    focus?: string;
     refreshToken: number;
   }) => {
-    requests.push(`/api/dashboard/model-research.json?market=${market}`);
+    requests.push(`/api/dashboard/model-research/${focus ?? "global"}`);
     return (
       <div data-testid="workspace-page">
-        模型研究页面 {market} 刷新{refreshToken}
+        模型研究页面 {focus ?? "global"} 刷新{refreshToken}
       </div>
     );
   },
 }));
 vi.mock("./DataIntelligencePage", () => ({
   DataIntelligencePage: ({
-    market,
+    focus,
     refreshToken,
   }: {
-    market: string;
+    focus?: string;
     refreshToken: number;
   }) => {
-    requests.push(`/api/dashboard/data-intelligence.json?market=${market}`);
+    requests.push(`/api/dashboard/data-intelligence/${focus ?? "global"}`);
     return (
       <div data-testid="workspace-page">
-        数据与情报页面 {market} 刷新{refreshToken}
+        数据与情报页面 {focus ?? "global"} 刷新{refreshToken}
       </div>
     );
   },
@@ -111,14 +111,14 @@ describe("Dashboard app workspace integration", () => {
       "/api/dashboard/strategy/cn_qdii_etf/detail/trend",
     ],
     [
-      "?view=model-research&market=a_share",
-      "模型研究页面 a_share",
-      "/api/dashboard/model-research.json?market=a_share",
+      "?view=model-research",
+      "模型研究页面 global",
+      "/api/dashboard/model-research/global",
     ],
     [
-      "?view=data-intelligence&market=a_share",
-      "数据与情报页面 a_share",
-      "/api/dashboard/data-intelligence.json?market=a_share",
+      "?view=data-intelligence",
+      "数据与情报页面 global",
+      "/api/dashboard/data-intelligence/global",
     ],
     [
       "?view=operations&scope=all",
@@ -150,7 +150,7 @@ describe("Dashboard app workspace integration", () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(window.location.search).toBe("?view=model-research&market=a_share");
+      expect(window.location.search).toBe("?view=model-research&focus=a_share");
     });
     expect(replace).toHaveBeenCalledTimes(1);
     expect(window.location.search).not.toMatch(/agent|claude|codex|model_shadow/);
@@ -181,7 +181,7 @@ describe("Dashboard app workspace integration", () => {
 
     await user.click(screen.getByRole("button", { name: "模型研究" }));
     expect(window.location.search).toBe(
-      "?view=model-research&market=cn_qdii_etf",
+      "?view=model-research",
     );
     expect(push).toHaveBeenCalledTimes(1);
 
@@ -194,6 +194,22 @@ describe("Dashboard app workspace integration", () => {
 
     expect(await screen.findByText(/运行中心页面 exceptions/)).toBeInTheDocument();
     expect(push).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns to the page top when the active workspace changes", async () => {
+    window.history.replaceState({}, "", "/app.html?view=system");
+    render(<App />);
+    const user = userEvent.setup();
+    await screen.findByText("决策总览页面");
+    document.documentElement.scrollTop = 420;
+    document.body.scrollTop = 420;
+
+    await user.click(screen.getByRole("button", { name: "模型研究" }));
+
+    await waitFor(() => {
+      expect(document.documentElement.scrollTop).toBe(0);
+      expect(document.body.scrollTop).toBe(0);
+    });
   });
 
   it("keeps strategy search exclusive to detail mode", async () => {
@@ -215,34 +231,32 @@ describe("Dashboard app workspace integration", () => {
     expect(screen.getByRole("textbox", { name: "搜索证券" })).toBeInTheDocument();
   });
 
-  it("routes operations market scope independently from strategy market", async () => {
+  it("keeps operations filtering inside the operations page", async () => {
     window.history.replaceState(
       {},
       "",
       "/app.html?view=operations&scope=all",
     );
     render(<App />);
-    const user = userEvent.setup();
 
-    await user.click(screen.getByRole("button", { name: "A股" }));
-
-    expect(await screen.findByText(/运行中心页面 a_share/)).toBeInTheDocument();
-    expect(window.location.search).toBe("?view=operations&scope=a_share");
+    expect(screen.queryByRole("button", { name: "A股" })).not.toBeInTheDocument();
+    expect(screen.getByText(/运行中心页面 all/)).toBeInTheDocument();
+    expect(window.location.search).toBe("?view=operations&scope=all");
   });
 
   it("increments the active page refresh token without mounting a second page", async () => {
     window.history.replaceState(
       {},
       "",
-      "/app.html?view=model-research&market=a_share",
+      "/app.html?view=model-research",
     );
     render(<App />);
     const user = userEvent.setup();
 
-    expect(screen.getByText(/模型研究页面 a_share 刷新0/)).toBeInTheDocument();
+    expect(screen.getByText(/模型研究页面 global 刷新0/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "刷新 dashboard" }));
 
-    expect(screen.getByText(/模型研究页面 a_share 刷新1/)).toBeInTheDocument();
+    expect(screen.getByText(/模型研究页面 global 刷新1/)).toBeInTheDocument();
     expect(screen.getAllByTestId("workspace-page")).toHaveLength(1);
   });
 });

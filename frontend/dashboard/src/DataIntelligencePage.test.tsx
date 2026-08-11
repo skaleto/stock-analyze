@@ -5,6 +5,15 @@ import { fetchDataIntelligence } from "./api";
 import { DataIntelligencePage } from "./DataIntelligencePage";
 import type { DataIntelligenceData } from "./workspaceTypes";
 
+const { fetchSystemOverview } = vi.hoisted(() => ({
+  fetchSystemOverview: vi.fn(),
+}));
+
+vi.mock("./api", async () => {
+  const actual = await vi.importActual<typeof import("./api")>("./api");
+  return { ...actual, fetchSystemOverview };
+});
+
 vi.mock("./IntelligencePanel", () => ({
   IntelligencePanel: ({ mode }: { mode: string }) => (
     <div>情报证据模式：{mode}</div>
@@ -315,6 +324,82 @@ describe("DataIntelligencePage", () => {
     vi.unstubAllGlobals();
   });
 
+  it("shows the shared pipeline once and demand-loads market evidence", async () => {
+    fetchSystemOverview.mockResolvedValue({
+      generated_at: "2026-08-08T18:00:00+08:00",
+      markets: [
+        { market: "a_share", label: "A股", agents: [], monthly: {} },
+        {
+          market: "cn_qdii_etf",
+          label: "跨境ETF",
+          agents: [],
+          monthly: {},
+        },
+      ],
+      models: [],
+      strategy_model_usage: [
+        {
+          market: "a_share",
+          agent: "codex",
+          strategy_label: "趋势进攻",
+          status: "rule_only",
+          applied_candidates: 0,
+          candidate_coverage: 0,
+          model_versions: {},
+          fallback_reason: "no_champion",
+          accounts: 1,
+        },
+      ],
+      intelligence: {
+        pipeline: {
+          status: "running",
+          stages: {
+            catalogued: 584598,
+            pdfReady: 18020,
+            parsed: 7201,
+            semanticCompleted: 102,
+            canonicalEvents: 41,
+          },
+          backlog: { download: 10, parse: 20, semantic: 30, total: 60 },
+        },
+        extraction: { latestBatch: { model: "deepseek", runs: 20 } },
+        factorSupply: {
+          status: "research",
+          suppliedFactors: 8,
+          modelEligibleFactors: ["event_net_strength_5d"],
+          modelEligible: true,
+        },
+        modelImpact: {
+          status: "research",
+          adopted: false,
+          reason: "等待增量检验",
+        },
+        decisions: { canonical: 41, failed: 2 },
+        recentEvents: [],
+      },
+      errors: [],
+    });
+    const onFocusMarket = vi.fn();
+
+    render(
+      <DataIntelligencePage
+        refreshToken={0}
+        onFocusMarket={onFocusMarket}
+      />,
+    );
+
+    expect(await screen.findByText("584,598")).toBeInTheDocument();
+    expect(screen.getByText("18,020")).toBeInTheDocument();
+    expect(screen.getByText("7,201")).toBeInTheDocument();
+    expect(screen.getAllByText("41").length).toBeGreaterThan(0);
+    expect(fetchSystemOverview).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", {
+      name: "查看A股数据证据",
+    }));
+    expect(onFocusMarket).toHaveBeenCalledWith("a_share");
+  });
+
   it("drills into actual node data and keeps formal factors separate from research features", async () => {
     const user = userEvent.setup();
     render(<DataIntelligencePage market="a_share" refreshToken={0} />);
@@ -325,6 +410,8 @@ describe("DataIntelligencePage", () => {
     expect(screen.getByText("文本情报")).toBeInTheDocument();
     expect(fetch).toHaveBeenCalledTimes(1);
     await user.click(screen.getByRole("button", { name: /行情与财务/ }));
+    expect(screen.getByText("复权行情数据")).toBeInTheDocument();
+    expect(screen.getByText(/开盘、最高、最低、收盘/)).toBeInTheDocument();
     expect(screen.getByText("adjusted_ohlcv")).toBeInTheDocument();
     expect(screen.getAllByText("2026-07-29").length).toBeGreaterThan(0);
     expect(screen.getByText("快照日期")).toBeInTheDocument();
@@ -332,6 +419,7 @@ describe("DataIntelligencePage", () => {
     expect(screen.getByText("研究模型 A20-V005 (20日)、稳健防守、趋势进攻")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /传统量化因子/ }));
+    expect(screen.getByText("技术面特征")).toBeInTheDocument();
     expect(screen.getByText("正式策略因子")).toBeInTheDocument();
     expect(screen.getByText("研究模型特征")).toBeInTheDocument();
     expect(screen.getByText("2 / 10")).toBeInTheDocument();
@@ -393,6 +481,28 @@ describe("DataIntelligencePage", () => {
     expect(screen.queryByText("serialized_size_limit")).not.toBeInTheDocument();
   });
 
+  it("drops an incomplete trailing source from an explicitly truncated lane", async () => {
+    const payload = responsePayload() as unknown as Record<string, unknown>;
+    const intelligence = payload.intelligence as Record<string, unknown>;
+    const pipeline = intelligence.pipeline as Record<string, unknown>;
+    intelligence.truncated = true;
+    intelligence.truncationReasons = ["node_budget_exhausted"];
+    delete pipeline.status;
+    pipeline.sources = [
+      ...pipeline.sources as unknown[],
+      { documents: 212, fetched: 0 },
+    ];
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(payload));
+
+    await expect(fetchDataIntelligence("a_share")).resolves.toMatchObject({
+      intelligence: {
+        pipeline: {
+          sources: [expect.objectContaining({ source: "tushare_anns_d" })],
+        },
+      },
+    });
+  });
+
   it("shows a partial-status banner without hiding the structured lane", async () => {
     const value = responsePayload();
     value.errors = [{ resource: "intelligence", reason: "unavailable" }];
@@ -423,6 +533,47 @@ describe("DataIntelligencePage", () => {
     await expect(fetchDataIntelligence("a_share")).rejects.toThrow(
       "Invalid data intelligence response: intelligence.pipeline.documents",
     );
+  });
+
+  it("accepts the bounded production semantic batch manifest", async () => {
+    const payload = responsePayload();
+    payload.intelligence.extraction.latestBatch = {
+      batchDate: "2026-08-08",
+      batchKey: "semantic-20260808-001",
+      costMicrounits: 1200,
+      deferred: 3,
+      failed: 1,
+      finishedAt: "2026-08-08T03:12:00+00:00",
+      inputTokens: 24000,
+      model: "deepseek-chat",
+      noEvent: 8,
+      outputTokens: 4000,
+      parserVersion: "v1",
+      profileId: "a-share-announcement-v1",
+      promptVersion: "v1",
+      provider: "deepseek",
+      qualityStatus: "accepted",
+      quarantined: 2,
+      remaining: 40,
+      requestCount: 12,
+      runs: 12,
+      schemaVersion: "v1",
+      startedAt: "2026-08-08T03:00:00+00:00",
+      succeeded: 11,
+      successRate: 0.9167,
+      taxonomyVersion: "v4",
+      validationRepairFailures: 0,
+      validationRepairs: 1,
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(payload));
+
+    await expect(fetchDataIntelligence("a_share")).resolves.toMatchObject({
+      intelligence: {
+        extraction: {
+          latestBatch: { batchKey: "semantic-20260808-001" },
+        },
+      },
+    });
   });
 
   it("uses a safe Chinese fallback for unknown truncation reasons", async () => {

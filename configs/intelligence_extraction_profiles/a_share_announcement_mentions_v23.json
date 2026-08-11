@@ -1,0 +1,19 @@
+{
+  "profile_id": "a-share-announcement-mentions-v23",
+  "profile_version": 23,
+  "document_kind": "listed_company_announcement",
+  "market": "a_share",
+  "included_security_suffixes": [".SH", ".SZ", ".BJ"],
+  "excluded_security_prefixes": ["200", "900"],
+  "prompt_version": "semantic-mentions-v16",
+  "schema_version": "announcement-mentions-v1-lite",
+  "taxonomy_version": "cn-announcement-taxonomy-v10",
+  "taxonomy_path": "configs/intelligence_event_taxonomy_v10.json",
+  "compiler_version": "mention-compiler-v3-ir",
+  "evidence_contract": "document-ir-v1-verbatim-cell",
+  "document_ir_version": "announcement-document-ir-v1",
+  "retriever_version": "deterministic-evidence-v2",
+  "max_evidence_packet_chars": 24000,
+  "decision_use": "research_feature_only",
+  "repair_only": false
+}

@@ -26,10 +26,11 @@ from typing import Any, Iterable
 import pandas as pd
 
 from ... import competition
-from .data_provider import DataProvider, INDEX_CODES, make_provider
+from .data_provider import DASHBOARD_HISTORY_DAYS, DataProvider, INDEX_CODES, make_provider
 from ...run_ledger import RunLedger
 from .strategy import preselect_universe
 from ...utils import ensure_dirs, parse_date, write_text_atomic
+from ...research.source_features import SourceCollection, collect_source_calls
 
 
 # Names that indicate a critical failure: if these come up empty the whole
@@ -43,6 +44,88 @@ OPTIONAL_EMPTY_METHODS = {"dividend_yield"}
 # The happy path (data already published) incurs zero extra delay.
 SPOT_EMPTY_RETRY_MAX = 3
 SPOT_EMPTY_RETRY_SLEEP_S = 60.0
+
+
+def _resolve_prepare_as_of(
+    repo_root: Path,
+    explicit_as_of: str | None,
+    *,
+    now: pd.Timestamp | None = None,
+) -> str:
+    """Use the latest successful snapshot for an implicit weekend rerun."""
+
+    if explicit_as_of:
+        return explicit_as_of
+
+    current = now or pd.Timestamp.now()
+    today = current.strftime("%Y-%m-%d")
+    if current.dayofweek < 5:
+        return today
+
+    shared_data = repo_root / "data" / "shared"
+    candidates: list[str] = []
+    for path in shared_data.glob("market_snapshot_*.json"):
+        snapshot_date = path.stem.removeprefix("market_snapshot_")
+        if snapshot_date > today:
+            continue
+        try:
+            snapshot = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if snapshot.get("status") in {"success", "partial"}:
+            candidates.append(snapshot_date)
+    return max(candidates) if candidates else today
+
+
+def collect_research_sources(
+    pro: Any,
+    *,
+    as_of: str,
+    codes: Iterable[str] = (),
+    benchmark_codes: Iterable[str] = (),
+    observed_at: str | None = None,
+) -> SourceCollection:
+    """Fetch the permission-verified research endpoints into normalized frames."""
+
+    as_of_key = str(as_of).replace("-", "")[:8]
+    end = pd.Timestamp(as_of_key)
+    start_date = (end - pd.Timedelta(days=1100)).strftime("%Y%m%d")
+    benchmark_start_date = start_date
+    start_month = (end - pd.DateOffset(months=40)).strftime("%Y%m")
+    end_month = end.strftime("%Y%m")
+    observed = observed_at or datetime.now().astimezone().isoformat(timespec="seconds")
+    code_list = [str(code) for code in codes]
+
+    calls: dict[str, list[Any]] = {
+        "daily_basic": [lambda: pro.daily_basic(trade_date=as_of_key)],
+        "moneyflow": [lambda: pro.moneyflow(trade_date=as_of_key)],
+        "margin": [lambda: pro.margin(trade_date=as_of_key)],
+        "margin_detail": [lambda: pro.margin_detail(trade_date=as_of_key)],
+        "hsgt_top10": [lambda: pro.hsgt_top10(trade_date=as_of_key)],
+        "index_classify": [lambda: pro.index_classify(level="L1", src="SW2021")],
+        "index_member_all": [lambda: pro.index_member_all()],
+        "cn_pmi": [lambda: pro.cn_pmi(start_m=start_month, end_m=end_month)],
+        "cn_m": [lambda: pro.cn_m(start_m=start_month, end_m=end_month)],
+        "cn_cpi": [lambda: pro.cn_cpi(start_m=start_month, end_m=end_month)],
+        "cn_ppi": [lambda: pro.cn_ppi(start_m=start_month, end_m=end_month)],
+        "shibor": [lambda: pro.shibor(start_date=start_date, end_date=as_of_key)],
+        "shibor_lpr": [lambda: pro.shibor_lpr(start_date=start_date, end_date=as_of_key)],
+        "us_tycr": [lambda: pro.us_tycr(start_date=start_date, end_date=as_of_key)],
+    }
+    for endpoint in ("fina_indicator", "income", "balancesheet", "cashflow"):
+        calls[endpoint] = [lambda endpoint=endpoint, code=code: getattr(pro, endpoint)(ts_code=code, end_date=as_of_key) for code in code_list]
+    calls["fina_mainbz"] = [lambda code=code: pro.fina_mainbz(ts_code=code, type="P", end_date=as_of_key) for code in code_list]
+    for raw_code in benchmark_codes:
+        code = str(raw_code).split(".")[0].zfill(6)
+        ts_code = f"{code}.SZ" if code.startswith("399") else f"{code}.SH"
+        calls[f"benchmark_{code}"] = [
+            lambda ts_code=ts_code: pro.index_daily(
+                ts_code=ts_code,
+                start_date=benchmark_start_date,
+                end_date=as_of_key,
+            )
+        ]
+    return collect_source_calls(calls, observed_at=observed)
 
 
 def _acquire_spot_with_retry(
@@ -147,11 +230,13 @@ def _fetch_one_candidate(
     counts = {"basic": 0, "history": 0, "valuation": 0, "financial": 0, "dividend": 0}
     steps: tuple[tuple[str, str, Any], ...] = (
         ("basic", "basic_info", lambda: provider.basic_info(code)),
-        # Prewarm the *largest* window any caller asks for: diagnostics
-        # uses 260, price_snapshot 220, execution_quote 45. The offline
-        # fallback in price_history() reuses a larger window for smaller
-        # requests, so prewarming 260 covers all three.
-        ("history", "price_history", lambda: provider.price_history(code, days=260)),
+        # Keep one three-year cache that serves both factor calculations and
+        # the interactive security drawer without a second network path.
+        (
+            "history",
+            "price_history",
+            lambda: provider.price_history(code, days=DASHBOARD_HISTORY_DAYS),
+        ),
         ("valuation", "valuation_metrics", lambda: provider.valuation_metrics(code)),
         ("financial", "financial_metrics", lambda: provider.financial_metrics(code)),
         ("dividend", "dividend_yield", lambda: provider.dividend_yield(code)),
@@ -172,6 +257,78 @@ def _fetch_one_candidate(
         except Exception as exc:  # noqa: BLE001 — record + continue per-stock
             errors.append({"code": code, "method": method_name, "message": str(exc)[:200]})
     return counts
+
+
+def _normalize_operational_code(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    code = raw.split(".")[0]
+    if not code.isdigit():
+        return None
+    return code.zfill(6)
+
+
+def _collect_operational_codes(repo_root: Path, agent_ids: Iterable[str]) -> set[str]:
+    """Return codes that current positions or pending orders still need.
+
+    Candidate preselection can drop a stock that is already held or has a
+    pending order. The daily simulator still needs fresh history for execution
+    quotes and NAV marking, so prepare-market-data must warm those codes too.
+    """
+
+    data_dirs: list[Path] = []
+    seen_agents = set(agent_ids)
+    market_root = repo_root / "data" / "a_share"
+    if market_root.exists():
+        seen_agents.update(path.name for path in market_root.iterdir() if path.is_dir())
+    legacy_root = repo_root / "data"
+    for agent_id in sorted(seen_agents):
+        data_dirs.append(market_root / agent_id)
+        data_dirs.append(legacy_root / agent_id)
+
+    codes: set[str] = set()
+    for data_dir in data_dirs:
+        pending_path = data_dir / "pending_orders.json"
+        if pending_path.exists():
+            try:
+                batches = json.loads(pending_path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                batches = []
+            if isinstance(batches, list):
+                for batch in batches:
+                    if not isinstance(batch, dict):
+                        continue
+                    for order in batch.get("orders") or []:
+                        if not isinstance(order, dict):
+                            continue
+                        code = _normalize_operational_code(order.get("code"))
+                        if code:
+                            codes.add(code)
+
+        state_path = data_dir / "state.json"
+        if state_path.exists():
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                state = {}
+            accounts = state.get("accounts") if isinstance(state, dict) else {}
+            if isinstance(accounts, dict):
+                for account in accounts.values():
+                    if not isinstance(account, dict):
+                        continue
+                    positions = account.get("positions") or {}
+                    if not isinstance(positions, dict):
+                        continue
+                    for raw_code, position in positions.items():
+                        code = _normalize_operational_code(raw_code)
+                        if code:
+                            codes.add(code)
+                        if isinstance(position, dict):
+                            code = _normalize_operational_code(position.get("code"))
+                            if code:
+                                codes.add(code)
+    return codes
 
 
 def _build_universe(provider: DataProvider, scopes: list[str], errors: list[dict[str, Any]]) -> pd.DataFrame:
@@ -228,7 +385,7 @@ def prepare_market_data(
     """
 
     repo_root = (repo_root or Path.cwd()).resolve()
-    as_of_str = as_of or pd.Timestamp.now().strftime("%Y-%m-%d")
+    as_of_str = _resolve_prepare_as_of(repo_root, as_of)
     parse_date(as_of_str)  # validate format early
 
     snapshot_path = _snapshot_path(repo_root, as_of_str)
@@ -258,7 +415,8 @@ def prepare_market_data(
                 path.unlink(missing_ok=True)
 
     scopes, benchmarks = _resolve_scopes_and_benchmarks(repo_root, scopes)
-    agents = [competition.load(agent_id, repo_root=repo_root) for agent_id in competition.list_agents(repo_root)]
+    agent_ids = competition.list_agents(repo_root)
+    agents = [competition.load(agent_id, repo_root=repo_root) for agent_id in agent_ids]
     filters = _merged_filters(agents)
 
     started_at = _now_iso()
@@ -295,13 +453,16 @@ def prepare_market_data(
     # 4. preselect candidates (use merged filters so neither agent runs short)
     candidates = preselect_universe(universe, filters)
     candidate_codes: list[str] = candidates["code"].dropna().astype(str).tolist() if not candidates.empty else []
+    operational_codes = _collect_operational_codes(repo_root, agent_ids)
+    fetch_codes = list(dict.fromkeys(candidate_codes + sorted(operational_codes - set(candidate_codes))))
     counters["candidates_fetched"] = len(candidate_codes)
+    counters["operational_codes"] = len(operational_codes)
 
     # 5. per-candidate detail fetch (concurrent across stocks, sequential within)
     per_code_counts = {"basic": 0, "history": 0, "valuation": 0, "financial": 0, "dividend": 0}
-    if candidate_codes:
+    if fetch_codes:
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_fetch_one_candidate, provider, code, errors, warnings): code for code in candidate_codes}
+            futures = {pool.submit(_fetch_one_candidate, provider, code, errors, warnings): code for code in fetch_codes}
             for future in as_completed(futures):
                 code = futures[future]
                 try:
@@ -357,6 +518,7 @@ def prepare_market_data(
         "scopes": scopes,
         "benchmarks": benchmarks,
         "candidates_fetched": len(candidate_codes),
+        "target_codes": sorted(fetch_codes),
         "rows": counters,
         "errors": errors,
         "warnings": warnings,

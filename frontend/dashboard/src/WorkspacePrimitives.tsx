@@ -122,11 +122,13 @@ export function BoundedTable<T>({
   columns,
   rowKey,
   emptyLabel,
+  className,
 }: {
   rows: T[];
   columns: BoundedColumn<T>[];
   rowKey: (row: T) => string;
   emptyLabel: string;
+  className?: string;
 }) {
   const bounded = rows.slice(0, 20);
   if (columns.length === 0) {
@@ -153,7 +155,7 @@ export function BoundedTable<T>({
   }
 
   return (
-    <div className="bounded-table-wrap">
+    <div className={`bounded-table-wrap${className ? ` ${className}` : ""}`}>
       <table className="bounded-table">
         <thead>
           <tr>

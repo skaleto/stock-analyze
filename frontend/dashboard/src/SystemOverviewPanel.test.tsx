@@ -171,7 +171,7 @@ describe("SystemOverviewPanel", () => {
     expect(
       screen.getByText("正式策略当前完全由经典规则驱动"),
     ).toBeInTheDocument();
-    expect(screen.getByText("A20-V005")).toBeInTheDocument();
+    expect(await screen.findByText("A20-V005")).toBeInTheDocument();
     expect(screen.getByText("Q5-V004")).toBeInTheDocument();
     expect(
       screen.getByText("情报因子仍处于观察或研究阶段，当前未进入正式模型。"),
@@ -181,7 +181,7 @@ describe("SystemOverviewPanel", () => {
     await userEvent.click(screen.getByRole("button", { name: "查看模型迭代" }));
     await waitFor(() => {
       expect(onNavigate).toHaveBeenCalledWith(
-        { view: "model-research", market: "cn_qdii_etf" },
+        { view: "model-research" },
       );
     });
     expect(JSON.stringify(onNavigate.mock.calls)).not.toMatch(

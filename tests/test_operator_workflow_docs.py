@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+
+class OperatorWorkflowDocsTests(unittest.TestCase):
+    def test_weekly_and_monthly_scripts_have_no_claude_or_sentiment_dependency(self) -> None:
+        weekly = Path("scripts/weekly.sh").read_text(encoding="utf-8")
+        monthly = Path("scripts/monthly.sh").read_text(encoding="utf-8")
+        combined = weekly + monthly
+
+        self.assertNotIn("claude -p", combined)
+        self.assertNotIn("record-sentiment", combined)
+        self.assertNotIn("configs/agents/claude.yaml", combined)
+        self.assertIn("notify-workflow-summary", weekly)
+        self.assertIn("--cadence weekly", weekly)
+        self.assertIn("运行 ${WEEK_END} 周度复盘", weekly)
+        self.assertIn("notify-workflow-summary", monthly)
+        self.assertIn("--cadence monthly", monthly)
+        self.assertIn("运行 ${TARGET_MONTH} 月度策略演化", monthly)
+
+    def test_repo_workflow_skill_names_only_active_markets(self) -> None:
+        skill = Path(".claude/skills/stock-analyze-workflows/SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("a_share", skill)
+        self.assertIn("cn_qdii_etf", skill)
+        self.assertIn("Codex", skill)
+        self.assertNotIn("run-overseas.sh", skill)
+        self.assertNotIn("hk/claude", skill)
+        self.assertNotIn("record-sector-sentiment", skill)
+        self.assertIn("每日收盘决策", skill)
+        self.assertIn("周任务不生成订单", skill)
+
+    def test_runbook_assigns_orders_to_daily_and_review_to_weekly(self) -> None:
+        runbook = Path("docs/competition-runbook.md").read_text(encoding="utf-8")
+
+        self.assertIn("每日收盘决策", runbook)
+        self.assertIn("run-weekly", runbook)
+        self.assertIn("不生成订单", runbook)
+
+    def test_alerting_docs_describe_completion_gated_daily_summary(self) -> None:
+        docs = Path("docs/operator-alerting-setup.md").read_text(encoding="utf-8")
+
+        self.assertIn("21:30", docs)
+        self.assertIn("四份 `runs.csv`", docs)
+        self.assertIn("可恢复状态 `75`", docs)
+        self.assertIn("10:45", docs)
+        self.assertIn("09:30", docs)
+        self.assertNotIn("ExecStartPost=notify-daily-summary.sh", docs)
+
+    def test_qdii_capacity_study_is_documented_as_research_only(self) -> None:
+        runbook = Path("docs/competition-runbook.md").read_text(encoding="utf-8")
+        skill = Path(".claude/skills/stock-analyze-workflows/SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        combined = runbook + skill
+
+        self.assertIn("qdii-capacity-study", combined)
+        self.assertIn("4 5 6 8 10", combined)
+        self.assertIn("幸存者偏差", combined)
+        self.assertIn("不自动修改", combined)
+        self.assertIn("top_n", combined)
+
+    def test_prediction_promotion_is_documented_as_automatic_but_gated(self) -> None:
+        runbook = Path("docs/competition-runbook.md").read_text(encoding="utf-8")
+
+        self.assertIn("训练完成后自动执行 `research -> shadow` 门禁", runbook)
+        self.assertIn("第四个有效影子周后自动执行 `shadow -> active` 门禁", runbook)
+        self.assertIn("未通过时保持原状态", runbook)
+        self.assertIn("Champion", runbook)
+        self.assertIn("Challenger", runbook)
+        self.assertIn("data/model_iterations/<market>/<horizon>/<version>/", runbook)
+        self.assertIn("run-model-iteration", runbook)
+        self.assertNotIn("### 模型影子账户", runbook)
+
+
+if __name__ == "__main__":
+    unittest.main()

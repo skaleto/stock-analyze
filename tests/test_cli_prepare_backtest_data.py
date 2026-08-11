@@ -67,6 +67,31 @@ class PrepareBacktestDataCLITests(unittest.TestCase):
                 Path("data/shared/backtest_cache"),
             )
 
+    def test_subcommand_passes_batch_and_phase_controls(self):
+        with patch(
+            "stock_analyze.markets.a_share.backtest.data_prep.prepare_backtest_data"
+        ) as mocked:
+            cli.main([
+                "prepare-backtest-data",
+                "--start", "2018-01-01",
+                "--end", "2020-12-31",
+                "--phases", "universe,fundamentals,adjustments,status",
+                "--code-scope", "historical-index-union",
+                "--code-offset", "100",
+                "--code-limit", "50",
+                "--status-provider", "baostock",
+            ])
+
+        kwargs = mocked.call_args.kwargs
+        self.assertEqual(
+            kwargs["phases"],
+            {"universe", "fundamentals", "adjustments", "status"},
+        )
+        self.assertEqual(kwargs["code_scope"], "historical-index-union")
+        self.assertEqual(kwargs["code_offset"], 100)
+        self.assertEqual(kwargs["code_limit"], 50)
+        self.assertEqual(kwargs["status_provider"], "baostock")
+
 
 if __name__ == "__main__":
     unittest.main()

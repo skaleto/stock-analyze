@@ -1,0 +1,17 @@
+executor:
+  kind: openai-compatible
+  base_url: https://api.deepseek.com
+  api_key_file_env: INTELLIGENCE_LLM_API_KEY_FILE
+  model: deepseek-v4-pro
+  response_format: json_object
+  server_side_json_schema: false
+  local_schema_validation: true
+  max_output_tokens: 16384
+  temperature: 0
+  thinking: disabled
+  request_timeout_seconds: 180
+  max_attempts: 2
+  schema_repair_attempts: 1
+  max_input_characters: 180000
+  max_documents_per_daily_run: 3
+  daily_input_token_budget: 250000

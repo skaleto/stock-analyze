@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
   ArrowRight,
   BarChart3,
@@ -14,11 +14,10 @@ import {
   ShieldAlert,
   Sigma,
 } from "lucide-react";
-import { fetchSystemOverview } from "./api";
 import type {
   StrategyModelUsage,
-  SystemOverviewData,
 } from "./types";
+import { useSystemOverviewResource } from "./useSystemOverviewResource";
 import type {
   DashboardMarket,
   WorkspaceRoute,
@@ -26,10 +25,9 @@ import type {
 
 type Props = {
   refreshToken?: number;
+  strategyMarket?: DashboardMarket;
   onNavigate: (route: WorkspaceRoute) => void;
 };
-
-const preferredMarket = "cn_qdii_etf";
 
 function publicMarket(market: string): DashboardMarket {
   return market === "a_share" ? "a_share" : "cn_qdii_etf";
@@ -76,30 +74,12 @@ function usageReason(usage?: StrategyModelUsage): string {
 
 export default function SystemOverviewPanel({
   refreshToken = 0,
+  strategyMarket = "cn_qdii_etf",
   onNavigate,
 }: Props) {
-  const [data, setData] = useState<SystemOverviewData | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setLoading(true);
-    setError(null);
-    fetchSystemOverview(controller.signal)
-      .then((payload) => {
-        if (!controller.signal.aborted) setData(payload);
-      })
-      .catch((reason: unknown) => {
-        if (!controller.signal.aborted) {
-          setError(reason instanceof Error ? reason.message : String(reason));
-        }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
-      });
-    return () => controller.abort();
-  }, [refreshToken]);
+  const resource = useSystemOverviewResource(refreshToken);
+  const data = resource.data;
+  const error = resource.error;
 
   const championCount = data?.models.filter(
     (item) => Boolean(item.iteration?.champion),
@@ -199,7 +179,7 @@ export default function SystemOverviewPanel({
           </span>
         </div>
       ) : null}
-      {loading && !data ? (
+      {resource.loading && !data ? (
         <div className="system-overview-loading" aria-label="决策总览加载中">
           <i /><i /><i /><i /><i />
         </div>
@@ -220,14 +200,9 @@ export default function SystemOverviewPanel({
                         ? {
                             view: "strategy",
                             mode: "compare",
-                            market: preferredMarket,
+                            market: strategyMarket,
                           }
-                        : {
-                            view: item.view,
-                            market: item.view === "data-intelligence"
-                              ? "a_share"
-                              : preferredMarket,
-                          },
+                        : { view: item.view },
                     )}
                     aria-label={`查看${item.label}`}
                   >
@@ -257,7 +232,7 @@ export default function SystemOverviewPanel({
                 onClick={() => onNavigate({
                   view: "strategy",
                   mode: "compare",
-                  market: preferredMarket,
+                  market: strategyMarket,
                 })}
               >
                 全维度对比<ChevronRight size={15} />
@@ -354,7 +329,6 @@ export default function SystemOverviewPanel({
                 className="system-drill-button"
                 onClick={() => onNavigate({
                   view: "model-research",
-                  market: preferredMarket,
                 })}
                 aria-label="查看模型迭代"
               >
@@ -390,7 +364,6 @@ export default function SystemOverviewPanel({
                 className="system-drill-button"
                 onClick={() => onNavigate({
                   view: "data-intelligence",
-                  market: "a_share",
                 })}
               >
                 查看情报证据<ChevronRight size={15} />

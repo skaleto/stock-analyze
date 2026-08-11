@@ -94,6 +94,19 @@ def _build_synthetic_cache(cache_root: Path, n_days: int = 10) -> None:
         "index_code": [], "con_code": [], "weight": [], "trade_date": [],
     }).to_csv(cache_root / "index_weight" / "000905_2023-06.csv", index=False)
 
+    benchmark_dir = cache_root / "benchmark_daily"
+    benchmark_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({
+        "ts_code": ["000300.SH"] * len(days),
+        "trade_date": yyyymmdd,
+        "close": [4000.0 + i * 2.0 for i in range(len(days))],
+    }).to_csv(benchmark_dir / "000300.csv", index=False)
+    pd.DataFrame({
+        "ts_code": ["000905.SH"] * len(days),
+        "trade_date": yyyymmdd,
+        "close": [6000.0 + i * 3.0 for i in range(len(days))],
+    }).to_csv(benchmark_dir / "000905.csv", index=False)
+
     # Stock basic
     pd.DataFrame([
         {"ts_code": "000001.SZ", "name": "平安银行",
