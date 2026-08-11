@@ -14,7 +14,10 @@ fi
 cd "$ROOT"
 
 run_local() {
-  "$PYTHON_BIN" -m unittest \
+  # Remote connection settings can break tests that intentionally replace ssh
+  # with a local fake. Keep the local gate hermetic when running --remote.
+  env -u SA_ECS_REMOTE -u SA_ECS_SSH_HOST -u SA_ECS_SSH_OPTS \
+    "$PYTHON_BIN" -m unittest \
     tests.test_system_structure \
     tests.test_archived_markets \
     tests.test_qdii_systemd_units \
