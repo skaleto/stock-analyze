@@ -29,6 +29,7 @@ from .research.feature_registry import DEFAULT_REGISTRY, INTELLIGENCE_FEATURES
 
 
 MAX_TABLE_ROWS = 20
+MAX_RESOURCE_OBJECT_FIELDS = 64
 MAX_ROLLBACK_ROWS = 5
 MAX_FEATURE_ROWS = 20
 MAX_MODEL_FEATURES = 20
@@ -37,6 +38,7 @@ MAX_DIAGNOSTIC_DEPTH = 4
 MAX_DIAGNOSTIC_ITEMS = 8
 MAX_DIAGNOSTIC_NODES = 128
 MAX_DIAGNOSTIC_TEXT = 32_000
+MAX_RESOURCE_NODES = 1_024
 MAX_SERIALIZED_BYTES = 250_000
 MAX_ABS_NUMERIC = 1_000_000_000_000_000
 WORKSPACE_READ_ERRORS = (
@@ -52,9 +54,46 @@ MODEL_METRIC_KEYS = (
     "icir",
     "brier_score",
     "auc",
+    "brier_improvement",
     "hit_rate_lift",
+    "hit_rate_uplift",
+    "gross_return",
+    "net_return",
+    "benchmark_return",
     "net_excess_return",
     "turnover",
+    "annual_turnover",
+    "max_drawdown",
+    "portfolio_sharpe",
+    "portfolio_rebalance_periods",
+    "effective_dates",
+    "effective_non_overlapping_periods",
+    "valid_trial_count",
+    "trial_evidence_status",
+    "deflated_sharpe_probability",
+    "probability_of_backtest_overfit",
+    "simulator_version",
+    "total_execution_cost",
+    "total_commission",
+    "total_stamp_tax",
+    "total_slippage",
+    "execution_cost_bps",
+    "impact_bps_p50",
+    "impact_bps_p90",
+    "impact_capped_notional_ratio",
+    "missing_liquidity_notional_ratio",
+    "execution_evidence_status",
+    "execution_policy_version",
+    "decision_count",
+    "trade_allowed_count",
+    "no_trade_count",
+    "all_accounts_profitable",
+    "all_accounts_positive_active",
+    "forward_evidence_status",
+    "forward_cycles",
+    "forward_net_excess_return",
+    "forward_max_drawdown",
+    "forward_all_accounts_positive_active",
 )
 PUBLIC_STRATEGIES = (
     ("defensive", "claude", "稳健防守"),
@@ -87,12 +126,6 @@ FORMAL_FACTOR_SOURCES = {
 }
 OPERATIONS_MAIN_CHAIN = (
     (
-        "intelligence",
-        "情报增量",
-        ("stock-analyze-intelligence.service",),
-        "stock-analyze-intelligence.timer",
-    ),
-    (
         "market_snapshot",
         "行情与研究快照",
         ("stock-analyze-market-data.service",),
@@ -106,9 +139,8 @@ OPERATIONS_MAIN_CHAIN = (
     ),
     (
         "simulation",
-        "正式策略及候选模型模拟",
+        "正式策略模拟",
         (
-            "stock-analyze-model-iteration.service",
             "stock-analyze-claude-daily.service",
             "stock-analyze-codex-daily.service",
             "stock-analyze-claude-cn-qdii-etf-daily.service",
@@ -119,14 +151,23 @@ OPERATIONS_MAIN_CHAIN = (
     (
         "publish",
         "Dashboard 聚合与通知",
-        (
-            "stock-analyze-aggregate-dashboard.service",
-            "stock-analyze-daily-summary.service",
-        ),
+        ("stock-analyze-daily-finalize.service",),
         "stock-analyze-daily-summary.timer",
     ),
 )
 OPERATIONS_BACKGROUND = (
+    (
+        "intelligence_refresh",
+        "情报增量采集",
+        "stock-analyze-intelligence.service",
+        "stock-analyze-intelligence.timer",
+    ),
+    (
+        "model_iteration",
+        "候选模型模拟",
+        "stock-analyze-model-iteration.service",
+        None,
+    ),
     (
         "artifact_backfill",
         "PDF 下载与解析回填",
@@ -145,6 +186,12 @@ OPERATIONS_BACKGROUND = (
         "stock-analyze-intelligence-semantic.service",
         "stock-analyze-intelligence-semantic.timer",
     ),
+    (
+        "quality",
+        "情报全库质量检查",
+        "stock-analyze-intelligence-quality.service",
+        "stock-analyze-intelligence-quality.timer",
+    ),
 )
 OPERATIONS_TIMERS = {
     "stock-analyze-market-data.timer": ("行情与研究日链", "daily"),
@@ -156,6 +203,7 @@ OPERATIONS_TIMERS = {
         "daily",
     ),
     "stock-analyze-intelligence-semantic.timer": ("LLM 语义抽取", "daily"),
+    "stock-analyze-intelligence-quality.timer": ("情报全库质量检查", "weekly"),
     "stock-analyze-ifind-source-audit.timer": ("iFinD 数据源审计", "daily"),
     "stock-analyze-weekly-trigger.timer": ("A股周度复盘", "weekly"),
     "stock-analyze-claude-cn-qdii-etf-weekly.timer": (
@@ -319,6 +367,16 @@ def _integer(value: Any) -> int:
     except (TypeError, ValueError, OverflowError):
         return 0
     return normalized if abs(normalized) <= MAX_ABS_NUMERIC else 0
+
+
+def _optional_integer(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return normalized if abs(normalized) <= MAX_ABS_NUMERIC else None
 
 
 def _text(value: Any, *, limit: int = MAX_TEXT_LENGTH) -> str:
@@ -532,7 +590,9 @@ def _model_rows(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for raw in _rows(health.get("models")):
-        metrics = _mapping(raw.get("metrics"))
+        training_metrics = _mapping(raw.get("metrics"))
+        gate_metrics = _mapping(raw.get("gate_metrics"))
+        metrics = {**training_metrics, **gate_metrics}
         all_features = sorted(
             {
                 _text(value, limit=128)
@@ -555,11 +615,14 @@ def _model_rows(
             model_version,
             registry_record,
         )
-        gate_reasons = [
+        gate_reasons = list(dict.fromkeys([
             _text(reason, limit=256)
-            for reason in (raw.get("gate_reasons") or [])
+            for reason in (
+                list(raw.get("gate_reasons") or [])
+                + list(raw.get("rejection_reasons") or [])
+            )
             if reason
-        ][:MAX_TABLE_ROWS]
+        ]))[:MAX_TABLE_ROWS]
         registry_active = str(registry_record.get("status") or "") == "active"
         rows.append(
             {
@@ -582,10 +645,18 @@ def _model_rows(
                 "featureColumns": all_features[:MAX_MODEL_FEATURES],
                 "_allFeatureColumns": all_features,
                 "registryStatus": "available" if registry_record else "missing",
+                "lifecycleStatus": _text(
+                    registry_record.get("status") or raw.get("status") or "research",
+                    limit=128,
+                ),
                 "artifactRef": artifact_ref,
                 "artifactStatus": "available" if artifact_ref else "missing",
                 "gatePassed": raw.get("gate_passed") is True,
                 "gateReasons": gate_reasons,
+                "roleGates": _bounded_diagnostics(raw.get("role_gates")) or {},
+                "evaluation": _bounded_diagnostics(
+                    raw.get("research_evaluation")
+                ) or {},
                 "shadowCycles": _integer(raw.get("shadow_cycles")),
                 "shadowCyclesRemaining": _integer(
                     raw.get("shadow_cycles_remaining")
@@ -604,6 +675,15 @@ def _model_rows(
                     metrics.get("candidate_feature_count")
                 )
                 or len(all_features),
+                "baselineComparison": _bounded_diagnostics(
+                    metrics.get("baseline_comparison")
+                ) or {},
+                "accountMetrics": _bounded_diagnostics(
+                    metrics.get("account_metrics")
+                ) or {},
+                "noTradeReasonCounts": _bounded_diagnostics(
+                    metrics.get("no_trade_reason_counts")
+                ) or {},
                 "metrics": {
                     key: _scalar(metrics.get(key))
                     for key in MODEL_METRIC_KEYS
@@ -627,10 +707,17 @@ def _source_rows(value: Any) -> list[dict[str, Any]]:
     seen: set[str] = set()
     for row in _rows(value):
         has_error = bool(row.get("error") or row.get("error_summary"))
+        rows = _integer(row.get("rows"))
+        status = _text(row.get("status"), limit=128)
+        if not status:
+            if has_error or bool(row.get("failed")):
+                status = "failed"
+            else:
+                status = "available" if rows > 0 else "empty"
         evidence = {
             "source": _text(row.get("source"), limit=256),
-            "status": _text(row.get("status"), limit=128),
-            "rows": _integer(row.get("rows")),
+            "status": status,
+            "rows": rows,
             "failed": bool(row.get("failed")),
             "as_of": _scalar(row.get("as_of"), text_limit=256),
             "error": "数据源状态读取失败" if has_error else None,
@@ -757,6 +844,177 @@ def _simulation_account(iteration: dict[str, Any]) -> dict[str, Any] | None:
         "isolation": isolation,
         "navRows": _integer(iteration.get("nav_rows")),
         "portfolioRef": portfolio_ref,
+    }
+
+
+def _simulation_accounts(iteration: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw in _rows(iteration.get("accounts")):
+        account_id = _text(raw.get("account_id") or raw.get("id"), limit=256)
+        if not account_id:
+            continue
+        rows.append({
+            "accountId": account_id,
+            "scope": _text(raw.get("scope"), limit=256),
+            "benchmark": _text(raw.get("benchmark"), limit=256),
+            "selectedCount": _integer(raw.get("selected_count")),
+            "date": _scalar(raw.get("date"), text_limit=256),
+            "cash": _finite_number(raw.get("cash")),
+            "marketValue": _finite_number(raw.get("market_value")),
+            "totalValue": _finite_number(raw.get("total_value")),
+            "benchmarkClose": _finite_number(raw.get("benchmark_close")),
+        })
+        if len(rows) >= MAX_TABLE_ROWS:
+            break
+    return rows
+
+
+def _model_evaluation(model: dict[str, Any] | None) -> dict[str, Any]:
+    if not model:
+        return {
+            "status": "unavailable",
+            "simulatorVersion": None,
+            "baselineComparison": {},
+            "accountMetrics": {},
+        }
+    metrics = _mapping(model.get("metrics"))
+    return {
+        "status": (
+            "available"
+            if metrics.get("simulator_version") == "paper-parity-daily-v1"
+            else "unavailable"
+        ),
+        "modelVersion": model.get("modelVersion"),
+        "simulatorVersion": metrics.get("simulator_version"),
+        "grossReturn": metrics.get("gross_return"),
+        "netReturn": metrics.get("net_return"),
+        "benchmarkReturn": metrics.get("benchmark_return"),
+        "netExcessReturn": metrics.get("net_excess_return"),
+        "maxDrawdown": metrics.get("max_drawdown"),
+        "annualTurnover": metrics.get("annual_turnover"),
+        "sharpe": metrics.get("portfolio_sharpe"),
+        "executionCost": metrics.get("total_execution_cost"),
+        "executionCostBps": metrics.get("execution_cost_bps"),
+        "impactBpsP50": metrics.get("impact_bps_p50"),
+        "impactBpsP90": metrics.get("impact_bps_p90"),
+        "impactCappedNotionalRatio": metrics.get(
+            "impact_capped_notional_ratio"
+        ),
+        "missingLiquidityNotionalRatio": metrics.get(
+            "missing_liquidity_notional_ratio"
+        ),
+        "executionEvidenceStatus": metrics.get("execution_evidence_status"),
+        "executionPolicyVersion": metrics.get("execution_policy_version"),
+        "decisionCount": _optional_integer(metrics.get("decision_count")),
+        "tradeAllowedCount": _optional_integer(
+            metrics.get("trade_allowed_count")
+        ),
+        "noTradeCount": _optional_integer(metrics.get("no_trade_count")),
+        "noTradeReasonCounts": _mapping(model.get("noTradeReasonCounts")),
+        "effectivePeriods": _integer(
+            metrics.get("effective_non_overlapping_periods")
+        ),
+        "validTrialCount": _integer(metrics.get("valid_trial_count")),
+        "trialEvidenceStatus": _text(
+            metrics.get("trial_evidence_status"),
+            limit=128,
+        ),
+        "baselineComparison": _mapping(model.get("baselineComparison")),
+        "accountMetrics": _mapping(model.get("accountMetrics")),
+    }
+
+
+def _model_attribution_evidence(root: Path, market: str) -> dict[str, Any]:
+    lineage_path = root / "data" / "shared" / "research_lineage.sqlite3"
+    if not lineage_path.exists():
+        return {
+            "status": "unavailable",
+            "formalModelApplied": False,
+            "completeCount": 0,
+            "totalCount": 0,
+            "rows": [],
+        }
+    from .research.lineage import ResearchLineageStore
+
+    lineage = ResearchLineageStore(lineage_path)
+    decisions = [
+        row
+        for row in lineage.query("decision_runs")
+        if str(row.get("market") or "") == market
+    ]
+    decision_by_id = {
+        str(row.get("decision_run_id") or ""): row
+        for row in decisions
+    }
+    raw_rows = [
+        row
+        for row in lineage.query("pnl_attributions")
+        if str(row.get("decision_run_id") or "") in decision_by_id
+        and str(row.get("security_code") or "") == "__PORTFOLIO__"
+    ]
+    raw_rows.sort(
+        key=lambda row: (
+            str(row.get("as_of") or ""),
+            str(row.get("pnl_attribution_id") or ""),
+        ),
+        reverse=True,
+    )
+    rows: list[dict[str, Any]] = []
+    for raw in raw_rows[:MAX_TABLE_ROWS]:
+        decision = decision_by_id.get(str(raw.get("decision_run_id") or ""), {})
+        model_versions = _mapping(
+            raw.get("model_versions") or decision.get("model_versions")
+        )
+        policy_status = _text(
+            raw.get("model_policy_status")
+            or decision.get("model_policy_status")
+            or "rule_only",
+            limit=128,
+        )
+        rows.append({
+            "asOf": _scalar(raw.get("as_of"), text_limit=256),
+            "strategyId": _text(
+                raw.get("strategy_id") or decision.get("strategy_id"),
+                limit=256,
+            ),
+            "accountId": _text(
+                raw.get("account_id") or decision.get("account_id"),
+                limit=256,
+            ),
+            "status": _text(raw.get("status"), limit=128),
+            "modelPolicyStatus": policy_status,
+            "modelVersions": {
+                _text(key, limit=32): _text(value, limit=256)
+                for key, value in model_versions.items()
+            },
+            "netPnl": _finite_number(raw.get("net_pnl")),
+            "modelSelectionPnl": _finite_number(
+                raw.get("model_selection_pnl")
+            ),
+            "explainedRatio": _finite_number(raw.get("explained_ratio")),
+            "residualRatio": _finite_number(raw.get("residual_ratio")),
+            "positiveDrivers": _bounded_diagnostics(
+                raw.get("top_positive_drivers")
+            ) or [],
+            "negativeDrivers": _bounded_diagnostics(
+                raw.get("top_negative_drivers")
+            ) or [],
+            "unavailableInputs": [
+                _text(value, limit=256)
+                for value in (raw.get("unavailable_inputs") or [])
+            ][:MAX_TABLE_ROWS],
+        })
+    applied = any(
+        row["modelPolicyStatus"] in {"active", "champion"}
+        and bool(row["modelVersions"])
+        for row in rows
+    )
+    return {
+        "status": "available" if rows else "empty",
+        "formalModelApplied": applied,
+        "completeCount": sum(row["status"] == "complete" for row in rows),
+        "totalCount": len(rows),
+        "rows": rows,
     }
 
 
@@ -1096,7 +1354,7 @@ _RESOURCE_OMIT_KEYS = frozenset(
 
 
 def _bounded_resource(value: Any) -> tuple[Any, list[str]]:
-    budget = {"nodes": 512, "text": 80_000}
+    budget = {"nodes": MAX_RESOURCE_NODES, "text": 80_000}
     reasons: set[str] = set()
 
     def empty_like(item: Any) -> Any:
@@ -1117,13 +1375,13 @@ def _bounded_resource(value: Any) -> tuple[Any, list[str]]:
         if isinstance(item, dict):
             result: dict[str, Any] = {}
             sorted_keys = sorted(item, key=str)
-            if len(sorted_keys) > MAX_TABLE_ROWS:
+            if len(sorted_keys) > MAX_RESOURCE_OBJECT_FIELDS:
                 reasons.add("item_limit")
             for raw_key in sorted_keys:
                 key = _text(raw_key, limit=128)
                 if key in _RESOURCE_OMIT_KEYS:
                     continue
-                if len(result) >= MAX_TABLE_ROWS:
+                if len(result) >= MAX_RESOURCE_OBJECT_FIELDS:
                     break
                 if budget["nodes"] <= 0:
                     reasons.add("node_budget_exhausted")
@@ -1271,11 +1529,32 @@ def build_dashboard_model_research_data(
         resource="model_health",
     )
     all_models = _model_rows(root, market, health)
-    models = all_models[:MAX_TABLE_ROWS]
+    latest_model_rows = _model_rows(
+        root,
+        market,
+        {"models": health.get("latest_models") or health.get("models") or []},
+    )
+    latest_models = [
+        {
+            key: row.get(key)
+            for key in (
+                "modelVersion",
+                "horizon",
+                "trainedAt",
+                "registeredAt",
+                "lifecycleStatus",
+                "gatePassed",
+                "gateReasons",
+            )
+        }
+        for row in latest_model_rows
+    ]
+    displayed_model_rows = latest_model_rows or all_models
+    models = displayed_model_rows[:MAX_TABLE_ROWS]
     selected_features = sorted(
         {
             feature
-            for model in all_models
+            for model in displayed_model_rows
             for feature in model.pop("_allFeatureColumns")
         }
     )
@@ -1360,17 +1639,46 @@ def build_dashboard_model_research_data(
         if row.get("model_version")
     ][:MAX_ROLLBACK_ROWS]
     candidate = _candidate(iteration.get("candidate"))
+    candidate_model = next(
+        (
+            row
+            for row in all_models
+            if row.get("modelVersion") == candidate.get("model_version")
+            and (
+                not candidate.get("horizon")
+                or _integer(row.get("horizon"))
+                == _integer(candidate.get("horizon"))
+            )
+        ),
+        None,
+    )
+    attribution = _mapping(
+        _safe_workspace_read(
+            errors,
+            "model_attribution",
+            {
+                "status": "unavailable",
+                "formalModelApplied": False,
+                "completeCount": 0,
+                "totalCount": 0,
+                "rows": [],
+            },
+            _model_attribution_evidence,
+            root,
+            market,
+        )
+    )
     required_cycles = _integer(candidate.get("shadow_cycles")) + _integer(
         candidate.get("shadow_cycles_remaining")
     )
-    passed = sum(1 for row in all_models if row["gatePassed"])
+    passed = sum(1 for row in displayed_model_rows if row["gatePassed"])
     candidate_count = max(
-        (row["candidateFeatureCount"] for row in all_models),
+        (row["candidateFeatureCount"] for row in displayed_model_rows),
         default=0,
     )
     audited = [
         row["pointInTimeAudit"]
-        for row in all_models
+        for row in displayed_model_rows
         if row["pointInTimeAudit"] is not None
     ]
     point_in_time_status = (
@@ -1395,12 +1703,12 @@ def build_dashboard_model_research_data(
                 "unavailable"
                 if not model_health_available
                 else "success"
-                if all_models
+                if displayed_model_rows
                 else "empty"
             ),
-            "primary": f"{len(all_models)} 个研究版本",
+            "primary": f"{len(displayed_model_rows)} 个最新研究版本",
             "secondary": (
-                f"{sum(row['sampleSupport'] for row in all_models)} 条样本支持"
+                f"{sum(row['sampleSupport'] for row in displayed_model_rows)} 条样本支持"
             ),
         },
         {
@@ -1413,9 +1721,9 @@ def build_dashboard_model_research_data(
                 if passed
                 else "research"
             ),
-            "primary": f"{passed} / {len(all_models)} 通过",
+            "primary": f"{passed} / {len(displayed_model_rows)} 通过",
             "secondary": (
-                f"{sum(len(row['gateReasons']) for row in all_models)} 个阻塞项"
+                f"{sum(len(row['gateReasons']) for row in displayed_model_rows)} 个阻塞项"
             ),
         },
         {
@@ -1471,16 +1779,21 @@ def build_dashboard_model_research_data(
                 or row["status"] in {"source_unavailable", "failed"}
             ],
         },
-        "training": {"models": models},
+        "training": {
+            "models": models,
+            "latestModels": latest_models[:MAX_TABLE_ROWS],
+        },
         "validation": {
             "passed": passed,
-            "total": len(all_models),
+            "total": len(displayed_model_rows),
             "models": models,
         },
         "simulation": {
             "status": _text(iteration.get("status"), limit=128) or "unavailable",
             "candidate": candidate or None,
             "account": _simulation_account(iteration),
+            "accounts": _simulation_accounts(iteration),
+            "evaluation": _model_evaluation(candidate_model),
             "predictionAsOf": _scalar(
                 iteration.get("prediction_as_of"),
                 text_limit=256,
@@ -1492,7 +1805,11 @@ def build_dashboard_model_research_data(
             "cyclesRequired": required_cycles or 12,
             "decision": {
                 "candidateRows": _integer(iteration.get("candidate_rows")),
+                "modelEligibleRows": _integer(
+                    iteration.get("model_eligible_rows", iteration.get("eligible_rows"))
+                ),
                 "eligibleRows": _integer(iteration.get("eligible_rows")),
+                "scopeRejectedRows": _integer(iteration.get("scope_rejected_rows")),
                 "selectedCount": _integer(iteration.get("selected_count")),
                 "tradesExecuted": _integer(iteration.get("trades_executed")),
                 "pendingOrders": _integer(iteration.get("pending_orders")),
@@ -1513,6 +1830,7 @@ def build_dashboard_model_research_data(
             "rollbackCandidates": rollback_candidates,
             "strategyUsage": usage,
         },
+        "attribution": attribution,
     }
     safe_payload = agg._json_safe(payload)
     return _enforce_serialized_size(safe_payload)
@@ -2471,7 +2789,84 @@ def _recent_strategy_runs(
     return bounded_rows
 
 
-def _operations_intelligence(intelligence: Any) -> dict[str, Any]:
+def _formal_daily_freshness(
+    root: Path,
+    scope: str,
+    *,
+    current: datetime,
+) -> dict[str, Any]:
+    markets = [scope] if scope in competition.MARKETS else list(competition.MARKETS)
+    expected = len(markets) * len(PUBLIC_STRATEGIES)
+    successes_by_date: dict[str, set[tuple[str, str]]] = {}
+    current_failed = False
+    for market in markets:
+        for _public_key, agent, _label in PUBLIC_STRATEGIES:
+            path = root / "data" / market / agent / "runs.csv"
+            for row in _operations_run_rows(path, limit=100):
+                if str(row.get("command") or "") != "run-daily":
+                    continue
+                target = str(row.get("as_of") or "").strip()
+                if not target:
+                    target = str(row.get("started_at") or "")[:10]
+                if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", target):
+                    continue
+                status = str(row.get("status") or "").strip().lower()
+                if status == "success":
+                    successes_by_date.setdefault(target, set()).add((market, agent))
+                elif target == current.date().isoformat() and status in {
+                    "failed",
+                    "error",
+                }:
+                    current_failed = True
+
+    today = current.date().isoformat()
+    completed = len(successes_by_date.get(today, set()))
+    complete_dates = sorted(
+        target
+        for target, identities in successes_by_date.items()
+        if len(identities) == expected
+    )
+    return {
+        "asOfDate": today,
+        "lastCompleteDate": complete_dates[-1] if complete_dates else None,
+        "completedTasks": completed,
+        "expectedTasks": expected,
+        "hasCurrentFailure": current_failed,
+    }
+
+
+def _operations_local_backfill(root: Path) -> dict[str, Any]:
+    path = (
+        root
+        / "data"
+        / "shared"
+        / "intelligence"
+        / "artifact_backfill_state.json"
+    )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {
+            "status": "unavailable",
+            "phase": None,
+            "reason": None,
+            "updatedAt": None,
+        }
+    history = _rows(_mapping(payload).get("history"))
+    latest = _mapping(history[-1]) if history else {}
+    return {
+        "status": str(latest.get("status") or "unavailable"),
+        "phase": _scalar(payload.get("phase"), text_limit=32),
+        "reason": _scalar(latest.get("reason"), text_limit=256),
+        "updatedAt": _scalar(payload.get("updated_at"), text_limit=128),
+    }
+
+
+def _operations_intelligence(
+    intelligence: Any,
+    *,
+    root: Path,
+) -> dict[str, Any]:
     intelligence = _mapping(intelligence)
     pipeline = _mapping(intelligence.get("pipeline"))
     backlog = {
@@ -2494,13 +2889,15 @@ def _operations_intelligence(intelligence: Any) -> dict[str, Any]:
                 text_limit=128,
             ),
         },
+        "localBackfill": _operations_local_backfill(root),
     }
 
 
 def _operations_disk(root: Path) -> dict[str, Any]:
     try:
         usage = shutil.disk_usage(root)
-        ratio = usage.used / usage.total if usage.total else 0.0
+        operational_capacity = usage.used + usage.free
+        ratio = usage.used / operational_capacity if operational_capacity else 0.0
     except OSError:
         return {"status": "unavailable", "usedRatio": None}
     return {
@@ -2520,12 +2917,21 @@ def _operations_interventions(
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     disk_ratio = disk.get("usedRatio")
-    if isinstance(disk_ratio, (int, float)) and disk_ratio >= 0.85:
+    if isinstance(disk_ratio, (int, float)) and disk_ratio >= 0.88:
         items.append(
             {
                 "key": "disk_capacity",
                 "severity": "critical",
-                "title": "磁盘使用率超过 85%",
+                "title": "磁盘使用率超过 88%",
+                "evidence": f"{disk_ratio:.1%}",
+            }
+        )
+    elif isinstance(disk_ratio, (int, float)) and disk_ratio >= 0.80:
+        items.append(
+            {
+                "key": "disk_capacity",
+                "severity": "warning",
+                "title": "磁盘使用率超过 80%",
                 "evidence": f"{disk_ratio:.1%}",
             }
         )
@@ -2559,7 +2965,16 @@ def _operations_interventions(
 
     backlog = _mapping(background.get("backlog"))
     workers = _mapping(background.get("artifactWorkers"))
-    latest_finished = _operations_timestamp(workers.get("latestFinishedAt"))
+    local_backfill = _mapping(background.get("localBackfill"))
+    observed_times = [
+        timestamp
+        for timestamp in (
+            _operations_timestamp(workers.get("latestFinishedAt")),
+            _operations_timestamp(local_backfill.get("updatedAt")),
+        )
+        if timestamp is not None
+    ]
+    latest_finished = max(observed_times) if observed_times else None
     if (
         _integer(backlog.get("total")) > 0
         and latest_finished is not None
@@ -2640,7 +3055,13 @@ def _operations_minimal_payload(payload: dict[str, Any]) -> dict[str, Any]:
         },
         "dailyFreshness": {
             key: _mapping(payload.get("dailyFreshness")).get(key)
-            for key in ("asOfDate", "status")
+            for key in (
+                "asOfDate",
+                "status",
+                "lastCompleteDate",
+                "completedTasks",
+                "expectedTasks",
+            )
         },
         "mainChain": [
             {
@@ -2651,7 +3072,12 @@ def _operations_minimal_payload(payload: dict[str, Any]) -> dict[str, Any]:
         ],
         "background": {
             key: _mapping(payload.get("background")).get(key)
-            for key in ("status", "snapshotGeneratedAt", "backlog")
+            for key in (
+                "status",
+                "snapshotGeneratedAt",
+                "backlog",
+                "localBackfill",
+            )
         },
         "backgroundWorkers": [
             {
@@ -2805,26 +3231,6 @@ def build_dashboard_operations_center_data(
     upstream_ready = True
     for key, label, units, timer_unit in OPERATIONS_MAIN_CHAIN:
         cross_market_units: list[dict[str, Any]] = []
-        if key == "simulation" and scope in competition.MARKETS:
-            model_unit = "stock-analyze-model-iteration.service"
-            model_service = _mapping(services.get(model_unit))
-            cross_market_units.append(
-                {
-                    "unit": model_unit,
-                    **model_service,
-                    "status": _operations_service_status(
-                        model_service or None,
-                        current=current,
-                        runtime_available=runtime_available,
-                    ),
-                    "loadReason": model_service.get("reason"),
-                    "reason": (
-                        "cross_market_service_result_not_attributable_"
-                        "to_single_market"
-                    ),
-                }
-            )
-            label = "正式策略模拟"
         units = _operations_chain_units(key, units, scope=scope)
         statuses = [
             _operations_service_status(
@@ -2877,7 +3283,7 @@ def build_dashboard_operations_center_data(
         agent="codex",
         limit=1,
     )
-    background = _operations_intelligence(intelligence)
+    background = _operations_intelligence(intelligence, root=root)
     background_workers: list[dict[str, Any]] = []
     for key, label, service_unit, timer_unit in OPERATIONS_BACKGROUND:
         service = _mapping(services.get(service_unit))
@@ -2899,7 +3305,7 @@ def build_dashboard_operations_center_data(
                     else None
                 ),
                 "serviceUnit": service_unit,
-                "timerUnit": timer_unit,
+                "timerUnit": timer_unit or "",
                 "lastResult": service.get("result"),
                 "startedAt": service.get("startedAt"),
                 "finishedAt": service.get("finishedAt"),
@@ -2977,6 +3383,22 @@ def build_dashboard_operations_center_data(
         )
 
     recent_runs = _recent_strategy_runs(root, scope)
+    freshness = _formal_daily_freshness(root, scope, current=current)
+    has_current_failure = bool(freshness.pop("hasCurrentFailure"))
+    main_statuses = {row["status"] for row in main_chain}
+    if not runtime_available:
+        freshness_status = "unavailable"
+    elif freshness["completedTasks"] == freshness["expectedTasks"]:
+        freshness_status = "success"
+    elif "unavailable" in main_statuses:
+        freshness_status = "unavailable"
+    elif has_current_failure or "failed" in main_statuses:
+        freshness_status = "failed"
+    elif "running" in main_statuses:
+        freshness_status = "running"
+    else:
+        freshness_status = "waiting"
+    freshness["status"] = freshness_status
     disk = _operations_disk(root)
     payload = {
         "generated_at": current.isoformat(timespec="seconds"),
@@ -2987,42 +3409,7 @@ def build_dashboard_operations_center_data(
             "lastKnownAt": runtime.get("last_known_at"),
             "reason": runtime.get("reason"),
         },
-        "dailyFreshness": {
-            "asOfDate": current.date().isoformat(),
-            "status": (
-                "unavailable"
-                if not runtime_available
-                else (
-                    "unavailable"
-                    if any(
-                        row["status"] == "unavailable"
-                        for row in main_chain
-                    )
-                    else (
-                        "failed"
-                        if any(
-                            row["status"] == "failed"
-                            for row in main_chain
-                        )
-                        else (
-                            "running"
-                            if any(
-                                row["status"] == "running"
-                                for row in main_chain
-                            )
-                            else (
-                                "success"
-                                if all(
-                                    row["status"] == "success"
-                                    for row in main_chain
-                                )
-                                else "waiting"
-                            )
-                        )
-                    )
-                )
-            ),
-        },
+        "dailyFreshness": freshness,
         "mainChain": main_chain,
         "background": background,
         "backgroundWorkers": background_workers,

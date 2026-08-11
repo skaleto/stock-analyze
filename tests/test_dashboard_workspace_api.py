@@ -17,7 +17,9 @@ from stock_analyze import competition
 from stock_analyze import dashboard_aggregator as agg
 from stock_analyze.dashboard_workspace_api import (
     FORMAL_FACTOR_SOURCES,
+    _bounded_resource,
     _bounded_intelligence_lane,
+    _operations_disk,
     _operations_timestamp,
     _sanitize_run_error,
     _structured_snapshot_coverage,
@@ -30,6 +32,7 @@ from stock_analyze.overlay_guard import (
     SENTIMENT_FACTORS,
 )
 from stock_analyze.research.feature_registry import DEFAULT_REGISTRY
+from stock_analyze.research.lineage import ResearchLineageStore
 
 
 def _model(
@@ -51,6 +54,40 @@ def _model(
             "point_in_time_audit": True,
             "rank_ic": 0.021,
             "brier_score": 0.61,
+            "net_return": 0.08,
+            "gross_return": 0.085,
+            "benchmark_return": 0.03,
+            "net_excess_return": 0.05,
+            "max_drawdown": 0.08,
+            "annual_turnover": 3.2,
+            "portfolio_sharpe": 0.9,
+            "simulator_version": "paper-parity-daily-v1",
+            "valid_trial_count": 5,
+            "trial_evidence_status": "available",
+            "total_execution_cost": 125.0,
+            "execution_cost_bps": 11.2,
+            "impact_bps_p50": 6.8,
+            "impact_bps_p90": 9.3,
+            "impact_capped_notional_ratio": 0.0,
+            "missing_liquidity_notional_ratio": 0.0,
+            "execution_evidence_status": "available",
+            "execution_policy_version": "cost-aware-aim-v1",
+            "decision_count": 120,
+            "trade_allowed_count": 18,
+            "no_trade_count": 102,
+            "no_trade_reason_counts": {
+                "insufficient_net_edge": 70,
+                "rank_buffer_hold": 32,
+            },
+            "baseline_comparison": {
+                "momentum_20": {"net_excess_return": 0.01},
+                "low_volatility_20": {"net_excess_return": 0.02},
+                "no_trade": {"net_excess_return": 0.0},
+            },
+            "account_metrics": {
+                "hs300": {"active_return": 0.03},
+                "zz500": {"active_return": 0.02},
+            },
         },
         "gate_passed": False,
         "gate_reasons": ["rank_ic_below_floor"],
@@ -71,7 +108,9 @@ def _iteration(**overrides: object) -> dict:
         },
         "champion": None,
         "candidate_rows": 31,
+        "model_eligible_rows": 3,
         "eligible_rows": 0,
+        "scope_rejected_rows": 3,
         "selected_count": 0,
         "cash_only": True,
         "cash_reason": "probability_gate_not_met",
@@ -221,6 +260,45 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertEqual(stage_statuses["training"], "unavailable")
         self.assertEqual(stage_statuses["validation"], "unavailable")
         self.assertEqual(stage_statuses["adoption"], "unavailable")
+
+    def test_model_resource_separates_latest_training_from_current_challenger(self) -> None:
+        latest = _model("A20-V006")
+        latest["trained_at"] = "2026-08-01T02:30:00+08:00"
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._build(
+                Path(tmp),
+                models={
+                    "status": "available",
+                    "models": [_model("A20-V005")],
+                    "latest_models": [latest],
+                },
+                iteration=_iteration(candidate={
+                    "model_version": "A20-V005",
+                    "display_version": "A20-V005",
+                    "status": "shadow",
+                    "status_label": "模拟验证",
+                    "shadow_cycles": 2,
+                    "shadow_cycles_remaining": 10,
+                    "horizon": 20,
+                }),
+            )
+
+        self.assertEqual(
+            payload["training"]["latestModels"][0]["modelVersion"],
+            "A20-V006",
+        )
+        self.assertEqual(
+            payload["training"]["models"][0]["modelVersion"],
+            "A20-V006",
+        )
+        self.assertEqual(
+            payload["validation"]["models"][0]["modelVersion"],
+            "A20-V006",
+        )
+        self.assertEqual(
+            payload["simulation"]["candidate"]["model_version"],
+            "A20-V005",
+        )
 
     def test_explicit_unavailable_iteration_marks_simulation_unavailable(
         self,
@@ -764,6 +842,8 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             ["rank_ic_below_floor"],
         )
         self.assertEqual(payload["simulation"]["decision"]["selectedCount"], 0)
+        self.assertEqual(payload["simulation"]["decision"]["modelEligibleRows"], 3)
+        self.assertEqual(payload["simulation"]["decision"]["scopeRejectedRows"], 3)
         self.assertTrue(payload["simulation"]["decision"]["cashOnly"])
         self.assertEqual(
             payload["simulation"]["decision"]["cashReason"],
@@ -809,6 +889,89 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
                 )
             )
         )
+
+    def test_model_resource_exposes_exact_replay_and_scoped_shadow_accounts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._build(
+                Path(tmp),
+                models={"status": "available", "models": [_model()]},
+                iteration=_iteration(
+                    accounts=[
+                        {
+                            "account_id": "hs300",
+                            "scope": "hs300",
+                            "benchmark": "000300",
+                            "selected_count": 3,
+                            "total_value": 503_000,
+                        },
+                        {
+                            "account_id": "zz500",
+                            "scope": "zz500",
+                            "benchmark": "000905",
+                            "selected_count": 2,
+                            "total_value": 498_000,
+                        },
+                    ],
+                ),
+            )
+
+        self.assertEqual(
+            {row["accountId"] for row in payload["simulation"]["accounts"]},
+            {"hs300", "zz500"},
+        )
+        economics = payload["simulation"]["evaluation"]
+        self.assertEqual(economics["simulatorVersion"], "paper-parity-daily-v1")
+        self.assertEqual(economics["netExcessReturn"], 0.05)
+        self.assertEqual(economics["benchmarkReturn"], 0.03)
+        self.assertEqual(economics["grossReturn"], 0.085)
+        self.assertEqual(economics["impactBpsP90"], 9.3)
+        self.assertEqual(economics["executionEvidenceStatus"], "available")
+        self.assertEqual(economics["tradeAllowedCount"], 18)
+        self.assertEqual(
+            economics["noTradeReasonCounts"]["insufficient_net_edge"],
+            70,
+        )
+        self.assertIn("momentum_20", economics["baselineComparison"])
+
+    def test_model_resource_separates_rule_only_usage_from_model_attribution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lineage = ResearchLineageStore(
+                root / "data" / "shared" / "research_lineage.sqlite3"
+            )
+            lineage.append_decision_runs({
+                "decision_run_id": "run-1:hs300",
+                "agent_id": "codex",
+                "market": "a_share",
+                "strategy_id": "trend-v2",
+                "as_of": "2026-08-07",
+            })
+            lineage.append_pnl_attributions({
+                "pnl_attribution_id": "pnl-1",
+                "decision_run_id": "run-1:hs300",
+                "security_code": "__PORTFOLIO__",
+                "as_of": "2026-08-07",
+                "status": "partial",
+                "account_id": "hs300",
+                "strategy_id": "trend-v2",
+                "model_policy_status": "rule_only",
+                "model_versions": {},
+                "model_selection_pnl": 0.0,
+                "net_pnl": -120.0,
+                "explained_ratio": 0.97,
+                "residual_ratio": 0.03,
+                "unavailable_inputs": ["factor_attribution"],
+            })
+            payload = self._build(
+                root,
+                models={"status": "available", "models": [_model()]},
+            )
+
+        self.assertEqual(payload["attribution"]["status"], "available")
+        latest = payload["attribution"]["rows"][0]
+        self.assertEqual(latest["modelPolicyStatus"], "rule_only")
+        self.assertEqual(latest["modelSelectionPnl"], 0.0)
+        self.assertFalse(payload["attribution"]["formalModelApplied"])
 
     def test_registry_dates_and_active_gate_evidence_remain_distinct(self) -> None:
         model = _model(champion=True)
@@ -1334,6 +1497,42 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
                 {**evidence, "error": None},
                 {**evidence, "as_of": "2026-07-29", "error": None},
             ],
+        )
+
+    def test_derives_source_status_when_health_snapshot_omits_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._build(
+                Path(tmp),
+                models={"status": "available", "models": [_model()]},
+                sources=[
+                    {
+                        "source": "daily_basic",
+                        "status": None,
+                        "rows": 5535,
+                        "failed": False,
+                    },
+                    {
+                        "source": "margin",
+                        "status": None,
+                        "rows": 0,
+                        "failed": False,
+                    },
+                    {
+                        "source": "moneyflow",
+                        "status": None,
+                        "rows": 1,
+                        "failed": False,
+                        "error": "upstream timeout",
+                    },
+                ],
+            )
+
+        self.assertEqual(
+            [
+                row["status"]
+                for row in payload["dataPreparation"]["sources"]
+            ],
+            ["available", "empty", "failed"],
         )
 
     def test_deduplicates_strategy_usage_by_public_agent_identity(self) -> None:
@@ -2205,6 +2404,65 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertTrue(lane["truncated"])
         self.assertIn("node_budget_exhausted", lane["truncationReasons"])
 
+    def test_current_sized_factor_payload_does_not_starve_pipeline_sources(
+        self,
+    ) -> None:
+        intelligence = _intelligence()
+        intelligence["factorSupply"]["factors"] = [
+            {
+                "name": f"factor-{index}",
+                **{
+                    f"metric-{metric}": metric
+                    for metric in range(24)
+                },
+            }
+            for index in range(20)
+        ]
+        intelligence["pipeline"]["sources"] = [
+            {
+                "source": source,
+                "documents": documents,
+                "latestPublishedAt": "2026-08-07T12:00:00+00:00",
+                "lastIngestedAt": "2026-08-08T06:00:00+00:00",
+                "freshnessStatus": "fresh",
+                "latestRunStatus": "success",
+                "fetched": 10,
+                "inserted": 5,
+                "error": None,
+                "cursor": None,
+                "cursorUpdatedAt": None,
+            }
+            for source, documents in (
+                ("tushare_announcement", 594753),
+                ("ndrc_policy", 733),
+                ("ifind_announcement", 212),
+                ("gov_policy", 35),
+            )
+        ]
+
+        lane = _bounded_intelligence_lane(intelligence)
+
+        self.assertEqual(
+            [
+                row["source"]
+                for row in lane["pipeline"].get("sources", [])
+            ],
+            [
+                "tushare_announcement",
+                "ndrc_policy",
+                "ifind_announcement",
+                "gov_policy",
+            ],
+        )
+
+    def test_bounded_resource_preserves_wide_structured_objects(self) -> None:
+        payload = {f"field-{index:02d}": index for index in range(80)}
+
+        bounded, reasons = _bounded_resource(payload)
+
+        self.assertEqual(len(bounded), 64)
+        self.assertIn("item_limit", reasons)
+
     def test_data_intelligence_payload_is_sanitized_bounded_and_deterministic(
         self,
     ) -> None:
@@ -2354,6 +2612,9 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         ), mock.patch(
             "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
             return_value=intelligence,
+        ), mock.patch(
+            "stock_analyze.dashboard_workspace_api.shutil.disk_usage",
+            return_value=mock.Mock(total=100, used=20, free=80),
         ):
             payload = build_dashboard_operations_center_data(
                 repo_root=Path(tmp),
@@ -2369,11 +2630,12 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             )
 
         statuses = {row["key"]: row["status"] for row in payload["mainChain"]}
-        self.assertEqual(statuses["intelligence"], "success")
+        self.assertNotIn("intelligence", statuses)
         self.assertEqual(statuses["market_snapshot"], "waiting_schedule")
         self.assertEqual(statuses["research"], "waiting_upstream")
         self.assertEqual(statuses["simulation"], "waiting_upstream")
         workers = {row["key"]: row for row in payload["backgroundWorkers"]}
+        self.assertEqual(workers["intelligence_refresh"]["status"], "success")
         self.assertEqual(workers["artifact_backfill"]["status"], "skipped")
         market_timer = next(
             row
@@ -2517,12 +2779,14 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             )
 
         intelligence = next(
-            row for row in payload["mainChain"] if row["key"] == "intelligence"
+            row
+            for row in payload["backgroundWorkers"]
+            if row["key"] == "intelligence_refresh"
         )
         self.assertEqual(intelligence["status"], "unavailable")
-        self.assertEqual(intelligence["units"][0]["loadState"], "not-found")
+        self.assertEqual(intelligence["loadState"], "not-found")
         self.assertEqual(
-            intelligence["units"][0]["reason"],
+            intelligence["reason"],
             "unit_load_state_not-found",
         )
         market_timer = next(
@@ -2565,7 +2829,9 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             )
 
         intelligence = next(
-            row for row in payload["mainChain"] if row["key"] == "intelligence"
+            row
+            for row in payload["backgroundWorkers"]
+            if row["key"] == "intelligence_refresh"
         )
         self.assertEqual(intelligence["status"], "success")
 
@@ -2602,7 +2868,7 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         )
         self.assertEqual(a_simulation["status"], "success")
         self.assertEqual(a_simulation["label"], "正式策略模拟")
-        self.assertEqual(a_share["dailyFreshness"]["status"], "success")
+        self.assertEqual(a_share["dailyFreshness"]["status"], "waiting")
         self.assertEqual(
             {row["unit"] for row in a_simulation["units"]},
             {
@@ -2610,17 +2876,17 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
                 "stock-analyze-codex-daily.service",
             },
         )
-        self.assertEqual(len(a_simulation["crossMarketUnits"]), 1)
-        model_evidence = a_simulation["crossMarketUnits"][0]
+        self.assertEqual(a_simulation["crossMarketUnits"], [])
+        model_evidence = next(
+            row
+            for row in a_share["backgroundWorkers"]
+            if row["key"] == "model_iteration"
+        )
         self.assertEqual(
-            model_evidence["unit"],
+            model_evidence["serviceUnit"],
             "stock-analyze-model-iteration.service",
         )
         self.assertEqual(model_evidence["status"], "failed")
-        self.assertEqual(
-            model_evidence["reason"],
-            "cross_market_service_result_not_attributable_to_single_market",
-        )
         self.assertNotIn("候选模型", a_simulation["label"])
         all_simulation = next(
             row
@@ -2628,10 +2894,7 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             if row["key"] == "simulation"
         )
         self.assertEqual(all_simulation["status"], "failed")
-        self.assertEqual(
-            all_simulation["label"],
-            "正式策略及候选模型模拟",
-        )
+        self.assertEqual(all_simulation["label"], "正式策略模拟")
         self.assertEqual(all_simulation["crossMarketUnits"], [])
 
     def test_operations_center_etf_scope_excludes_a_share_simulation_failure(
@@ -2664,7 +2927,7 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         )
         self.assertEqual(etf_simulation["status"], "success")
         self.assertEqual(etf_simulation["label"], "正式策略模拟")
-        self.assertEqual(etf["dailyFreshness"]["status"], "success")
+        self.assertEqual(etf["dailyFreshness"]["status"], "waiting")
         self.assertEqual(
             {row["unit"] for row in etf_simulation["units"]},
             {
@@ -2672,11 +2935,7 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
                 "stock-analyze-codex-cn-qdii-etf-daily.service",
             },
         )
-        self.assertLessEqual(len(etf_simulation["crossMarketUnits"]), 20)
-        self.assertEqual(
-            etf_simulation["crossMarketUnits"][0]["reason"],
-            "cross_market_service_result_not_attributable_to_single_market",
-        )
+        self.assertEqual(etf_simulation["crossMarketUnits"], [])
         exception_simulation = next(
             row
             for row in exceptions["mainChain"]
@@ -2685,7 +2944,7 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertEqual(exception_simulation["status"], "failed")
         self.assertEqual(
             exception_simulation["label"],
-            "正式策略及候选模型模拟",
+            "正式策略模拟",
         )
 
     @staticmethod
@@ -2707,7 +2966,7 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             "stock-analyze-codex-daily.service",
             "stock-analyze-claude-cn-qdii-etf-daily.service",
             "stock-analyze-codex-cn-qdii-etf-daily.service",
-            "stock-analyze-aggregate-dashboard.service",
+            "stock-analyze-daily-finalize.service",
             "stock-analyze-daily-summary.service",
         )
         return {
@@ -3087,6 +3346,17 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
 
         assert_external_text_bounded(payload)
 
+    def test_operations_disk_excludes_root_reserved_blocks_from_capacity(self) -> None:
+        with mock.patch(
+            "stock_analyze.dashboard_workspace_api.shutil.disk_usage",
+            return_value=mock.Mock(total=100, used=79, free=16),
+        ):
+            disk = _operations_disk(Path("/"))
+
+        self.assertEqual(disk["totalBytes"], 100)
+        self.assertEqual(disk["freeBytes"], 16)
+        self.assertEqual(disk["usedRatio"], round(79 / 95, 6))
+
     def test_operations_center_only_raises_actionable_interventions(self) -> None:
         intelligence = _intelligence()
         intelligence["pipeline"]["backlog"]["total"] = 10
@@ -3138,12 +3408,123 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
 
         keys = {row["key"] for row in payload["interventions"]}
         self.assertIn("disk_capacity", keys)
+        disk_item = next(
+            row for row in payload["interventions"] if row["key"] == "disk_capacity"
+        )
+        self.assertEqual(disk_item["severity"], "critical")
+        self.assertIn("88%", disk_item["title"])
         self.assertIn("artifact_worker_stale", keys)
         self.assertTrue(any(key.startswith("credential:") for key in keys))
         self.assertTrue(
             any(key.startswith("consecutive_failure:") for key in keys)
         )
         self.assertNotIn("secret-value", json.dumps(payload, ensure_ascii=False))
+
+    def test_operations_center_uses_local_backfill_state_and_warns_at_80_percent(
+        self,
+    ) -> None:
+        intelligence = _intelligence()
+        intelligence["pipeline"]["backlog"]["total"] = 10
+        intelligence["pipeline"]["artifactWorkers"] = {
+            "status": "available",
+            "activeLeases": 0,
+            "latestFinishedAt": "2026-07-28T12:00:00+08:00",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = (
+                root
+                / "data"
+                / "shared"
+                / "intelligence"
+                / "artifact_backfill_state.json"
+            )
+            state.parent.mkdir(parents=True)
+            state.write_text(
+                json.dumps(
+                    {
+                        "phase": "a",
+                        "updated_at": "2026-07-30T13:20:00+08:00",
+                        "history": [
+                            {
+                                "status": "deferred",
+                                "reason": "daily_critical_window",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+                return_value=self._operations_scope_runtime(),
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+                return_value=intelligence,
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.shutil.disk_usage",
+                return_value=mock.Mock(total=100, used=82, free=18),
+            ):
+                payload = build_dashboard_operations_center_data(
+                    repo_root=root,
+                    now=datetime(
+                        2026,
+                        7,
+                        30,
+                        13,
+                        30,
+                        tzinfo=ZoneInfo("Asia/Shanghai"),
+                    ),
+                )
+
+        local = payload["background"]["localBackfill"]
+        self.assertEqual(local["phase"], "a")
+        self.assertEqual(local["status"], "deferred")
+        self.assertEqual(local["reason"], "daily_critical_window")
+        interventions = {row["key"]: row for row in payload["interventions"]}
+        self.assertNotIn("artifact_worker_stale", interventions)
+        self.assertEqual(interventions["disk_capacity"]["severity"], "warning")
+
+    def test_operations_center_daily_freshness_requires_all_formal_ledgers(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for market in competition.MARKETS:
+                for agent in ("claude", "codex"):
+                    path = root / "data" / market / agent / "runs.csv"
+                    path.parent.mkdir(parents=True)
+                    path.write_text(
+                        "run_id,command,as_of,started_at,finished_at,duration_ms,status,error_summary,config_hash,code_version\n"
+                        f"{market}-{agent},run-daily,2026-07-30,"
+                        "2026-07-30T13:00:00,2026-07-30T13:01:00,"
+                        "60000,success,,hash,v1\n",
+                        encoding="utf-8",
+                    )
+            with mock.patch(
+                "stock_analyze.dashboard_workspace_api.read_dashboard_runtime",
+                return_value=self._operations_scope_runtime(),
+            ), mock.patch(
+                "stock_analyze.dashboard_workspace_api.build_dashboard_intelligence_data",
+                return_value=_intelligence(),
+            ):
+                payload = build_dashboard_operations_center_data(
+                    repo_root=root,
+                    scope="all",
+                    now=datetime(
+                        2026,
+                        7,
+                        30,
+                        13,
+                        30,
+                        tzinfo=ZoneInfo("Asia/Shanghai"),
+                    ),
+                )
+
+        self.assertEqual(payload["dailyFreshness"]["status"], "success")
+        self.assertEqual(payload["dailyFreshness"]["lastCompleteDate"], "2026-07-30")
+        self.assertEqual(payload["dailyFreshness"]["completedTasks"], 4)
+        self.assertEqual(payload["dailyFreshness"]["expectedTasks"], 4)
 
     def test_operations_center_locally_degrades_failed_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, mock.patch(

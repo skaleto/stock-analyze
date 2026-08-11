@@ -2,14 +2,20 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import pandas as pd
 
 from .data_provider import DataProvider, ExecutionQuote
 from ...factor_pipeline import UNCLASSIFIED
-from .portfolio_controls import annotate_industries, select_top_n_with_controls
+from .portfolio_controls import annotate_industries
 from ...store import PortfolioStore
+from ...research.execution_policy import estimate_market_impact_bps
+from ...execution_costs import calculate_execution_fill
+from ...research.strategy_ensemble import (
+    load_provider_return_history,
+    risk_adjusted_target_weights,
+)
 from .strategy import build_signals
 from ...utils import next_business_day, now_iso, safe_float
 
@@ -97,28 +103,96 @@ def generate_rebalance_orders(
         scored = signal.candidates.copy()
         account_state = state["accounts"][account_id]
         top_n = int(account.get("top_n", 10))
-        selected, control_warnings = select_top_n_with_controls(scored, account_state, config, top_n, run_date=run_date)
-        warnings = list(signal.warnings) + control_warnings
+        annotate_industries(account_state.get("positions", {}), scored)
+        candidate_pool, pool_warnings = _controlled_candidate_pool(
+            scored,
+            account_state,
+            config,
+            top_n,
+        )
+        warnings = list(signal.warnings) + pool_warnings
+
+        coverage_rows.extend(_coverage_rows(scored, config.get("factors", {}), account_id, run_date))
+
+        benchmark_code = str(account.get("benchmark") or "")
+        history_codes = candidate_pool.get(
+            "code", pd.Series(dtype=str)
+        ).astype(str).tolist()
+        if benchmark_code:
+            history_codes.append(benchmark_code)
+        return_history = load_provider_return_history(
+            provider,
+            history_codes,
+            as_of=run_date,
+        )
+        optimizer_diagnostics: dict[str, object] = {}
+        orders = build_target_orders(
+            config,
+            account_state,
+            candidate_pool,
+            max_positions=top_n,
+            return_history=return_history,
+            gross_exposure=float(
+                candidate_pool.get("regime_gross_exposure", pd.Series([1.0])).iloc[0]
+                if not candidate_pool.empty
+                else 1.0
+            ),
+            benchmark_weights={benchmark_code: 1.0} if benchmark_code else None,
+            optimizer_diagnostics=optimizer_diagnostics,
+        )
+        selected_codes = set(
+            str(code).zfill(6)
+            for code in optimizer_diagnostics.get("selected_codes", [])
+        )
+        if candidate_pool.empty or "code" not in candidate_pool.columns:
+            selected = candidate_pool.copy()
+        else:
+            selected = candidate_pool[
+                candidate_pool["code"].map(
+                    lambda code: str(code).zfill(6) in selected_codes
+                )
+            ].copy()
         if not selected.empty:
-            selected = selected.copy()
+            selected["target_weight"] = selected["code"].map(
+                lambda code: optimizer_diagnostics["target_weights"].get(
+                    str(code).zfill(6), 0.0
+                )
+            )
             selected["account_id"] = account_id
             selected["pool"] = account["scope"]
         all_selected.append(selected)
-        annotate_industries(account_state.get("positions", {}), scored)
 
         factor_table = signal.factor_table
         if not factor_table.empty:
             factor_table = factor_table.copy()
             factor_table["signal_date"] = run_date
-            selected_codes = set(str(code).zfill(6) for code in selected.get("code", pd.Series([], dtype=str)).tolist())
-            factor_table["selected"] = factor_table["code"].map(lambda code: str(code).zfill(6) in selected_codes)
+            factor_table["selected"] = factor_table["code"].map(
+                lambda code: str(code).zfill(6) in selected_codes
+            )
+            scored_by_code = scored.copy()
+            scored_by_code["_lineage_code"] = scored_by_code["code"].map(
+                lambda code: str(code).split(".", 1)[0].zfill(6)
+            )
+            scored_by_code = scored_by_code.drop_duplicates(
+                "_lineage_code", keep="last"
+            ).set_index("_lineage_code")
+            factor_codes = factor_table["code"].map(
+                lambda code: str(code).split(".", 1)[0].zfill(6)
+            )
+            for column in (
+                "prediction_applied",
+                "prediction_confidence",
+                "expected_excess_return",
+                "prediction_horizons",
+                "prediction_model_versions",
+                "prediction_fallback_reason",
+            ):
+                if column in scored_by_code.columns:
+                    factor_table[column] = factor_codes.map(
+                        scored_by_code[column]
+                    )
             all_factor_tables.append(factor_table)
 
-        coverage_rows.extend(_coverage_rows(scored, config.get("factors", {}), account_id, run_date))
-
-        orders = build_target_orders(
-            config, account_state, selected, fallback_pool=scored
-        )
         pending_batches.append(
             {
                 "run_id": run_id or f"{config.get('strategy_id', 'strategy')}-{account_id}-{run_date}",
@@ -130,6 +204,9 @@ def generate_rebalance_orders(
                 "created_at": now_iso(),
                 "orders": orders,
                 "warnings": warnings,
+                "selected_codes": sorted(selected_codes),
+                "target_weights": optimizer_diagnostics.get("target_weights", {}),
+                "optimizer_diagnostics": optimizer_diagnostics,
             }
         )
 
@@ -149,6 +226,80 @@ def generate_rebalance_orders(
 
 def _fallback_run_id(config: dict[str, Any], run_date: str) -> str:
     return f"{config.get('strategy_id', 'strategy')}-rebalance-{run_date}"
+
+
+def _controlled_candidate_pool(
+    scored: pd.DataFrame,
+    account_state: dict[str, Any],
+    config: dict[str, Any],
+    top_n: int,
+) -> tuple[pd.DataFrame, list[str]]:
+    controls = dict(config.get("portfolio_controls", {}) or {})
+    multiple = max(int(controls.get("candidate_pool_multiple", 3)), 3)
+    required_size = max(int(top_n), 1) * multiple
+    ranked = scored.copy()
+    if "code" not in ranked.columns:
+        ranked["code"] = pd.Series(dtype=str)
+    if "score" not in ranked.columns:
+        ranked["score"] = pd.Series(dtype=float)
+    ranked = ranked.sort_values("score", ascending=False)
+    ranked["_allocation_code"] = ranked["code"].map(lambda code: str(code).zfill(6))
+    pool = ranked.head(required_size)
+    held_codes = {
+        str(code).zfill(6)
+        for code in (account_state.get("positions", {}) or {})
+    }
+    if held_codes:
+        held_rows = ranked[ranked["_allocation_code"].isin(held_codes)]
+        pool = pd.concat([pool, held_rows], ignore_index=False)
+    existing_codes = set(pool["_allocation_code"])
+    synthetic_rows: list[dict[str, Any]] = []
+    minimum_score = pd.to_numeric(ranked["score"], errors="coerce").min()
+    if pd.isna(minimum_score):
+        minimum_score = 0.0
+    for offset, (raw_code, position) in enumerate(
+        (account_state.get("positions", {}) or {}).items(),
+        start=1,
+    ):
+        code = str(raw_code).zfill(6)
+        if code in existing_codes:
+            continue
+        synthetic_rows.append(
+            {
+                "code": code,
+                "name": position.get("name", ""),
+                "latest_price": (
+                    safe_float(position.get("last_price"))
+                    or safe_float(position.get("avg_cost"))
+                ),
+                "score": float(minimum_score) - offset * 1e-6,
+                "score_detail": "held_position_outside_signal_universe",
+                "industry": position.get("industry") or UNCLASSIFIED,
+                "avg_amount_20": safe_float(position.get("avg_daily_amount")),
+                "low_volatility_60": (
+                    safe_float(position.get("expected_volatility")) or 0.20
+                ),
+                "_allocation_code": code,
+                "synthetic_holding": True,
+            }
+        )
+    if synthetic_rows:
+        pool = pd.DataFrame(
+            [*pool.to_dict(orient="records"), *synthetic_rows]
+        )
+    pool = (
+        pool.drop_duplicates("_allocation_code", keep="first")
+        .drop(columns=["_allocation_code"])
+        .reset_index(drop=True)
+    )
+    warnings: list[str] = []
+    if len(ranked) < required_size:
+        warnings.append(f"optimizer_candidate_pool_short:{len(ranked)}/{required_size}")
+    warnings.extend(
+        f"optimizer_synthetic_holding:{row['code']}"
+        for row in synthetic_rows
+    )
+    return pool, warnings
 
 
 def _coverage_rows(scored: pd.DataFrame, factors: dict[str, Any], account_id: str, signal_date: str) -> list[dict[str, Any]]:
@@ -182,43 +333,139 @@ def build_target_orders(
     selected: pd.DataFrame,
     *,
     fallback_pool: pd.DataFrame | None = None,
+    max_positions: int | None = None,
+    return_history: pd.DataFrame | None = None,
+    gross_exposure: float = 1.0,
+    benchmark_weights: dict[str, float] | None = None,
+    optimizer_diagnostics: dict[str, object] | None = None,
+    target_weights_override: Mapping[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     """Build pending buy/sell orders for the next trading day.
 
-    The caller passes ``selected`` (top-N after industry caps + hold buffer)
-    and the full scored ``fallback_pool``. Sizing applies in this order:
+    Formal callers pass a controlled candidate pool plus ``max_positions``;
+    legacy callers may omit it when ``selected`` is already the approved
+    allocation. ``fallback_pool`` is retained only for API compatibility and
+    is deliberately ignored: order materialization cannot select a security
+    that the allocation stage did not approve. Sizing applies in this order:
 
-      1. Equal-weight target ``total_value / top_n``, capped by
-         ``max_single_weight × total_value`` (5% by default).
+      1. Inverse-volatility base weights, tilted only by active prediction
+         evidence and blended with current holdings to penalize turnover.
+         Every target remains capped by ``max_single_weight``.
       2. ``target_shares = int(target_value // (price × lot_size)) × lot_size``.
       3. **Tier 1 — 1-lot fallback**: if ``target_shares == 0`` but 1 lot
          still fits under the 5% cap (``price × lot_size ≤ cap``), bump to
          ``lot_size``. This rescues stocks priced ¥100-250 that the strict
          equal-weight formula would otherwise drop.
-      4. **Tier 2 — skip-down fill**: if fewer than ``top_n`` slots have
-         non-zero target_shares after processing ``selected``, walk
-         ``fallback_pool`` in score-rank order, pulling in the next
-         eligible candidate (1 lot under cap). This guarantees the
-         strategy actually expresses its top-N intent rather than leaving
-         slots empty just because the highest-ranked picks are unbuyable.
-
     Stocks priced > ``max_single_value / lot_size`` (¥250 under default
     baseline) are still structurally excluded — buying any of them would
     breach the 5% single-stock cap.
     """
-    top_n = max(len(selected), 1)
+    explicit_max_positions = max_positions is not None
+    top_n = max(int(max_positions or len(selected)), 1)
     total_value = account_total_value(account_state)
-    target_value = total_value / top_n
     max_single_weight = safe_float(config.get("trading", {}).get("max_single_weight"))
     if max_single_weight is not None and max_single_weight > 0:
         max_single_value = total_value * max_single_weight
-        target_value = min(target_value, max_single_value)
     else:
         max_single_value = None
+        max_single_weight = 1.0
     lot_size = int(config.get("trading", {}).get("lot_size", 100))
     current_positions = account_state.get("positions", {})
+    current_weights: dict[str, float] = {}
+    if total_value > 0:
+        for code, position in current_positions.items():
+            market_value = safe_float(position.get("market_value"))
+            if market_value is None:
+                shares = int(position.get("shares", 0))
+                price = safe_float(position.get("last_price")) or safe_float(position.get("avg_cost")) or 0.0
+                market_value = shares * price
+            current_weights[str(code).zfill(6)] = max(float(market_value), 0.0) / total_value
 
-    def _compute_target_shares(price: float) -> int:
+    controls = config.get("portfolio_controls", {}) or {}
+    defensive = str(config.get("agent_id") or "").lower() == "claude"
+    turnover_penalty = float(controls.get("turnover_penalty", 0.45 if defensive else 0.20))
+    min_trade_weight = float(controls.get("min_trade_weight", 0.003 if defensive else 0.001))
+    max_turnover = min(
+        max(float(controls.get("max_turnover", 1.0)), 0.0),
+        1.0,
+    )
+    max_industry_weight = float(controls.get("max_industry_weight", 1.0))
+    candidates = _attach_liquidity_caps(
+        selected,
+        total_value,
+        float(max_single_weight),
+        controls,
+    )
+    group_constraints = (
+        {"industry": max_industry_weight}
+        if max_industry_weight < 1.0 and "industry" in candidates.columns
+        else None
+    )
+    solution_diagnostics: dict[str, object] = {}
+    if target_weights_override is not None:
+        target_weights = {
+            str(code).zfill(6): min(
+                max(float(weight), 0.0),
+                float(max_single_weight),
+            )
+            for code, weight in target_weights_override.items()
+            if float(weight) > 1e-10
+        }
+        solution_diagnostics["fallback_reason"] = "preapproved_cost_aware_target"
+    elif explicit_max_positions:
+        target_weights = risk_adjusted_target_weights(
+            candidates,
+            top_n=top_n,
+            max_single_weight=float(max_single_weight),
+            current_weights=current_weights,
+            turnover_penalty=turnover_penalty,
+            min_trade_weight=min_trade_weight,
+            return_history=return_history,
+            gross_exposure=gross_exposure,
+            group_constraints=group_constraints,
+            risk_aversion=float(
+                controls.get("risk_aversion", 1.35 if defensive else 0.90)
+            ),
+            cost_aversion=float(controls.get("cost_aversion", 1.0)),
+            max_turnover=max_turnover,
+            benchmark_weights=benchmark_weights,
+            diagnostics=solution_diagnostics,
+        )
+    else:
+        target_weights = _preallocated_target_weights(
+            candidates,
+            max_single_weight=float(max_single_weight),
+            gross_exposure=gross_exposure,
+        )
+        solution_diagnostics["fallback_reason"] = "legacy_preallocated_input"
+    selected_codes = sorted(
+        code for code, weight in target_weights.items() if float(weight) > 0.0
+    )
+    allocation_target_weights = {
+        str(code): float(weight)
+        for code, weight in target_weights.items()
+    }
+    for code in current_positions:
+        allocation_target_weights.setdefault(str(code).zfill(6), 0.0)
+    solution_diagnostics.update(
+        {
+            "candidate_pool_size": int(len(candidates)),
+            "max_positions": top_n,
+            "max_turnover_limit": max_turnover,
+            "selected_codes": selected_codes,
+            "target_weights": allocation_target_weights,
+            "liquidity_caps": {
+                str(row["code"]).zfill(6): float(row["liquidity_cap"])
+                for _, row in candidates.iterrows()
+            },
+        }
+    )
+    if optimizer_diagnostics is not None:
+        optimizer_diagnostics.clear()
+        optimizer_diagnostics.update(solution_diagnostics)
+
+    def _compute_target_shares(price: float, target_weight: float) -> int:
+        target_value = total_value * min(max(target_weight, 0.0), float(max_single_weight))
         raw = int(target_value // (price * lot_size)) * lot_size
         if raw == 0 and max_single_value is not None and price * lot_size <= max_single_value:
             # Tier 1: 1 lot fits under cap — buy 1 lot rather than leave slot empty.
@@ -240,39 +487,28 @@ def build_target_orders(
             "reference_price": price,
             "score": row.get("score"),
             "reason": base_reason,
+            "avg_daily_amount": safe_float(row.get("avg_amount_20")),
+            "expected_volatility": safe_float(
+                row.get("expected_volatility", row.get("low_volatility_60"))
+            ),
         }
 
     targets: dict[str, dict[str, Any]] = {}
-    filled_count = 0
-    for _, row in selected.iterrows():
+    for _, row in candidates.iterrows():
         price = safe_float(row.get("latest_price"))
         if price is None or price <= 0:
             continue
         code = str(row["code"]).zfill(6)
-        target_shares = _compute_target_shares(price)
+        if code not in target_weights or float(target_weights[code]) <= 0.0:
+            continue
+        target_shares = _compute_target_shares(
+            price,
+            target_weights[code],
+        )
+        current_shares = int(current_positions.get(code, {}).get("shares", 0))
+        if total_value > 0 and abs(target_shares - current_shares) * price / total_value < min_trade_weight:
+            target_shares = current_shares
         targets[code] = _make_target(code, row, price, target_shares)
-        if target_shares > 0:
-            filled_count += 1
-
-    # Tier 2: skip-down fill from fallback_pool when selected leaves slots empty.
-    if fallback_pool is not None and filled_count < top_n:
-        already_seen = set(targets.keys())
-        need = top_n - filled_count
-        for _, row in fallback_pool.iterrows():
-            if need <= 0:
-                break
-            price = safe_float(row.get("latest_price"))
-            if price is None or price <= 0:
-                continue
-            code = str(row["code"]).zfill(6)
-            if code in already_seen:
-                continue
-            target_shares = _compute_target_shares(price)
-            if target_shares == 0:
-                continue  # still unbuyable — try next candidate
-            targets[code] = _make_target(code, row, price, target_shares, fallback=True)
-            already_seen.add(code)
-            need -= 1
 
     for code, position in current_positions.items():
         targets.setdefault(
@@ -297,6 +533,14 @@ def build_target_orders(
         if target_shares == current_shares:
             continue
         side = "buy" if target_shares > current_shares else "sell"
+        reference_price = safe_float(target.get("reference_price")) or 0.0
+        baseline_bps = float(config.get("trading", {}).get("slippage_rate", 0.0)) * 10_000.0
+        estimated_impact_bps = estimate_market_impact_bps(
+            order_value=abs(target_shares - current_shares) * reference_price,
+            avg_daily_amount=target.get("avg_daily_amount"),
+            volatility=target.get("expected_volatility"),
+            baseline_bps=baseline_bps,
+        )
         orders.append(
             {
                 "code": code,
@@ -311,10 +555,122 @@ def build_target_orders(
                 "reference_price": target.get("reference_price"),
                 "score": target.get("score"),
                 "reason": target.get("reason"),
+                "estimated_impact_bps": round(estimated_impact_bps, 4),
                 "status": "pending",
             }
         )
     return orders
+
+
+def _attach_liquidity_caps(
+    candidates: pd.DataFrame,
+    account_value: float,
+    max_single_weight: float,
+    controls: dict[str, Any],
+) -> pd.DataFrame:
+    frame = candidates.copy()
+    participation = min(
+        max(float(controls.get("max_liquidity_participation", 0.05)), 0.0),
+        1.0,
+    )
+    amount_column = (
+        "avg_amount_20"
+        if "avg_amount_20" in frame.columns
+        else "avg_daily_amount"
+        if "avg_daily_amount" in frame.columns
+        else None
+    )
+    frame["liquidity_cap"] = float(max_single_weight)
+    if amount_column is not None and account_value > 0 and participation > 0:
+        amounts = pd.to_numeric(frame[amount_column], errors="coerce")
+        observed_caps = amounts * participation / float(account_value)
+        valid = observed_caps.notna() & observed_caps.gt(0.0)
+        frame.loc[valid, "liquidity_cap"] = observed_caps.loc[valid].clip(
+            upper=float(max_single_weight)
+        )
+    return frame
+
+
+def _preallocated_target_weights(
+    candidates: pd.DataFrame,
+    *,
+    max_single_weight: float,
+    gross_exposure: float,
+) -> dict[str, float]:
+    if candidates.empty or "code" not in candidates.columns:
+        return {}
+    frame = candidates.copy()
+    frame["_code"] = frame["code"].map(lambda code: str(code).zfill(6))
+    volatility = pd.to_numeric(
+        frame.get(
+            "expected_volatility",
+            frame.get(
+                "low_volatility_60",
+                pd.Series(0.20, index=frame.index),
+            ),
+        ),
+        errors="coerce",
+    ).abs()
+    valid = volatility[volatility.gt(0.0) & volatility.notna()]
+    fallback_volatility = float(valid.median()) if not valid.empty else 0.20
+    volatility = (
+        volatility.where(volatility.gt(0.0), fallback_volatility)
+        .fillna(fallback_volatility)
+        .clip(lower=0.03, upper=1.50)
+    )
+    utility = 1.0 / volatility
+    expected = pd.to_numeric(
+        frame.get(
+            "expected_excess_return",
+            pd.Series(0.0, index=frame.index),
+        ),
+        errors="coerce",
+    ).fillna(0.0)
+    confidence = pd.to_numeric(
+        frame.get(
+            "prediction_confidence",
+            pd.Series(0.0, index=frame.index),
+        ),
+        errors="coerce",
+    ).fillna(0.0)
+    applied = frame.get(
+        "prediction_applied",
+        pd.Series(False, index=frame.index),
+    ).fillna(False).astype(bool)
+    if applied.any():
+        alpha_tilt = (expected * confidence / volatility).clip(
+            lower=-1.0,
+            upper=1.0,
+        )
+        utility.loc[applied] *= (1.0 + alpha_tilt.loc[applied]).clip(
+            lower=0.25,
+            upper=2.0,
+        )
+    cap = min(max(float(max_single_weight), 0.0), 1.0)
+    budget = min(
+        max(float(gross_exposure), 0.0),
+        1.0,
+        cap * len(frame),
+    )
+    weights = pd.Series(0.0, index=frame.index)
+    active = pd.Series(True, index=frame.index)
+    while active.any() and budget - float(weights.sum()) > 1e-10:
+        remaining = budget - float(weights.sum())
+        active_utility = utility.where(active, 0.0).clip(lower=0.0)
+        if float(active_utility.sum()) <= 0.0:
+            active_utility = active.astype(float)
+        proposal = active_utility / float(active_utility.sum()) * remaining
+        headroom = (cap - weights).clip(lower=0.0)
+        increment = pd.concat([proposal, headroom], axis=1).min(axis=1)
+        weights += increment
+        active &= weights.lt(cap - 1e-10)
+        if float(increment.sum()) <= 1e-12:
+            break
+    return {
+        code: float(weight)
+        for code, weight in zip(frame["_code"], weights)
+        if float(weight) > 1e-10
+    }
 
 
 def execute_due_orders(
@@ -396,7 +752,10 @@ def execute_order(
 
     trading = config.get("trading", {})
     lot_size = int(trading.get("lot_size", 100))
-    slippage_rate = float(trading.get("slippage_rate", 0))
+    slippage_rate = max(
+        float(trading.get("slippage_rate", 0)),
+        float(order.get("estimated_impact_bps", 0.0) or 0.0) / 10_000.0,
+    )
     commission_rate = float(trading.get("commission_rate", 0))
     min_commission = float(trading.get("min_commission", 0))
     stamp_tax_rate = float(trading.get("stamp_tax_rate", 0))
@@ -425,14 +784,22 @@ def execute_order(
         mark_order_unfilled(order, reason, current_shares, target_shares)
         return None
 
-    gross = shares * execution_price
-    commission = max(gross * commission_rate, min_commission)
-    stamp_tax = gross * stamp_tax_rate if side == "sell" else 0.0
-    slippage = abs(execution_price - price) * shares
+    fill = calculate_execution_fill(
+        reference_price=price,
+        shares=shares,
+        side=side,
+        trading=trading,
+        impact_bps=slippage_rate * 10_000.0,
+    )
+    execution_price = fill.execution_price
+    gross = fill.gross_amount
+    commission = fill.commission
+    stamp_tax = fill.stamp_tax
+    slippage = fill.slippage
 
     if side == "sell":
         net = gross - commission - stamp_tax
-        account["cash"] = float(account.get("cash", 0)) + net
+        account["cash"] = float(account.get("cash", 0)) + fill.cash_delta
         new_shares = current_shares - shares
         if new_shares <= 0:
             account.get("positions", {}).pop(code, None)
@@ -444,7 +811,7 @@ def execute_order(
             account["positions"][code] = current
     else:
         net = gross + commission
-        account["cash"] = float(account.get("cash", 0)) - net
+        account["cash"] = float(account.get("cash", 0)) + fill.cash_delta
         new_shares = current_shares + shares
         old_cost = float(current.get("avg_cost", execution_price)) * current_shares
         avg_cost = (old_cost + gross + commission) / new_shares

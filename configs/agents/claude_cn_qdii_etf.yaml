@@ -1,0 +1,28 @@
+{
+  "agent_id": "claude",
+  "strategy_id": "defensive_global_etf_v1",
+  "name": "稳健防守 · 低波均衡",
+  "factors": {
+    "momentum_60": {"weight": 0.10, "direction": "high"},
+    "low_volatility_60": {"weight": 0.45, "direction": "low"},
+    "avg_amount_20": {"weight": 0.20, "direction": "high"},
+    "discount_premium": {"weight": 0.25, "direction": "low"}
+  },
+  "factor_processing": {
+    "winsorize_lower": 0.05,
+    "winsorize_upper": 0.95,
+    "neutralize_industry": false,
+    "min_factor_coverage": 0.60
+  },
+  "portfolio_controls": {
+    "max_industry_weight": 1.0,
+    "hold_buffer_pct": 0.40,
+    "max_holding_days": 180,
+    "industry_unclassified_label": "ETF"
+  },
+  "filters": {
+    "max_fetch_candidates": 50,
+    "min_listing_days": 60,
+    "min_avg_amount_20": 50000
+  }
+}

@@ -1,0 +1,10 @@
+[Unit]
+Description=Reconcile announcement metadata and document artifacts daily
+
+[Timer]
+OnCalendar=*-*-* 00:30:00 Asia/Shanghai
+Persistent=true
+Unit=stock-analyze-intelligence-reconcile.service
+
+[Install]
+WantedBy=timers.target

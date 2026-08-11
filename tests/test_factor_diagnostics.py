@@ -5,6 +5,7 @@ import unittest
 
 import pandas as pd
 
+from stock_analyze.markets.a_share.data_provider import CacheMiss
 from stock_analyze.markets.a_share.diagnostics import compute_pending_forward_ic
 from stock_analyze.store import PortfolioStore
 
@@ -17,6 +18,17 @@ class StaticHistoryProvider:
 
     def price_history(self, code: str, as_of: str | None = None, days: int = 260) -> pd.DataFrame:
         return self.history_by_code.get(code, pd.DataFrame()).copy()
+
+
+class PartiallyMissingHistoryProvider(StaticHistoryProvider):
+    def __init__(self, history_by_code: dict[str, pd.DataFrame], missing_codes: set[str]) -> None:
+        super().__init__(history_by_code)
+        self.missing_codes = missing_codes
+
+    def price_history(self, code: str, as_of: str | None = None, days: int = 260) -> pd.DataFrame:
+        if code in self.missing_codes:
+            raise CacheMiss(method="price_history", cache_name=f"history_{code}_missing")
+        return super().price_history(code, as_of=as_of, days=days)
 
 
 def make_history(code: str, daily_return: float, days: int = 30) -> pd.DataFrame:
@@ -59,6 +71,36 @@ class ForwardIcTests(unittest.TestCase):
             ok_rows = [row for row in new_rows if row["ic_status"] == "ok"]
             self.assertEqual(len(ok_rows), 1)
             self.assertGreaterEqual(float(ok_rows[0]["ic"]), 0.95)
+
+    def test_cache_miss_is_treated_as_missing_forward_return(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            snapshot = pd.DataFrame(
+                [
+                    {"code": "000001", "signal_date": "2026-04-01", "account_id": "acc",
+                     "factor": "pe", "zscore": 1.0},
+                    {"code": "000002", "signal_date": "2026-04-01", "account_id": "acc",
+                     "factor": "pe", "zscore": 0.5},
+                    {"code": "000003", "signal_date": "2026-04-01", "account_id": "acc",
+                     "factor": "pe", "zscore": 0.0},
+                    {"code": "300782", "signal_date": "2026-04-01", "account_id": "acc",
+                     "factor": "pe", "zscore": -0.5},
+                ]
+            )
+            store.write_factor_snapshot(snapshot, "test_run_missing")
+            provider = PartiallyMissingHistoryProvider(
+                {
+                    "000001": make_history("000001", 0.020),
+                    "000002": make_history("000002", 0.015),
+                    "000003": make_history("000003", 0.000),
+                },
+                {"300782"},
+            )
+            new_rows = compute_pending_forward_ic({}, store, provider, as_of="2026-05-01")
+
+            ok_rows = [row for row in new_rows if row["ic_status"] == "ok"]
+            self.assertEqual(len(ok_rows), 1)
+            self.assertEqual(ok_rows[0]["sample_size"], 3)
 
     def test_insufficient_history_marker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

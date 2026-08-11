@@ -1,0 +1,11 @@
+[Unit]
+Description=Audit Friday announcements with iFinD every Saturday
+
+[Timer]
+OnCalendar=Sat *-*-* 08:30:00 Asia/Shanghai
+RandomizedDelaySec=5m
+Persistent=true
+Unit=stock-analyze-ifind-source-audit.service
+
+[Install]
+WantedBy=timers.target

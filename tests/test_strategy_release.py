@@ -1,0 +1,260 @@
+from __future__ import annotations
+
+import csv
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from stock_analyze.markets.a_share.backtest.types import BacktestMetrics
+from stock_analyze.markets.a_share.backtest.exceptions import BacktestFloorBreach
+from stock_analyze.strategy_registry import StrategyPairInvalid
+from stock_analyze.strategy_release import StrategyReleaseInvalid, apply_strategy_release
+
+
+class StrategyReleaseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "configs" / "agents").mkdir(parents=True)
+        version_dir = self.root / "configs" / "strategy_versions" / "release"
+        version_dir.mkdir(parents=True)
+        registry = {
+            "season_id": "test-season",
+            "name": "测试赛季",
+            "effective_date": "2026-07-11",
+            "factor_distance_floor": 0.45,
+            "slots": {
+                "claude": {"label": "稳健防守", "description": "def", "color": "#d6a84b"},
+                "codex": {"label": "趋势进攻", "description": "trend", "color": "#22d3ee"},
+            },
+        }
+        (self.root / "configs" / "strategy_competition.json").write_text(
+            json.dumps(registry), encoding="utf-8"
+        )
+        self.entries = []
+        for market in ("a_share", "cn_qdii_etf"):
+            baseline = {
+                "competition_id": market,
+                "start_date": "2026-01-01",
+                "initial_cash": 1_000_000,
+                "accounts": [{
+                    "id": "acc", "scope": "scope", "benchmark": "bench",
+                    "cash": 1_000_000, "top_n": 5,
+                }],
+                "schedule": {"execution": "weekly", "signal_day": "friday"},
+                "trading": {
+                    "lot_size": 100, "commission_rate": 0.0003,
+                    "min_commission": 5, "stamp_tax_rate": 0,
+                    "slippage_rate": 0.0005, "max_single_weight": 0.2,
+                },
+            }
+            (self.root / "configs" / f"competition_{market}.yaml").write_text(
+                json.dumps(baseline), encoding="utf-8"
+            )
+            for agent in ("claude", "codex"):
+                old_factor = "pe" if market == "a_share" else "momentum_20"
+                old = {
+                    "agent_id": agent,
+                    "strategy_id": f"old-{agent}-{market}",
+                    "name": f"Old {agent} {market}",
+                    "factors": {old_factor: {"weight": 1.0, "direction": "low" if old_factor == "pe" else "high"}},
+                }
+                live = self.root / "configs" / "agents" / f"{agent}_{market}.yaml"
+                live.write_text(json.dumps(old), encoding="utf-8")
+                defensive_factor = "pe" if market == "a_share" else "low_volatility_60"
+                trend_factor = "momentum_20"
+                factor = defensive_factor if agent == "claude" else trend_factor
+                direction = "low" if factor in {"pe", "low_volatility_60"} else "high"
+                desired = {
+                    "agent_id": agent,
+                    "strategy_id": f"new-{agent}-{market}",
+                    "name": "稳健防守" if agent == "claude" else "趋势进攻",
+                    "factors": {factor: {"weight": 1.0, "direction": direction}},
+                }
+                overlay_name = f"{agent}_{market}.json"
+                (version_dir / overlay_name).write_text(json.dumps(desired), encoding="utf-8")
+                self.entries.append({
+                    "market": market,
+                    "agent_id": agent,
+                    "overlay": overlay_name,
+                    "reasoning": f"# {agent} {market}",
+                })
+        self.manifest = version_dir / "manifest.json"
+        self.manifest.write_text(
+            json.dumps({
+                "release_id": "release",
+                "month": "2026-07-takeover",
+                "reviewer": "test",
+                "entries": self.entries,
+            }),
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_release_is_idempotent_across_both_markets(self) -> None:
+        metrics = BacktestMetrics(0.1, 0.08, 1.0, -0.05, 0.7)
+        with patch(
+            "stock_analyze.markets.a_share.backtest.gate.validate_overlay_via_backtest",
+            return_value=metrics,
+        ) as gate:
+            first = apply_strategy_release(self.manifest, self.root)
+            second = apply_strategy_release(self.manifest, self.root)
+
+        self.assertEqual([row["status"] for row in first["entries"]], ["evolved"] * 4)
+        self.assertEqual([row["status"] for row in second["entries"]], ["unchanged"] * 4)
+        self.assertEqual(gate.call_count, 2)
+        for entry in self.entries:
+            live = self.root / "configs" / "agents" / f"{entry['agent_id']}_{entry['market']}.yaml"
+            desired = self.manifest.parent / entry["overlay"]
+            self.assertEqual(json.loads(live.read_text()), json.loads(desired.read_text()))
+            csv_path = self.root / "data" / entry["market"] / entry["agent_id"] / "config_evolution.csv"
+            with csv_path.open(encoding="utf-8-sig", newline="") as handle:
+                self.assertEqual(len(list(csv.DictReader(handle))), 1)
+
+    def test_pair_guard_failure_writes_nothing(self) -> None:
+        bad_path = self.manifest.parent / "codex_cn_qdii_etf.json"
+        bad = json.loads((self.manifest.parent / "claude_cn_qdii_etf.json").read_text())
+        bad["agent_id"] = "codex"
+        bad["strategy_id"] = "different-id"
+        bad["name"] = "different-name"
+        bad_path.write_text(json.dumps(bad), encoding="utf-8")
+        before = {
+            path: path.read_text(encoding="utf-8")
+            for path in (self.root / "configs" / "agents").glob("*.yaml")
+        }
+
+        with self.assertRaises(StrategyPairInvalid):
+            apply_strategy_release(self.manifest, self.root)
+
+        self.assertEqual(
+            before,
+            {path: path.read_text(encoding="utf-8") for path in before},
+        )
+        self.assertFalse((self.root / "data").exists())
+
+    def test_release_archives_pre_release_pending_orders_once(self) -> None:
+        seeded: dict[tuple[str, str], list[dict[str, object]]] = {}
+        for entry in self.entries:
+            market = entry["market"]
+            agent_id = entry["agent_id"]
+            data_dir = self.root / "data" / market / agent_id
+            data_dir.mkdir(parents=True, exist_ok=True)
+            if market == "a_share":
+                payload: list[dict[str, object]] = [{
+                    "strategy_id": f"old-{agent_id}-{market}",
+                    "orders": [{"code": "000001", "side": "buy"}],
+                }]
+            else:
+                payload = [{"code": "513500.SH", "side": "buy"}]
+            seeded[(market, agent_id)] = payload
+            (data_dir / "pending_orders.json").write_text(
+                json.dumps(payload), encoding="utf-8"
+            )
+
+        metrics = BacktestMetrics(0.1, 0.08, 1.0, -0.05, 0.7)
+        with patch(
+            "stock_analyze.markets.a_share.backtest.gate.validate_overlay_via_backtest",
+            return_value=metrics,
+        ):
+            first = apply_strategy_release(self.manifest, self.root)
+
+            for entry in self.entries:
+                market = entry["market"]
+                agent_id = entry["agent_id"]
+                data_dir = self.root / "data" / market / agent_id
+                self.assertEqual(
+                    json.loads((data_dir / "pending_orders.json").read_text()), []
+                )
+                archive_path = (
+                    data_dir / "pending_order_archive" / "release.json"
+                )
+                archive = json.loads(archive_path.read_text(encoding="utf-8"))
+                self.assertEqual(archive["pending"], seeded[(market, agent_id)])
+                self.assertEqual(archive["order_count"], 1)
+                self.assertEqual(archive["queue_state"], "cleared")
+                self.assertTrue(archive["queue_cleared_at"])
+
+            # A deterministic strategy may generate byte-for-byte identical
+            # orders after the release. Completed migration state, not payload
+            # equality, decides whether a retry may clear the queue.
+            fresh = seeded[("cn_qdii_etf", "codex")]
+            fresh_path = (
+                self.root / "data" / "cn_qdii_etf" / "codex" / "pending_orders.json"
+            )
+            fresh_path.write_text(json.dumps(fresh), encoding="utf-8")
+            second = apply_strategy_release(self.manifest, self.root)
+
+        self.assertEqual(
+            [row["pending_orders_archived"] for row in first["entries"]],
+            [1, 1, 1, 1],
+        )
+        self.assertEqual([row["status"] for row in second["entries"]], ["unchanged"] * 4)
+        self.assertEqual(json.loads(fresh_path.read_text(encoding="utf-8")), fresh)
+
+    def test_all_a_share_gates_pass_before_any_overlay_is_written(self) -> None:
+        before = {
+            path: path.read_text(encoding="utf-8")
+            for path in (self.root / "configs" / "agents").glob("*.yaml")
+        }
+        metrics = BacktestMetrics(0.1, 0.08, 1.0, -0.05, 0.7)
+        breach = BacktestFloorBreach("sharpe_below_floor", metrics)
+
+        with patch(
+            "stock_analyze.markets.a_share.backtest.gate.validate_overlay_via_backtest",
+            side_effect=[metrics, breach],
+        ):
+            with self.assertRaises(StrategyReleaseInvalid):
+                apply_strategy_release(self.manifest, self.root)
+
+        self.assertEqual(
+            before,
+            {path: path.read_text(encoding="utf-8") for path in before},
+        )
+        self.assertFalse((self.root / "data").exists())
+
+    def test_retry_finishes_an_interrupted_pending_archive(self) -> None:
+        data_dir = self.root / "data" / "cn_qdii_etf" / "codex"
+        archive_dir = data_dir / "pending_order_archive"
+        archive_dir.mkdir(parents=True)
+        pending = [{"code": "513500.SH", "side": "buy"}]
+        (data_dir / "pending_orders.json").write_text(
+            json.dumps(pending), encoding="utf-8"
+        )
+        archive_path = archive_dir / "release.json"
+        archive_path.write_text(
+            json.dumps({
+                "release_id": "release",
+                "archived_at": "2026-07-11T20:00:00",
+                "market": "cn_qdii_etf",
+                "agent_id": "codex",
+                "from_strategy_id": "old-codex-cn_qdii_etf",
+                "to_strategy_id": "new-codex-cn_qdii_etf",
+                "order_count": 1,
+                "queue_state": "archiving",
+                "queue_cleared_at": None,
+                "pending": pending,
+            }),
+            encoding="utf-8",
+        )
+
+        metrics = BacktestMetrics(0.1, 0.08, 1.0, -0.05, 0.7)
+        with patch(
+            "stock_analyze.markets.a_share.backtest.gate.validate_overlay_via_backtest",
+            return_value=metrics,
+        ):
+            apply_strategy_release(self.manifest, self.root)
+
+        self.assertEqual(
+            json.loads((data_dir / "pending_orders.json").read_text()), []
+        )
+        archive = json.loads(archive_path.read_text(encoding="utf-8"))
+        self.assertEqual(archive["queue_state"], "cleared")
+        self.assertTrue(archive["queue_cleared_at"])
+
+
+if __name__ == "__main__":
+    unittest.main()

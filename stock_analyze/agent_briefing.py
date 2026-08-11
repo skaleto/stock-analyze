@@ -137,7 +137,7 @@ def build_weekly_briefing(
     lines += _role_section(agent_id, paths, overlay, target_kind="weekly", as_of=as_of)
     lines += _weekly_data_snapshot(paths, as_of)
     lines += _weekly_task_section(agent_id, as_of)
-    lines += _weekly_output_contract(agent_id, as_of)
+    lines += _weekly_output_contract(paths, as_of)
     lines += _weekly_references_section(paths)
     return "\n".join(lines).rstrip() + "\n"
 
@@ -161,7 +161,7 @@ def build_monthly_briefing(
     lines += _role_section(agent_id, paths, overlay, target_kind="monthly", as_of=month)
     lines += _monthly_data_snapshot(paths, month, root)
     lines += _monthly_task_section(agent_id, month)
-    lines += _monthly_output_contract(agent_id, month, baseline)
+    lines += _monthly_output_contract(paths, month, baseline)
     lines += _monthly_references_section(paths)
     return "\n".join(lines).rstrip() + "\n"
 
@@ -253,8 +253,8 @@ def _weekly_task_section(agent_id: str, as_of: str) -> list[str]:
     ]
 
 
-def _weekly_output_contract(agent_id: str, as_of: str) -> list[str]:
-    target = f"data/{agent_id}/notes/{as_of}-weekly-review.md"
+def _weekly_output_contract(paths: AgentPaths, as_of: str) -> list[str]:
+    target = _relative_to_repo(paths, paths.data_dir / "notes" / f"{as_of}-weekly-review.md")
     return [
         "# 输出契约",
         "",
@@ -311,10 +311,11 @@ def _monthly_task_section(agent_id: str, month: str) -> list[str]:
     ]
 
 
-def _monthly_output_contract(agent_id: str, month: str, baseline: dict[str, Any] | None) -> list[str]:
-    notes_target = f"data/{agent_id}/notes/{month}-monthly-review.md"
-    log_target = f"data/{agent_id}/evolution_log/{month}.md"
-    overlay_target = f"configs/agents/{agent_id}.yaml"
+def _monthly_output_contract(paths: AgentPaths, month: str, baseline: dict[str, Any] | None) -> list[str]:
+    agent_id = paths.agent_id
+    notes_target = _relative_to_repo(paths, paths.data_dir / "notes" / f"{month}-monthly-review.md")
+    log_target = _relative_to_repo(paths, paths.data_dir / "evolution_log" / f"{month}.md")
+    overlay_target = _relative_to_repo(paths, paths.config_path)
     locked_lines = [f"- `{path}`" for path in BASELINE_LOCKED_PATHS]
     baseline_excerpt: list[str] = []
     if baseline:
@@ -353,6 +354,10 @@ def _monthly_output_contract(agent_id: str, month: str, baseline: dict[str, Any]
         "其它路径不要写入。**不要**修改 `configs/competition_a_share.yaml`、`stock_analyze/`、`tests/`、`reports/`。",
         "",
     ]
+
+
+def _relative_to_repo(paths: AgentPaths, path: Path) -> str:
+    return str(path.relative_to(paths.data_dir.parents[2]))
 
 
 def _monthly_references_section(paths: AgentPaths) -> list[str]:

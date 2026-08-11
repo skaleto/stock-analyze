@@ -18,6 +18,9 @@ _STATUS_LABELS = {
     "research": "研究候选",
     "shadow": "模拟验证",
     "active": "正式使用",
+    "rejected": "未通过验收",
+    "superseded": "已被替代",
+    "quarantined": "已隔离",
 }
 
 
@@ -175,7 +178,7 @@ def ensure_iteration_candidate(
     *,
     as_of: str | date | None = None,
 ) -> dict[str, Any] | None:
-    """Return one stable Challenger, rotating only after promotion or removal."""
+    """Return the current Challenger, pinning only versions already in Shadow."""
 
     registry = read_model_registry(root, market, horizon)
     models = registry.get("models") or {}
@@ -186,16 +189,28 @@ def ensure_iteration_candidate(
     stamp = str(as_of or now_iso())
     current_metadata = models.get(current_version) or {}
     current_status = str(current_metadata.get("status") or "")
-    current_is_candidate = bool(
+    current_is_pinned = bool(
         current_version
         and current_version in models
         and current_version != champion
-        and current_status != "active"
+        and current_status == "shadow"
+    )
+    selected_version = (
+        current_version
+        if current_is_pinned
+        else _select_candidate_version(models, champion)
     )
 
-    if current_version and not current_is_candidate:
+    if current_version and current_version != selected_version:
         history = state.setdefault("history", [])
-        outcome = "promoted" if current_version == champion or current_status == "active" else "retired"
+        if current_version == champion or current_status == "active":
+            outcome = "promoted"
+        elif current_status in {"rejected", "superseded", "quarantined"}:
+            outcome = current_status
+        elif current_status == "research" and selected_version:
+            outcome = "superseded"
+        else:
+            outcome = "retired"
         if not history or history[-1].get("model_version") != current_version or history[-1].get("outcome") != outcome:
             history.append({
                 **current,
@@ -204,10 +219,7 @@ def ensure_iteration_candidate(
                 "outcome": outcome,
                 "ended_at": stamp,
             })
-        current_version = ""
-
-    if not current_version:
-        current_version = _select_candidate_version(models, champion)
+    current_version = selected_version
 
     state.update({
         "schema_version": 1,

@@ -20,6 +20,7 @@ Override scope:
 
 from __future__ import annotations
 
+import html
 from datetime import datetime
 from typing import Iterable
 
@@ -192,6 +193,7 @@ def render_nav_html(
     active: str | None = None,
     generated_at: datetime | str | None = None,
     data_as_of: str | None = None,
+    strategy_labels: dict[str, str] | None = None,
 ) -> str:
     """Render the sticky top nav as a single HTML string.
 
@@ -219,7 +221,8 @@ def render_nav_html(
     groups: list[str] = []
     for label, links in _NAV_LINKS:
         items = [
-            f'<a class="nav-link" href="{href}" data-active="{str(key == active).lower()}">{text}</a>'
+            f'<a class="nav-link" href="{href}" data-active="{str(key == active).lower()}">'
+            f'{html.escape((strategy_labels or {}).get(key.removeprefix("simple-"), text))}</a>'
             for key, href, text in links
         ]
         groups.append(

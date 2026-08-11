@@ -7,10 +7,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from stock_analyze.markets.a_share.data_provider import AkshareProvider, CacheMiss, filter_financial_visible_as_of
+from stock_analyze.markets.a_share.data_provider import AkshareProvider, CacheMiss, filter_financial_visible_as_of, normalize_history
 from stock_analyze.markets.a_share.market_data import (
     _acquire_spot_with_retry,
     _merged_filters,
+    _resolve_prepare_as_of,
     prepare_market_data,
 )
 
@@ -26,6 +27,8 @@ class FakeProvider(AkshareProvider):
     def __init__(self, cache_dir: Path | None, *, as_of: str = "2026-05-22", failures: set[str] | None = None) -> None:
         super().__init__(cache_dir=cache_dir, offline=False, as_of=as_of)
         self._failures = failures or set()
+        self.history_calls: list[str] = []
+        self.history_days: list[int] = []
         self._mock_spot = pd.DataFrame(
             [
                 {"code": "600519", "name": "贵州茅台", "latest_price": 1620.0, "pe": 32.5, "pb": 8.1, "market_cap_yi": 20000},
@@ -53,6 +56,8 @@ class FakeProvider(AkshareProvider):
         return {"code": code, "name": "T", "industry": "酿酒", "listing_date": "2001-01-01"}
 
     def price_history(self, code: str, as_of: str | None = None, days: int = 180) -> pd.DataFrame:
+        self.history_calls.append(code)
+        self.history_days.append(days)
         return pd.DataFrame([{"日期": "2026-05-22", "收盘": 100.0, "开盘": 99.0, "最高": 101.0, "最低": 98.5, "成交额": 1e8}])
 
     def valuation_metrics(self, code: str) -> dict:
@@ -71,6 +76,53 @@ class FakeProvider(AkshareProvider):
 
 
 class CacheMissBehaviorTests(unittest.TestCase):
+    def test_normalize_history_preserves_tushare_volume(self) -> None:
+        history = normalize_history(pd.DataFrame([
+            {
+                "trade_date": "20260710",
+                "open": 10.0,
+                "high": 10.8,
+                "low": 9.8,
+                "close": 10.5,
+                "vol": 123_456,
+                "amount": 1_200_000,
+            }
+        ]))
+
+        self.assertEqual(float(history.iloc[0]["成交量"]), 123_456)
+
+    def test_online_history_refreshes_legacy_cache_without_volume(self) -> None:
+        class VolumeProvider(AkshareProvider):
+            def __init__(self, cache_dir: Path) -> None:
+                super().__init__(cache_dir=cache_dir, offline=False, as_of="2026-07-10")
+                self.daily_calls = 0
+
+            def daily(self, code: str, start: str, end: str) -> pd.DataFrame:
+                self.daily_calls += 1
+                return pd.DataFrame([
+                    {
+                        "日期": "2026-07-10",
+                        "开盘": 10.0,
+                        "最高": 10.8,
+                        "最低": 9.8,
+                        "收盘": 10.5,
+                        "成交量": 123_456,
+                        "成交额": 1_200_000,
+                    }
+                ])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            pd.DataFrame([
+                {"日期": "2026-07-10", "开盘": 10, "最高": 10.8, "最低": 9.8, "收盘": 10.5, "成交额": 1_200_000}
+            ]).to_csv(cache / "history_000001_20260710_1098.csv", index=False)
+            provider = VolumeProvider(cache)
+
+            history = provider.price_history("000001", days=1098)
+
+        self.assertEqual(provider.daily_calls, 1)
+        self.assertEqual(float(history.iloc[0]["成交量"]), 123_456)
+
     def test_offline_raises_cache_miss_for_uncached_method(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             provider = AkshareProvider(cache_dir=tmp, offline=True, as_of="2026-05-22")
@@ -90,6 +142,23 @@ class CacheMissBehaviorTests(unittest.TestCase):
         self.assertEqual(close, 3500.0)
         self.assertEqual(trade_date, "2026-05-22")
 
+    def test_offline_short_factor_request_reuses_three_year_history_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            pd.DataFrame(
+                [{"日期": "2026-05-22", "开盘": 10, "最高": 11, "最低": 9, "收盘": 10.5}],
+            ).to_csv(cache / "history_600519_20260522_1098.csv", index=False)
+            provider = AkshareProvider(
+                cache_dir=cache,
+                offline=True,
+                as_of="2026-05-22",
+            )
+
+            history = provider.price_history("600519", days=220)
+
+        self.assertEqual(len(history), 1)
+        self.assertEqual(float(history.iloc[0]["收盘"]), 10.5)
+
     def test_offline_does_not_emit_http_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             provider = AkshareProvider(cache_dir=tmp, offline=True, as_of="2026-05-22")
@@ -102,6 +171,48 @@ class CacheMissBehaviorTests(unittest.TestCase):
 
 
 class WeekendCacheResolutionTests(unittest.TestCase):
+    def test_prepare_rerun_uses_latest_successful_snapshot_on_weekend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shared = root / "data" / "shared"
+            shared.mkdir(parents=True)
+            (shared / "market_snapshot_2026-07-24.json").write_text(
+                json.dumps({"status": "success"}),
+                encoding="utf-8",
+            )
+            (shared / "market_snapshot_2026-07-25.json").write_text(
+                json.dumps({"status": "failed"}),
+                encoding="utf-8",
+            )
+
+            resolved = _resolve_prepare_as_of(
+                root,
+                None,
+                now=pd.Timestamp("2026-07-26 12:00:00"),
+            )
+
+        self.assertEqual(resolved, "2026-07-24")
+
+    def test_prepare_keeps_today_on_weekday(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            resolved = _resolve_prepare_as_of(
+                Path(tmp),
+                None,
+                now=pd.Timestamp("2026-07-27 12:00:00"),
+            )
+
+        self.assertEqual(resolved, "2026-07-27")
+
+    def test_prepare_explicit_date_wins_on_weekend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            resolved = _resolve_prepare_as_of(
+                Path(tmp),
+                "2026-07-20",
+                now=pd.Timestamp("2026-07-26 12:00:00"),
+            )
+
+        self.assertEqual(resolved, "2026-07-20")
+
     def test_offline_provider_auto_resolves_to_latest_cache_date(self) -> None:
         """Saturday agent runs (no as_of given) read Friday's cache files."""
 
@@ -198,6 +309,8 @@ class PrepareMarketDataTests(unittest.TestCase):
             self.assertGreater(snapshot["candidates_fetched"], 0)
             self.assertEqual(snapshot["errors"], [])
             self.assertEqual(snapshot["rows"]["benchmark_000300"], 1)
+            self.assertTrue(fake.history_days)
+            self.assertGreaterEqual(min(fake.history_days), 3 * 365)
             snapshot_path = root / "data" / "shared" / "market_snapshot_2026-05-22.json"
             self.assertTrue(snapshot_path.exists())
 
@@ -309,6 +422,39 @@ class PrepareMarketDataTests(unittest.TestCase):
                     f"--force should have deleted stale cache {path.name}",
                 )
             self.assertTrue(untouched.exists(), "per-stock caches must not be deleted")
+
+    def test_prewarms_operational_codes_outside_candidate_universe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._scaffold(root)
+            data_dir = root / "data" / "a_share" / "codex"
+            data_dir.mkdir(parents=True)
+            (data_dir / "pending_orders.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "account_id": "hs300",
+                            "execute_after": "2026-05-22",
+                            "orders": [{"code": "603195", "side": "buy", "status": "pending"}],
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (data_dir / "state.json").write_text(
+                json.dumps({"accounts": {"hs300": {"positions": {"688001": {"shares": 100}}}}}),
+                encoding="utf-8",
+            )
+            cache_dir = root / "data" / "shared" / "cache"
+            cache_dir.mkdir(parents=True)
+            fake = FakeProvider(cache_dir=cache_dir)
+            self._patch_provider(fake)
+
+            snapshot = prepare_market_data(as_of="2026-05-22", repo_root=root, max_workers=1)
+
+        self.assertEqual(snapshot["status"], "success")
+        self.assertIn("603195", fake.history_calls)
+        self.assertIn("688001", fake.history_calls)
 
 
 class PointInTimeFinancialTests(unittest.TestCase):

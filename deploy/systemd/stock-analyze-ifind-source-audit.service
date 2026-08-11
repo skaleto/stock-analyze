@@ -1,0 +1,20 @@
+[Unit]
+Description=Stock Analyze weekly iFinD and Tushare source audit
+After=network-online.target
+Wants=network-online.target
+OnFailure=stock-analyze-pipeline-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+Environment=IFIND_PYTHON=/opt/stock-analyze/vendor/ifind/venv/bin/python
+Environment=IFIND_GATEWAY=/opt/stock-analyze/app/scripts/ifind_sdk_gateway.py
+Environment=IFIND_SDK_LIB_DIRS=/opt/stock-analyze/vendor/ifind/1.10.22.44.001/bin64:/opt/stock-analyze/vendor/ifind/1.10.22.44.001/compat/root/lib/x86_64-linux-gnu
+Environment=IFIND_USER_FILE=/etc/stock-analyze/secrets/ifind_username
+Environment=IFIND_PASSWORD_FILE=/etc/stock-analyze/secrets/ifind_password
+ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli intelligence-source-audit --repo-root /opt/stock-analyze/app --datasets announcement --announcement-scope full-market --supplement
+ExecStartPost=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli intelligence-semantic-status --repo-root /opt/stock-analyze/app
+TimeoutStartSec=30min
+StandardOutput=append:/opt/stock-analyze/logs/ifind-source-audit.log
+StandardError=append:/opt/stock-analyze/logs/ifind-source-audit.err

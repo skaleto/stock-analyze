@@ -1,0 +1,11 @@
+[Unit]
+Description=Sat 10:15 Asia/Shanghai Codex mainland QDII ETF weekly run
+
+[Timer]
+OnCalendar=Sat *-*-* 10:15:00 Asia/Shanghai
+Persistent=true
+AccuracySec=30s
+Unit=stock-analyze-codex-cn-qdii-etf-weekly.service
+
+[Install]
+WantedBy=timers.target

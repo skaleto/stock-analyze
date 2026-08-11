@@ -46,6 +46,7 @@ EVOLUTION_COLUMNS: list[str] = [
     "event",
     "event_at",
     "agent_id",
+    "market",
     "month",
     "from_hash",
     "to_hash",
@@ -72,6 +73,9 @@ _LEGACY_COLUMNS: list[str] = [
 ]
 
 
+_BACKTEST_NOT_PREVALIDATED = object()
+
+
 def write_evolution(
     agent_id: str,
     old_overlay: dict[str, Any],
@@ -82,6 +86,7 @@ def write_evolution(
     reviewer: str = "llm-direct",
     *,
     market: str = "a_share",
+    validated_backtest_metrics: Any = _BACKTEST_NOT_PREVALIDATED,
 ) -> dict[str, Any]:
     """Persist the four artifacts and return a summary dict.
 
@@ -103,6 +108,9 @@ def write_evolution(
         Target month (``YYYY-MM``). Defaults to ``default_month_for()``.
     reviewer:
         Free-form label recorded in the CSV. Defaults to ``llm-direct``.
+    validated_backtest_metrics:
+        Internal release-orchestration hook. When supplied for A-share, the
+        caller has already run the gate as part of a multi-overlay preflight.
 
     Returns
     -------
@@ -117,11 +125,16 @@ def write_evolution(
     """
 
     root = Path(repo_root) if repo_root else Path.cwd()
-    paths = competition.resolve_agent_paths(agent_id, repo_root=root)
+    paths = competition.resolve_market_paths(market, agent_id, repo_root=root)
     target_month = month or default_month_for()
 
     # 1. Guard check first; if this raises, no side effects happen.
-    overlay_guard.validate(agent_id, new_overlay, repo_root=root)
+    overlay_guard.validate(
+        agent_id,
+        new_overlay,
+        repo_root=root,
+        market=market,
+    )
 
     # 1b. Backtest floor gate. If it raises BacktestFloorBreach, no side
     # effects on yaml; we write a breach log and re-raise. Imported lazily
@@ -129,32 +142,33 @@ def write_evolution(
     from .markets.a_share.backtest import gate as backtest_gate
     from .markets.a_share.backtest.exceptions import BacktestFloorBreach
 
-    try:
-        backtest_metrics = backtest_gate.validate_overlay_via_backtest(
-            new_overlay, agent_id=agent_id,
-        )
-    except BacktestFloorBreach as breach:
-        _write_floor_breach_log(
-            agent_id=agent_id,
-            month=target_month,
-            breach=breach,
-            reasoning_md=reasoning_md,
-            repo_root=root,
-        )
-        raise
-    except Exception as exc:  # noqa: BLE001
-        # If the gate cannot run (e.g., backtest_cache missing), log a soft
-        # warning and continue. Operator should run prepare-backtest-data.
-        import logging
-        logging.warning(
-            "backtest gate skipped (cache missing or engine error): %s", exc
-        )
-        backtest_metrics = None
+    backtest_status = "not_available"
+    backtest_metrics = None
+    if market == "a_share":
+        if validated_backtest_metrics is not _BACKTEST_NOT_PREVALIDATED:
+            backtest_metrics = validated_backtest_metrics
+            backtest_status = "passed"
+        else:
+            try:
+                backtest_metrics = backtest_gate.validate_overlay_via_backtest(
+                    new_overlay, agent_id=agent_id,
+                )
+                backtest_status = "passed"
+            except BacktestFloorBreach as breach:
+                _write_floor_breach_log(
+                    agent_id=agent_id,
+                    market=market,
+                    month=target_month,
+                    breach=breach,
+                    reasoning_md=reasoning_md,
+                    repo_root=root,
+                )
+                raise
 
     # Resolve hashes through the same `competition.load`-style merge so
     # they are comparable with the hashes already in `runs.csv`.
-    from_hash = _config_hash_for_overlay(agent_id, old_overlay, root)
-    to_hash = _config_hash_for_overlay(agent_id, new_overlay, root)
+    from_hash = _config_hash_for_overlay(agent_id, old_overlay, root, market)
+    to_hash = _config_hash_for_overlay(agent_id, new_overlay, root, market)
 
     # 2. Backup the current overlay (idempotent — skip if already present).
     history_path = _history_path(root, from_hash)
@@ -191,6 +205,7 @@ def write_evolution(
     ensure_dirs(diff_path.parent)
     diff_payload: dict[str, Any] = {
         "agent_id": agent_id,
+        "market": market,
         "month": target_month,
         "evolved_at": datetime.now().isoformat(timespec="seconds"),
         "from_config_hash": from_hash,
@@ -203,6 +218,7 @@ def write_evolution(
             "factors_in_whitelist",
             "weights_in_range",
         ],
+        "backtest_status": backtest_status,
     }
     if backtest_metrics is not None:
         diff_payload["backtest_metrics"] = {
@@ -228,6 +244,7 @@ def write_evolution(
             "event": "evolve",
             "event_at": datetime.now().isoformat(timespec="seconds"),
             "agent_id": agent_id,
+            "market": market,
             "month": target_month,
             "from_hash": from_hash,
             "to_hash": to_hash,
@@ -241,6 +258,7 @@ def write_evolution(
     return {
         "status": "evolved",
         "agent_id": agent_id,
+        "market": market,
         "month": target_month,
         "from_hash": from_hash,
         "to_hash": to_hash,
@@ -295,6 +313,7 @@ def summarise_diff(diff: dict[str, dict[str, Any]], limit: int = 6) -> str:
 def _write_floor_breach_log(
     *,
     agent_id: str,
+    market: str,
     month: str,
     breach: Any,  # BacktestFloorBreach — typed as Any to avoid top-level import
     reasoning_md: str,
@@ -307,7 +326,7 @@ def _write_floor_breach_log(
     NOT touched in this path — the operator must read this file and
     redesign before re-attempting.
     """
-    paths = competition.resolve_agent_paths(agent_id, repo_root=repo_root)
+    paths = competition.resolve_market_paths(market, agent_id, repo_root=repo_root)
     out = paths.data_dir / "evolution_log" / f"{month}-floor-breach.md"
     ensure_dirs(out.parent)
     m = breach.metrics
@@ -332,6 +351,7 @@ def _config_hash_for_overlay(
     agent_id: str,
     overlay: dict[str, Any],
     root: Path,
+    market: str,
 ) -> str:
     """Compute the same hash ``runs.csv`` writes, given an in-memory overlay.
 
@@ -341,7 +361,12 @@ def _config_hash_for_overlay(
     """
 
     try:
-        merged = competition.validate_overlay(agent_id, overlay, repo_root=root)
+        merged = competition.validate_overlay(
+            agent_id,
+            overlay,
+            repo_root=root,
+            market=market,
+        )
     except competition.CompetitionBaselineLocked:
         # Shouldn't reach here because guard runs first; fall back to a
         # deepcopy-only hash so callers still get *some* identifier.

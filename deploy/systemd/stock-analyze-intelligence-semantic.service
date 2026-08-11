@@ -1,0 +1,28 @@
+[Unit]
+Description=Stock Analyze provider-neutral announcement semantic batch
+After=network-online.target stock-analyze-intelligence-reconcile.service
+Wants=network-online.target
+OnFailure=stock-analyze-pipeline-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+EnvironmentFile=-/etc/stock-analyze/secrets.env
+Environment=MALLOC_ARENA_MAX=2
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+ExecStartPre=/usr/bin/test -s /etc/stock-analyze/intelligence-semantic-executor.yaml
+ExecStart=/usr/bin/flock --wait 300 --conflict-exit-code 75 /run/stock-analyze-intelligence-reconcile.lock /usr/bin/flock --nonblock --conflict-exit-code 75 /run/stock-analyze-intelligence-semantic.lock /opt/stock-analyze/venv/bin/python -m stock_analyze.cli intelligence-semantic-daily --repo-root /opt/stock-analyze/app --profile a-share-announcement-mentions-v1 --limit 3 --max-input-characters 40000 --executor-config /etc/stock-analyze/intelligence-semantic-executor.yaml
+ExecStartPost=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli intelligence-semantic-status --repo-root /opt/stock-analyze/app
+SuccessExitStatus=75
+TimeoutStartSec=2h
+Nice=10
+CPUWeight=25
+IOWeight=25
+MemoryAccounting=true
+MemoryHigh=1G
+MemoryMax=1250M
+MemorySwapMax=512M
+StandardOutput=append:/opt/stock-analyze/logs/intelligence-semantic.log
+StandardError=append:/opt/stock-analyze/logs/intelligence-semantic.err

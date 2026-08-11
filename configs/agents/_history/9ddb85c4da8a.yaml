@@ -1,0 +1,87 @@
+{
+  "agent_id": "claude",
+  "strategy_id": "claude_value_quality_momentum_v1",
+  "name": "Claude · Value + Quality + Momentum",
+  "factors": {
+    "pe": {
+      "weight": 0.17,
+      "direction": "low"
+    },
+    "pb": {
+      "weight": 0.17,
+      "direction": "low"
+    },
+    "roe": {
+      "weight": 0.2,
+      "direction": "high"
+    },
+    "gross_margin": {
+      "weight": 0.12,
+      "direction": "high"
+    },
+    "debt_ratio": {
+      "weight": 0.08,
+      "direction": "low"
+    },
+    "momentum_20": {
+      "weight": 0.08,
+      "direction": "high"
+    },
+    "momentum_60": {
+      "weight": 0.11,
+      "direction": "high"
+    },
+    "low_volatility_60": {
+      "weight": 0.06,
+      "direction": "low"
+    },
+    "dividend_yield": {
+      "weight": 0.0,
+      "direction": "high"
+    },
+    "claude_market_sentiment_1w": {
+      "weight": 0.02,
+      "direction": "high"
+    },
+    "claude_sector_sentiment": {
+      "weight": 0.02,
+      "direction": "high"
+    }
+  },
+  "factor_processing": {
+    "enabled": true,
+    "winsorize_lower": 0.01,
+    "winsorize_upper": 0.99,
+    "neutralize_industry": true,
+    "min_factor_coverage": 0.6
+  },
+  "portfolio_controls": {
+    "max_industry_weight": 0.3,
+    "hold_buffer_pct": 0.7,
+    "max_holding_days": 60,
+    "industry_unclassified_label": "未分类"
+  },
+  "filters": {
+    "exclude_st": true,
+    "max_fetch_candidates": 850,
+    "min_listing_days": 365,
+    "min_pe": 0,
+    "min_avg_amount_20": 50000000,
+    "min_market_cap_yi": 30,
+    "require_fields": [
+      "pe",
+      "pb",
+      "roe",
+      "gross_margin",
+      "debt_ratio",
+      "momentum_20",
+      "momentum_60"
+    ],
+    "fallback_require_fields": [
+      "pe",
+      "pb",
+      "momentum_20",
+      "momentum_60"
+    ]
+  }
+}

@@ -1,0 +1,51 @@
+schema_version: 1
+research_only: true
+
+# Archived multi-annotator QA configuration. It is consumed only by
+# stock_analyze.intelligence.semantic.research_cli and is not deployed as a
+# prerequisite for daily provider-neutral extraction.
+parser:
+  version: announcement-layout-v1
+
+semantic:
+  schema_version: announcement-events-v1
+  prompt_version: announcement-event-v2
+  taxonomy_version: cn-announcement-taxonomy-v1
+  grounding_alignment_version: exact-quote-unique-v1
+  provider:
+    kind: openai-compatible
+    base_url: https://api.deepseek.com
+    api_key_file_env: INTELLIGENCE_LLM_API_KEY_FILE
+    response_format: json_object
+    server_side_json_schema: false
+    local_schema_validation: true
+  candidate_profiles:
+    candidate-a:
+      model_env: INTELLIGENCE_LLM_MODEL_CANDIDATE_A
+      max_output_tokens: 16384
+      temperature: 0
+    candidate-b:
+      model_env: INTELLIGENCE_LLM_MODEL_CANDIDATE_B
+      max_output_tokens: 16384
+      temperature: 0
+  budgets:
+    request_timeout_seconds: 120
+    max_attempts: 3
+    schema_repair_attempts: 2
+    max_input_characters: 180000
+    max_documents_per_daily_run: 500
+    daily_input_token_budget: 3000000
+    no_event_audit_sample_rate: 0.05
+
+benchmark:
+  gold_document_count: 240
+  no_event_document_count: 60
+  materialization_workers: 4
+  max_source_characters: 40000
+  schema_validity_floor: 1.0
+  event_precision_floor: 0.90
+  event_recall_floor: 0.85
+  evidence_grounding_floor: 0.98
+  entity_accuracy_floor: 0.995
+  numeric_exact_match_floor: 0.98
+  no_event_false_negative_ceiling: 0.10

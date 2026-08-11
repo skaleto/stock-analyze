@@ -1,0 +1,26 @@
+[Unit]
+Description=Stock Analyze resumable historical announcement artifact backfill
+After=network-online.target
+Wants=network-online.target
+OnFailure=stock-analyze-pipeline-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+EnvironmentFile=-/etc/stock-analyze/secrets.env
+Environment=MALLOC_ARENA_MAX=2
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+ExecStart=/usr/bin/flock --nonblock --conflict-exit-code 75 /run/stock-analyze-intelligence-reconcile.lock /opt/stock-analyze/venv/bin/python -m stock_analyze.intelligence.artifact_backfill --repo-root /opt/stock-analyze/app --python /opt/stock-analyze/venv/bin/python --state-path /opt/stock-analyze/app/data/shared/intelligence/artifact_backfill_state.json --runtime-budget-seconds 1080
+SuccessExitStatus=75
+TimeoutStartSec=22min
+Nice=10
+CPUWeight=25
+IOWeight=25
+MemoryAccounting=true
+MemoryHigh=1G
+MemoryMax=1250M
+MemorySwapMax=512M
+StandardOutput=append:/opt/stock-analyze/logs/intelligence-artifact-backfill.log
+StandardError=append:/opt/stock-analyze/logs/intelligence-artifact-backfill.err

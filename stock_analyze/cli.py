@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import http.server
 import json
+import re
 import socketserver
 import sys
 import time
@@ -22,7 +23,10 @@ from .agent_briefing import (
 )
 from .competition import CompetitionBaselineLocked
 from .config import load_config
-from .dashboard_aggregator import generate_competition_dashboard
+from .dashboard_aggregator import (
+    PUBLIC_STRATEGY_KEYS,
+    generate_competition_dashboard,
+)
 # Per-market run primitives (make_provider / initialize / generate_rebalance_orders
 # / execute_due_orders / update_nav) are dispatched at call time via
 # competition.get_market_module(market); see main(). compute_pending_forward_ic
@@ -399,6 +403,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the summary without sending or marking it delivered.",
     )
+    workflow_notify.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="Return 75 without sending until every formal task succeeded.",
+    )
+    workflow_notify.add_argument(
+        "--wait-seconds",
+        type=int,
+        default=0,
+        help="Maximum time to wait for required task completion.",
+    )
+    workflow_notify.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=5.0,
+        help="Completion polling interval used with --require-complete.",
+    )
 
     for command, help_text in (
         ("prepare-research-data", "Build immutable feature snapshots from market caches."),
@@ -511,12 +532,45 @@ def build_parser() -> argparse.ArgumentParser:
         "--repo-root", type=Path, default=Path(".")
     )
     semantic_prepare.add_argument(
-        "--profile", default="a-share-announcement-v1"
+        "--profile", default="a-share-announcement-mentions-v1"
     )
     semantic_prepare.add_argument("--limit", type=int, default=50)
     semantic_prepare.add_argument(
         "--max-input-characters", type=int, default=40_000
     )
+    semantic_prepare.add_argument(
+        "--executor-mode", choices=["api", "coding_plan"], default=None
+    )
+    semantic_prepare.add_argument("--provider", default=None)
+    semantic_prepare.add_argument("--model", default=None)
+    semantic_prepare.add_argument("--client-version", default=None)
+
+    semantic_repair_prepare = sub.add_parser(
+        "intelligence-semantic-repair-prepare",
+        help="Prepare an explicit versioned semantic remediation job.",
+    )
+    semantic_repair_prepare.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    semantic_repair_prepare.add_argument(
+        "--profile", default="a-share-announcement-remediation-v1"
+    )
+    semantic_repair_prepare.add_argument(
+        "--document-id", type=int, action="append", required=True
+    )
+    semantic_repair_prepare.add_argument("--reason", required=True)
+    semantic_repair_prepare.add_argument(
+        "--max-input-characters", type=int, default=40_000
+    )
+
+    semantic_repair_rollback = sub.add_parser(
+        "intelligence-semantic-repair-rollback",
+        help="Roll back one semantic repair without deleting lineage.",
+    )
+    semantic_repair_rollback.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    semantic_repair_rollback.add_argument("--repair-id", required=True)
 
     semantic_run = sub.add_parser(
         "intelligence-semantic-run",
@@ -554,7 +608,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--repo-root", type=Path, default=Path(".")
     )
     semantic_daily.add_argument(
-        "--profile", default="a-share-announcement-v1"
+        "--profile", default="a-share-announcement-mentions-v1"
     )
     semantic_daily.add_argument("--limit", type=int, default=50)
     semantic_daily.add_argument(
@@ -727,7 +781,7 @@ def _parse_iso_date(s: str) -> date:
 
 
 def _resolve_offline_as_of(cache_dir: Path) -> str | None:
-    """Find the latest ``spot_<YYYYMMDD>.csv`` in ``cache_dir`` and return its date.
+    """Resolve the latest dated market snapshot in ``cache_dir``.
 
     Returns YYYY-MM-DD or None if no cache yet. Mirrors
     ``DataProvider._resolve_default_date`` but produces an ISO date the
@@ -738,14 +792,44 @@ def _resolve_offline_as_of(cache_dir: Path) -> str | None:
     if not cache_path.exists():
         return None
     today = date.today().strftime("%Y%m%d")
-    latest: str | None = None
-    for path in cache_path.glob("spot_*.csv"):
-        stem = path.stem  # spot_20260529
-        parts = stem.split("_")
-        if len(parts) != 2 or not parts[1].isdigit() or len(parts[1]) != 8:
+
+    snapshot_pattern = re.compile(
+        r"market_snapshot_(\d{4})-(\d{2})-(\d{2})\.json"
+    )
+    latest_snapshot: str | None = None
+    for path in cache_path.parent.glob("market_snapshot_*.json"):
+        match = snapshot_pattern.fullmatch(path.name)
+        if not match:
             continue
-        if parts[1] <= today and (latest is None or parts[1] > latest):
-            latest = parts[1]
+        snapshot_date = "".join(match.groups())
+        if snapshot_date <= today and (
+            latest_snapshot is None or snapshot_date > latest_snapshot
+        ):
+            latest_snapshot = snapshot_date
+    if latest_snapshot:
+        return (
+            f"{latest_snapshot[:4]}-{latest_snapshot[4:6]}-"
+            f"{latest_snapshot[6:]}"
+        )
+
+    latest: str | None = None
+    dated_patterns = (
+        ("spot_*.csv", re.compile(r"spot_(\d{8})\.csv")),
+        (
+            "fund_daily_*.csv",
+            re.compile(r"fund_daily_\d{6}_[A-Z]+_(\d{8})\.csv"),
+        ),
+    )
+    for glob_pattern, filename_pattern in dated_patterns:
+        for path in cache_path.glob(glob_pattern):
+            match = filename_pattern.fullmatch(path.name)
+            if not match:
+                continue
+            snapshot_date = match.group(1)
+            if snapshot_date <= today and (
+                latest is None or snapshot_date > latest
+            ):
+                latest = snapshot_date
     if not latest:
         return None
     return f"{latest[:4]}-{latest[4:6]}-{latest[6:]}"
@@ -971,6 +1055,8 @@ def main(argv: list[str] | None = None) -> int:
         return _command_intelligence_model_effect(args)
     if args.command in {
         "intelligence-semantic-prepare",
+        "intelligence-semantic-repair-prepare",
+        "intelligence-semantic-repair-rollback",
         "intelligence-semantic-run",
         "intelligence-semantic-import",
         "intelligence-semantic-job-status",
@@ -1177,7 +1263,7 @@ def _command_research_workflow(args: argparse.Namespace) -> int:
         print(f"error: {args.command} failed: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0 if result.get("status") not in {"failed"} else 2
+    return 0 if result.get("status") not in {"failed", "fallback"} else 2
 
 
 def _command_run_model_iteration(args: argparse.Namespace) -> int:
@@ -1297,18 +1383,47 @@ def _command_intelligence_exchange(args: argparse.Namespace) -> int:
         import_job,
         job_status,
         prepare_job,
+        prepare_repair_job,
+        rollback_repair,
         run_daily,
         run_job,
     )
 
     try:
         if args.command == "intelligence-semantic-prepare":
-            result = prepare_job(
+            prepare_kwargs = {
+                "profile_id": args.profile,
+                "limit": args.limit,
+                "max_input_characters": args.max_input_characters,
+            }
+            if any(
+                value is not None
+                for value in (
+                    args.executor_mode,
+                    args.provider,
+                    args.model,
+                    args.client_version,
+                )
+            ):
+                prepare_kwargs.update(
+                    {
+                        "executor_mode": args.executor_mode,
+                        "executor_provider": args.provider,
+                        "executor_model": args.model,
+                        "executor_client_version": args.client_version,
+                    }
+                )
+            result = prepare_job(args.repo_root, **prepare_kwargs)
+        elif args.command == "intelligence-semantic-repair-prepare":
+            result = prepare_repair_job(
                 args.repo_root,
+                document_ids=args.document_id,
+                reason=args.reason,
                 profile_id=args.profile,
-                limit=args.limit,
                 max_input_characters=args.max_input_characters,
             )
+        elif args.command == "intelligence-semantic-repair-rollback":
+            result = rollback_repair(args.repo_root, args.repair_id)
         elif args.command == "intelligence-semantic-run":
             result = run_job(
                 args.repo_root,
@@ -2234,6 +2349,9 @@ def _command_notify_workflow_summary(args: argparse.Namespace) -> int:
         target=args.target,
         force=args.force,
         preview=args.preview,
+        require_complete=args.require_complete,
+        wait_seconds=args.wait_seconds,
+        poll_seconds=args.poll_seconds,
     )
 
 
@@ -2294,6 +2412,33 @@ def _resolve_dashboard_route(path: str, directory: Path) -> str | None:
             _, pro, market, agent = parts
             if pro == "pro" and market in competition.MARKETS and agent:
                 target = f"/{market}/{agent}/dashboard.html"
+    if target is None:
+        parts = path.split("/")
+        if (
+            len(parts) == 5
+            and parts[1] == "strategy-reports"
+            and parts[2] in competition.MARKETS
+            and parts[4] == "weekly_report.md"
+        ):
+            market = parts[2]
+            strategy_key = parts[3]
+            agent = next(
+                (
+                    slot
+                    for slot, public_key in PUBLIC_STRATEGY_KEYS.items()
+                    if public_key == strategy_key
+                ),
+                None,
+            )
+            if agent is not None:
+                target = f"/{market}/{agent}/weekly_report.md"
+                if (
+                    not (directory / target.lstrip("/")).exists()
+                    and market == "a_share"
+                ):
+                    legacy_target = f"/{agent}/weekly_report.md"
+                    if (directory / legacy_target.lstrip("/")).exists():
+                        target = legacy_target
     if target is None:
         return None
     candidate = directory / target.lstrip("/")

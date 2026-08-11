@@ -1,0 +1,27 @@
+[Unit]
+Description=Stock Analyze daily announcement enrichment reconcile
+After=network-online.target
+Wants=network-online.target
+OnFailure=stock-analyze-pipeline-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+EnvironmentFile=-/etc/stock-analyze/secrets.env
+Environment=MALLOC_ARENA_MAX=2
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+ExecStart=/usr/bin/flock --wait 2700 --conflict-exit-code 75 /run/stock-analyze-intelligence-reconcile.lock /opt/stock-analyze/venv/bin/python -m stock_analyze.cli intelligence-reconcile --repo-root /opt/stock-analyze/app --lookback-days 2 --limit 100 --stages metadata enqueue download
+ExecStartPost=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli intelligence-semantic-status --repo-root /opt/stock-analyze/app
+SuccessExitStatus=75
+TimeoutStartSec=3h
+Nice=10
+CPUWeight=25
+IOWeight=25
+MemoryAccounting=true
+MemoryHigh=1G
+MemoryMax=1250M
+MemorySwapMax=512M
+StandardOutput=append:/opt/stock-analyze/logs/intelligence-reconcile.log
+StandardError=append:/opt/stock-analyze/logs/intelligence-reconcile.err

@@ -1,0 +1,26 @@
+[Unit]
+Description=Stock Analyze low-frequency full intelligence quality report
+After=network-online.target
+Wants=network-online.target
+OnFailure=stock-analyze-pipeline-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+EnvironmentFile=-/etc/stock-analyze/secrets.env
+Environment=MALLOC_ARENA_MAX=2
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+ExecStart=/usr/bin/flock --wait 1500 --conflict-exit-code 75 /run/stock-analyze-intelligence-reconcile.lock /opt/stock-analyze/venv/bin/python -m stock_analyze.cli intelligence-status --repo-root /opt/stock-analyze/app
+SuccessExitStatus=75
+TimeoutStartSec=2h
+Nice=15
+CPUWeight=20
+IOWeight=20
+MemoryAccounting=true
+MemoryHigh=1G
+MemoryMax=1250M
+MemorySwapMax=512M
+StandardOutput=append:/opt/stock-analyze/logs/intelligence-quality.log
+StandardError=append:/opt/stock-analyze/logs/intelligence-quality.err

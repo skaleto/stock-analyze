@@ -1,0 +1,27 @@
+[Unit]
+Description=Stock Analyze point-in-time market intelligence refresh
+After=network-online.target
+Wants=network-online.target
+OnFailure=stock-analyze-pipeline-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+EnvironmentFile=-/etc/stock-analyze/secrets.env
+Environment=MALLOC_ARENA_MAX=2
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+ExecStart=/usr/bin/flock --wait 600 --conflict-exit-code 75 /run/stock-analyze-intelligence-reconcile.lock /usr/bin/flock --nonblock --conflict-exit-code 75 /run/stock-analyze-intelligence.lock /bin/bash -lc 'set +e; /opt/stock-analyze/venv/bin/python -m stock_analyze.cli intelligence-ingest --repo-root /opt/stock-analyze/app; ingest_rc=$?; /opt/stock-analyze/venv/bin/python -m stock_analyze.cli intelligence-extract --repo-root /opt/stock-analyze/app --limit 1000; extract_rc=$?; test "$ingest_rc" -eq 0 -a "$extract_rc" -eq 0'
+ExecStartPost=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli intelligence-semantic-status --repo-root /opt/stock-analyze/app
+SuccessExitStatus=75
+TimeoutStartSec=25min
+Nice=10
+CPUWeight=25
+IOWeight=25
+MemoryAccounting=true
+MemoryHigh=1G
+MemoryMax=1250M
+MemorySwapMax=512M
+StandardOutput=append:/opt/stock-analyze/logs/intelligence.log
+StandardError=append:/opt/stock-analyze/logs/intelligence.err
