@@ -1,10 +1,15 @@
 import unittest
 
-import torch
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
 
-from stock_analyze.research.deep.temporal_model import TemporalContextNet
+if torch is not None:
+    from stock_analyze.research.deep.temporal_model import TemporalContextNet
 
 
+@unittest.skipIf(torch is None, "optional deep-learning dependencies not installed")
 class TemporalModelTest(unittest.TestCase):
     def test_multi_horizon_forward_and_backward(self):
         model = TemporalContextNet(

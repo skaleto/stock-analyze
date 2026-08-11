@@ -16,6 +16,7 @@
 - [系统 Harness](docs/system-harness.md)：开发、运行、部署、验收和故障处理。
 - [竞赛运行手册](docs/competition-runbook.md)：双策略规则、周度复盘和月度演化。
 - [数据源增强策略](docs/data-source-enrichment-strategy.md)：Tushare、Choice、iFinD、富途等接入边界。
+- [项目维护策略](docs/project-maintenance.md)：当前文档入口、数据保留和定期清理规则。
 
 ## 快速检查
 

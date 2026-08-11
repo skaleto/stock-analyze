@@ -2,17 +2,22 @@ import unittest
 
 import numpy as np
 
-from stock_analyze.research.deep.model import (
-    DualHeadTabularNet,
-    combined_objective,
-    deterministic_pairwise_rank_loss,
-)
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
+
+if torch is not None:
+    from stock_analyze.research.deep.model import (
+        DualHeadTabularNet,
+        combined_objective,
+        deterministic_pairwise_rank_loss,
+    )
 
 
+@unittest.skipIf(torch is None, "optional deep-learning dependencies not installed")
 class DeepModelTest(unittest.TestCase):
     def test_dual_head_shapes_and_backward(self):
-        import torch
-
         model = DualHeadTabularNet(input_dim=12, hidden_dim=32, bottleneck_dim=16, dropout=0.0)
         features = torch.randn(24, 12)
         labels = torch.tensor([0, 1, 2] * 8)
@@ -37,8 +42,6 @@ class DeepModelTest(unittest.TestCase):
         self.assertTrue(any(parameter.grad is not None for parameter in model.parameters()))
 
     def test_pairwise_loss_rewards_correct_cross_sectional_order(self):
-        import torch
-
         target = torch.tensor([-0.03, -0.01, 0.01, 0.04, -0.02, 0.00, 0.02, 0.05])
         date_groups = torch.tensor([0, 0, 0, 0, 1, 1, 1, 1])
         correct = target * 100.0

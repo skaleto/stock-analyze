@@ -14,7 +14,6 @@ jobs and Claude CLI orchestration are retired.
 | Refresh/publish data artifacts only | `./scripts/sync-to-ecs.sh` |
 | Preview latest weekly status | `./scripts/weekly.sh` |
 | Preview previous-month status | `./scripts/monthly.sh` |
-| Run one bounded local announcement artifact job | `./scripts/run-local-intelligence-artifact-worker.sh --once` |
 | Warm Dashboard global and strategy first-screen caches | `python3 scripts/warm-dashboard-cache.py` |
 | Run checksummed classical-model training on this Mac | `./scripts/run-local-classical-tournament.sh a_share YYYY-MM-DD` |
 
@@ -98,9 +97,6 @@ market/strategy pipelines.
 or pass `--remote` after setting `SA_ECS_REMOTE` and `SA_ECS_SSH_OPTS` to add
 ECS timer, ledger, Dashboard API, and intelligence checks.
 
-Historical announcement PDF download and deterministic parse/OCR can be
-offloaded to a local macOS worker without copying SQLite or cloud credentials.
-Use `docs/superpowers/plans/2026-07-30-local-artifact-worker-harness.md` as the
-canonical handoff contract; do not enable its optional LaunchAgent before the
-download and parse canaries both pass. The executor must be trusted; hashes
-detect corruption and version drift, not deliberate result forgery.
+Historical announcement PDF download and deterministic parse/OCR run on ECS
+against the same-region private OSS bucket. The retired macOS LaunchAgent path
+is no longer part of normal operation.

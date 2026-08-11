@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -302,7 +303,11 @@ class PrepareMarketDataTests(unittest.TestCase):
             fake = FakeProvider(cache_dir=cache_dir)
             self._patch_provider(fake)
 
-            snapshot = prepare_market_data(as_of="2026-05-22", repo_root=root, max_workers=1)
+            snapshot = prepare_market_data(
+                as_of="2026-05-22",
+                repo_root=root,
+                max_workers=1,
+            )
 
             self.assertEqual(snapshot["status"], "success")
             self.assertEqual(snapshot["as_of"], "2026-05-22")
@@ -323,7 +328,18 @@ class PrepareMarketDataTests(unittest.TestCase):
             fake = FakeProvider(cache_dir=cache_dir, failures={"spot"})
             self._patch_provider(fake)
 
-            snapshot = prepare_market_data(as_of="2026-05-22", repo_root=root, max_workers=1)
+            with patch(
+                "stock_analyze.markets.a_share.market_data._acquire_spot_with_retry",
+                side_effect=lambda provider: _acquire_spot_with_retry(
+                    provider,
+                    sleep_s=0,
+                ),
+            ):
+                snapshot = prepare_market_data(
+                    as_of="2026-05-22",
+                    repo_root=root,
+                    max_workers=1,
+                )
 
         self.assertEqual(snapshot["status"], "failed")
         self.assertIn("spot", snapshot["fetch_summary"]["fatal"])
