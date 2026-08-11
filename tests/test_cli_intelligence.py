@@ -39,6 +39,72 @@ class FakeAdapter:
 
 
 class IntelligenceCliTest(unittest.TestCase):
+    def test_semantic_quality_evaluate_is_read_only(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "stock_analyze.intelligence.semantic.quality.evaluate_files",
+                return_value={
+                    "schema_version": 1,
+                    "documents": 80,
+                    "event_precision": {"value": 0.9},
+                },
+            ) as evaluate,
+            redirect_stdout(output),
+        ):
+            exit_code = main([
+                "intelligence-semantic-quality-evaluate",
+                "--reference", "/tmp/reference.jsonl",
+                "--predictions", "/tmp/predictions.jsonl",
+                "--output", "/tmp/quality.json",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        evaluate.assert_called_once_with(
+            Path("/tmp/reference.jsonl"),
+            Path("/tmp/predictions.jsonl"),
+            Path("/tmp/quality.json"),
+        )
+        self.assertEqual(json.loads(output.getvalue())["documents"], 80)
+
+    def test_semantic_frozen_run_is_explicitly_non_production(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "stock_analyze.intelligence.semantic.benchmark_runner."
+                "run_frozen_benchmark",
+                return_value={
+                    "status": "complete",
+                    "documents": 2,
+                    "production_import": False,
+                },
+            ) as run,
+            redirect_stdout(output),
+        ):
+            exit_code = main([
+                "intelligence-semantic-frozen-run",
+                "--repo-root", "/tmp/repo",
+                "--workbench", "/tmp/workbench",
+                "--profile", "a-share-announcement-mentions-v24",
+                "--predictions", "/tmp/predictions.jsonl",
+                "--report", "/tmp/run.json",
+                "--executor-config", "/tmp/executor.yaml",
+                "--limit", "2",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        run.assert_called_once_with(
+            Path("/tmp/repo"),
+            Path("/tmp/workbench"),
+            profile_id="a-share-announcement-mentions-v24",
+            predictions_path=Path("/tmp/predictions.jsonl"),
+            report_path=Path("/tmp/run.json"),
+            executor_config=Path("/tmp/executor.yaml"),
+            limit=2,
+            document_ids=None,
+        )
+        self.assertFalse(json.loads(output.getvalue())["production_import"])
+
     def test_semantic_repair_commands_are_explicit_and_auditable(self) -> None:
         output = io.StringIO()
         with (

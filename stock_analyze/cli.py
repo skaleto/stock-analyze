@@ -792,6 +792,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     semantic_daily.add_argument("--executor-config", default=None)
 
+    semantic_quality = sub.add_parser(
+        "intelligence-semantic-quality-evaluate",
+        help="Evaluate frozen semantic predictions without production side effects.",
+    )
+    semantic_quality.add_argument("--reference", type=Path, required=True)
+    semantic_quality.add_argument("--predictions", type=Path, required=True)
+    semantic_quality.add_argument("--output", type=Path, required=True)
+
+    semantic_frozen = sub.add_parser(
+        "intelligence-semantic-frozen-run",
+        help="Run a frozen semantic workbench without production imports.",
+    )
+    semantic_frozen.add_argument("--repo-root", type=Path, default=Path("."))
+    semantic_frozen.add_argument("--workbench", type=Path, required=True)
+    semantic_frozen.add_argument(
+        "--profile", default="a-share-announcement-mentions-v24"
+    )
+    semantic_frozen.add_argument("--predictions", type=Path, required=True)
+    semantic_frozen.add_argument("--report", type=Path, required=True)
+    semantic_frozen.add_argument("--executor-config", type=Path, required=True)
+    semantic_frozen.add_argument("--limit", type=int, default=None)
+    semantic_frozen.add_argument("--document-id", type=int, action="append")
+
     artifact_job_export = sub.add_parser(
         "intelligence-artifact-job-export",
         help="Lease and export a bounded historical artifact worker job.",
@@ -1262,6 +1285,12 @@ def main(argv: list[str] | None = None) -> int:
     }:
         ensure_dirs(args.logs_dir)
         return _command_intelligence_exchange(args)
+    if args.command == "intelligence-semantic-quality-evaluate":
+        ensure_dirs(args.logs_dir)
+        return _command_intelligence_semantic_quality(args)
+    if args.command == "intelligence-semantic-frozen-run":
+        ensure_dirs(args.logs_dir)
+        return _command_intelligence_semantic_frozen(args)
     if args.command in {
         "intelligence-artifact-job-export",
         "intelligence-artifact-job-run",
@@ -1823,6 +1852,55 @@ def _command_intelligence_exchange(args: argparse.Namespace) -> int:
     if status in {"partial", "awaiting_executor", "ready_to_import"}:
         return 3
     return 0
+
+
+def _command_intelligence_semantic_quality(args: argparse.Namespace) -> int:
+    from .intelligence.semantic.quality import evaluate_files
+
+    try:
+        result = evaluate_files(
+            args.reference,
+            args.predictions,
+            args.output,
+        )
+    except (OSError, ValueError) as exc:
+        print(
+            json.dumps(
+                {"status": "failed", "error": str(exc)},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 2
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def _command_intelligence_semantic_frozen(args: argparse.Namespace) -> int:
+    from .intelligence.semantic.benchmark_runner import run_frozen_benchmark
+
+    try:
+        result = run_frozen_benchmark(
+            args.repo_root,
+            args.workbench,
+            profile_id=args.profile,
+            predictions_path=args.predictions,
+            report_path=args.report,
+            executor_config=args.executor_config,
+            limit=args.limit,
+            document_ids=args.document_id,
+        )
+    except (OSError, ValueError) as exc:
+        print(
+            json.dumps(
+                {"status": "failed", "error": str(exc)},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 2
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0 if result.get("status") == "complete" else 3
 
 
 def _command_intelligence_artifact_exchange(

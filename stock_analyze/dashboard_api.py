@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from . import competition
 from . import dashboard_aggregator as agg
 from .dashboard_finance import build_activity, build_strategy_profile, enrich_rows
@@ -310,15 +312,31 @@ def _public_intelligence_error(value: object) -> str:
 
 
 def _semantic_extraction_contract(root: Path) -> dict[str, Any]:
-    profile = _read_json_file(
-        root
-        / "configs"
-        / "intelligence_extraction_profiles"
-        / "a_share_announcement_v1.json"
-    )
+    profile_id = "a-share-announcement-v1"
+    try:
+        semantic_config = yaml.safe_load(
+            (root / "configs" / "intelligence_semantic.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, UnicodeError, yaml.YAMLError):
+        semantic_config = None
+    if isinstance(semantic_config, dict):
+        profile_id = str(
+            semantic_config.get("production_extraction_profile")
+            or profile_id
+        )
+
+    profile: dict[str, Any] = {}
+    profile_root = root / "configs" / "intelligence_extraction_profiles"
+    for path in sorted(profile_root.glob("*.json")):
+        candidate = _read_json_file(path)
+        if str(candidate.get("profile_id") or "") == profile_id:
+            profile = candidate
+            break
     return {
         "profileId": str(
-            profile.get("profile_id") or "a-share-announcement-v1"
+            profile.get("profile_id") or profile_id
         ),
         "promptVersion": profile.get("prompt_version"),
         "schemaVersion": profile.get("schema_version"),

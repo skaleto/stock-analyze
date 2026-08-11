@@ -6,17 +6,26 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pandas as pd
+
+import stock_analyze.intelligence.semantic.exchange as semantic_exchange
 
 from stock_analyze.intelligence.semantic.exchange import (
     SemanticExchangeError,
     _grounding_repair_bundle,
+    _context_repair_can_be_no_event,
+    _context_events_missing_current_transition,
     _prune_ungrounded_optional_facts,
     _bound_payload,
     _bound_v21_payload,
     _no_event_review_signal,
     _mention_templates,
+    _missing_routed_event_types,
+    _requires_no_event_review,
+    _revision_rejection_can_be_no_event,
+    _packet_visible_evidence_ids,
     _render_daily_markdown,
     _taxonomy_requirements,
     import_job,
@@ -302,6 +311,130 @@ class MentionProvider:
         )
 
 
+class IncrementalFamilyMentionProvider(MentionProvider):
+    def extract(self, bundle, *, response_schema):
+        if not bundle.payload.get("repair_context"):
+            return super().extract(bundle, response_schema=response_schema)
+        self.calls.append((bundle, response_schema))
+        chunk = next(
+            item
+            for item in bundle.payload["chunks"]
+            if "股东增持100万股" in str(item.get("text") or "")
+        )
+        result = {
+            "document_id": bundle.document_id,
+            "schema_version": "announcement-mentions-v1-lite",
+            "mentions": [{
+                "mention_id": "shareholder-change-1",
+                "event_type": "shareholder_change",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "平安银行",
+                    "evidence": [{
+                        "chunk_id": chunk["chunk_id"],
+                        "quote": "平安银行",
+                    }],
+                }],
+                "facts": [{
+                    "name": "action",
+                    "raw_value": "增持",
+                    "evidence": [{
+                        "chunk_id": chunk["chunk_id"],
+                        "quote": "增持",
+                    }],
+                }, {
+                    "name": "share_count",
+                    "raw_value": "100万股",
+                    "evidence": [{
+                        "chunk_id": chunk["chunk_id"],
+                        "quote": "100万股",
+                    }],
+                }],
+                "dates": [],
+                "status": None,
+            }],
+            "no_event_reason": None,
+        }
+        raw = json.dumps(result, ensure_ascii=False)
+        return SemanticProviderResponse(
+            identity=self.identity,
+            parsed_output=result,
+            raw_output=raw,
+            input_hash=bundle.artifact_hash,
+            output_hash=hashlib.sha256(raw.encode()).hexdigest(),
+            request_id="request-mention-family-repair",
+            response_model=self.identity.model,
+            input_tokens=60,
+            output_tokens=40,
+            total_tokens=100,
+            latency_ms=4,
+        )
+
+
+class SegmentMentionProvider(MentionProvider):
+    def extract(self, bundle, *, response_schema):
+        del response_schema
+        self.calls.append((bundle, None))
+        event_chunk = next(
+            item
+            for item in bundle.payload["chunks"]
+            if "回购金额上限为1亿元" in str(item.get("text") or "")
+        )
+        issuer_chunk = next(
+            item
+            for item in bundle.payload["chunks"]
+            if str(item.get("section") or "") == "document_metadata"
+            and str(item.get("chunk_id") or "").endswith("-meta-issuer")
+        )
+        result = {
+            "document_id": bundle.document_id,
+            "schema_version": "announcement-mentions-v1-lite",
+            "mentions": [{
+                "mention_id": "buyback-segment-1",
+                "event_type": "buyback",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "平安银行",
+                    "evidence": [{
+                        "chunk_id": issuer_chunk["chunk_id"],
+                        "quote": "平安银行",
+                    }],
+                }],
+                "facts": [{
+                    "name": "amount_upper",
+                    "raw_value": "1亿元",
+                    "evidence": [{
+                        "chunk_id": event_chunk["chunk_id"],
+                        "quote": "1亿元",
+                    }],
+                }],
+                "dates": [],
+                "status": {
+                    "raw_value": "审议通过",
+                    "evidence": [{
+                        "chunk_id": event_chunk["chunk_id"],
+                        "quote": "审议通过",
+                    }],
+                },
+            }],
+            "no_event_reason": None,
+        }
+        raw = json.dumps(result, ensure_ascii=False)
+        return SemanticProviderResponse(
+            identity=self.identity,
+            parsed_output=result,
+            raw_output=raw,
+            input_hash=bundle.artifact_hash,
+            output_hash=hashlib.sha256(raw.encode()).hexdigest(),
+            request_id="request-segment-1",
+            response_model=self.identity.model,
+            input_tokens=80,
+            output_tokens=40,
+            total_tokens=120,
+            latency_ms=5,
+        )
+
+
 class WholeEventRetryMentionProvider(MentionProvider):
     def extract(self, bundle, *, response_schema):
         if not self.calls:
@@ -429,7 +562,48 @@ class OptionalDropMentionProvider(MentionProvider):
         )
 
 
+class MixedValidityMentionProvider(MentionProvider):
+    def extract(self, bundle, *, response_schema):
+        response = super().extract(bundle, response_schema=response_schema)
+        result = json.loads(json.dumps(response.parsed_output, ensure_ascii=False))
+        invalid = json.loads(json.dumps(result["mentions"][0], ensure_ascii=False))
+        invalid["mention_id"] = "capacity-not-routed"
+        invalid["event_type"] = "capacity_project"
+        result["mentions"].append(invalid)
+        raw = json.dumps(result, ensure_ascii=False)
+        return SemanticProviderResponse(
+            identity=response.identity,
+            parsed_output=result,
+            raw_output=raw,
+            input_hash=response.input_hash,
+            output_hash=hashlib.sha256(raw.encode()).hexdigest(),
+            request_id=response.request_id,
+            response_model=response.response_model,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            total_tokens=response.total_tokens,
+            latency_ms=response.latency_ms,
+        )
+
+
 class SemanticExchangeTest(unittest.TestCase):
+    def test_packet_ir_nodes_are_visible_but_full_ir_only_nodes_are_not(self) -> None:
+        packet_ir = {
+            "nodes": [
+                {"node_id": "packet-table-r1-c1", "node_type": "table_cell"},
+            ]
+        }
+
+        visible = _packet_visible_evidence_ids({
+            "chunks": [{"chunk_id": "packet-text"}],
+            "document_ir": packet_ir,
+        })
+
+        self.assertEqual(
+            visible,
+            frozenset({"packet-text", "packet-table-r1-c1"}),
+        )
+
     def test_v10_dividend_dedupe_does_not_require_future_record_date(self) -> None:
         taxonomy = EventTaxonomy.load(
             ROOT / "configs" / "intelligence_event_taxonomy_v10.json"
@@ -754,6 +928,151 @@ class SemanticExchangeTest(unittest.TestCase):
             "dividend",
         )
 
+    def test_no_event_review_gate_applies_only_to_primary_event_documents(self) -> None:
+        self.assertTrue(
+            _requires_no_event_review({
+                "route_context": {
+                    "document_kind": "event_announcement",
+                    "extraction_purpose": "canonical_event",
+                }
+            })
+        )
+        self.assertFalse(
+            _requires_no_event_review({
+                "route_context": {
+                    "document_kind": "legal_opinion",
+                    "extraction_purpose": "canonical_event",
+                }
+            })
+        )
+        self.assertTrue(
+            _requires_no_event_review({
+                "route_context": {
+                    "document_kind": "legal_opinion",
+                    "extraction_purpose": "canonical_event",
+                    "reason_codes": ["title_taxonomy_match", "legal_current_event"],
+                }
+            })
+        )
+        self.assertFalse(
+            _requires_no_event_review({
+                "route_context": {
+                    "document_kind": "supplemental_report",
+                    "extraction_purpose": "none",
+                }
+            })
+        )
+        self.assertFalse(
+            _requires_no_event_review({
+                "route_context": {
+                    "document_kind": "event_announcement",
+                    "extraction_purpose": "canonical_event",
+                },
+                "repair_context": {
+                    "validation_error": {
+                        "code": "semantic_mentions_all_rejected",
+                        "detail": "m1:mention_revision_no_changed_fact",
+                    }
+                },
+            })
+        )
+        self.assertFalse(
+            _requires_no_event_review({
+                "route_context": {
+                    "document_kind": "legal_opinion",
+                    "extraction_purpose": "canonical_event",
+                    "reason_codes": ["title_taxonomy_match", "legal_current_event"],
+                },
+                "repair_context": {
+                    "validation_error": {
+                        "code": "no_event_review_required",
+                        "detail": "buyback",
+                    }
+                },
+            })
+        )
+        self.assertTrue(_requires_no_event_review({}))
+
+    def test_only_unchanged_revision_rejections_can_become_no_event(self) -> None:
+        self.assertTrue(
+            _revision_rejection_can_be_no_event(
+                SemanticContractError(
+                    "semantic_mentions_all_rejected",
+                    detail="m1:mention_revision_no_changed_fact",
+                )
+            )
+        )
+        self.assertFalse(
+            _revision_rejection_can_be_no_event(
+                SemanticContractError(
+                    "semantic_mentions_all_rejected",
+                    detail="m1:mention_revision_no_changed_fact,table_semantic_label_mismatch",
+                )
+            )
+        )
+
+    def test_nonexplicit_context_repair_can_fail_closed_to_no_event(self) -> None:
+        bundle = SemanticInputBundle(
+            document_id=73165,
+            artifact_hash="a" * 64,
+            parser_version="anchor-workbench-v1",
+            prompt_version="semantic-mentions-v17",
+            schema_version="announcement-mentions-v1-lite",
+            taxonomy_version="cn-announcement-taxonomy-v12",
+            payload={
+                "route_context": {
+                    "document_kind": "legal_opinion",
+                    "extraction_purpose": "canonical_event",
+                    "reason_codes": ["title_taxonomy_match"],
+                }
+            },
+            input_token_estimate=100,
+        )
+        explicit_bundle = SemanticInputBundle(
+            document_id=bundle.document_id,
+            artifact_hash=bundle.artifact_hash,
+            parser_version=bundle.parser_version,
+            prompt_version=bundle.prompt_version,
+            schema_version=bundle.schema_version,
+            taxonomy_version=bundle.taxonomy_version,
+            payload={
+                "route_context": {
+                    "document_kind": "legal_opinion",
+                    "extraction_purpose": "canonical_event",
+                    "reason_codes": ["title_taxonomy_match", "legal_current_event"],
+                }
+            },
+            input_token_estimate=100,
+        )
+        context_error = SemanticContractError(
+            "semantic_context_current_transition_missing",
+            detail="dividend",
+        )
+        rejected_error = SemanticContractError(
+            "semantic_mentions_all_rejected",
+            detail="m1:mention_candidate_required_fact_missing",
+        )
+
+        self.assertTrue(_context_repair_can_be_no_event(context_error, bundle))
+        self.assertTrue(_context_repair_can_be_no_event(rejected_error, bundle))
+        self.assertFalse(
+            _context_repair_can_be_no_event(context_error, explicit_bundle)
+        )
+        self.assertFalse(
+            _context_repair_can_be_no_event(
+                SemanticContractError("semantic_evidence_quote_missing"),
+                bundle,
+            )
+        )
+        self.assertFalse(
+            _revision_rejection_can_be_no_event(
+                SemanticContractError(
+                    "semantic_context_current_transition_missing",
+                    detail="shareholder_change",
+                )
+            )
+        )
+
     def test_daily_markdown_counts_current_and_resumed_imports(self) -> None:
         markdown = _render_daily_markdown(
             {
@@ -1008,6 +1327,10 @@ class SemanticExchangeTest(unittest.TestCase):
             self.root / "configs" / "intelligence_event_taxonomy_v9.json",
         )
         shutil.copy(
+            ROOT / "configs" / "intelligence_event_taxonomy_v11.json",
+            self.root / "configs" / "intelligence_event_taxonomy_v11.json",
+        )
+        shutil.copy(
             ROOT
             / "configs"
             / "intelligence_extraction_profiles"
@@ -1030,6 +1353,68 @@ class SemanticExchangeTest(unittest.TestCase):
             / "semantic_mentions_v16.md",
             prompt_dir / "semantic_mentions_v16.md",
         )
+        shutil.copy(
+            ROOT
+            / "configs"
+            / "intelligence_extraction_profiles"
+            / "a_share_announcement_mentions_v24.json",
+            profile_dir / "a_share_announcement_mentions_v24.json",
+        )
+        shutil.copy(
+            ROOT
+            / "stock_analyze"
+            / "intelligence"
+            / "semantic"
+            / "prompts"
+            / "semantic_mentions_v17.md",
+            prompt_dir / "semantic_mentions_v17.md",
+        )
+
+    def test_profile_controls_routing_audit_sampling(self) -> None:
+        with self.store.connect() as connection:
+            connection.execute(
+                "UPDATE documents SET title='其他公告' WHERE id=?",
+                (self.a_share_id,),
+            )
+        profile_path = (
+            self.root
+            / "configs"
+            / "intelligence_extraction_profiles"
+            / "a_share_announcement_mentions_v24.json"
+        )
+        base = json.loads(profile_path.read_text(encoding="utf-8"))
+        for profile_id, rate in (("test-audit-off", 0), ("test-audit-on", 1)):
+            payload = {**base, "profile_id": profile_id, "audit_sample_rate": rate}
+            (profile_path.parent / f"{profile_id}.json").write_text(
+                json.dumps(payload, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+        off = prepare_job(
+            self.root,
+            profile_id="test-audit-off",
+            limit=1,
+            executor_mode="api",
+            executor_provider="openai-compatible",
+            executor_model="deepseek-v4-pro",
+            executor_client_version="semantic-provider-audit-off",
+        )
+        on = prepare_job(
+            self.root,
+            profile_id="test-audit-on",
+            limit=1,
+            executor_mode="api",
+            executor_provider="openai-compatible",
+            executor_model="deepseek-v4-pro",
+            executor_client_version="semantic-provider-audit-on",
+        )
+
+        self.assertEqual(off["documents"], 0)
+        self.assertEqual(on["documents"], 1)
+        manifest = json.loads(
+            (Path(on["job_dir"]) / "job.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["items"][0]["route"], "audit_extraction")
 
     def test_v21_freezes_ir_evidence_and_executor_lineage(self) -> None:
         first = prepare_job(
@@ -1248,7 +1633,7 @@ class SemanticExchangeTest(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(final_state, "accepted")
 
-    def test_v21_resume_skips_terminal_validation_quarantine(self) -> None:
+    def test_v21_resume_reuses_bounded_reviewed_no_event(self) -> None:
         prepared = prepare_job(
             self.root,
             profile_id="a-share-announcement-mentions-v21",
@@ -1262,14 +1647,14 @@ class SemanticExchangeTest(unittest.TestCase):
         job_dir = Path(prepared["job_dir"])
         first_provider = AlwaysNoEventMentionProvider()
         first = run_job(self.root, job_dir, provider=first_provider)
-        self.assertEqual(first["status"], "partial")
+        self.assertEqual(first["status"], "complete")
         self.assertEqual(len(first_provider.calls), 2)
-        self.assertTrue((job_dir / "quarantine.jsonl").is_file())
+        self.assertFalse((job_dir / "quarantine.jsonl").exists())
 
         resumed_provider = AlwaysNoEventMentionProvider()
         resumed = run_job(self.root, job_dir, provider=resumed_provider)
 
-        self.assertEqual(resumed["status"], "partial")
+        self.assertEqual(resumed["status"], "complete")
         self.assertEqual(resumed["reused"], 1)
         self.assertEqual(resumed_provider.calls, [])
 
@@ -1295,6 +1680,31 @@ class SemanticExchangeTest(unittest.TestCase):
         self.assertEqual(report["deterministic_optional_fact_prunes"], 1)
         self.assertEqual(report["mention_compilation"]["accepted"], 1)
         self.assertEqual(report["mention_compilation"]["dropped_items"], 1)
+
+    def test_v21_keeps_valid_mentions_when_a_sibling_is_rejected(self) -> None:
+        prepared = prepare_job(
+            self.root,
+            profile_id="a-share-announcement-mentions-v21",
+            limit=1,
+            max_input_characters=24_000,
+            executor_mode="api",
+            executor_provider="openai-compatible",
+            executor_model="deepseek-v4-pro",
+            executor_client_version="semantic-provider-v1",
+        )
+
+        report = run_job(
+            self.root,
+            prepared["job_dir"],
+            provider=MixedValidityMentionProvider(),
+        )
+
+        self.assertEqual(report["status"], "complete", report)
+        self.assertEqual(report["validation_repairs"], 0)
+        self.assertEqual(report["mention_compilation"]["accepted"], 1)
+        self.assertEqual(report["mention_compilation"]["rejected"], 1)
+        imported = import_job(self.root, prepared["job_dir"])
+        self.assertEqual(imported["valid"], 1, imported)
 
     def test_v7_remediation_profile_is_repair_only(self) -> None:
         profile = json.loads(
@@ -1529,6 +1939,74 @@ class SemanticExchangeTest(unittest.TestCase):
         imported = import_job(self.root, job_dir)
         self.assertEqual(imported["valid"], 1, imported)
 
+    def test_v24_family_repair_merges_with_first_valid_mention(self) -> None:
+        with self.store.connect() as connection:
+            connection.execute(
+                "UPDATE documents SET title=? WHERE id=?",
+                (
+                    "关于回购股份暨股东增持的公告",
+                    self.a_share_id,
+                ),
+            )
+            row = connection.execute(
+                "SELECT text FROM document_chunks WHERE chunk_id=?",
+                (f"chunk-{self.a_share_id}",),
+            ).fetchone()
+            text = str(row[0]) + "股东增持100万股。"
+            connection.execute(
+                "UPDATE document_chunks SET text=?, text_hash=? WHERE chunk_id=?",
+                (
+                    text,
+                    hashlib.sha256(text.encode()).hexdigest(),
+                    f"chunk-{self.a_share_id}",
+                ),
+            )
+        provider = IncrementalFamilyMentionProvider()
+        prepared = prepare_job(
+            self.root,
+            profile_id="a-share-announcement-mentions-v24",
+            limit=1,
+            executor_mode="api",
+            executor_provider=provider.identity.provider,
+            executor_model=provider.identity.model,
+            executor_client_version=provider.identity.client_version,
+        )
+        report = run_job(
+            self.root,
+            prepared["job_dir"],
+            provider=provider,
+        )
+
+        self.assertEqual(report["failed"], 0, report)
+        self.assertEqual(report["validation_repairs"], 1)
+        output = json.loads(
+            (Path(prepared["job_dir"]) / "output.jsonl").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            {event["event_type"] for event in output["result"]["events"]},
+            {"buyback", "shareholder_change"},
+        )
+        source = json.loads(
+            (Path(prepared["job_dir"]) / "mention_output.jsonl").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            {mention["event_type"] for mention in source["result"]["mentions"]},
+            {"buyback", "shareholder_change"},
+        )
+        self.assertEqual(len(source["provider_attempts"]), 2)
+        self.assertEqual(
+            {
+                mention["event_type"]
+                for attempt in source["provider_attempts"]
+                for mention in attempt["result"]["mentions"]
+            },
+            {"buyback", "shareholder_change"},
+        )
+
     def test_failed_explicit_mention_canary_does_not_write_semantic_runs(self) -> None:
         prepared = prepare_repair_job(
             self.root,
@@ -1730,6 +2208,37 @@ class SemanticExchangeTest(unittest.TestCase):
         self.assertIn("appears more than once", instruction)
         self.assertIn("expand the quote", instruction)
 
+    def test_explicit_legal_current_repair_accepts_implementation_progress(self) -> None:
+        bundle = SemanticInputBundle(
+            document_id=72776,
+            artifact_hash="b" * 64,
+            parser_version="anchor-workbench-v1",
+            prompt_version="semantic-mentions-v17",
+            schema_version="announcement-mentions-v1-lite",
+            taxonomy_version="cn-announcement-taxonomy-v12",
+            payload={
+                "route_context": {
+                    "document_kind": "legal_opinion",
+                    "extraction_purpose": "canonical_event",
+                    "reason_codes": ["title_taxonomy_match", "legal_current_event"],
+                },
+                "chunks": [],
+            },
+            input_token_estimate=100,
+        )
+        repaired = _grounding_repair_bundle(
+            bundle,
+            previous_result={"document_id": 72776},
+            error=SemanticContractError(
+                "no_event_review_required",
+                detail="buyback",
+            ),
+        )
+
+        instruction = repaired.payload["repair_context"]["instruction"]
+        self.assertIn("explicit current-action signal", instruction)
+        self.assertIn("does not require a new program", instruction)
+
     def test_lossy_mention_repair_restates_subject_and_table_contracts(self) -> None:
         bundle = SemanticInputBundle(
             document_id=73850,
@@ -1758,6 +2267,206 @@ class SemanticExchangeTest(unittest.TestCase):
         self.assertIn("subject_roles", instruction)
         self.assertIn("fact_names", instruction)
         self.assertIn("incomplete secondary mention", instruction)
+
+    def test_revision_repair_points_executor_to_current_section(self) -> None:
+        bundle = SemanticInputBundle(
+            document_id=322230,
+            artifact_hash="c" * 64,
+            parser_version="anchor-workbench-v1",
+            prompt_version="semantic-mentions-v17",
+            schema_version="announcement-mentions-v1-lite",
+            taxonomy_version="cn-announcement-taxonomy-v11",
+            payload={"chunks": [], "document": {"name": "氯碱化工"}},
+            input_token_estimate=100,
+        )
+
+        repaired = _grounding_repair_bundle(
+            bundle,
+            previous_result={"document_id": 322230},
+            error=SemanticContractError(
+                "semantic_mentions_all_rejected",
+                detail="m1:mention_revision_uses_superseded_value",
+            ),
+        )
+        instruction = repaired.payload["repair_context"]["instruction"]
+
+        self.assertIn("原来披露", instruction)
+        self.assertIn("更正后", instruction)
+        self.assertIn("只输出更正后的值", instruction)
+
+    def test_multi_family_result_gets_one_bounded_coverage_repair(self) -> None:
+        bundle = SemanticInputBundle(
+            document_id=114674,
+            artifact_hash="d" * 64,
+            parser_version="anchor-workbench-v1",
+            prompt_version="semantic-mentions-v17",
+            schema_version="announcement-mentions-v1-lite",
+            taxonomy_version="cn-announcement-taxonomy-v11",
+            payload={
+                "taxonomy_candidates": [
+                    "earnings_forecast",
+                    "litigation_arbitration",
+                ],
+                "route_context": {
+                    "document_kind": "event_announcement",
+                    "extraction_purpose": "canonical_event",
+                },
+            },
+            input_token_estimate=100,
+        )
+        result = {
+            "events": [{"event_type": "litigation_arbitration"}],
+        }
+
+        self.assertEqual(
+            _missing_routed_event_types(result, bundle),
+            ("earnings_forecast",),
+        )
+        legal_bundle = SemanticInputBundle(
+            document_id=bundle.document_id,
+            artifact_hash=bundle.artifact_hash,
+            parser_version=bundle.parser_version,
+            prompt_version=bundle.prompt_version,
+            schema_version=bundle.schema_version,
+            taxonomy_version=bundle.taxonomy_version,
+            payload={
+                **bundle.payload,
+                "route_context": {
+                    "document_kind": "legal_opinion",
+                    "extraction_purpose": "canonical_event",
+                },
+            },
+            input_token_estimate=bundle.input_token_estimate,
+        )
+        self.assertEqual(
+            _missing_routed_event_types(result, legal_bundle),
+            ("earnings_forecast",),
+        )
+        repaired = _grounding_repair_bundle(
+            bundle,
+            previous_result={"document_id": 114674},
+            error=SemanticContractError(
+                "semantic_candidate_family_unreviewed",
+                detail="earnings_forecast",
+            ),
+        )
+        instruction = repaired.payload["repair_context"]["instruction"]
+        self.assertIn("earnings_forecast", instruction)
+        self.assertIn("Do not fabricate", instruction)
+
+    def test_context_merger_requires_current_transition_not_generic_title(self) -> None:
+        bundle = SemanticInputBundle(
+            document_id=224790,
+            artifact_hash="e" * 64,
+            parser_version="anchor-workbench-v1",
+            prompt_version="semantic-mentions-v17",
+            schema_version="announcement-mentions-v1-lite",
+            taxonomy_version="cn-announcement-taxonomy-v12",
+            payload={
+                "route_context": {
+                    "document_kind": "supplemental_report",
+                    "extraction_purpose": "canonical_event",
+                },
+            },
+            input_token_estimate=100,
+        )
+        generic = {
+            "events": [{
+                "event_type": "merger_restructuring",
+                "lifecycle": "uncertain",
+                "facts": [{"name": "transaction_type", "raw_value": "资产置换"}],
+                "effective_dates": [],
+            }],
+        }
+        revised = {
+            "events": [{
+                **generic["events"][0],
+                "lifecycle": "revised",
+            }],
+        }
+
+        self.assertEqual(
+            _context_events_missing_current_transition(generic, bundle),
+            ("merger_restructuring",),
+        )
+        self.assertEqual(
+            _context_events_missing_current_transition(revised, bundle),
+            (),
+        )
+        repaired = _grounding_repair_bundle(
+            bundle,
+            previous_result={"document_id": 224790},
+            error=SemanticContractError(
+                "semantic_context_current_transition_missing",
+                detail="merger_restructuring",
+            ),
+        )
+        instruction = repaired.payload["repair_context"]["instruction"]
+        self.assertIn("current transition", instruction)
+        self.assertIn("return no_event", instruction)
+
+    def test_context_documents_require_revision_or_explicit_current_route(self) -> None:
+        base_bundle = SemanticInputBundle(
+            document_id=73165,
+            artifact_hash="f" * 64,
+            parser_version="anchor-workbench-v1",
+            prompt_version="semantic-mentions-v17",
+            schema_version="announcement-mentions-v1-lite",
+            taxonomy_version="cn-announcement-taxonomy-v12",
+            payload={
+                "route_context": {
+                    "document_kind": "legal_opinion",
+                    "extraction_purpose": "canonical_event",
+                    "reason_codes": ["title_taxonomy_match"],
+                },
+            },
+            input_token_estimate=100,
+        )
+        repeated_dividend = {
+            "events": [{
+                "event_type": "dividend",
+                "lifecycle": "uncertain",
+                "facts": [{"name": "cash_per_share", "raw_value": "0.10元/股"}],
+                "effective_dates": [],
+            }],
+        }
+        historical_completion = {
+            "events": [{
+                "event_type": "merger_restructuring",
+                "lifecycle": "completed",
+                "facts": [{"name": "transaction_type", "raw_value": "资产置换"}],
+                "effective_dates": [],
+            }],
+        }
+        explicit_bundle = SemanticInputBundle(
+            document_id=72776,
+            artifact_hash=base_bundle.artifact_hash,
+            parser_version=base_bundle.parser_version,
+            prompt_version=base_bundle.prompt_version,
+            schema_version=base_bundle.schema_version,
+            taxonomy_version=base_bundle.taxonomy_version,
+            payload={
+                "route_context": {
+                    "document_kind": "legal_opinion",
+                    "extraction_purpose": "canonical_event",
+                    "reason_codes": ["title_taxonomy_match", "legal_current_event"],
+                },
+            },
+            input_token_estimate=100,
+        )
+
+        self.assertEqual(
+            _context_events_missing_current_transition(repeated_dividend, base_bundle),
+            ("dividend",),
+        )
+        self.assertEqual(
+            _context_events_missing_current_transition(historical_completion, base_bundle),
+            ("merger_restructuring",),
+        )
+        self.assertEqual(
+            _context_events_missing_current_transition(repeated_dividend, explicit_bundle),
+            (),
+        )
 
     def test_repair_job_is_explicit_and_carries_prior_run_provenance(self) -> None:
         prepared = prepare_job(
@@ -2649,6 +3358,58 @@ class SemanticExchangeTest(unittest.TestCase):
         self.assertEqual(result["prepared"]["documents"], 1)
         self.assertTrue(Path(result["report_path"]).is_file())
 
+    def test_daily_ir_profile_binds_the_configured_executor_before_prepare(
+        self,
+    ) -> None:
+        executor_config = self.root / "executor.yaml"
+        executor_config.write_text(
+            """executor:
+  kind: openai-compatible
+  base_url: https://api.deepseek.com
+  model: deepseek-v4-pro
+  max_output_tokens: 1024
+""",
+            encoding="utf-8",
+        )
+        fake_report = {
+            "status": "partial",
+            "completed": 0,
+            "reused": 0,
+            "failed": 0,
+            "mention_compilation": {"accepted": 0, "rejected": 0},
+        }
+
+        with mock.patch.object(
+            semantic_exchange,
+            "run_job",
+            return_value=fake_report,
+        ):
+            result = run_daily(
+                self.root,
+                profile_id="a-share-announcement-mentions-v24",
+                limit=1,
+                executor_config=executor_config,
+            )
+
+        self.assertEqual(result["quality_status"], "partial")
+
+        manifest = json.loads(
+            (
+                Path(result["prepared"]["job_dir"]) / "job.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            manifest["executor_binding"],
+            {
+                "contract_version": "semantic-execution-v1",
+                "executor_mode": "api",
+                "provider": "openai-compatible",
+                "model": "deepseek-v4-pro",
+                "client_version": "semantic-provider-v1",
+            },
+        )
+        self.assertTrue(manifest["binding_id"].startswith("seb-"))
+
     def test_valid_lite_event_persists_candidate_event_and_score(
         self,
     ) -> None:
@@ -2817,6 +3578,274 @@ class SemanticExchangeTest(unittest.TestCase):
                 "event_scores": 1,
             },
         )
+
+    def test_v24_import_materializes_segment_and_metadata_evidence(self) -> None:
+        prefix = "历史背景。" * 900
+        event_text = (
+            "平安银行董事会审议通过回购方案，"
+            "回购金额上限为1亿元。"
+        )
+        source_text = prefix + event_text
+        with self.store.connect() as connection:
+            connection.execute(
+                """
+                UPDATE document_chunks
+                SET text=?, text_hash=?
+                WHERE chunk_id=?
+                """,
+                (
+                    source_text,
+                    hashlib.sha256(source_text.encode()).hexdigest(),
+                    f"chunk-{self.a_share_id}",
+                ),
+            )
+            connection.execute(
+                "UPDATE document_security_links SET name='平安银行' WHERE document_id=?",
+                (self.a_share_id,),
+            )
+        provider = SegmentMentionProvider()
+        prepared = prepare_job(
+            self.root,
+            profile_id="a-share-announcement-mentions-v24",
+            limit=1,
+            executor_mode="api",
+            executor_provider=provider.identity.provider,
+            executor_model=provider.identity.model,
+            executor_client_version=provider.identity.client_version,
+        )
+        job_dir = Path(prepared["job_dir"])
+        manifest = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+        item = manifest["items"][0]
+        input_row = json.loads(
+            (job_dir / "input.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        )
+        payload_chunks = input_row["payload"]["chunks"]
+        event_chunk = next(
+            chunk
+            for chunk in payload_chunks
+            if "回购金额上限为1亿元" in str(chunk.get("text") or "")
+        )
+        self.assertEqual(event_chunk["section"], "semantic_segment")
+        issuer_chunk_id = f"doc{self.a_share_id}-meta-issuer"
+        run_report = run_job(self.root, job_dir, provider=provider)
+        self.assertEqual(run_report["failed"], 0, run_report)
+
+        imported = import_job(self.root, job_dir)
+
+        self.assertEqual(imported["valid"], 1, imported)
+        self.assertEqual(imported["quarantined"], 0, imported)
+        with self.store.connect() as connection:
+            sections = dict(
+                connection.execute(
+                    """
+                    SELECT chunk_id, section
+                    FROM document_chunks
+                    WHERE chunk_id IN (?, ?)
+                    """,
+                    (event_chunk["chunk_id"], issuer_chunk_id),
+                ).fetchall()
+            )
+            foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
+            evidence_ids = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT chunk_id FROM event_evidence"
+                ).fetchall()
+            }
+        self.assertEqual(sections[event_chunk["chunk_id"]], "semantic_segment")
+        self.assertEqual(sections[issuer_chunk_id], "document_metadata")
+        self.assertIn(event_chunk["chunk_id"], evidence_ids)
+        self.assertIn(issuer_chunk_id, evidence_ids)
+        self.assertEqual(foreign_keys, [])
+
+    def test_v24_import_validates_evidence_against_the_frozen_full_ir(self) -> None:
+        with self.store.connect() as connection:
+            connection.execute(
+                "UPDATE document_security_links SET name='平安银行' WHERE document_id=?",
+                (self.a_share_id,),
+            )
+            connection.executemany(
+                """
+                INSERT INTO document_chunks(
+                    chunk_id, document_id, artifact_id, sequence_no,
+                    page_number, section, bbox_json, text, text_hash,
+                    ocr_used, ocr_confidence, parser_version
+                ) VALUES(?, ?, ?, ?, ?, 'body', '[]', ?, ?, 0, NULL,
+                         'announcement-layout-v1')
+                """,
+                [
+                    (
+                        f"frozen-full-ir-{index}",
+                        self.a_share_id,
+                        f"parsed-{self.a_share_id}",
+                        index + 1,
+                        2 + index // 25,
+                        text := (
+                            f"平安银行历史背景第{index}段。" + "背景材料。" * 60
+                        ),
+                        hashlib.sha256(text.encode()).hexdigest(),
+                    )
+                    for index in range(160)
+                ],
+            )
+        prepared = prepare_job(
+            self.root,
+            profile_id="a-share-announcement-mentions-v24",
+            limit=1,
+            max_input_characters=24_000,
+            executor_mode="coding_plan",
+            executor_provider="codex",
+            executor_model="codex-test",
+            executor_client_version="semantic-provider-v1",
+        )
+        job_dir = Path(prepared["job_dir"])
+        manifest = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+        item = manifest["items"][0]
+        input_row = json.loads(
+            (job_dir / "input.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        )
+        visible_ids = {
+            str(chunk["chunk_id"])
+            for chunk in input_row["payload"]["chunks"]
+        }
+        ir_row = json.loads(
+            (job_dir / "document_ir.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        )
+        full_only = next(
+            node
+            for node in ir_row["document_ir"]["nodes"]
+            if str(node.get("node_id") or "") not in visible_ids
+            and "平安银行" in str(node.get("text") or "")
+        )
+        chunk_id = f"chunk-{self.a_share_id}"
+        result = {
+            "document_id": self.a_share_id,
+            "schema_version": "announcement-events-v1-lite",
+            "events": [{
+                "event_type": "buyback",
+                "lifecycle": "approved",
+                "subjects": [{
+                    "entity_id": "000001.SZ",
+                    "role": "issuer",
+                    "evidence_ids": ["e1"],
+                }],
+                "facts": [{
+                    "name": "amount_upper",
+                    "raw_value": "1亿元",
+                    "numeric_value": 100000000,
+                    "unit": "元",
+                    "currency": "CNY",
+                    "period": None,
+                    "evidence_ids": ["e2"],
+                }, {
+                    "name": "price_cap",
+                    "raw_value": "不超过10元/股",
+                    "numeric_value": 10,
+                    "unit": "元/股",
+                    "currency": "CNY",
+                    "period": None,
+                    "evidence_ids": ["e3"],
+                }],
+                "effective_dates": [{
+                    "kind": "approval_date",
+                    "value": "2026-07-28",
+                    "evidence_ids": ["e4"],
+                }],
+                "conditions": [],
+                "conflicts": [],
+                "missing_required_fields": [],
+            }],
+            "evidence": [{
+                "evidence_id": "e1",
+                "chunk_id": full_only["node_id"],
+                "quote": "平安银行",
+            }, {
+                "evidence_id": "e2",
+                "chunk_id": chunk_id,
+                "quote": "回购金额上限为1亿元",
+            }, {
+                "evidence_id": "e3",
+                "chunk_id": chunk_id,
+                "quote": "回购价格不超过10元/股",
+            }, {
+                "evidence_id": "e4",
+                "chunk_id": f"table-{self.a_share_id}-r0-c0",
+                "quote": "2026年7月28日",
+            }],
+            "no_event_reason": None,
+        }
+        envelope = {
+            "contract_version": "semantic-extraction-output-v1",
+            "document_id": item["document_id"],
+            "artifact_hash": item["artifact_hash"],
+            "input_hash": item["input_hash"],
+            "semantic_task_id": item["semantic_task_id"],
+            "execution_job_id": item["execution_job_id"],
+            "binding_id": item["binding_id"],
+            "executor": {
+                "kind": "coding-plan",
+                "provider": "codex",
+                "model": "codex-test",
+                "client_version": "semantic-provider-v1",
+            },
+            "usage": {},
+            "result": result,
+        }
+        (job_dir / "output.jsonl").write_text(
+            json.dumps(envelope, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        imported = import_job(self.root, job_dir)
+
+        self.assertEqual(imported["valid"], 1, imported)
+        self.assertEqual(imported["quarantined"], 0, imported)
+
+    def test_v24_run_accepts_a_large_frozen_full_ir_line(self) -> None:
+        source_text = (
+            "平安银行董事会于2026年7月28日审议通过回购方案，"
+            "回购金额上限为1亿元，回购价格不超过10元/股。"
+            + "历史背景。" * 180_000
+        )
+        with self.store.connect() as connection:
+            connection.execute(
+                """
+                UPDATE document_chunks
+                SET text=?, text_hash=?
+                WHERE chunk_id=?
+                """,
+                (
+                    source_text,
+                    hashlib.sha256(source_text.encode()).hexdigest(),
+                    f"chunk-{self.a_share_id}",
+                ),
+            )
+            connection.execute(
+                "UPDATE document_security_links SET name='平安银行' WHERE document_id=?",
+                (self.a_share_id,),
+            )
+        provider = MentionProvider()
+        prepared = prepare_job(
+            self.root,
+            profile_id="a-share-announcement-mentions-v24",
+            limit=1,
+            max_input_characters=24_000,
+            executor_mode="api",
+            executor_provider=provider.identity.provider,
+            executor_model=provider.identity.model,
+            executor_client_version=provider.identity.client_version,
+        )
+        job_dir = Path(prepared["job_dir"])
+        ir_line = (
+            job_dir / "document_ir.jsonl"
+        ).read_bytes().splitlines()[0]
+        self.assertGreater(len(ir_line), semantic_exchange.MAX_JOB_LINE_BYTES)
+
+        report = run_job(self.root, job_dir, provider=provider)
+
+        self.assertEqual(report["completed"], 1, report)
+        self.assertEqual(report["failed"], 0, report)
+        self.assertEqual(len(provider.calls), 1)
 
     def test_invalid_quote_is_terminal_and_never_becomes_event(
         self,

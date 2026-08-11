@@ -9,7 +9,10 @@ from pathlib import Path
 
 from stock_analyze.intelligence.blob_store import LocalBlobStore
 from stock_analyze.intelligence.ingestion import IntelligencePipeline
-from stock_analyze.intelligence.semantic.pipeline import SemanticPipeline
+from stock_analyze.intelligence.semantic.pipeline import (
+    SemanticPipeline,
+    _segment_evidence_chunks,
+)
 from stock_analyze.intelligence.semantic.provider import (
     SemanticProviderError,
     SemanticProviderIdentity,
@@ -107,6 +110,28 @@ class BlockingSemanticProvider(FakeSemanticProvider):
 
 
 class SemanticPipelineTest(unittest.TestCase):
+    def test_long_chunks_are_tagged_as_durable_semantic_segments(self) -> None:
+        original = "甲" * 4_100
+
+        parts = _segment_evidence_chunks([{
+            "chunk_id": "source-1",
+            "page_number": 1,
+            "section": "body",
+            "bbox": [],
+            "text": original,
+        }])
+
+        self.assertEqual(len(parts), 2)
+        self.assertEqual("".join(str(part["text"]) for part in parts), original)
+        self.assertEqual(
+            [part["section"] for part in parts],
+            ["semantic_segment", "semantic_segment"],
+        )
+        self.assertEqual(
+            [(part["source_start"], part["source_end"]) for part in parts],
+            [(0, 4_000), (4_000, 4_100)],
+        )
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -269,6 +294,18 @@ class SemanticPipelineTest(unittest.TestCase):
                 "chunks",
                 "tables",
                 "revision_context",
+                "route_context",
+            },
+        )
+        self.assertEqual(
+            bundle.payload["route_context"],
+            {
+                "document_kind": "event_announcement",
+                "extraction_purpose": "canonical_event",
+                "difficulty_tags": ["table_heavy"],
+                "reason_codes": [
+                    "title_taxonomy_match",
+                ],
             },
         )
         self.assertEqual(

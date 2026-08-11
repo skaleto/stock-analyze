@@ -589,7 +589,11 @@ def _unit_from_context(value: str) -> str | None:
     label = _UNIT_LABEL.search(value)
     if label:
         return _normalize_unit(label.group(2))
-    matches = list(_UNIT_TOKEN.finditer(value))
+    # Financial row labels frequently contain lexical uses such as ``股东``
+    # and ``股份``. Those are not share-unit declarations and must not conflict
+    # with an explicit currency unit from the column header.
+    normalized = re.sub(r"股东|股份|股本|股票|股权|每股", "", value)
+    matches = list(_UNIT_TOKEN.finditer(normalized))
     return _normalize_unit(matches[-1].group(1)) if matches else None
 
 
@@ -598,7 +602,7 @@ def _normalize_unit(value: str) -> str:
 
 
 def _looks_numeric(value: str) -> bool:
-    normalized = str(value).strip().replace(" ", "")
+    normalized = re.sub(r"\s+", "", str(value))
     if normalized.startswith("(") and normalized.endswith(")"):
         normalized = f"-{normalized[1:-1]}"
     match = _UNIT_TOKEN.search(normalized)
