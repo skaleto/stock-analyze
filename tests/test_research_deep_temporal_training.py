@@ -7,14 +7,22 @@ import numpy as np
 
 from tests.test_research_deep_temporal_dataset import TemporalDatasetTest
 from stock_analyze.research.deep.temporal_dataset import prepare_temporal_dataset
-from stock_analyze.research.deep.temporal_inference import load_temporal_artifact
-from stock_analyze.research.deep.temporal_training import (
-    TemporalTrainingConfig,
-    save_temporal_artifact,
-    train_temporal_model,
-)
+
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
+
+if torch is not None:
+    from stock_analyze.research.deep.temporal_inference import load_temporal_artifact
+    from stock_analyze.research.deep.temporal_training import (
+        TemporalTrainingConfig,
+        save_temporal_artifact,
+        train_temporal_model,
+    )
 
 
+@unittest.skipIf(torch is None, "optional deep-learning dependencies not installed")
 class TemporalTrainingTest(unittest.TestCase):
     def test_training_writes_multi_horizon_content_addressed_artifact(self):
         features, labels = TemporalDatasetTest._frames()

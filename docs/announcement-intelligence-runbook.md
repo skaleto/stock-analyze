@@ -110,12 +110,8 @@ python -m stock_analyze.cli intelligence-semantic-import \
 - `intelligence-semantic-job-status`
 - `intelligence-semantic-daily`
 
-旧 Candidate/Anchor/Gold 基准不再挂在主 CLI，也不参与任何 timer。确需复现实验时
-只能显式使用离线入口：
-
-```bash
-python -m stock_analyze.intelligence.semantic.research_cli --help
-```
+旧的多模型投票和独立晋升状态机已经退出代码主线。执行器质量通过同一任务契约上的
+小规模分层抽检和漂移复查验证。
 
 当前生产 profile 是 `a-share-announcement-mentions-v1`：大模型按
 `semantic-mentions-v1` 只抽取带逐字证据的主体、事实、日期和状态 mention；本地
@@ -226,5 +222,4 @@ Dashboard 的“情报与模型影响”页面按四层展示：语料覆盖、�
 semantic timer 和 service；“timer active”不能替代最近一次服务结果、数据库产物和
 模型影响报告。
 
-旧的双模型基准、Anchor 标注和一次性工作台已归档为 QA 资产。它们可用于小规模抽样
-和漂移复查，但不属于每日生产依赖，也不能阻塞这条主线。
+质量抽检和漂移复查不属于每日生产依赖，也不能阻塞这条主线。

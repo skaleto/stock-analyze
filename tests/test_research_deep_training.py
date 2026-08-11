@@ -7,16 +7,24 @@ import numpy as np
 import pandas as pd
 
 from stock_analyze.research.deep.dataset import prepare_tabular_dataset
-from stock_analyze.research.deep.inference import load_deep_artifact
-from stock_analyze.research.deep.training import (
-    DeepTrainingConfig,
-    _bounded_training_indices,
-    save_training_artifact,
-    train_deep_model,
-)
 from stock_analyze.research.deep.dataset import DatasetSplit
 
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
 
+if torch is not None:
+    from stock_analyze.research.deep.inference import load_deep_artifact
+    from stock_analyze.research.deep.training import (
+        DeepTrainingConfig,
+        _bounded_training_indices,
+        save_training_artifact,
+        train_deep_model,
+    )
+
+
+@unittest.skipIf(torch is None, "optional deep-learning dependencies not installed")
 class DeepTrainingTest(unittest.TestCase):
     @staticmethod
     def _prepared():

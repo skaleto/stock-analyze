@@ -127,22 +127,12 @@ python -m stock_analyze.cli intelligence-semantic-run \
 - V21 校验失败时只允许把完整事件候选重抽一次，不能返回字段补丁；
   再失败则整篇隔离。
 
-## 双执行器 Canary
+## 执行器质量抽检
 
-Claude 与 DeepSeek 的简单对照使用同一组 `semantic_task_id`，分别创建
-不同 binding 的 job，然后运行：
-
-```bash
-python scripts/run-semantic-v21-canary.py \
-  --repo-root /path/to/repo \
-  --claude-job /path/to/claude-job \
-  --deepseek-job /path/to/deepseek-job \
-  --deepseek-executor-config deploy/intelligence-semantic-executor.deepseek.yaml
-```
-
-报告只比较 Schema、grounding、接受/隔离、错误、token 与耗时；不会调用
-import，不修改执行器资格，并固定写入 `production_approved=false`。模型之间
-的一致不等于 Gold，小样本 canary 也不等于生产批准。
+生产批次默认只使用一个执行器。更换执行器或检测到质量漂移时，从相同任务契约中
+抽取小规模分层样本，对 Schema、grounding、接受/隔离、错误、token 与耗时进行
+独立检查。抽检结果不执行 import，也不修改执行器资格；不同模型结果一致不等于
+Gold，小样本通过也不等于生产批准。
 
 ## 上线准则
 

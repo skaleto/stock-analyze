@@ -10,9 +10,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 SEMANTIC_CONFIG = ROOT / "configs" / "intelligence_semantic.yaml"
-RESEARCH_CONFIG = (
-    ROOT / "configs" / "research" / "intelligence_semantic_benchmark.yaml"
-)
 EXECUTOR_CONFIG = (
     ROOT / "deploy" / "intelligence-semantic-executor.deepseek.yaml"
 )
@@ -114,10 +111,6 @@ class IntelligenceSemanticConfigTest(unittest.TestCase):
             f"missing taxonomy config: {TAXONOMY_CONFIG}",
         )
         return json.loads(TAXONOMY_CONFIG.read_text(encoding="utf-8"))
-
-    def _research_config(self) -> dict:
-        self.assertTrue(RESEARCH_CONFIG.exists())
-        return yaml.safe_load(RESEARCH_CONFIG.read_text(encoding="utf-8"))
 
     def _intelligence_configs(self) -> list[tuple[Path, dict]]:
         configs: list[tuple[Path, dict]] = []
@@ -322,9 +315,7 @@ class IntelligenceSemanticConfigTest(unittest.TestCase):
         )
         self.assertEqual(profile["decision_use"], "research_feature_only")
 
-    def test_production_and_offline_research_configs_are_physically_separate(
-        self,
-    ) -> None:
+    def test_production_config_has_no_retired_multi_model_benchmark(self) -> None:
         config = self._semantic_config()
         self.assertEqual(config["schema_version"], 1)
         self.assertEqual(
@@ -337,24 +328,11 @@ class IntelligenceSemanticConfigTest(unittest.TestCase):
         )
         self.assertEqual(config["parser"]["version"], "announcement-layout-v1")
         self.assertEqual(config["parser"]["ocr_languages"], "chi_sim+eng")
-        research = self._research_config()
-        self.assertTrue(research["research_only"])
-        self.assertEqual(
-            research["benchmark"],
-            {
-                "gold_document_count": 240,
-                "no_event_document_count": 60,
-                "materialization_workers": 4,
-                "max_source_characters": 40000,
-                "schema_validity_floor": 1.0,
-                "event_precision_floor": 0.90,
-                "event_recall_floor": 0.85,
-                "evidence_grounding_floor": 0.98,
-                "entity_accuracy_floor": 0.995,
-                "numeric_exact_match_floor": 0.98,
-                "no_event_false_negative_ceiling": 0.10,
-            },
+        self.assertFalse(
+            (ROOT / "configs" / "research" / "intelligence_semantic_benchmark.yaml").exists()
         )
+        self.assertNotIn("candidate_profiles", config)
+        self.assertNotIn("benchmark", config)
 
     def test_provider_neutral_exchange_does_not_resolve_candidate_profiles(
         self,
