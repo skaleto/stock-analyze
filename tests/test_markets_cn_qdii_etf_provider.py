@@ -275,6 +275,33 @@ class ProviderSnapshotTests(unittest.TestCase):
         provider = make_provider(cache_dir=None, offline=False, as_of="2026-07-09")
         self.assertIsInstance(provider, CNQDIETFProvider)
 
+    def test_price_snapshot_resolves_suffixless_code_from_fund_catalog(self):
+        with TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            pd.DataFrame(
+                [
+                    {
+                        "ts_code": "501018.SH",
+                        "name": "南方原油(QDII-LOF-FOF)-A",
+                        "list_date": "20160628",
+                    }
+                ]
+            ).to_csv(cache / "fund_basic_E_v2.csv", index=False)
+            daily = _daily_frame().copy()
+            daily["ts_code"] = "501018.SH"
+            daily.to_csv(cache / "fund_daily_501018_SH_20260709.csv", index=False)
+            provider = CNQDIETFProvider(
+                cache_dir=cache,
+                offline=True,
+                as_of="2026-07-09",
+            )
+
+            snap = provider.price_snapshot("501018", as_of="2026-07-09")
+
+        self.assertEqual(snap.code, "501018.SH")
+        self.assertEqual(snap.name, "南方原油(QDII-LOF-FOF)-A")
+        self.assertIsNotNone(snap.close)
+
     def test_price_snapshot_computes_etf_factors_and_nav_discount(self):
         provider = CNQDIETFProvider(pro_client=FakeTushareClient(), cache_dir=None)
         snap = provider.price_snapshot("513100.SH", as_of="2026-07-09")

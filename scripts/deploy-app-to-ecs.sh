@@ -19,9 +19,19 @@ if [[ "$remote_no_slash" != *:* ]]; then
 fi
 REMOTE_HOST="${SA_ECS_SSH_HOST:-${remote_no_slash%%:*}}"
 REMOTE_PATH="${SA_ECS_REMOTE_PATH:-${remote_no_slash#*:}}"
-DEPLOY_VERSION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-
 cd "$REPO_ROOT"
+DEPLOY_VERSION="$(git rev-parse HEAD)"
+if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+  worktree_hash="$({
+    git diff --binary HEAD
+    while IFS= read -r path; do
+      printf 'untracked:%s\n' "$path"
+      git hash-object "$path"
+    done < <(git ls-files --others --exclude-standard | LC_ALL=C sort)
+  } | git hash-object --stdin | cut -c1-12)"
+  DEPLOY_VERSION="${DEPLOY_VERSION}-worktree.${worktree_hash}"
+fi
+
 rsync -az --relative \
   --exclude '__pycache__/' \
   --exclude '*.pyc' \
@@ -37,6 +47,7 @@ rsync -az --relative \
   ./requirements.txt \
   ./configs/competition_a_share.yaml \
   ./configs/competition_cn_qdii_etf.yaml \
+  ./configs/model_shadow.json \
   ./configs/strategy_competition.json \
   ./configs/strategy_versions/ \
   "$remote_no_slash/"
@@ -134,9 +145,19 @@ python -m unittest \
   tests.test_dashboard_predictions \
   tests.test_prediction_notifications \
   tests.test_prediction_systemd \
+  tests.test_model_shadow \
+  tests.test_dashboard_model_shadow \
   tests.test_deploy_app_script
 
+for obsolete_unit in \
+  stock-analyze-intelligence.timer \
+  stock-analyze-intelligence.service; do
+  systemctl disable --now "$obsolete_unit" >/dev/null 2>&1 || true
+  rm -f "/etc/systemd/system/$obsolete_unit"
+done
 systemctl daemon-reload
+systemctl reset-failed stock-analyze-market-data.service >/dev/null 2>&1 || true
+systemctl reset-failed stock-analyze-intelligence.service >/dev/null 2>&1 || true
 for archived_timer in \
   stock-analyze-codex-hk-daily.timer \
   stock-analyze-codex-hk-weekly.timer \
@@ -148,11 +169,11 @@ for archived_timer in \
   stock-analyze-claude-us-weekly.timer; do
   systemctl disable --now "$archived_timer" >/dev/null 2>&1 || true
 done
+systemctl disable --now stock-analyze-claude-cn-qdii-etf-daily.timer >/dev/null 2>&1 || true
+systemctl disable --now stock-analyze-codex-cn-qdii-etf-daily.timer >/dev/null 2>&1 || true
 install -d -m 0755 /var/lib/systemd/timers
 for timer in \
-  stock-analyze-claude-cn-qdii-etf-daily.timer \
   stock-analyze-claude-cn-qdii-etf-weekly.timer \
-  stock-analyze-codex-cn-qdii-etf-daily.timer \
   stock-analyze-codex-cn-qdii-etf-weekly.timer \
   stock-analyze-qdii-research.timer \
   stock-analyze-model-training.timer \
@@ -163,9 +184,7 @@ for timer in \
     touch "$stamp"
   fi
 done
-systemctl enable --now stock-analyze-claude-cn-qdii-etf-daily.timer
 systemctl enable --now stock-analyze-claude-cn-qdii-etf-weekly.timer
-systemctl enable --now stock-analyze-codex-cn-qdii-etf-daily.timer
 systemctl enable --now stock-analyze-codex-cn-qdii-etf-weekly.timer
 systemctl enable --now stock-analyze-qdii-research.timer
 systemctl enable --now stock-analyze-daily-summary.timer
@@ -174,9 +193,7 @@ systemctl enable --now stock-analyze-monthly-summary.timer
 systemctl enable --now stock-analyze-model-training.timer
 systemctl restart stock-analyze-dashboard.service
 systemctl is-active --quiet stock-analyze-dashboard.service
-systemctl is-active --quiet stock-analyze-claude-cn-qdii-etf-daily.timer
 systemctl is-active --quiet stock-analyze-claude-cn-qdii-etf-weekly.timer
-systemctl is-active --quiet stock-analyze-codex-cn-qdii-etf-daily.timer
 systemctl is-active --quiet stock-analyze-codex-cn-qdii-etf-weekly.timer
 systemctl is-active --quiet stock-analyze-qdii-research.timer
 systemctl is-active --quiet stock-analyze-daily-summary.timer

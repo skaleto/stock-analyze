@@ -70,7 +70,7 @@ export default function CompetitionPanel({
   onSelectAgent,
 }: {
   comparison: StrategyComparison | null | undefined;
-  activeAgent: string;
+  activeAgent?: string;
   currency: string;
   onSelectAgent: (agent: string) => void;
 }) {

@@ -84,7 +84,7 @@ def _context(
     if market not in competition.MARKETS:
         raise competition.UnknownMarket(market)
     root = Path(repo_root) if repo_root else Path.cwd()
-    if agent not in competition.list_agents_for_market(market, root):
+    if not agg._dashboard_identity_allowed(market, agent, root):
         raise competition.UnknownAgent(f"unknown_agent:{agent}; market={market}")
     return root, agg._resolve_dashboard_paths(market, agent, root)
 
@@ -117,20 +117,25 @@ def build_dashboard_overview_data(
     """Return identity, strategy configuration, and the latest account NAV."""
 
     root, paths = _context(repo_root, market, agent)
-    try:
-        strategy = build_strategy_profile(paths.config_path, repo_root=root)
-    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise agg.DashboardDataError("strategy_overlay") from exc
-    latest_nav = agg._read_nav_detail(paths.data_dir, market).get("latest")
-    return agg._json_safe(
-        {
-            **_base(market, agent),
-            "market_label": agg.MARKET_LABELS.get(market, market),
-            "currency": agg.MARKET_CURRENCY.get(market, ""),
-            "strategy": strategy,
-            "latest_nav": latest_nav,
-        }
+    strategy = agg._dashboard_strategy_profile(
+        paths,
+        root=root,
+        market=market,
+        agent=agent,
     )
+    latest_nav = agg._read_nav_detail(paths.data_dir, market).get("latest")
+    payload = {
+        **_base(market, agent),
+        "market_label": agg.MARKET_LABELS.get(market, market),
+        "currency": agg.MARKET_CURRENCY.get(market, ""),
+        "strategy": strategy,
+        "latest_nav": latest_nav,
+    }
+    if agent == "model_shadow":
+        model_iteration = agg._read_model_iteration_status(root, market)
+        payload["model_iteration"] = model_iteration
+        payload["model_shadow"] = model_iteration
+    return agg._json_safe(payload)
 
 
 def build_dashboard_performance_data(
@@ -151,12 +156,15 @@ def _read_portfolio_exposure(
     root: Path,
     paths: agg.DashboardAgentPaths,
     market: str,
+    *,
+    name_lookup: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    names = agg._read_fund_name_lookup(root, market)
+    names = name_lookup if name_lookup is not None else agg._read_fund_name_lookup(root, market)
     orders = enrich_rows(
         market,
         agg._flatten_pending_orders(paths.data_dir, name_lookup=names),
         repo_root=root,
+        name_lookup=names,
     )
     positions = enrich_rows(
         market,
@@ -187,6 +195,7 @@ def _read_portfolio_exposure(
             sort_by=["account_id", "code"],
         ),
         repo_root=root,
+        name_lookup=names,
     )
     return (
         _project_rows(orders, _ORDER_ROW_FIELDS, order=True),
@@ -204,7 +213,13 @@ def build_dashboard_portfolio_data(
     """Return current holdings, pending orders, trades, and their timeline."""
 
     root, paths = _context(repo_root, market, agent)
-    orders_all, positions_all = _read_portfolio_exposure(root, paths, market)
+    names = agg._read_fund_name_lookup(root, market)
+    orders_all, positions_all = _read_portfolio_exposure(
+        root,
+        paths,
+        market,
+        name_lookup=names,
+    )
     trades_all = enrich_rows(
         market,
         agg._limited_csv_rows(
@@ -226,6 +241,7 @@ def build_dashboard_portfolio_data(
             sort_by=["trade_date"],
         ),
         repo_root=root,
+        name_lookup=names,
     )
     trades_all = _project_rows(trades_all, _TRADE_ROW_FIELDS)
     activity_all = build_activity(trades_all, orders_all)
@@ -271,6 +287,7 @@ def build_dashboard_predictions_data(
     """Return bounded prediction rows and the evidence needed to interpret them."""
 
     root, _ = _context(repo_root, market, agent)
+    prediction_agent = agg._dashboard_prediction_agent(root, market, agent)
     bounded_limit = None
     if limit_per_horizon is not None:
         bounded_limit = min(
@@ -280,16 +297,29 @@ def build_dashboard_predictions_data(
     summary = agg._read_prediction_summary(
         root,
         market,
-        agent,
+        prediction_agent,
         limit_per_horizon=bounded_limit,
+        directory=agg._dashboard_prediction_directory(root, market, agent),
     )
+    model_health = agg._read_model_health(root, market)
+    model_health["accuracy"] = agg._read_prediction_accuracy(
+        root,
+        market,
+        prediction_agent,
+    )
+    model_health["prediction_diagnostics"] = summary.get("diagnostics") or {
+        "invalidated": 0,
+        "mean_out_of_distribution_ratio": 0.0,
+        "max_out_of_distribution_ratio": 0.0,
+        "max_psi": 0.0,
+    }
     return agg._json_safe(
         {
             **_base(market, agent),
             "prediction_summary": summary,
             "alerts": agg._prediction_alerts(summary),
             "regimes": agg._read_regime_summary(root, market),
-            "model_health": agg._read_model_health(root, market),
+            "model_health": model_health,
             "source_health": agg._read_research_source_health(root, market),
         }
     )
@@ -331,7 +361,10 @@ def build_dashboard_research_data(
             **_base(market, agent),
             "selection": agg._read_selection_snapshot(paths.data_dir),
             "lookthrough": _lookthrough(market, positions, orders),
-            "research": agg._read_qdii_research(root, agent),
+            "research": agg._read_qdii_research(
+                root,
+                agg._dashboard_prediction_agent(root, market, agent),
+            ),
         }
     )
 

@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from ._dashboard_assets import BASE_CSS, NAV_CSS, render_nav_html
@@ -46,6 +47,20 @@ from .dashboard_finance import (
 from .markets.cn_qdii_etf.lookthrough import (
     build_portfolio_lookthrough,
     profile_for_index,
+)
+from .model_shadow import (
+    MODEL_ITERATION_LABEL,
+    MODEL_ITERATION_PORTFOLIO_LABEL,
+    MODEL_SHADOW_AGENT,
+    load_shadow_profile,
+    shadow_data_dir,
+)
+from .model_iteration import (
+    iteration_portfolio_dir,
+    iteration_prediction_dir,
+    model_version_summary,
+    read_iteration_state,
+    read_model_registry,
 )
 from .research.activation import select_registry_model
 from .strategy_comparison import build_strategy_comparison
@@ -565,6 +580,28 @@ def _has_runtime_data(data_dir: Path) -> bool:
 
 
 def _resolve_dashboard_paths(market: str, agent: str, root: Path) -> DashboardAgentPaths:
+    if agent == MODEL_SHADOW_AGENT:
+        profile = load_shadow_profile(root, market)
+        horizon = int(profile["horizon"])
+        status = _read_model_iteration_status(root, market)
+        candidate = status.get("candidate") or {}
+        version = str(candidate.get("model_version") or status.get("model_version") or "")
+        data_dir = (
+            iteration_portfolio_dir(root, market, horizon, version)
+            if version
+            else root / "data" / "model_iterations" / market / str(horizon)
+        )
+        legacy_data_dir = shadow_data_dir(root, market)
+        if not _has_runtime_data(data_dir) and _has_runtime_data(legacy_data_dir):
+            data_dir = legacy_data_dir
+        return DashboardAgentPaths(
+            market=market,
+            agent_id=agent,
+            repo_root=root,
+            data_dir=data_dir,
+            reports_dir=root / "reports" / MODEL_SHADOW_AGENT / market,
+            config_path=root / "configs" / "model_shadow.json",
+        )
     paths = resolve_market_paths(market, agent, repo_root=root)
     data_dir = paths.data_dir
     reports_dir = paths.reports_dir
@@ -583,6 +620,157 @@ def _resolve_dashboard_paths(market: str, agent: str, root: Path) -> DashboardAg
         reports_dir=reports_dir,
         config_path=paths.config_path,
     )
+
+
+def _dashboard_identity_allowed(market: str, agent: str, root: Path) -> bool:
+    return agent == MODEL_SHADOW_AGENT or agent in competition.list_agents_for_market(
+        market, root
+    )
+
+
+def _read_model_iteration_status(root: Path, market: str) -> dict[str, Any]:
+    profile = load_shadow_profile(root, market)
+    horizon = int(profile["horizon"])
+    lifecycle_root = root / "data" / "model_iterations" / market / str(horizon)
+    path = lifecycle_root / "current_status.json"
+    legacy_path = shadow_data_dir(root, market) / "shadow_status.json"
+    if not path.exists() and legacy_path.exists():
+        path = legacy_path
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        payload = {
+            "status": "not_started",
+            "market": market,
+            "label": MODEL_ITERATION_LABEL,
+            "portfolio_label": MODEL_ITERATION_PORTFOLIO_LABEL,
+            "isolation": "完全隔离，不计入双策略竞赛",
+            "source_agent": profile.get("source_agent", "codex"),
+            "horizon": horizon,
+            "prediction_as_of": None,
+            "selected_count": 0,
+            "cash_only": True,
+            "pending_orders": 0,
+        }
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DashboardDataError("model_iteration_status") from exc
+    if not isinstance(payload, dict):
+        raise DashboardDataError("model_iteration_status")
+    payload.setdefault("status", "available")
+    payload["label"] = MODEL_ITERATION_LABEL
+    payload["portfolio_label"] = MODEL_ITERATION_PORTFOLIO_LABEL
+    payload.setdefault("isolation", "完全隔离，不计入双策略竞赛")
+    payload.setdefault("source_agent", profile.get("source_agent", "codex"))
+    payload["horizon"] = horizon
+
+    registry = read_model_registry(root, market, horizon)
+    state = read_iteration_state(root, market, horizon)
+    current = state.get("current_candidate") or {}
+    candidate_version = str(
+        current.get("model_version") or payload.get("model_version") or ""
+    )
+    candidate = None
+    if candidate_version:
+        candidate = {
+            **model_version_summary(
+                root,
+                market,
+                horizon,
+                candidate_version,
+                registry=registry,
+            ),
+            "selected_at": current.get("selected_at"),
+        }
+    champion_version = str(registry.get("champion_model_version") or "")
+    champion = (
+        model_version_summary(
+            root,
+            market,
+            horizon,
+            champion_version,
+            registry=registry,
+        )
+        if champion_version
+        else None
+    )
+    return {
+        **payload,
+        "candidate": candidate,
+        "champion": champion,
+        "version_history": state.get("history") or [],
+    }
+
+
+def _read_model_shadow_status(root: Path, market: str) -> dict[str, Any]:
+    """Compatibility alias used by older API consumers."""
+
+    return _read_model_iteration_status(root, market)
+
+
+def _dashboard_prediction_agent(root: Path, market: str, agent: str) -> str:
+    if agent != MODEL_SHADOW_AGENT:
+        return agent
+    status = _read_model_iteration_status(root, market)
+    return str(status.get("source_agent") or "codex")
+
+
+def _dashboard_prediction_directory(root: Path, market: str, agent: str) -> Path | None:
+    if agent != MODEL_SHADOW_AGENT:
+        return None
+    status = _read_model_iteration_status(root, market)
+    candidate = status.get("candidate") or {}
+    version = str(candidate.get("model_version") or status.get("model_version") or "")
+    if not version:
+        return root / "data" / "research" / "iteration_predictions" / market / str(status["horizon"])
+    return iteration_prediction_dir(root, market, int(status["horizon"]), version)
+
+
+def _dashboard_strategy_profile(
+    paths: DashboardAgentPaths,
+    *,
+    root: Path,
+    market: str,
+    agent: str,
+) -> dict[str, Any]:
+    if agent != MODEL_SHADOW_AGENT:
+        try:
+            return build_strategy_profile(paths.config_path, repo_root=root)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise DashboardDataError("strategy_overlay") from exc
+    profile = load_shadow_profile(root, market)
+    horizon = int(profile["horizon"])
+    return {
+        "agent": MODEL_SHADOW_AGENT,
+        "agent_label": MODEL_ITERATION_LABEL,
+        "strategy_id": f"model_iteration_{market}_v{int(profile.get('version', 1))}",
+        "name": f"候选模型模拟验证 · {horizon}日",
+        "factors": [
+            {
+                "key": "expected_excess_return",
+                "label": "预期超额收益",
+                "explanation": "模型对未来相对收益的点估计，只接受正值。",
+                "weight": 0.45,
+                "direction": "high",
+                "direction_label": "偏好高值",
+            },
+            {
+                "key": "probability_spread",
+                "label": "上涨概率优势",
+                "explanation": "上涨概率必须高于下跌概率。",
+                "weight": 0.30,
+                "direction": "high",
+                "direction_label": "偏好高值",
+            },
+            {
+                "key": "predicted_risk",
+                "label": "预测区间风险",
+                "explanation": "使用预测收益区间控制仓位集中度。",
+                "weight": 0.25,
+                "direction": "low",
+                "direction_label": "偏好低值",
+            },
+        ],
+    }
 
 
 def _build_market_paths(
@@ -739,11 +927,17 @@ def _read_fund_name_lookup(root: Path, market: str) -> dict[str, str]:
         raise DashboardDataError("fund_basic") from exc
     if df.empty or "ts_code" not in df.columns or "name" not in df.columns:
         return {}
-    return {
-        str(row["ts_code"]): str(row["name"])
-        for row in df[["ts_code", "name"]].to_dict(orient="records")
-        if str(row.get("ts_code") or "") and str(row.get("name") or "")
-    }
+    names: dict[str, str] = {}
+    for row in df[["ts_code", "name"]].to_dict(orient="records"):
+        code = str(row.get("ts_code") or "").strip().upper()
+        name = str(row.get("name") or "").strip()
+        if not code or not name:
+            continue
+        names[code] = name
+        digits = code.split(".", 1)[0]
+        if digits.isdigit():
+            names[digits.zfill(6)] = name
+    return names
 
 
 def _flatten_pending_orders(data_dir: Path, *, name_lookup: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -848,9 +1042,15 @@ def _read_nav_detail(data_dir: Path, market: str) -> dict[str, Any]:
     )
     benchmark_by_date, benchmark_codes_all = _composite_benchmark_series(df)
     series: list[dict[str, Any]] = []
+    previous_total_value: float | None = None
     for row in grouped.to_dict(orient="records"):
         total_value = safe_float(row.get("total_value"))
         date_key = str(row.get("date"))
+        daily_return = (
+            total_value / previous_total_value - 1.0
+            if total_value is not None and previous_total_value not in {None, 0.0}
+            else None
+        )
         series.append(
             {
                 "date": date_key,
@@ -862,12 +1062,16 @@ def _read_nav_detail(data_dir: Path, market: str) -> dict[str, Any]:
                 "return_display": format_pct(
                     (total_value / baseline - 1.0) if total_value is not None and baseline else None
                 ),
+                "daily_return": daily_return,
+                "daily_return_display": format_pct(daily_return),
                 **benchmark_by_date.get(
                     date_key,
                     {"benchmark_return": None, "benchmark_coverage": 0.0},
                 ),
             }
         )
+        if total_value is not None:
+            previous_total_value = total_value
     latest_date = series[-1]["date"] if series else None
     latest_row = None
     if latest_date is not None:
@@ -978,17 +1182,19 @@ def build_dashboard_detail_data(
     if market not in competition.MARKETS:
         raise competition.UnknownMarket(market)
     root = Path(repo_root) if repo_root else Path.cwd()
-    if agent not in competition.list_agents_for_market(market, root):
+    if not _dashboard_identity_allowed(market, agent, root):
         raise competition.UnknownAgent(f"unknown_agent:{agent}; market={market}")
     paths = _resolve_dashboard_paths(market, agent, root)
 
+    names = _read_fund_name_lookup(root, market)
     orders = enrich_rows(
         market,
         _flatten_pending_orders(
             paths.data_dir,
-            name_lookup=_read_fund_name_lookup(root, market),
+            name_lookup=names,
         ),
         repo_root=root,
+        name_lookup=names,
     )
     positions_all = enrich_rows(
         market,
@@ -1019,6 +1225,7 @@ def build_dashboard_detail_data(
             sort_by=["account_id", "code"],
         ),
         repo_root=root,
+        name_lookup=names,
     )
     trades_all = enrich_rows(
         market,
@@ -1041,6 +1248,7 @@ def build_dashboard_detail_data(
             sort_by=["trade_date"],
         ),
         repo_root=root,
+        name_lookup=names,
     )
     runs_all = _limited_csv_rows(
         paths.data_dir / "runs.csv",
@@ -1062,10 +1270,12 @@ def build_dashboard_detail_data(
         sort_by=["started_at"],
     )
     runs_all = _collapse_run_transitions(runs_all)
-    try:
-        strategy = build_strategy_profile(paths.config_path, repo_root=root)
-    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise DashboardDataError("strategy_overlay") from exc
+    strategy = _dashboard_strategy_profile(
+        paths,
+        root=root,
+        market=market,
+        agent=agent,
+    )
     activity = build_activity(trades_all, orders)
     positions = positions_all[-limit:] if limit > 0 else positions_all
     trades = trades_all[-limit:] if limit > 0 else trades_all
@@ -1088,10 +1298,23 @@ def build_dashboard_detail_data(
         )
     else:
         lookthrough = {}
-    research = _read_qdii_research(root, agent) if market == "cn_qdii_etf" else {}
-    prediction_summary = _read_prediction_summary(root, market, agent)
+    prediction_agent = _dashboard_prediction_agent(root, market, agent)
+    research = _read_qdii_research(root, prediction_agent) if market == "cn_qdii_etf" else {}
+    prediction_summary = _read_prediction_summary(
+        root,
+        market,
+        prediction_agent,
+        directory=_dashboard_prediction_directory(root, market, agent),
+    )
     regimes = _read_regime_summary(root, market)
     model_health = _read_model_health(root, market)
+    model_health["accuracy"] = _read_prediction_accuracy(root, market, prediction_agent)
+    model_health["prediction_diagnostics"] = prediction_summary.get("diagnostics") or {
+        "invalidated": 0,
+        "mean_out_of_distribution_ratio": 0.0,
+        "max_out_of_distribution_ratio": 0.0,
+        "max_psi": 0.0,
+    }
     source_health = _read_research_source_health(root, market)
     payload = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -1134,6 +1357,10 @@ def build_dashboard_detail_data(
             "markdown": report_markdown[:12000],
         },
     }
+    if agent == MODEL_SHADOW_AGENT:
+        model_iteration = _read_model_iteration_status(root, market)
+        payload["model_iteration"] = model_iteration
+        payload["model_shadow"] = model_iteration
     return _json_safe(payload)
 
 
@@ -1149,6 +1376,18 @@ def _decode_json_list(value: Any) -> list[str]:
     return [str(item) for item in parsed] if isinstance(parsed, list) else [str(parsed)]
 
 
+def _decode_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _read_prediction_summary(
     root: Path,
     market: str,
@@ -1156,8 +1395,9 @@ def _read_prediction_summary(
     *,
     code: str | None = None,
     limit_per_horizon: int | None = None,
+    directory: Path | None = None,
 ) -> dict[str, Any]:
-    directory = root / "data" / market / agent / "predictions"
+    directory = directory or root / "data" / market / agent / "predictions"
     files = sorted(directory.glob("*.parquet")) if directory.exists() else []
     if not files:
         return {"status": "unavailable", "as_of": None, "horizons": [], "rows": []}
@@ -1196,14 +1436,33 @@ def _read_prediction_summary(
         row["name"] = names.get(code, code)
         row["reasons"] = _decode_json_list(row.get("reasons"))
         row["invalidation"] = _decode_json_list(row.get("invalidation"))
+        row["metadata"] = _decode_json_dict(row.get("metadata"))
         rows.append(row)
     as_of = next((str(row.get("as_of")) for row in reversed(rows) if row.get("as_of")), files[-1].stem)
+    ood_values = [
+        safe_float((row.get("metadata") or {}).get("out_of_distribution_ratio"))
+        for row in rows
+    ]
+    ood_values = [value for value in ood_values if value is not None]
+    psi_values = [
+        safe_float((row.get("metadata") or {}).get("feature_drift_max_psi"))
+        for row in rows
+    ]
+    psi_values = [value for value in psi_values if value is not None]
     return {
         "status": "available",
         "as_of": as_of,
         "horizons": horizons,
         "total": total,
         "rows": rows,
+        "diagnostics": {
+            "invalidated": sum(
+                row.get("invalidated") in (True, 1, "true", "True") for row in rows
+            ),
+            "mean_out_of_distribution_ratio": float(np.mean(ood_values)) if ood_values else 0.0,
+            "max_out_of_distribution_ratio": float(np.max(ood_values)) if ood_values else 0.0,
+            "max_psi": float(np.max(psi_values)) if psi_values else 0.0,
+        },
     }
 
 
@@ -1283,6 +1542,45 @@ def _read_model_health(root: Path, market: str) -> dict[str, Any]:
     return {"status": "available" if models else "unavailable", "models": models}
 
 
+def _read_prediction_accuracy(root: Path, market: str, agent: str) -> dict[str, Any]:
+    path = root / "data" / market / agent / "prediction_accuracy.csv"
+    if not path.exists() or path.stat().st_size == 0:
+        return {"status": "unavailable", "evaluated": 0, "by_horizon": []}
+    try:
+        frame = pd.read_csv(
+            path,
+            dtype={"as_of": str, "code": str, "model_version": str},
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise DashboardDataError("prediction_accuracy") from exc
+    if frame.empty or not {"horizon", "correct", "brier_score"}.issubset(frame.columns):
+        return {"status": "unavailable", "evaluated": 0, "by_horizon": []}
+    correct = frame["correct"].astype("string").str.lower().map({"true": 1.0, "false": 0.0})
+    frame = frame.assign(
+        _correct=correct,
+        _brier=pd.to_numeric(frame["brier_score"], errors="coerce"),
+        _return_error=pd.to_numeric(frame.get("return_error"), errors="coerce"),
+    )
+    by_horizon = []
+    for horizon, group in frame.groupby("horizon", sort=True):
+        by_horizon.append({
+            "horizon": int(horizon),
+            "evaluated": int(len(group)),
+            "hit_rate": safe_float(group["_correct"].mean()),
+            "mean_brier_score": safe_float(group["_brier"].mean()),
+            "mean_absolute_return_error": safe_float(group["_return_error"].abs().mean()),
+        })
+    return {
+        "status": "available",
+        "evaluated": int(len(frame)),
+        "latest_as_of": str(frame["as_of"].max()) if "as_of" in frame.columns else None,
+        "hit_rate": safe_float(frame["_correct"].mean()),
+        "mean_brier_score": safe_float(frame["_brier"].mean()),
+        "mean_absolute_return_error": safe_float(frame["_return_error"].abs().mean()),
+        "by_horizon": by_horizon,
+    }
+
+
 def _read_research_source_health(root: Path, market: str) -> list[dict[str, Any]]:
     rows = [
         {"source": source, "status": "source_unavailable", "rows": 0}
@@ -1304,6 +1602,8 @@ def _prediction_alerts(summary: dict[str, Any]) -> list[dict[str, Any]]:
     if summary.get("status") != "available":
         return alerts
     for row in summary.get("rows") or []:
+        if row.get("invalidated") in (True, 1, "true", "True"):
+            continue
         confidence = safe_float(row.get("confidence")) or 0.0
         p_up = safe_float(row.get("p_up")) or 0.0
         p_down = safe_float(row.get("p_down")) or 0.0
@@ -1339,14 +1639,15 @@ def build_dashboard_instrument_data(
     if market not in competition.MARKETS:
         raise competition.UnknownMarket(market)
     root = Path(repo_root) if repo_root else Path.cwd()
-    if agent not in competition.list_agents_for_market(market, root):
+    if not _dashboard_identity_allowed(market, agent, root):
         raise competition.UnknownAgent(f"unknown_agent:{agent}; market={market}")
     paths = _resolve_dashboard_paths(market, agent, root)
     normalized, candles, warning = read_instrument_history(root, market, code)
     name = _instrument_name(root, market, normalized)
     factor_values = read_latest_research_values(root, market, normalized)
+    prediction_agent = _dashboard_prediction_agent(root, market, agent)
     if market == "a_share":
-        factor_values = {**read_latest_factor_values(root, agent, normalized), **factor_values}
+        factor_values = {**read_latest_factor_values(root, prediction_agent, normalized), **factor_values}
     metrics = build_history_metrics(candles, factor_values)
     related = _limited_csv_rows(
         paths.data_dir / "trades.csv",
@@ -1388,7 +1689,13 @@ def build_dashboard_instrument_data(
         if market == "cn_qdii_etf"
         else None
     )
-    prediction_summary = _read_prediction_summary(root, market, agent, code=digits)
+    prediction_summary = _read_prediction_summary(
+        root,
+        market,
+        prediction_agent,
+        code=digits,
+        directory=_dashboard_prediction_directory(root, market, agent),
+    )
     predictions = [
         row for row in prediction_summary.get("rows") or []
         if str(row.get("code") or "").split(".", 1)[0].zfill(6) == digits

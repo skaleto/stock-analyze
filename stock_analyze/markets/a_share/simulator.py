@@ -10,6 +10,11 @@ from .data_provider import DataProvider, ExecutionQuote
 from ...factor_pipeline import UNCLASSIFIED
 from .portfolio_controls import annotate_industries, select_top_n_with_controls
 from ...store import PortfolioStore
+from ...research.execution_policy import estimate_market_impact_bps
+from ...research.strategy_ensemble import (
+    load_provider_return_history,
+    risk_adjusted_target_weights,
+)
 from .strategy import build_signals
 from ...utils import next_business_day, now_iso, safe_float
 
@@ -116,8 +121,22 @@ def generate_rebalance_orders(
 
         coverage_rows.extend(_coverage_rows(scored, config.get("factors", {}), account_id, run_date))
 
+        return_history = load_provider_return_history(
+            provider,
+            selected.get("code", pd.Series(dtype=str)).astype(str).tolist(),
+            as_of=run_date,
+        )
         orders = build_target_orders(
-            config, account_state, selected, fallback_pool=scored
+            config,
+            account_state,
+            selected,
+            fallback_pool=scored,
+            return_history=return_history,
+            gross_exposure=float(
+                selected.get("regime_gross_exposure", pd.Series([1.0])).iloc[0]
+                if not selected.empty
+                else 1.0
+            ),
         )
         pending_batches.append(
             {
@@ -182,14 +201,17 @@ def build_target_orders(
     selected: pd.DataFrame,
     *,
     fallback_pool: pd.DataFrame | None = None,
+    return_history: pd.DataFrame | None = None,
+    gross_exposure: float = 1.0,
 ) -> list[dict[str, Any]]:
     """Build pending buy/sell orders for the next trading day.
 
     The caller passes ``selected`` (top-N after industry caps + hold buffer)
     and the full scored ``fallback_pool``. Sizing applies in this order:
 
-      1. Equal-weight target ``total_value / top_n``, capped by
-         ``max_single_weight × total_value`` (5% by default).
+      1. Inverse-volatility base weights, tilted only by active prediction
+         evidence and blended with current holdings to penalize turnover.
+         Every target remains capped by ``max_single_weight``.
       2. ``target_shares = int(target_value // (price × lot_size)) × lot_size``.
       3. **Tier 1 — 1-lot fallback**: if ``target_shares == 0`` but 1 lot
          still fits under the 5% cap (``price × lot_size ≤ cap``), bump to
@@ -208,17 +230,50 @@ def build_target_orders(
     """
     top_n = max(len(selected), 1)
     total_value = account_total_value(account_state)
-    target_value = total_value / top_n
     max_single_weight = safe_float(config.get("trading", {}).get("max_single_weight"))
     if max_single_weight is not None and max_single_weight > 0:
         max_single_value = total_value * max_single_weight
-        target_value = min(target_value, max_single_value)
     else:
         max_single_value = None
+        max_single_weight = 1.0
     lot_size = int(config.get("trading", {}).get("lot_size", 100))
     current_positions = account_state.get("positions", {})
+    current_weights: dict[str, float] = {}
+    if total_value > 0:
+        for code, position in current_positions.items():
+            market_value = safe_float(position.get("market_value"))
+            if market_value is None:
+                shares = int(position.get("shares", 0))
+                price = safe_float(position.get("last_price")) or safe_float(position.get("avg_cost")) or 0.0
+                market_value = shares * price
+            current_weights[str(code).zfill(6)] = max(float(market_value), 0.0) / total_value
 
-    def _compute_target_shares(price: float) -> int:
+    controls = config.get("portfolio_controls", {}) or {}
+    defensive = str(config.get("agent_id") or "").lower() == "claude"
+    turnover_penalty = float(controls.get("turnover_penalty", 0.45 if defensive else 0.20))
+    min_trade_weight = float(controls.get("min_trade_weight", 0.003 if defensive else 0.001))
+    max_industry_weight = float(controls.get("max_industry_weight", 1.0))
+    group_constraints = (
+        {"industry": max_industry_weight}
+        if max_industry_weight < 1.0 and "industry" in selected.columns
+        else None
+    )
+    target_weights = risk_adjusted_target_weights(
+        selected,
+        top_n=top_n,
+        max_single_weight=float(max_single_weight),
+        current_weights=current_weights,
+        turnover_penalty=turnover_penalty,
+        min_trade_weight=min_trade_weight,
+        return_history=return_history,
+        gross_exposure=gross_exposure,
+        group_constraints=group_constraints,
+        risk_aversion=1.35 if defensive else 0.90,
+    )
+    fallback_weight = min(1.0 / top_n, float(max_single_weight))
+
+    def _compute_target_shares(price: float, target_weight: float) -> int:
+        target_value = total_value * min(max(target_weight, 0.0), float(max_single_weight))
         raw = int(target_value // (price * lot_size)) * lot_size
         if raw == 0 and max_single_value is not None and price * lot_size <= max_single_value:
             # Tier 1: 1 lot fits under cap — buy 1 lot rather than leave slot empty.
@@ -240,6 +295,10 @@ def build_target_orders(
             "reference_price": price,
             "score": row.get("score"),
             "reason": base_reason,
+            "avg_daily_amount": safe_float(row.get("avg_amount_20")),
+            "expected_volatility": safe_float(
+                row.get("expected_volatility", row.get("low_volatility_60"))
+            ),
         }
 
     targets: dict[str, dict[str, Any]] = {}
@@ -249,7 +308,13 @@ def build_target_orders(
         if price is None or price <= 0:
             continue
         code = str(row["code"]).zfill(6)
-        target_shares = _compute_target_shares(price)
+        target_shares = _compute_target_shares(
+            price,
+            target_weights.get(code, fallback_weight),
+        )
+        current_shares = int(current_positions.get(code, {}).get("shares", 0))
+        if total_value > 0 and abs(target_shares - current_shares) * price / total_value < min_trade_weight:
+            target_shares = current_shares
         targets[code] = _make_target(code, row, price, target_shares)
         if target_shares > 0:
             filled_count += 1
@@ -267,7 +332,7 @@ def build_target_orders(
             code = str(row["code"]).zfill(6)
             if code in already_seen:
                 continue
-            target_shares = _compute_target_shares(price)
+            target_shares = _compute_target_shares(price, fallback_weight)
             if target_shares == 0:
                 continue  # still unbuyable — try next candidate
             targets[code] = _make_target(code, row, price, target_shares, fallback=True)
@@ -297,6 +362,14 @@ def build_target_orders(
         if target_shares == current_shares:
             continue
         side = "buy" if target_shares > current_shares else "sell"
+        reference_price = safe_float(target.get("reference_price")) or 0.0
+        baseline_bps = float(config.get("trading", {}).get("slippage_rate", 0.0)) * 10_000.0
+        estimated_impact_bps = estimate_market_impact_bps(
+            order_value=abs(target_shares - current_shares) * reference_price,
+            avg_daily_amount=target.get("avg_daily_amount"),
+            volatility=target.get("expected_volatility"),
+            baseline_bps=baseline_bps,
+        )
         orders.append(
             {
                 "code": code,
@@ -311,6 +384,7 @@ def build_target_orders(
                 "reference_price": target.get("reference_price"),
                 "score": target.get("score"),
                 "reason": target.get("reason"),
+                "estimated_impact_bps": round(estimated_impact_bps, 4),
                 "status": "pending",
             }
         )
@@ -396,7 +470,10 @@ def execute_order(
 
     trading = config.get("trading", {})
     lot_size = int(trading.get("lot_size", 100))
-    slippage_rate = float(trading.get("slippage_rate", 0))
+    slippage_rate = max(
+        float(trading.get("slippage_rate", 0)),
+        float(order.get("estimated_impact_bps", 0.0) or 0.0) / 10_000.0,
+    )
     commission_rate = float(trading.get("commission_rate", 0))
     min_commission = float(trading.get("min_commission", 0))
     stamp_tax_rate = float(trading.get("stamp_tax_rate", 0))

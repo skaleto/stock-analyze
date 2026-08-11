@@ -164,14 +164,6 @@ def write_evolution(
                     repo_root=root,
                 )
                 raise
-            except Exception as exc:  # noqa: BLE001
-                # Direct local evolution may not have the historical cache.
-                # Manifest releases use strict preflight in strategy_release.
-                import logging
-                logging.warning(
-                    "backtest gate skipped (cache missing or engine error): %s", exc
-                )
-                backtest_status = "skipped"
 
     # Resolve hashes through the same `competition.load`-style merge so
     # they are comparable with the hashes already in `runs.csv`.

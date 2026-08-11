@@ -34,6 +34,7 @@ class USOrder:
     account_id: str = ""
     score: float | None = None
     reason: str = ""
+    name: str = ""
 
 
 # Module singleton bound to US mechanics (T+1, zero-fee, lot=1).

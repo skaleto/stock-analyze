@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import hashlib
 import re
+import tempfile
 from dataclasses import asdict
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -13,7 +15,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..utils import write_text_atomic
+from .. import competition
+from ..model_iteration import (
+    ensure_iteration_candidate,
+    iteration_prediction_path,
+)
+from ..utils import write_dataframe_csv_atomic, write_text_atomic
 from .activation import (
     ModelRegistry,
     ShadowCycleTracker,
@@ -21,8 +28,14 @@ from .activation import (
     evaluate_activation,
     select_registry_model,
 )
-from .event_study import build_event_study
-from .events import detect_events
+from .event_study import build_event_study_from_parquet
+from .events import write_events_incremental
+from .feature_registry import DEFAULT_REGISTRY, DEFAULT_REGISTRY_HASH
+from .governance import (
+    TrialRegistry,
+    deflated_sharpe_probability,
+    probability_of_backtest_overfit,
+)
 from .labels import build_forward_labels
 from .models import load_model_bundle, save_model_bundle, train_model_bundle
 from .prediction import generate_predictions
@@ -42,6 +55,7 @@ from .technical_features import compute_technical_features
 
 
 class ResearchPipeline:
+    _FEATURE_BATCH_SIZE = 32
     _REGIME_SOURCE_NAMES = {
         "cn_pmi", "cn_m", "cn_cpi", "cn_ppi", "shibor", "us_tycr",
         "index_global", "fx_daily",
@@ -55,14 +69,18 @@ class ResearchPipeline:
         agent: str,
         as_of: str | None = None,
         offline: bool = False,
-        max_full_history_instruments: int = 60,
+        max_full_history_instruments: int | None = None,
     ) -> None:
         self.repo_root = Path(repo_root)
         self.market = market
         self.agent = agent
         self.as_of = as_of or date.today().isoformat()
         self.offline = offline
-        self.max_full_history_instruments = max(1, int(max_full_history_instruments))
+        self.max_full_history_instruments = (
+            None
+            if max_full_history_instruments is None
+            else max(1, int(max_full_history_instruments))
+        )
         self.research_root = self.repo_root / "data" / "research"
         self.store = ResearchStore(self.research_root)
         self._persisted_source_frames_cache: dict[str, pd.DataFrame] | None = None
@@ -122,11 +140,25 @@ class ResearchPipeline:
         keep = [column for column in ("code", "trade_date", "open", "high", "low", "close", "volume", "amount", "turnover_rate") if column in normalized.columns]
         return normalized[keep]
 
+    @staticmethod
+    def _compact_numeric_features(frame: pd.DataFrame) -> pd.DataFrame:
+        compact = frame.copy()
+        for column in compact.select_dtypes(include=["float64"]).columns:
+            compact[column] = compact[column].astype(np.float32)
+        return compact
+
     def prepare_data(self, *, force: bool = False) -> dict[str, Any]:
         destination = self.store.feature_snapshot_path(self.market, self.as_of)
         if destination.exists() and not force:
-            rows = len(self.store.read_feature_snapshot(self.market, self.as_of))
-            return {"status": "cached", "rows": rows, "path": str(destination)}
+            cached = self.store.read_feature_snapshot(self.market, self.as_of)
+            manifest = self._write_feature_registry_manifest(cached, destination)
+            return {
+                "status": "cached",
+                "rows": len(cached),
+                "path": str(destination),
+                "feature_registry_hash": DEFAULT_REGISTRY_HASH,
+                "feature_manifest": str(manifest),
+            }
         history_files = self._history_files()
         if not history_files:
             raise FileNotFoundError(f"research_history_cache_missing:{self._cache_dir()}")
@@ -136,42 +168,18 @@ class ResearchPipeline:
             if (match := re.search(r"(?:fund_daily|history)_(\d{6})", path.name))
         ]
         full_history_codes = self._full_history_codes(all_codes)
-        feature_parts: list[pd.DataFrame] = []
-        for path in history_files:
-            history = self._normalize_history(path)
-            history = history.loc[history["trade_date"] <= self.run_key]
-            if history.empty:
-                continue
-            part = compute_technical_features(history)
-            code = str(part.iloc[-1]["code"])
-            keep_full = self.market != "a_share" or code in full_history_codes
-            part["history_role"] = "full" if keep_full else "latest_only"
-            feature_parts.append(part if keep_full else part.tail(1))
-        if not feature_parts:
-            raise FileNotFoundError(f"research_history_cache_empty:{self._cache_dir()}")
-        featured = pd.concat(feature_parts, ignore_index=True)
+        featured = self._build_history_features(history_files, full_history_codes)
         source_count = 0
         source_frames: dict[str, pd.DataFrame] = {}
         if not self.offline:
             available_codes = sorted(featured["code"].dropna().astype(str).unique())
-            persisted_financials = self._load_persisted_source_frames().get("fina_indicator", pd.DataFrame())
-            persisted_financial_codes = (
-                persisted_financials["ts_code"].dropna().astype(str).str.split(".").str[0].tolist()
-                if not persisted_financials.empty and "ts_code" in persisted_financials.columns else []
-            )
-            preferred_full_history = [
-                code for code in dict.fromkeys(persisted_financial_codes)
-                if code in full_history_codes and code in set(available_codes)
-            ]
-            source_codes = [
-                *preferred_full_history,
-                *sorted(code for code in full_history_codes if code in set(available_codes) and code not in preferred_full_history),
-                *[code for code in available_codes if code not in full_history_codes],
-            ]
+            persisted_sources = self._load_persisted_source_frames()
+            source_codes = self._research_source_codes(available_codes, full_history_codes)
             sources = self._collect_sources(source_codes)
-            source_frames = sources.frames
+            source_frames = self._merge_source_frame_maps(persisted_sources, sources.frames)
+            self._persisted_source_frames_cache = source_frames
             raw_root = self.research_root / "raw" / self.market / self.run_key
-            for name, frame in sources.frames.items():
+            for name, frame in source_frames.items():
                 if frame.empty:
                     continue
                 self.store.write_parquet_atomic(raw_root / f"{name}.parquet", frame)
@@ -210,7 +218,9 @@ class ResearchPipeline:
             featured = self._attach_qdii_metadata(featured)
         featured = add_industry_features(featured)
         featured["feature_observed_at"] = self.as_of
+        featured = self._compact_numeric_features(featured)
         self.store.write_feature_snapshot(self.market, self.as_of, featured)
+        manifest = self._write_feature_registry_manifest(featured, destination)
         return {
             "status": "built",
             "rows": len(featured),
@@ -219,12 +229,80 @@ class ResearchPipeline:
             "offline": self.offline,
             "sources": source_count,
             "full_history_instruments": len(full_history_codes) if self.market == "a_share" else int(featured["code"].nunique()),
+            "feature_registry_hash": DEFAULT_REGISTRY_HASH,
+            "feature_manifest": str(manifest),
         }
+
+    def _build_history_features(
+        self,
+        history_files: list[Path],
+        full_history_codes: set[str],
+    ) -> pd.DataFrame:
+        self.research_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            dir=self.research_root,
+            prefix=f".{self.market}-feature-batches-",
+        ) as temporary_dir:
+            batch_root = Path(temporary_dir)
+            pending: list[pd.DataFrame] = []
+            batch_count = 0
+
+            def flush() -> None:
+                nonlocal batch_count
+                if not pending:
+                    return
+                batch = pd.concat(pending, ignore_index=True)
+                pending.clear()
+                batch.to_parquet(batch_root / f"batch-{batch_count:04d}.parquet", index=False)
+                batch_count += 1
+
+            for path in history_files:
+                history = self._normalize_history(path)
+                history = history.loc[history["trade_date"] <= self.run_key]
+                if history.empty:
+                    continue
+                part = self._compact_numeric_features(compute_technical_features(history))
+                code = str(part.iloc[-1]["code"])
+                keep_full = self.market != "a_share" or code in full_history_codes
+                part["history_role"] = "full" if keep_full else "latest_only"
+                pending.append(part if keep_full else part.tail(1))
+                if len(pending) >= self._FEATURE_BATCH_SIZE:
+                    flush()
+            flush()
+            if batch_count == 0:
+                raise FileNotFoundError(f"research_history_cache_empty:{self._cache_dir()}")
+            return pd.read_parquet(batch_root)
+
+    @staticmethod
+    def _write_feature_registry_manifest(frame: pd.DataFrame, destination: Path) -> Path:
+        definitions = {item.name: asdict(item) for item in DEFAULT_REGISTRY}
+        excluded = {
+            "open", "high", "low", "close", "volume", "amount",
+            "code", "trade_date", "feature_observed_at",
+        }
+        numeric_features = sorted(
+            column for column in frame.select_dtypes(include=[np.number]).columns
+            if column not in excluded
+        )
+        present = sorted(set(numeric_features).intersection(definitions))
+        manifest = {
+            "registry_hash": DEFAULT_REGISTRY_HASH,
+            "registry_version": "research-feature-registry-v2",
+            "registered_features": sorted(definitions),
+            "present_registered_features": present,
+            "present_unregistered_numeric_features": sorted(set(numeric_features).difference(definitions)),
+            "definitions": definitions,
+        }
+        path = destination.with_suffix(".metadata.json")
+        write_text_atomic(path, json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
 
     def _full_history_codes(self, all_codes: list[str]) -> set[str]:
         if self.market != "a_share":
             return set(all_codes)
         available = set(all_codes)
+        if self.max_full_history_instruments is None:
+            return available
         priority: list[str] = []
         market_root = self.repo_root / "data" / "a_share"
         if market_root.exists():
@@ -260,6 +338,27 @@ class ResearchPipeline:
         )
         ordered = [*prioritized, *remaining]
         return set(ordered[: self.max_full_history_instruments])
+
+    def _research_source_codes(
+        self,
+        available_codes: list[str],
+        full_history_codes: set[str],
+    ) -> list[str]:
+        available = set(available_codes)
+        financials = self._load_persisted_source_frames().get("fina_indicator", pd.DataFrame())
+        covered = set()
+        if not financials.empty and "ts_code" in financials.columns:
+            covered = set(
+                financials["ts_code"].dropna().astype(str).str.split(".").str[0]
+            )
+        preferred = sorted(available.intersection(full_history_codes))
+        remaining = sorted(available.difference(full_history_codes))
+        return [
+            *[code for code in preferred if code not in covered],
+            *[code for code in remaining if code not in covered],
+            *[code for code in preferred if code in covered],
+            *[code for code in remaining if code in covered],
+        ]
 
     def _collect_sources(self, codes: list[str]) -> SourceCollection:
         if self.market == "cn_qdii_etf":
@@ -300,7 +399,68 @@ class ResearchPipeline:
             SafeProProxy(),
             as_of=self.as_of,
             codes=[ts_code_for_stock(code) for code in codes[:40]],
+            benchmark_codes=self._benchmark_codes(),
         )
+
+    def _baseline_accounts(self) -> list[dict[str, Any]]:
+        try:
+            accounts = competition.load_baseline(self.repo_root, self.market).get("accounts") or []
+        except (FileNotFoundError, ValueError):
+            accounts = []
+        if accounts:
+            return [dict(account) for account in accounts]
+        if self.market == "a_share":
+            return [
+                {"id": "hs300", "benchmark": "000300", "cash": 500_000},
+                {"id": "zz500", "benchmark": "000905", "cash": 500_000},
+            ]
+        return [
+            {"id": "us_exposure", "benchmark": "513100.SH", "cash": 500_000},
+            {"id": "hk_exposure", "benchmark": "159920.SZ", "cash": 500_000},
+        ]
+
+    def _benchmark_codes(self) -> list[str]:
+        return [
+            str(account.get("benchmark") or "").split(".")[0].zfill(6)
+            for account in self._baseline_accounts()
+            if account.get("benchmark")
+        ]
+
+    def _benchmark_history(self, features: pd.DataFrame) -> tuple[pd.DataFrame, float]:
+        accounts = self._baseline_accounts()
+        total_cash = sum(float(account.get("cash") or 0.0) for account in accounts) or float(len(accounts) or 1)
+        raw_frames = self._load_persisted_source_frames()
+        levels: list[pd.Series] = []
+        weights: list[float] = []
+        codes: list[str] = []
+        for account in accounts:
+            code = str(account.get("benchmark") or "").split(".")[0].zfill(6)
+            frame = raw_frames.get(f"benchmark_{code}", pd.DataFrame()).copy()
+            if frame.empty and self.market == "cn_qdii_etf":
+                frame = features.loc[features["code"].astype("string").str.zfill(6).eq(code)].copy()
+            if frame.empty or not {"trade_date", "close"}.issubset(frame.columns):
+                continue
+            frame["trade_date"] = frame["trade_date"].astype("string").str.replace("-", "", regex=False).str[:8]
+            frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
+            frame = frame.dropna(subset=["trade_date", "close"]).sort_values("trade_date").drop_duplicates("trade_date", keep="last")
+            if frame.empty or float(frame.iloc[0]["close"]) <= 0:
+                continue
+            levels.append(frame.set_index("trade_date")["close"] / float(frame.iloc[0]["close"]))
+            weights.append(float(account.get("cash") or 1.0) / total_cash)
+            codes.append(code)
+        if not levels:
+            raise ValueError(f"research_benchmark_missing:{self.market}")
+        panel = pd.concat(levels, axis=1)
+        panel.columns = codes
+        weight_series = pd.Series(weights, index=codes, dtype=float)
+        available_weight = panel.notna().mul(weight_series, axis=1).sum(axis=1)
+        composite = panel.mul(weight_series, axis=1).sum(axis=1, min_count=1) / available_weight.replace(0.0, np.nan)
+        benchmark = composite.dropna().rename("close").reset_index().rename(columns={"index": "trade_date"})
+        feature_dates = set(features["trade_date"].astype("string").str.replace("-", "", regex=False).str[:8])
+        benchmark_dates = set(benchmark["trade_date"].astype(str))
+        coverage = len(feature_dates.intersection(benchmark_dates)) / max(len(feature_dates), 1)
+        benchmark["benchmark_code"] = "composite:" + "|".join(codes)
+        return benchmark, float(coverage)
 
     def _load_persisted_source_frames(self) -> dict[str, pd.DataFrame]:
         if self._persisted_source_frames_cache is not None:
@@ -314,13 +474,56 @@ class ResearchPipeline:
         )
         if not runs:
             return {}
-        frames: dict[str, pd.DataFrame] = {}
-        for path in runs[-1].glob("*.parquet"):
-            if path.stem == "source_health":
-                continue
-            frames[path.stem] = pd.read_parquet(path)
+        versions: dict[str, list[pd.DataFrame]] = {}
+        for run in runs:
+            for path in run.glob("*.parquet"):
+                if path.stem == "source_health":
+                    continue
+                versions.setdefault(path.stem, []).append(pd.read_parquet(path))
+        frames = {
+            name: self._merge_source_versions(items)
+            for name, items in versions.items()
+        }
         self._persisted_source_frames_cache = frames
         return frames
+
+    @classmethod
+    def _merge_source_frame_maps(
+        cls,
+        *maps: dict[str, pd.DataFrame],
+    ) -> dict[str, pd.DataFrame]:
+        names = set().union(*(mapping.keys() for mapping in maps))
+        return {
+            name: cls._merge_source_versions(
+                [mapping[name] for mapping in maps if name in mapping]
+            )
+            for name in names
+        }
+
+    @staticmethod
+    def _merge_source_versions(frames: list[pd.DataFrame]) -> pd.DataFrame:
+        non_empty = [frame for frame in frames if isinstance(frame, pd.DataFrame) and not frame.empty]
+        if not non_empty:
+            return pd.DataFrame()
+        combined = pd.concat(non_empty, ignore_index=True, sort=False)
+        if "observed_at" in combined.columns:
+            combined = combined.sort_values("observed_at", kind="stable")
+        identity_candidates = (
+            "ts_code", "code", "index_code", "con_code", "trade_date",
+            "ann_date", "nav_date", "end_date", "source_date", "date",
+            "month", "in_date", "out_date", "bz_item", "series",
+        )
+        identity = [column for column in identity_candidates if column in combined.columns]
+        if identity:
+            combined = combined.drop_duplicates(identity, keep="last")
+        else:
+            value_columns = [
+                column for column in combined.columns
+                if column not in {"source", "observed_at"}
+            ]
+            if value_columns:
+                combined = combined.drop_duplicates(value_columns, keep="last")
+        return combined.reset_index(drop=True)
 
     def _attach_a_share_industry_fallback(self, features: pd.DataFrame) -> pd.DataFrame:
         cache = self._cache_dir()
@@ -451,9 +654,20 @@ class ResearchPipeline:
 
     def run_research(self) -> dict[str, Any]:
         features = self.store.read_feature_snapshot(self.market, self.as_of)
+        features_rows = len(features)
         price_columns = [column for column in ("code", "trade_date", "close") if column in features.columns]
-        labels = build_forward_labels(features[price_columns])
+        benchmark, benchmark_coverage = self._benchmark_history(features)
+        if benchmark_coverage < 0.95:
+            raise ValueError(f"research_benchmark_coverage:{benchmark_coverage:.4f}")
+        labels = build_forward_labels(
+            features[price_columns],
+            benchmark=benchmark,
+            require_benchmark=True,
+        )
+        labels_rows = len(labels)
         self.store.write_label_snapshot(self.market, self.as_of, labels)
+        del labels, price_columns
+        gc.collect()
 
         market_daily = features.groupby("trade_date", as_index=False).agg(
             momentum_20=("momentum_20", "median"),
@@ -491,54 +705,133 @@ class ResearchPipeline:
         regimes = classify_regimes(pd.concat(regime_inputs, ignore_index=True, sort=False))
         self.store.write_parquet_atomic(self._artifact_path("regimes"), regimes)
 
-        events = detect_events(features, market=self.market)
-        if not events.empty:
-            market_regimes = regimes.loc[regimes["scope"].eq("market")]
-            event_regime = market_regimes[["trade_date", "composite_regime"]].rename(columns={"composite_regime": "detected_regime"})
-            events = events.merge(event_regime, on="trade_date", how="left")
-            events["regime"] = events["detected_regime"].fillna(events["regime"])
-            events = events.drop(columns="detected_regime")
-        self.store.write_parquet_atomic(self._artifact_path("events"), events)
-        event_study = build_event_study(events, labels) if not events.empty else pd.DataFrame()
+        market_regimes = regimes.loc[regimes["scope"].eq("market")]
+        regime_by_date = dict(zip(
+            market_regimes["trade_date"].astype(str),
+            market_regimes["composite_regime"].astype(str),
+        ))
+        events_path = self._artifact_path("events")
+        events_rows = write_events_incremental(
+            features,
+            market=self.market,
+            destination=events_path,
+            regime_by_date=regime_by_date,
+        )
+        del features
+        gc.collect()
+        if events_rows:
+            event_study = build_event_study_from_parquet(
+                events_path,
+                self.store.label_snapshot_path(self.market, self.as_of),
+            )
+        else:
+            event_study = pd.DataFrame()
+        gc.collect()
         self.store.write_parquet_atomic(self._artifact_path("event_studies"), event_study)
+        pruned_artifacts = self.store.prune_dated_artifacts(
+            self.market,
+            categories=("features", "labels", "events", "regimes", "event_studies"),
+            keep_recent=3,
+            keep_monthly=3,
+        )
         return {
             "status": "complete",
             "stages": ["features", "labels", "events", "regimes", "event_study"],
-            "features_rows": len(features),
-            "labels_rows": len(labels),
-            "events_rows": len(events),
+            "features_rows": features_rows,
+            "labels_rows": labels_rows,
+            "benchmark_coverage": round(benchmark_coverage, 4),
+            "events_rows": events_rows,
             "regime_rows": len(regimes),
             "event_study_rows": len(event_study),
+            "pruned_artifacts": pruned_artifacts,
         }
 
     def _model_root(self, horizon: int) -> Path:
         return self.research_root / "models" / self.market / str(horizon)
 
     def train_models(self) -> dict[str, Any]:
-        features = self.store.read_feature_snapshot(self.market, self.as_of)
-        labels = self.store.read_label_snapshot(self.market, self.as_of)
-        dataset = features.merge(labels, on=["code", "trade_date"], how="inner", suffixes=("", "_label"))
+        snapshot_date = self.store.latest_common_snapshot_date(
+            self.market,
+            as_of=self.as_of,
+        )
+        features = self.store.read_feature_snapshot(self.market, snapshot_date)
+        labels = self.store.read_label_snapshot(self.market, snapshot_date)
         excluded = {
             "code", "trade_date", "open", "high", "low", "close", "volume", "amount",
             "horizon", "label", "label_end_date", "absolute_return", "benchmark_return",
             "excess_return", "threshold", "max_favorable_excursion", "max_adverse_excursion",
         }
-        numeric = [column for column in dataset.select_dtypes(include=[np.number]).columns if column not in excluded]
-        feature_columns = [column for column in numeric if dataset[column].notna().mean() >= 0.55]
+        numeric = [
+            column
+            for column in features.select_dtypes(include=[np.number]).columns
+            if column not in excluded
+        ]
+        feature_columns = [
+            column for column in numeric if features[column].notna().mean() >= 0.55
+        ]
         trained: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
         for horizon in (3, 5, 10, 20):
             try:
+                horizon_labels = labels.loc[labels["horizon"].eq(horizon)]
+                if horizon_labels.empty:
+                    raise ValueError(f"model_horizon_data_missing:{horizon}")
+                dataset = features.merge(
+                    horizon_labels,
+                    on=["code", "trade_date"],
+                    how="inner",
+                    suffixes=("", "_label"),
+                )
+                if dataset.empty:
+                    raise ValueError(f"model_horizon_data_missing:{horizon}")
                 bundle = train_model_bundle(dataset, feature_columns=feature_columns, horizon=horizon)
-                artifact = self._model_root(horizon) / f"{self.run_key}-{bundle.model_version}.joblib"
+                model_root = self._model_root(horizon)
+                trial_registry = TrialRegistry(model_root / "trials.jsonl")
+                metrics = bundle.metrics
+                trial = trial_registry.record({
+                    "trial_id": f"{self.market}:{horizon}:{self.run_key}:{bundle.model_version}",
+                    "model_version": bundle.model_version,
+                    "as_of": self.as_of,
+                    "snapshot_date": snapshot_date,
+                    "market": self.market,
+                    "horizon": horizon,
+                    "protocol": metrics.get("training_protocol_version", "unknown"),
+                    "sharpe": float(metrics.get("portfolio_sharpe", 0.0)),
+                    "rank_ic": float(metrics.get("rank_ic", 0.0)),
+                    "period_returns": list(metrics.get("portfolio_period_returns") or []),
+                })
+                trials = trial_registry.read()
+                trial_sharpes = [float(row.get("sharpe", 0.0)) for row in trials]
+                trial_returns = pd.DataFrame({
+                    f"trial_{int(row.get('trial_number', index + 1))}": pd.Series(
+                        row.get("period_returns") or [], dtype=float
+                    )
+                    for index, row in enumerate(trials)
+                })
+                governance = {
+                    "trial_number": int(trial.get("trial_number", len(trials))),
+                    "protocol_trial_number": int(trial.get("protocol_trial_number", 1)),
+                    "deflated_sharpe_probability": deflated_sharpe_probability(
+                        observed_sharpe=float(metrics.get("portfolio_sharpe", 0.0)),
+                        trial_sharpes=trial_sharpes,
+                        observations=max(len(metrics.get("portfolio_period_returns") or []), 2),
+                    ),
+                    "probability_of_backtest_overfit": probability_of_backtest_overfit(
+                        trial_returns
+                    ),
+                    "pbo_trial_count": len(trial_returns.columns),
+                }
+                metrics["governance"] = governance
+                artifact = model_root / f"{self.run_key}-{bundle.model_version}.joblib"
                 save_model_bundle(bundle, artifact)
-                registry = ModelRegistry(self._model_root(horizon) / "registry.json")
+                registry = ModelRegistry(model_root / "registry.json")
                 state = registry._read()
                 model = state.setdefault("models", {}).setdefault(
                     bundle.model_version,
                     {"status": "research", "gate_history": []},
                 )
                 model["artifact"] = str(artifact)
+                model["governance"] = governance
                 model.setdefault("registered_at", datetime.now(timezone.utc).isoformat())
                 registry._write(state)
                 gate = None
@@ -559,7 +852,12 @@ class ResearchPipeline:
                 })
             except Exception as exc:  # noqa: BLE001 - one horizon must not erase others
                 failures.append({"horizon": horizon, "error": str(exc)[:200]})
-        return {"status": "complete" if trained else "failed", "trained": trained, "failures": failures}
+        return {
+            "status": "complete" if trained else "failed",
+            "snapshot_date": snapshot_date,
+            "trained": trained,
+            "failures": failures,
+        }
 
     def _resolve_model(self, horizon: int) -> tuple[Path, str]:
         model_root = self._model_root(horizon)
@@ -572,6 +870,103 @@ class ResearchPipeline:
                 return Path(metadata["artifact"]), str(metadata.get("status", "research"))
         return model_root / "missing.joblib", "research"
 
+    def backfill_prediction_accuracy(self) -> dict[str, Any]:
+        label_paths = sorted(
+            path
+            for path in (self.research_root / "labels" / self.market).glob("*.parquet")
+            if path.stem.isdigit() and path.stem <= self.run_key
+        )
+        prediction_dir = self.repo_root / "data" / self.market / self.agent / "predictions"
+        prediction_paths = sorted(
+            path
+            for path in prediction_dir.glob("*.parquet")
+            if path.stem.isdigit() and path.stem <= self.run_key
+        )
+        if not label_paths or not prediction_paths:
+            return {"status": "unavailable", "evaluated": 0}
+        labels = pd.read_parquet(label_paths[-1])
+        required_labels = {"code", "trade_date", "horizon", "label", "excess_return"}
+        if required_labels.difference(labels.columns):
+            raise ValueError("prediction_accuracy_label_schema")
+        prediction_parts: list[pd.DataFrame] = []
+        for path in prediction_paths[-120:]:
+            frame = pd.read_parquet(path)
+            if "as_of" not in frame.columns:
+                frame = frame.assign(as_of=path.stem)
+            prediction_parts.append(frame)
+        predictions = pd.concat(prediction_parts, ignore_index=True, sort=False)
+        required_predictions = {
+            "as_of", "code", "horizon", "p_down", "p_flat", "p_up",
+        }
+        if required_predictions.difference(predictions.columns):
+            raise ValueError("prediction_accuracy_prediction_schema")
+        predictions["trade_date"] = (
+            predictions["as_of"].astype("string").str.replace("-", "", regex=False).str[:8]
+        )
+        predictions["code"] = predictions["code"].astype("string").str.split(".").str[0].str.zfill(6)
+        labels = labels.copy()
+        labels["code"] = labels["code"].astype("string").str.split(".").str[0].str.zfill(6)
+        labels["trade_date"] = labels["trade_date"].astype("string").str.replace("-", "", regex=False).str[:8]
+        if "label_end_date" in labels.columns:
+            labels = labels.loc[
+                labels["label_end_date"].astype("string").str.replace("-", "", regex=False).str[:8] <= self.run_key
+            ]
+        joined = predictions.merge(
+            labels[["code", "trade_date", "horizon", "label", "excess_return"]],
+            on=["code", "trade_date", "horizon"],
+            how="inner",
+            validate="many_to_one",
+        )
+        if joined.empty:
+            return {"status": "current", "evaluated": 0}
+        probability_columns = ["p_down", "p_flat", "p_up"]
+        probability_labels = np.asarray(["down", "flat", "up"], dtype=object)
+        probabilities = joined[probability_columns].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+        expected = np.column_stack([
+            joined["label"].astype(str).eq(class_name).astype(float).to_numpy()
+            for class_name in probability_labels
+        ])
+        joined["predicted_label"] = probability_labels[np.argmax(probabilities, axis=1)]
+        joined["correct"] = joined["predicted_label"].eq(joined["label"].astype(str))
+        joined["brier_score"] = np.sum((probabilities - expected) ** 2, axis=1)
+        predicted_return = pd.to_numeric(joined.get("expected_excess_return"), errors="coerce")
+        actual_return = pd.to_numeric(joined["excess_return"], errors="coerce")
+        joined["return_error"] = predicted_return - actual_return
+        joined["evaluated_at"] = datetime.now(timezone.utc).isoformat()
+        joined["as_of"] = joined["trade_date"].astype(str)
+        if "model_version" not in joined.columns:
+            joined["model_version"] = ""
+        output_columns = [
+            "as_of", "code", "horizon", "model_version", "active_status", "confidence",
+            "predicted_label", "label", "correct", "brier_score",
+            "expected_excess_return", "excess_return", "return_error", "evaluated_at",
+        ]
+        for column in output_columns:
+            if column not in joined.columns:
+                joined[column] = pd.NA
+        destination = self.repo_root / "data" / self.market / self.agent / "prediction_accuracy.csv"
+        if destination.exists() and destination.stat().st_size > 0:
+            existing = pd.read_csv(
+                destination,
+                dtype={"as_of": str, "code": str, "model_version": str},
+            )
+            joined = pd.concat([existing, joined[output_columns]], ignore_index=True, sort=False)
+        else:
+            joined = joined[output_columns]
+        joined = (
+            joined.sort_values("evaluated_at", kind="stable")
+            .drop_duplicates(["as_of", "code", "horizon", "model_version"], keep="last")
+            .sort_values(["as_of", "horizon", "code"], kind="stable")
+            .reset_index(drop=True)
+        )
+        write_dataframe_csv_atomic(joined, destination, index=False)
+        return {
+            "status": "complete",
+            "evaluated": int(len(joined)),
+            "hit_rate": float(pd.to_numeric(joined["correct"], errors="coerce").mean()),
+            "mean_brier_score": float(pd.to_numeric(joined["brier_score"], errors="coerce").mean()),
+            "path": str(destination),
+        }
     def predict(self, *, horizon: int | None = None) -> dict[str, Any]:
         health_path = self.research_root / "prediction_health" / self.market / f"{self.run_key}-{self.agent}.json"
         try:
@@ -582,6 +977,7 @@ class ResearchPipeline:
             statuses: dict[str, str] = {}
             failures: list[dict[str, Any]] = []
             cycle_counts: dict[str, int] = {}
+            iteration_candidates: dict[str, dict[str, Any]] = {}
             regime, regime_stability = self._current_regime_context()
             target_horizons = (horizon,) if horizon is not None else (3, 5, 10, 20)
             for target_horizon in target_horizons:
@@ -602,24 +998,31 @@ class ResearchPipeline:
                     artifacts[str(target_horizon)] = str(artifact)
                     statuses[str(target_horizon)] = status
                     rows.extend(self._prediction_rows(records))
-                    if status == "shadow" and self.agent == "codex":
-                        cycle = self._advance_shadow_cycle(target_horizon, bundle, len(records))
-                        cycle_counts[str(target_horizon)] = cycle["count"]
-                        statuses[str(target_horizon)] = cycle["status"]
                     if self.agent == "codex":
-                        self._run_shadow_challengers(
+                        candidate = self._write_iteration_candidate_predictions(
                             target_horizon,
                             latest,
-                            exclude_version=bundle.model_version,
+                            canonical_bundle=bundle,
+                            canonical_records=records,
                             regime=regime,
                             regime_stability=regime_stability,
                         )
+                        if candidate is not None:
+                            iteration_candidates[str(target_horizon)] = candidate
+                            if candidate.get("shadow_cycles") is not None:
+                                cycle_counts[str(target_horizon)] = int(candidate["shadow_cycles"])
+                            if candidate["model_version"] == bundle.model_version:
+                                statuses[str(target_horizon)] = str(candidate["status"])
                 except Exception as exc:  # noqa: BLE001 - preserve successful horizons
                     failures.append({"horizon": target_horizon, "error": str(exc)[:240]})
             if not rows:
                 raise RuntimeError(f"prediction_models_unavailable:{failures}")
             destination = self.repo_root / "data" / self.market / self.agent / "predictions" / f"{self.run_key}.parquet"
             self.store.write_parquet_atomic(destination, pd.DataFrame(rows))
+            try:
+                accuracy_backfill = self.backfill_prediction_accuracy()
+            except Exception as exc:  # noqa: BLE001 - diagnostics cannot invalidate fresh predictions
+                accuracy_backfill = {"status": "failed", "evaluated": 0, "error": str(exc)[:240]}
             health = {
                 "status": "partial" if failures else "complete",
                 "predictions": len(rows),
@@ -628,8 +1031,10 @@ class ResearchPipeline:
                 "active_status": statuses,
                 "failures": failures,
                 "shadow_cycles": cycle_counts,
+                "iteration_candidates": iteration_candidates,
                 "regime": regime,
                 "regime_stability": regime_stability,
+                "accuracy_backfill": accuracy_backfill,
             }
         except Exception as exc:  # noqa: BLE001 - trading path remains unchanged
             health = {"status": "fallback", "predictions": 0, "error": str(exc)[:240]}
@@ -667,44 +1072,58 @@ class ResearchPipeline:
             status = str(state["models"][bundle.model_version]["status"])
         return {**cycle, "status": status}
 
-    def _run_shadow_challengers(
+    def _write_iteration_candidate_predictions(
         self,
         horizon: int,
         features: pd.DataFrame,
         *,
-        exclude_version: str,
+        canonical_bundle: Any,
+        canonical_records: list,
         regime: str,
         regime_stability: float,
-    ) -> None:
-        model_root = self._model_root(horizon)
-        registry_path = model_root / "registry.json"
-        if not registry_path.exists():
-            return
-        state = json.loads(registry_path.read_text(encoding="utf-8"))
-        candidates = [
-            (version, metadata)
-            for version, metadata in (state.get("models") or {}).items()
-            if version != exclude_version and metadata.get("status") == "shadow"
-        ]
-        if not candidates:
-            return
-        registered = [item for item in candidates if item[1].get("registered_at")]
-        version, metadata = (
-            max(registered, key=lambda item: str(item[1]["registered_at"]))
-            if registered else candidates[-1]
-        )
-        bundle = load_model_bundle(Path(metadata["artifact"]))
-        records = generate_predictions(
-            bundle,
-            features,
+    ) -> dict[str, Any] | None:
+        candidate = ensure_iteration_candidate(
+            self.repo_root,
+            self.market,
+            horizon,
             as_of=self.as_of,
-            horizon=horizon,
-            regime=regime,
-            data_quality=1.0,
-            regime_stability=regime_stability,
-            feature_snapshot_id=f"{self.market}-{self.run_key}",
-            active_status="inactive",
         )
-        destination = self.research_root / "shadow_predictions" / self.market / str(horizon) / version / f"{self.run_key}.parquet"
+        if candidate is None:
+            return None
+        version = str(candidate["model_version"])
+        if version == str(canonical_bundle.model_version):
+            bundle = canonical_bundle
+            records = canonical_records
+        else:
+            artifact = candidate.get("artifact")
+            if not artifact:
+                raise FileNotFoundError(f"iteration_candidate_artifact_missing:{version}")
+            bundle = load_model_bundle(Path(str(artifact)))
+            records = generate_predictions(
+                bundle,
+                features,
+                as_of=self.as_of,
+                horizon=horizon,
+                regime=regime,
+                data_quality=1.0,
+                regime_stability=regime_stability,
+                feature_snapshot_id=f"{self.market}-{self.run_key}",
+                active_status="inactive",
+            )
+        destination = iteration_prediction_path(
+            self.repo_root,
+            self.market,
+            horizon,
+            version,
+            self.as_of,
+        )
         self.store.write_parquet_atomic(destination, pd.DataFrame(self._prediction_rows(records)))
-        self._advance_shadow_cycle(horizon, bundle, len(records))
+        if candidate["status"] == "shadow":
+            cycle = self._advance_shadow_cycle(horizon, bundle, len(records))
+            candidate = {
+                **candidate,
+                "status": cycle["status"],
+                "shadow_cycles": cycle["count"],
+                "shadow_cycles_remaining": cycle["remaining"],
+            }
+        return {**candidate, "prediction_path": str(destination), "predictions": len(records)}

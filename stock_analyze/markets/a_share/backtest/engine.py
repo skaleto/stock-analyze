@@ -6,7 +6,7 @@ interface that the simulator's execution + NAV code paths actually need
 (``next_trading_day`` / ``price_snapshot`` / ``benchmark_close`` /
 ``execution_quote`` / ``execution_price``).
 
-Signal generation on Fridays runs the full overlay ``factor_pipeline``
+Signal generation follows the baseline schedule and runs the full overlay ``factor_pipeline``
 (winsorize → z-score → industry-neutralize → weighted combine) when
 ``backtest.use_full_pipeline`` is true — the default in the A-share
 baseline — driving selection from the same factor mix as live trading. When
@@ -26,11 +26,12 @@ from typing import Any, Iterator, List, Optional, Tuple
 
 import pandas as pd
 
+from ....research.execution_policy import estimate_market_impact_bps
+from ....research.regime_policy import apply_regime_policy, regime_decision_from_state
+from ....research.strategy_ensemble import risk_adjusted_target_weights
 from .data_view import PointInTimeView
+from .exceptions import BacktestDataUnavailable
 from .types import BacktestMetrics, BacktestResult
-
-
-SIGNAL_DAY_WEEKDAY = 4  # Friday
 
 
 # ---------------------------------------------------------------------------
@@ -155,17 +156,9 @@ class BacktestProvider:
 
     def benchmark_close(self, code: str,
                           as_of: Optional[str] = None) -> tuple[Optional[float], Optional[str]]:
-        """Best-effort: read benchmark close from daily file by ts_code."""
+        """Read a benchmark close from its dedicated point-in-time history."""
         d = _coerce_date(as_of) if as_of else self._view.as_of
-        daily = self._view.daily(as_of=d)
-        if daily.empty:
-            return None, None
-        # Heuristic: benchmark "000300" -> "000300.SH"
-        bench_ts = _normalize_benchmark(code)
-        row = daily[daily["ts_code"] == bench_ts]
-        if row.empty:
-            return None, None
-        return _safe_float(row.iloc[0].get("close")), d.isoformat()
+        return self._view.benchmark_close(code, as_of=d)
 
     def execution_quote(self, code: str, execute_after: str,
                           side: str, as_of: Optional[str] = None) -> _ExecutionQuote:
@@ -256,8 +249,13 @@ def _load_trade_days(cache_root: Path, start: date, end: date) -> List[date]:
     return sorted(d for d in days if start <= d <= end)
 
 
-def _is_signal_day(d: date) -> bool:
-    return d.weekday() == SIGNAL_DAY_WEEKDAY
+def _is_signal_day(d: date, signal_day: str = "every_trading_day") -> bool:
+    normalized = str(signal_day or "every_trading_day").strip().lower()
+    if normalized == "every_trading_day":
+        return True
+    if normalized in {"friday", "weekly_friday"}:
+        return d.weekday() == 4
+    raise ValueError(f"unsupported_signal_day:{signal_day}")
 
 
 # ---------------------------------------------------------------------------
@@ -288,18 +286,19 @@ def _compute_signals(view: PointInTimeView, overlay: dict,
     if daily_basic.empty:
         return []
 
-    available_codes = set(view.universe(as_of=as_of, indices=universe))
-    df = daily_basic[daily_basic["ts_code"].isin(available_codes)].copy()
-    if df.empty:
-        return []
-
-    # Drop missing PE and sort ascending (low first)
-    df = df.dropna(subset=["pe_ttm"])
-    df = df[df["pe_ttm"] > 0]
-    df = df.sort_values("pe_ttm")
-
     rows: List[dict] = []
     for account in overlay.get("accounts", []):
+        scope = str(account.get("scope") or "")
+        if scope and scope not in universe:
+            continue
+        available_codes = set(
+            view.universe(as_of=as_of, indices=[scope] if scope else universe)
+        )
+        df = daily_basic[daily_basic["ts_code"].isin(available_codes)].copy()
+        if df.empty:
+            continue
+        df = df.dropna(subset=["pe_ttm"])
+        df = df[df["pe_ttm"] > 0].sort_values("pe_ttm")
         top_n = int(account.get("top_n", 50))
         selected = df.head(top_n)
         for _, r in selected.iterrows():
@@ -322,9 +321,8 @@ def _build_pending_batch(signals: List[dict], overlay: dict, as_of: date,
                           state: dict, run_id: str) -> List[dict]:
     """Translate signals into pending orders the simulator can execute.
 
-    For each account, target equal-weighted positions across its top-N. Compute
-    delta vs current holdings (in state["positions"]) and emit BUY/SELL orders
-    with execute_after = next trade day after as_of.
+    Uses the same covariance/turnover-aware target policy as live trading,
+    then emits deltas for next-day execution.
     """
     batches: List[dict] = []
     daily = view.daily(as_of=as_of)
@@ -352,7 +350,68 @@ def _build_pending_batch(signals: List[dict], overlay: dict, as_of: date,
                               for code, qty in current_qty.items())
         total_value = cash + positions_value
         target_codes = [s["ts_code"] for s in acc_signals]
-        target_value_each = total_value / max(len(target_codes), 1)
+        return_history = view.return_history(target_codes, as_of=as_of, days=90)
+        volatility = (
+            return_history.std(ddof=0) * (252.0 ** 0.5)
+            if not return_history.empty
+            else pd.Series(dtype=float)
+        )
+        candidates = pd.DataFrame([
+            {
+                "code": signal["ts_code"],
+                "score": signal.get("score", 0.0),
+                "low_volatility_60": volatility.get(signal["ts_code"]),
+                "momentum_20": (
+                    float((1.0 + return_history[signal["ts_code"]].dropna().tail(20)).prod() - 1.0)
+                    if signal["ts_code"] in return_history.columns
+                    and not return_history[signal["ts_code"]].dropna().empty
+                    else None
+                ),
+            }
+            for signal in acc_signals
+        ])
+        profile = "defensive" if str(overlay.get("agent_id") or "").lower() == "claude" else "trend"
+        benchmark_returns = view.benchmark_return_history(
+            str(account.get("benchmark") or "000300.SH"),
+            as_of=as_of,
+            days=60,
+        )
+        if len(benchmark_returns) < 20:
+            regime_state = "unknown"
+        else:
+            momentum_20 = float((1.0 + benchmark_returns.tail(20)).prod() - 1.0)
+            volatility_20 = float(benchmark_returns.tail(20).std(ddof=0) * (252.0 ** 0.5))
+            if momentum_20 < -0.03 or volatility_20 > 0.30:
+                regime_state = "risk_off"
+            elif momentum_20 > 0.02 and volatility_20 < 0.28:
+                regime_state = "risk_on"
+            else:
+                regime_state = "mixed"
+        regime_decision = regime_decision_from_state(
+            regime_state,
+            profile=profile,
+            source_date=as_of.isoformat(),
+            warning="backtest_regime_insufficient" if regime_state == "unknown" else "",
+        )
+        candidates = apply_regime_policy(candidates, regime_decision, profile=profile)
+        current_weights = {
+            str(code).split(".", 1)[0].zfill(6): qty * price_map.get(code, 0.0) / total_value
+            for code, qty in current_qty.items()
+            if total_value > 0
+        }
+        controls = overlay.get("portfolio_controls", {}) or {}
+        defensive = str(overlay.get("agent_id") or "").lower() == "claude"
+        target_weights = risk_adjusted_target_weights(
+            candidates,
+            top_n=len(target_codes),
+            max_single_weight=float(overlay.get("trading", {}).get("max_single_weight", 1.0)),
+            current_weights=current_weights,
+            turnover_penalty=float(controls.get("turnover_penalty", 0.45 if defensive else 0.20)),
+            min_trade_weight=float(controls.get("min_trade_weight", 0.003 if defensive else 0.001)),
+            return_history=return_history,
+            risk_aversion=1.35 if defensive else 0.90,
+            gross_exposure=regime_decision.gross_exposure,
+        )
 
         orders: List[dict] = []
         lot_size = int(overlay.get("trading", {}).get("lot_size", 100))
@@ -367,20 +426,36 @@ def _build_pending_batch(signals: List[dict], overlay: dict, as_of: date,
                     "account_id": acc_id,
                 })
 
-        # BUY top-N targets to reach target_value_each
+        # Rebalance top-N targets to covariance- and turnover-aware weights.
         for code in target_codes:
             price = price_map.get(code)
             if not price or price <= 0:
                 continue
-            target_qty = int((target_value_each / price) // lot_size * lot_size)
+            weight_code = str(code).split(".", 1)[0].zfill(6)
+            target_value = total_value * float(target_weights.get(weight_code, 0.0))
+            target_qty = int((target_value / price) // lot_size * lot_size)
             current = current_qty.get(code, 0)
             delta = target_qty - current
+            daily_row = daily.loc[daily["ts_code"].eq(code)]
+            amount = (
+                float(pd.to_numeric(daily_row["amount"], errors="coerce").dropna().iloc[-1])
+                if not daily_row.empty and "amount" in daily_row.columns
+                and pd.to_numeric(daily_row["amount"], errors="coerce").notna().any()
+                else None
+            )
+            impact_bps = estimate_market_impact_bps(
+                order_value=abs(delta) * price,
+                avg_daily_amount=amount,
+                volatility=volatility.get(code),
+                baseline_bps=float(overlay.get("trading", {}).get("slippage_rate", 0.0)) * 10_000.0,
+            )
             if delta > 0:
                 orders.append({
                     "ts_code": code,
                     "side": "BUY",
                     "quantity": int(delta),
                     "account_id": acc_id,
+                    "estimated_impact_bps": impact_bps,
                 })
             elif delta < 0:
                 orders.append({
@@ -388,6 +463,7 @@ def _build_pending_batch(signals: List[dict], overlay: dict, as_of: date,
                     "side": "SELL",
                     "quantity": int(-delta),
                     "account_id": acc_id,
+                    "estimated_impact_bps": impact_bps,
                 })
 
         if orders:
@@ -435,8 +511,12 @@ def _execute_pending(pending: List[dict], trade_day: date,
                 # Carry forward to next attempt
                 unfilled.append(order)
                 continue
-            price = quote.price * (1 + slippage_rate if order["side"] == "BUY"
-                                    else 1 - slippage_rate)
+            effective_slippage_rate = max(
+                slippage_rate,
+                float(order.get("estimated_impact_bps", 0.0) or 0.0) / 10_000.0,
+            )
+            price = quote.price * (1 + effective_slippage_rate if order["side"] == "BUY"
+                                    else 1 - effective_slippage_rate)
             qty = order["quantity"]
             gross = price * qty
             commission = max(gross * commission_rate, min_commission)
@@ -493,7 +573,7 @@ def _execute_pending(pending: List[dict], trade_day: date,
                 "price": price,
                 "commission": commission,
                 "stamp_tax": stamp,
-                "slippage": gross * slippage_rate,
+                "slippage": abs(price - quote.price) * qty,
             })
 
         if unfilled:
@@ -517,12 +597,23 @@ def _update_nav(trade_day: date, state: dict, overlay: dict,
             snap = provider.price_snapshot(code, as_of=trade_day.isoformat())
             close = snap.close if snap.close is not None else pos.get("avg_cost", 0.0)
             positions_value += pos.get("qty", 0) * (close or 0.0)
+        benchmark_code = account.get("benchmark")
+        benchmark_close = None
+        benchmark_date = None
+        if benchmark_code:
+            benchmark_close, benchmark_date = provider.benchmark_close(
+                str(benchmark_code),
+                as_of=trade_day.isoformat(),
+            )
         rows.append({
             "date": trade_day.isoformat(),
             "account_id": acc_id,
             "cash": round(cash, 2),
             "positions_value": round(positions_value, 2),
             "total_value": round(cash + positions_value, 2),
+            "benchmark_code": benchmark_code,
+            "benchmark_close": benchmark_close,
+            "benchmark_date": benchmark_date,
         })
     return rows
 
@@ -535,6 +626,11 @@ def _update_nav(trade_day: date, state: dict, overlay: dict,
 def _compute_metrics(daily_nav: pd.DataFrame) -> BacktestMetrics:
     if daily_nav.empty:
         return BacktestMetrics(0.0, 0.0, 0.0, 0.0, 0.0)
+    required = {"date", "account_id", "total_value", "benchmark_close"}
+    missing = sorted(required.difference(daily_nav.columns))
+    if missing:
+        raise BacktestDataUnavailable("benchmark_history_incomplete", {"missing_columns": missing})
+
     portfolio = daily_nav.groupby("date")["total_value"].sum().sort_index()
     if len(portfolio) < 2:
         return BacktestMetrics(0.0, 0.0, 0.0, 0.0, 0.0)
@@ -553,13 +649,74 @@ def _compute_metrics(daily_nav: pd.DataFrame) -> BacktestMetrics:
     drawdown = portfolio / cummax - 1
     max_dd = float(drawdown.min())
 
+    benchmark_parts: list[pd.Series] = []
+    for _account_id, group in daily_nav.groupby("account_id", sort=False):
+        ordered = group.sort_values("date").copy()
+        closes = pd.to_numeric(ordered["benchmark_close"], errors="coerce")
+        values = pd.to_numeric(ordered["total_value"], errors="coerce")
+        if closes.isna().any() or closes.empty or closes.iloc[0] <= 0 or values.isna().any():
+            raise BacktestDataUnavailable("benchmark_history_incomplete")
+        normalized_value = float(values.iloc[0]) * closes / float(closes.iloc[0])
+        benchmark_parts.append(pd.Series(normalized_value.to_numpy(), index=ordered["date"].astype(str)))
+    benchmark_value = pd.concat(benchmark_parts, axis=1).sum(axis=1).sort_index()
+    aligned = pd.concat(
+        [portfolio.rename("portfolio"), benchmark_value.rename("benchmark")],
+        axis=1,
+        join="inner",
+    ).dropna()
+    active_returns = aligned["portfolio"].pct_change() - aligned["benchmark"].pct_change()
+    active_returns = active_returns.dropna()
+    tracking_error = float(active_returns.std(ddof=1)) if len(active_returns) > 1 else 0.0
+    information_ratio = (
+        float(active_returns.mean()) / tracking_error * (252 ** 0.5)
+        if tracking_error > 0
+        else 0.0
+    )
+
     return BacktestMetrics(
         cum_return=cum,
         annual_return=float(annual),
         sharpe=float(sharpe),
         max_drawdown=max_dd,
-        information_ratio=float(sharpe),  # IR ≈ sharpe (no benchmark yet in MVP)
+        information_ratio=information_ratio,
     )
+
+
+def _validate_market_data(
+    view: PointInTimeView,
+    provider: BacktestProvider,
+    trade_days: List[date],
+    overlay: dict,
+) -> None:
+    missing_daily = [d.isoformat() for d in trade_days if view.daily(as_of=d).empty]
+    missing_basic = [d.isoformat() for d in trade_days if view.daily_basic(as_of=d).empty]
+    if missing_daily or missing_basic:
+        raise BacktestDataUnavailable(
+            "market_history_incomplete",
+            {
+                "missing_daily": missing_daily[:10],
+                "missing_daily_basic": missing_basic[:10],
+            },
+        )
+
+    missing_benchmarks: dict[str, list[str]] = {}
+    for account in overlay.get("accounts", []):
+        code = str(account.get("benchmark") or "")
+        if not code:
+            missing_benchmarks[str(account.get("id") or "unknown")] = ["benchmark_not_configured"]
+            continue
+        missing_dates: list[str] = []
+        for d in trade_days:
+            close, benchmark_date = provider.benchmark_close(code, as_of=d.isoformat())
+            if close is None or benchmark_date != d.isoformat():
+                missing_dates.append(d.isoformat())
+        if missing_dates:
+            missing_benchmarks[code] = missing_dates[:10]
+    if missing_benchmarks:
+        raise BacktestDataUnavailable(
+            "benchmark_history_incomplete",
+            {"missing": missing_benchmarks},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -614,23 +771,15 @@ def run_backtest(
     out_dir.mkdir(parents=True, exist_ok=True)
     trade_days = _load_trade_days(market_data_root, start, end)
     if not trade_days:
-        # Empty window — still produce empty outputs
-        (out_dir / "daily_nav.csv").write_text(
-            "date,account_id,cash,positions_value,total_value\n"
+        raise BacktestDataUnavailable(
+            "trade_calendar_empty",
+            {"start": start.isoformat(), "end": end.isoformat()},
         )
-        (out_dir / "trades.csv").write_text(
-            "date,account_id,ts_code,side,quantity,price,"
-            "commission,stamp_tax,slippage\n"
-        )
-        (out_dir / "signals.csv").write_text(
-            "signal_date,account_id,ts_code,score\n"
-        )
-        return BacktestResult(out_dir=out_dir, start=start, end=end,
-                               metrics=BacktestMetrics(0, 0, 0, 0, 0))
 
     state = _init_state(overlay)
     view = PointInTimeView(as_of=trade_days[-1], cache_root=market_data_root)
     provider = BacktestProvider(view, trade_days)
+    _validate_market_data(view, provider, trade_days, overlay)
 
     pending: List[dict] = []
     all_trades: List[dict] = []
@@ -649,8 +798,9 @@ def run_backtest(
         nav_rows = _update_nav(d, state, overlay, provider)
         all_nav_rows.extend(nav_rows)
 
-        # 3. Friday: generate signals + pending orders for next trade day
-        if _is_signal_day(d):
+        # 3. Generate signals according to the locked baseline schedule.
+        signal_day = overlay.get("schedule", {}).get("signal_day", "every_trading_day")
+        if _is_signal_day(d, signal_day):
             signals = _compute_signals(view, overlay, d, universe)
             all_signals.extend(signals)
             if signals:
@@ -661,10 +811,18 @@ def run_backtest(
                 )
                 pending.extend(batches)
 
+    if not all_signals:
+        raise BacktestDataUnavailable(
+            "signal_generation_empty",
+            {"start": start.isoformat(), "end": end.isoformat()},
+        )
+
     # Persist final products
     daily_nav_df = pd.DataFrame(all_nav_rows,
                                   columns=["date", "account_id", "cash",
-                                           "positions_value", "total_value"])
+                                           "positions_value", "total_value",
+                                           "benchmark_code", "benchmark_close",
+                                           "benchmark_date"])
     daily_nav_df.to_csv(out_dir / "daily_nav.csv", index=False)
 
     trades_df = pd.DataFrame(all_trades,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import pandas as pd
 
@@ -17,6 +17,7 @@ ACCOUNT_LABELS = {
     "zz500": "中证500账户",
     "us_exposure": "美国市场ETF账户",
     "hk_exposure": "香港市场ETF账户",
+    "model_shadow": "候选模型模拟组合",
 }
 
 SIDE_LABELS = {
@@ -179,17 +180,44 @@ def instrument_metadata(
     }
 
 
+def _backfill_simulated_slippage(market: str, row: dict[str, Any]) -> None:
+    if market != "cn_qdii_etf" or row.get("gross_amount") is None:
+        return
+    try:
+        existing = float(row.get("slippage") or 0.0)
+        gross = abs(float(row.get("gross_amount") or 0.0))
+    except (TypeError, ValueError):
+        return
+    side = str(row.get("side") or "").lower()
+    if existing > 0.0 or gross <= 0.0 or side not in {"buy", "sell", "short", "cover"}:
+        return
+    from .markets.cn_qdii_etf.mechanics import SLIPPAGE_BPS
+
+    rate = float(SLIPPAGE_BPS) / 10_000.0
+    divisor = 1.0 + rate if side in {"buy", "cover"} else 1.0 - rate
+    row["slippage"] = abs(gross - gross / divisor)
+
+
 def enrich_rows(
     market: str,
     rows: list[dict[str, Any]],
     *,
     repo_root: str | Path | None = None,
+    name_lookup: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     enriched: list[dict[str, Any]] = []
     for raw in rows:
         row = dict(raw)
+        _backfill_simulated_slippage(market, row)
         code = str(row.get("code") or "")
         if code:
+            code_key = code.upper().split(".", 1)[0]
+            if code_key.isdigit():
+                code_key = code_key.zfill(6)
+            current_name = str(row.get("name") or "")
+            fallback_name = (name_lookup or {}).get(code) or (name_lookup or {}).get(code_key)
+            if fallback_name and current_name in {"", code, code_key}:
+                row["name"] = fallback_name
             row.update(
                 instrument_metadata(
                     market,
@@ -301,6 +329,38 @@ def normalize_instrument_code(market: str, code: str) -> str:
     return f"{digits}.{exchange}"
 
 
+def resolve_instrument_code(repo_root: Path, market: str, code: str) -> str:
+    """Resolve QDII exchange suffixes from catalog/cache before heuristics."""
+
+    raw = str(code or "").strip().upper()
+    normalized = normalize_instrument_code(market, raw)
+    if market != "cn_qdii_etf" or "." in raw:
+        return normalized
+    digits = raw[:6]
+    cache = repo_root / "data" / market / "shared" / "cache"
+    for name in ("fund_basic_E_v2.csv", "fund_basic_E.csv"):
+        path = cache / name
+        if not path.exists():
+            continue
+        try:
+            catalog = pd.read_csv(path, usecols=["ts_code"], dtype={"ts_code": str})
+        except (OSError, ValueError, pd.errors.ParserError, pd.errors.EmptyDataError):
+            continue
+        ts_codes = catalog["ts_code"].dropna().astype(str).str.upper()
+        matches = ts_codes.loc[ts_codes.str.split(".", n=1).str[0] == digits]
+        if not matches.empty and "." in str(matches.iloc[0]):
+            return str(matches.iloc[0])
+    exchange_pattern = re.compile(rf"^fund_daily_{digits}_(SH|SZ)_")
+    exchanges = {
+        match.group(1)
+        for path in cache.glob(f"fund_daily_{digits}_??_*.csv")
+        if (match := exchange_pattern.match(path.name))
+    }
+    if len(exchanges) == 1:
+        return f"{digits}.{exchanges.pop()}"
+    return normalized
+
+
 def _latest_cache_file(paths: list[Path], date_pattern: re.Pattern[str]) -> Path | None:
     dated: list[tuple[str, int, str, Path]] = []
     for path in paths:
@@ -316,7 +376,7 @@ def read_instrument_history(
     market: str,
     code: str,
 ) -> tuple[str, list[dict[str, Any]], str | None]:
-    normalized = normalize_instrument_code(market, code)
+    normalized = resolve_instrument_code(repo_root, market, code)
     digits, exchange = normalized.split(".", 1)
     if market == "cn_qdii_etf":
         cache = repo_root / "data" / market / "shared" / "cache"

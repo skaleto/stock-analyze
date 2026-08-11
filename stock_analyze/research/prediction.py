@@ -62,6 +62,7 @@ def compute_confidence(
     model_agreement: float,
     data_quality: float,
     regime_stability: float,
+    out_of_distribution: bool = False,
 ) -> float:
     support_score = min(1.0, max(0.0, sample_support / 500.0))
     confidence = (
@@ -71,7 +72,7 @@ def compute_confidence(
         + 0.15 * data_quality
         + 0.15 * regime_stability
     )
-    if sample_support < 100:
+    if sample_support < 100 or out_of_distribution:
         confidence = min(confidence, 0.49)
     return float(np.clip(confidence, 0.0, 1.0))
 
@@ -99,30 +100,38 @@ def generate_predictions(
     if horizon != bundle.horizon:
         raise ValueError("prediction_model_horizon")
     probabilities = bundle.predict_proba(features)
+    expected_excess_returns = bundle.predict_excess_return(features)
     logistic, boosting = bundle.component_probabilities(features)
+    out_of_distribution = bundle.out_of_distribution_ratios(features)
+    drift = bundle.feature_drift(features)
     records: list[PredictionRecord] = []
     for index, (_, row) in enumerate(features.iterrows()):
         probability_by_class = dict(zip(bundle.class_order, probabilities[index]))
         agreement = float(1.0 - np.abs(logistic[index] - boosting[index]).sum() / 2.0)
         row_quality = float(data_quality) * float(row.loc[list(bundle.feature_columns)].notna().mean())
+        row_ood = float(out_of_distribution[index])
+        invalidated = row_quality < 0.70 or row_ood > 0.20
         confidence = compute_confidence(
             calibration_quality=bundle.metrics.get("calibration_quality", 0.0),
             sample_support=bundle.sample_support,
             model_agreement=agreement,
             data_quality=row_quality,
             regime_stability=regime_stability,
+            out_of_distribution=row_ood > 0.20,
         )
-        expected = sum(probability_by_class[name] * bundle.return_stats[name]["mean"] for name in bundle.class_order)
+        expected = float(expected_excess_returns[index])
         quantiles = {
             key: sum(probability_by_class[name] * bundle.return_stats[name][key] for name in bundle.class_order)
             for key in ("q10", "q50", "q90")
         }
         code = str(row.get("code", row.get("ts_code", ""))).split(".")[0]
         reasons = _reason_text(bundle.logistic_contributions(row, "up"))
-        invalidation = (
-            "数据完整度低于 70%" if row_quality < 0.70 else "模型状态或市场状态发生变化",
-            "下行概率超过上行概率",
-        )
+        invalidation_items = []
+        if row_quality < 0.70:
+            invalidation_items.append("数据完整度低于 70%")
+        if row_ood > 0.20:
+            invalidation_items.append("超过 20% 特征超出训练分布")
+        invalidation_items.extend(("模型状态或市场状态发生变化", "下行概率超过上行概率"))
         records.append(
             PredictionRecord(
                 code=code,
@@ -139,11 +148,21 @@ def generate_predictions(
                 return_q90=float(quantiles["q90"]),
                 regime=regime,
                 reasons=reasons,
-                invalidation=invalidation,
+                invalidation=tuple(invalidation_items),
                 model_version=bundle.model_version,
                 feature_snapshot_id=feature_snapshot_id,
                 active_status=active_status,
-                metadata={"model_agreement": agreement, "data_quality": row_quality},
+                invalidated=invalidated,
+                metadata={
+                    "model_agreement": agreement,
+                    "data_quality": row_quality,
+                    "out_of_distribution_ratio": row_ood,
+                    "feature_drift_mean_psi": drift["mean_psi"],
+                    "feature_drift_max_psi": drift["max_psi"],
+                    "ranking_head": "ridge_hgbr"
+                    if getattr(bundle, "linear_ranking_model", None) is not None
+                    else "legacy_probability_buckets",
+                },
             )
         )
     return records

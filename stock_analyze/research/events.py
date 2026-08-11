@@ -4,10 +4,39 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+
+_EVENT_COLUMNS = (
+    "event_id",
+    "event",
+    "market",
+    "code",
+    "trade_date",
+    "direction",
+    "regime",
+    "industry",
+    "context",
+)
+_CONTEXT_COLUMNS = (
+    "close",
+    "macd_dif",
+    "macd_dea",
+    "macd_hist",
+    "rsi_14",
+    "adx_14",
+    "volume_ratio_5_20",
+    "flow_net_large",
+    "industry_breadth",
+)
 
 
 def _series(frame: pd.DataFrame, name: str) -> pd.Series:
@@ -19,6 +48,15 @@ def _series(frame: pd.DataFrame, name: str) -> pd.Series:
 def _event_id(market: str, code: str, trade_date: str, event: str) -> str:
     raw = f"{market}|{code}|{trade_date}|{event}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _empty_events() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            column: pd.Series(dtype="string[pyarrow]")
+            for column in _EVENT_COLUMNS
+        }
+    )
 
 
 def _volume_price_stage(price_return: pd.Series, volume_ratio: pd.Series) -> pd.Series:
@@ -50,7 +88,7 @@ def _volume_price_stage(price_return: pd.Series, volume_ratio: pd.Series) -> pd.
     )
 
 
-def _detect_group(group: pd.DataFrame, market: str) -> list[dict[str, Any]]:
+def _detect_group(group: pd.DataFrame, market: str) -> pd.DataFrame:
     group = group.sort_values("trade_date").copy()
     close = _series(group, "close")
     macd = _series(group, "macd_dif")
@@ -104,32 +142,69 @@ def _detect_group(group: pd.DataFrame, market: str) -> list[dict[str, Any]]:
     for stage in sorted(set(stages) - {"volume_price_neutral"}):
         masks[stage] = (stages == stage) & (stages.shift(1) != stage)
 
-    rows: list[dict[str, Any]] = []
+    context_columns = [column for column in _CONTEXT_COLUMNS if column in group]
+    context_values = [_series(group, column).to_numpy() for column in context_columns]
+    contexts = [
+        json.dumps(
+            {
+                key: float(value)
+                for key, value in zip(context_columns, values)
+                if pd.notna(value)
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        for values in zip(*context_values)
+    ] if context_values else ["{}"] * len(group)
+    code_column = "code" if "code" in group else "ts_code" if "ts_code" in group else None
+    codes = (
+        group[code_column].astype(str).str.split(".").str[0]
+        if code_column
+        else pd.Series("", index=group.index)
+    )
+    base = pd.DataFrame(
+        {
+            "code": codes.to_numpy(),
+            "trade_date": group["trade_date"].astype(str).to_numpy(),
+            "regime": (
+                group["regime"].astype(str).to_numpy()
+                if "regime" in group
+                else np.full(len(group), "unknown", dtype=object)
+            ),
+            "industry": (
+                group["industry"].astype(str).to_numpy()
+                if "industry" in group
+                else np.full(len(group), "unclassified", dtype=object)
+            ),
+            "context": contexts,
+        }
+    )
+    event_frames: list[pd.DataFrame] = []
     for event, mask in masks.items():
-        for index in group.index[mask.fillna(False)]:
-            source = group.loc[index]
-            code = str(source.get("code", source.get("ts_code", ""))).split(".")[0]
-            trade_date = str(source.get("trade_date", ""))
-            direction = "up" if any(token in event for token in ("up", "golden", "bullish", "rise", "strengthening")) else "down" if any(token in event for token in ("down", "death", "bearish", "fall", "weakening", "breakdown")) else "neutral"
-            context = {
-                key: float(source[key])
-                for key in ("close", "macd_dif", "macd_dea", "macd_hist", "rsi_14", "adx_14", "volume_ratio_5_20", "flow_net_large", "industry_breadth")
-                if key in source and pd.notna(source[key])
-            }
-            rows.append(
-                {
-                    "event_id": _event_id(market, code, trade_date, event),
-                    "event": event,
-                    "market": market,
-                    "code": code,
-                    "trade_date": trade_date,
-                    "direction": direction,
-                    "regime": str(source.get("regime", "unknown")),
-                    "industry": str(source.get("industry", "unclassified")),
-                    "context": json.dumps(context, ensure_ascii=False, sort_keys=True),
-                }
-            )
-    return rows
+        positions = np.flatnonzero(mask.fillna(False).to_numpy(dtype=bool))
+        if len(positions) == 0:
+            continue
+        selected = base.iloc[positions].copy()
+        selected["event"] = event
+        selected["market"] = market
+        selected["direction"] = (
+            "up"
+            if any(token in event for token in ("up", "golden", "bullish", "rise", "strengthening"))
+            else "down"
+            if any(token in event for token in ("down", "death", "bearish", "fall", "weakening", "breakdown"))
+            else "neutral"
+        )
+        selected["event_id"] = [
+            _event_id(market, code, trade_date, event)
+            for code, trade_date in zip(selected["code"], selected["trade_date"])
+        ]
+        event_frames.append(selected.loc[:, _EVENT_COLUMNS])
+    if not event_frames:
+        return _empty_events()
+    detected = pd.concat(event_frames, ignore_index=True)
+    for column in _EVENT_COLUMNS:
+        detected[column] = detected[column].astype("string[pyarrow]")
+    return detected
 
 
 def detect_events(features: pd.DataFrame, *, market: str) -> pd.DataFrame:
@@ -137,11 +212,97 @@ def detect_events(features: pd.DataFrame, *, market: str) -> pd.DataFrame:
     if required.difference(features.columns):
         raise ValueError("event_missing_trade_date")
     if features.empty:
-        return pd.DataFrame(columns=["event_id", "event", "market", "code", "trade_date", "direction", "regime", "industry", "context"])
-    working = features.copy()
+        return _empty_events()
+    working = features
     group_column = "code" if "code" in working.columns else "ts_code" if "ts_code" in working.columns else None
     groups = working.groupby(group_column, sort=False, dropna=False) if group_column else [("market", working)]
-    rows: list[dict[str, Any]] = []
+    detected_groups: list[pd.DataFrame] = []
     for _, group in groups:
-        rows.extend(_detect_group(group, market))
-    return pd.DataFrame(rows).sort_values(["trade_date", "event", "code"]).reset_index(drop=True) if rows else pd.DataFrame(columns=["event_id", "event", "market", "code", "trade_date", "direction", "regime", "industry", "context"])
+        detected = _detect_group(group, market)
+        if not detected.empty:
+            detected_groups.append(detected)
+    if not detected_groups:
+        return _empty_events()
+    return pd.concat(detected_groups, ignore_index=True).sort_values(
+        ["trade_date", "event", "code"]
+    ).reset_index(drop=True)
+
+
+def write_events_incremental(
+    features: pd.DataFrame,
+    *,
+    market: str,
+    destination: str | Path,
+    regime_by_date: dict[str, str] | None = None,
+    groups_per_batch: int = 16,
+) -> int:
+    """Detect and atomically persist events without retaining all groups."""
+
+    if "trade_date" not in features.columns:
+        raise ValueError("event_missing_trade_date")
+    path = Path(destination)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".parquet",
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    temporary.unlink(missing_ok=True)
+    writer: pq.ParquetWriter | None = None
+    rows = 0
+    pending: list[pd.DataFrame] = []
+    batch_size = max(1, int(groups_per_batch))
+
+    def flush() -> None:
+        nonlocal writer, rows
+        if not pending:
+            return
+        batch = pd.concat(pending, ignore_index=True)
+        pending.clear()
+        if regime_by_date:
+            detected_regime = batch["trade_date"].astype(str).map(regime_by_date)
+            batch["regime"] = detected_regime.fillna(batch["regime"])
+        for column in _EVENT_COLUMNS:
+            batch[column] = batch[column].astype("string[pyarrow]")
+        table = pa.Table.from_pandas(batch.loc[:, _EVENT_COLUMNS], preserve_index=False)
+        if writer is None:
+            writer = pq.ParquetWriter(temporary, table.schema, compression="snappy")
+        writer.write_table(table)
+        rows += len(batch)
+
+    try:
+        if features.empty:
+            _empty_events().to_parquet(temporary, index=False)
+        else:
+            group_column = (
+                "code"
+                if "code" in features.columns
+                else "ts_code"
+                if "ts_code" in features.columns
+                else None
+            )
+            groups = (
+                features.groupby(group_column, sort=False, dropna=False)
+                if group_column
+                else [("market", features)]
+            )
+            for _, group in groups:
+                detected = _detect_group(group, market)
+                if not detected.empty:
+                    pending.append(detected)
+                if len(pending) >= batch_size:
+                    flush()
+            flush()
+            if writer is None:
+                _empty_events().to_parquet(temporary, index=False)
+        if writer is not None:
+            writer.close()
+            writer = None
+        os.replace(temporary, path)
+        return rows
+    finally:
+        if writer is not None:
+            writer.close()
+        temporary.unlink(missing_ok=True)

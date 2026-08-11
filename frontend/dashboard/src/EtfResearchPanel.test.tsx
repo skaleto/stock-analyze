@@ -39,6 +39,7 @@ describe("ETF research panel", () => {
           indexes: [
             { index_key: "nasdaq_100", label: "纳斯达克100", weight: 0.6, profile_available: true },
             { index_key: "sp_500", label: "标普500", weight: 0.4, profile_available: true },
+            { index_key: "unknown", label: "跨境ETF", weight: 0.1, profile_available: false },
           ],
           countries: [{ label: "美国", weight: 1 }],
           sectors: [{ label: "信息技术", weight: 0.58 }],
@@ -59,6 +60,8 @@ describe("ETF research panel", () => {
     expect(within(panel).getByText("26")).toBeInTheDocument();
     expect(within(panel).getByText("目标持仓")).toBeInTheDocument();
     expect(within(panel).getByText("纳斯达克100")).toBeInTheDocument();
+    expect(within(panel).getByText("未知")).toBeInTheDocument();
+    expect(within(panel).queryByText("unknown")).not.toBeInTheDocument();
     expect(within(panel).getByText("英伟达")).toBeInTheDocument();
     expect(within(panel).getByText("80.00%")).toBeInTheDocument();
     expect(within(panel).getByText("54.00%")).toBeInTheDocument();

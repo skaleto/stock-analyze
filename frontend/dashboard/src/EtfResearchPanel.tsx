@@ -48,12 +48,16 @@ function statusLabel(status?: string): string {
   return "研究中";
 }
 
-function CandidateView({ selection, exposure }: { selection?: SelectionSnapshot; exposure: PortfolioLookthrough | null }) {
+function indexKeyLabel(value?: string): string {
+  return !value || value.toLowerCase() === "unknown" ? "未知" : value;
+}
+
+function CandidateView({ selection, exposure, modelDriven }: { selection?: SelectionSnapshot; exposure: PortfolioLookthrough | null; modelDriven: boolean }) {
   const scopes = Object.entries(selection?.scopes ?? {});
   return <div className="etf-research-grid">
     <div className="selection-funnels">
       <div className="research-subhead"><Layers3 size={15} aria-hidden="true" /><h3>选择过程</h3></div>
-      {scopes.length === 0 ? <p className="terminal-empty">等待每日决策生成候选漏斗</p> : scopes.map(([scope, block]) => {
+      {scopes.length === 0 ? <p className="terminal-empty">{modelDriven ? "模型按概率、预期超额与预测风险筛选，结果见计划持仓" : "等待每日决策生成候选漏斗"}</p> : scopes.map(([scope, block]) => {
         const baseline = Math.max(block.stages[0]?.count ?? 0, 1);
         const dataGaps = Object.entries(block.data_gaps ?? {}).filter(([, count]) => count > 0);
         return <section className="funnel-scope" key={scope} aria-label={`${accountLabel(scope)}候选漏斗`}>
@@ -71,10 +75,10 @@ function CandidateView({ selection, exposure }: { selection?: SelectionSnapshot;
       <div className="research-subhead"><Building2 size={15} aria-hidden="true" /><h3>真实底层暴露</h3><span className={`coverage-badge coverage-${exposure?.status || "unavailable"}`}>{coverageStatus(exposure?.status)}</span></div>
       <div className="coverage-readout"><div><span>指数资料覆盖</span><strong>{formatPercent(exposure?.profile_coverage)}</strong></div><div><span>公司权重覆盖</span><strong>{formatPercent(exposure?.company_weight_coverage)}</strong></div></div>
       <div className="exposure-columns">
-        <div><h4>底层指数</h4>{(exposure?.indexes ?? []).slice(0, 5).map((item) => <div className="exposure-row" key={item.index_key}><span><b>{item.label}</b><small>{item.index_key}</small></span><strong>{formatPercent(item.weight)}</strong></div>)}{!exposure?.indexes.length ? <p className="comparison-pending">暂无指数暴露</p> : null}</div>
+        <div><h4>底层指数</h4>{(exposure?.indexes ?? []).slice(0, 5).map((item) => <div className="exposure-row" key={item.index_key}><span><b>{item.label}</b><small>{indexKeyLabel(item.index_key)}</small></span><strong>{formatPercent(item.weight)}</strong></div>)}{!exposure?.indexes.length ? <p className="comparison-pending">暂无指数暴露</p> : null}</div>
         <div><h4>底层公司</h4>{(exposure?.companies ?? []).slice(0, 5).map((item) => <div className="exposure-row" key={item.symbol}><span><b>{item.name}</b><small>{item.symbol} · {item.sector}</small></span><strong>{formatPercent(item.weight)}</strong></div>)}{!exposure?.companies.length ? <p className="comparison-pending">暂无可计权公司数据</p> : null}</div>
       </div>
-      {exposure?.unsupported_indexes.length ? <p className="coverage-note">尚未覆盖 {exposure.unsupported_indexes.length} 个指数：{exposure.unsupported_indexes.slice(0, 3).join("、")}</p> : null}
+      {exposure?.unsupported_indexes.length ? <p className="coverage-note">尚未覆盖 {exposure.unsupported_indexes.length} 个指数：{exposure.unsupported_indexes.slice(0, 3).map(indexKeyLabel).join("、")}</p> : null}
     </div>
   </div>;
 }
@@ -100,7 +104,7 @@ function ThemeView({ research }: { research?: QDIIResearch }) {
   return <div className="research-view theme-grid">{rows.map((row) => <article key={`${row.agent}-${row.week_end}-${row.index_key}`}><header><b>{row.index_key}</b><span className={(row.score ?? 0) >= 0 ? "positive" : "negative"}>{(row.score ?? 0) >= 0 ? "+" : ""}{row.score?.toFixed(2)}</span></header><p>{row.drivers || "暂无驱动摘要"}</p><footer><span>置信度 {formatPercent(row.confidence)}</span><span>{row.week_end}</span>{row.sources ? <a href={row.sources.split("|")[0]} target="_blank" rel="noreferrer"><ExternalLink size={12} />来源</a> : null}</footer></article>)}{rows.length === 0 ? <p className="terminal-empty">尚无可审计的指数级主题观点</p> : null}</div>;
 }
 
-export default function EtfResearchPanel({ selection, lookthrough, research }: { selection?: SelectionSnapshot; lookthrough?: PortfolioLookthrough | Record<string, never>; research?: QDIIResearch }) {
+export default function EtfResearchPanel({ selection, lookthrough, research, modelDriven = false }: { selection?: SelectionSnapshot; lookthrough?: PortfolioLookthrough | Record<string, never>; research?: QDIIResearch; modelDriven?: boolean }) {
   const [view, setView] = useState<"candidate" | "shadow" | "events" | "theme">("candidate");
   const exposure = lookthrough && "indexes" in lookthrough ? lookthrough as PortfolioLookthrough : null;
   const latestSourceDate = exposure?.sources.map((source) => source.as_of || "").filter(Boolean).sort().slice(-1)[0];
@@ -111,9 +115,9 @@ export default function EtfResearchPanel({ selection, lookthrough, research }: {
     { key: "theme" as const, label: "主题观点", icon: MessageSquareText },
   ];
   return <section className="etf-research terminal-section" role="region" aria-label="ETF候选与底层暴露">
-    <header className="section-heading etf-research-heading"><div><span className="section-kicker"><FlaskConical size={14} />ETF RESEARCH</span><h2>跨境 ETF 研究工作台</h2><p>{selection?.as_of || "等待周度选基"} · {coverageStatus(exposure?.status)}{latestSourceDate ? ` · 资料 ${latestSourceDate}` : ""}</p></div><div className="universe-version"><span><Database size={13} />共享候选版本</span><strong>{selection?.universe_hash || "等待生成"}</strong></div></header>
+    <header className="section-heading etf-research-heading"><div><span className="section-kicker"><FlaskConical size={14} />ETF RESEARCH</span><h2>跨境 ETF 研究工作台</h2><p>{modelDriven ? "模型订单穿透" : selection?.as_of || "等待周度选基"} · {coverageStatus(exposure?.status)}{latestSourceDate ? ` · 资料 ${latestSourceDate}` : ""}</p></div><div className="universe-version"><span><Database size={13} />{modelDriven ? "组合来源" : "共享候选版本"}</span><strong>{modelDriven ? "概率预测" : selection?.universe_hash || "等待生成"}</strong></div></header>
     <nav className="research-tabs" aria-label="ETF研究视图">{tabs.map((tab) => <button type="button" key={tab.key} className={view === tab.key ? "active" : ""} onClick={() => setView(tab.key)}><tab.icon size={14} />{tab.label}</button>)}</nav>
-    {view === "candidate" ? <CandidateView selection={selection} exposure={exposure} /> : null}
+    {view === "candidate" ? <CandidateView selection={selection} exposure={exposure} modelDriven={modelDriven} /> : null}
     {view === "shadow" ? <ShadowView research={research} /> : null}
     {view === "events" ? <EventView research={research} /> : null}
     {view === "theme" ? <ThemeView research={research} /> : null}

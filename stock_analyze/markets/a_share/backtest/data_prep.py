@@ -7,7 +7,7 @@ The fetch is idempotent: progress is tracked in ``_meta.json``. A rerun
 fetches only what's missing. Use ``--force`` (or ``force=True``) to bypass
 the progress check and refetch everything in the requested window.
 
-Seven Tushare endpoints are exercised:
+Eight Tushare endpoints are exercised:
 
 * ``pro.trade_cal`` — once per call, used to enumerate trading days
 * ``pro.stock_basic`` — once, lists every A-share with list/delist dates
@@ -16,6 +16,7 @@ Seven Tushare endpoints are exercised:
 * ``pro.fina_indicator`` — once per stock in stock_basic
 * ``pro.adj_factor`` — once per stock in stock_basic
 * ``pro.index_weight`` — once per (index, month) in [start, end] for hs300+zz500
+* ``pro.index_daily`` — benchmark closes for hs300+zz500 over [start, end]
 
 Tests in ``tests/test_backtest_data_prep.py`` mock the client; no network is
 required for testing.
@@ -71,6 +72,7 @@ _DEFAULT_META = {
     "fina_codes_done": [],
     "adj_factor_codes_done": [],
     "index_weight_months_done": [],
+    "benchmark_ranges_done": [],
     "stock_basic_done": False,
     "trade_cal_done": False,
 }
@@ -208,6 +210,45 @@ def _fetch_index_weight(pro: Any, idx_code: str, fname: str, month_start: date,
     df.to_csv(out, index=False)
 
 
+def _fetch_index_daily(
+    pro: Any,
+    idx_code: str,
+    fname: str,
+    start: date,
+    end: date,
+    cache_root: Path,
+) -> None:
+    fetched = pro.index_daily(
+        ts_code=idx_code,
+        start_date=_yyyymmdd(start),
+        end_date=_yyyymmdd(end),
+    )
+    columns = ["ts_code", "trade_date", "close"]
+    if fetched is None or fetched.empty:
+        fetched = pd.DataFrame(columns=columns)
+    out = cache_root / "benchmark_daily" / f"{fname}.csv"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    frames = [fetched]
+    if out.exists():
+        try:
+            frames.insert(
+                0,
+                pd.read_csv(out, dtype={"ts_code": str, "trade_date": str}),
+            )
+        except pd.errors.EmptyDataError:
+            pass
+    merged = pd.concat(frames, ignore_index=True, sort=False)
+    if "trade_date" not in merged.columns:
+        merged = pd.DataFrame(columns=columns)
+    else:
+        merged["trade_date"] = merged["trade_date"].astype("string").str.replace(
+            "-", "", regex=False
+        ).str[:8]
+        merged = merged.dropna(subset=["trade_date"])
+        merged = merged.drop_duplicates("trade_date", keep="last").sort_values("trade_date")
+    merged.to_csv(out, index=False)
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -312,7 +353,18 @@ def prepare_backtest_data(
     meta["adj_factor_codes_done"] = sorted(adj_done)
     _save_meta(cache_root, meta)
 
-    # 6. index_weight monthly snapshots for hs300 + zz500
+    # 6. Dedicated benchmark history for performance and information ratio.
+    benchmark_done = set(meta.get("benchmark_ranges_done", []))
+    for idx_code, fname in INDEX_CODES:
+        key = f"{fname}:{start.isoformat()}:{end.isoformat()}"
+        if force or key not in benchmark_done:
+            _fetch_index_daily(pro, idx_code, fname, start, end, cache_root)
+            benchmark_done.add(key)
+            _throttle()
+    meta["benchmark_ranges_done"] = sorted(benchmark_done)
+    _save_meta(cache_root, meta)
+
+    # 7. index_weight monthly snapshots for hs300 + zz500
     iw_done = set(meta.get("index_weight_months_done", []))
     for month_start in _month_starts(start, end):
         ym = month_start.strftime("%Y-%m")

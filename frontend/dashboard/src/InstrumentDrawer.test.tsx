@@ -32,6 +32,7 @@ describe("instrument drawer", () => {
       },
       latest: { date: "2026-07-10", open: 2.1, high: 2.2, low: 2.0, close: 2.15, change_pct: 0.01, volume: 1000, amount: 2200 },
       candles: [{ date: "2026-07-10", open: 2.1, high: 2.2, low: 2.0, close: 2.15, volume: 1000, amount: 2200 }],
+      predictions: [{ horizon: 5, p_up: 0.6, p_flat: 0.2, p_down: 0.2, confidence: 0.7, active_status: "inactive", reasons: [], invalidation: [] }],
       metrics: [{ key: "roe", label: "净资产收益率 ROE", explanation: "公司用股东投入的净资产创造利润的效率。", value: 0.15, format: "percent" }],
       related_trades: [{ trade_date: "2026-07-14", side: "buy", shares: 100 }],
       warning: null,
@@ -39,11 +40,11 @@ describe("instrument drawer", () => {
 
     render(
       <InstrumentDrawer
-        row={{ code: "513100.SH", name: "纳指ETF", gross_margin: 0.4 }}
+        row={{ code: "513100.SH", name: "纳指ETF", gross_margin: 0.4, index_key: "unknown", country: "美国", sector: "信息技术" }}
         title="持仓"
         market="cn_qdii_etf"
-        agent="codex"
-        strategyLabel="趋势进攻"
+        agent="model_shadow"
+        strategyLabel="模型迭代"
         onClose={vi.fn()}
       />
     );
@@ -57,9 +58,14 @@ describe("instrument drawer", () => {
     expect(screen.getByText("7.60%")).toBeInTheDocument();
     expect(screen.getByText("数据日期 2026-06-30")).toBeInTheDocument();
     expect(screen.queryByText("gross_margin")).not.toBeInTheDocument();
+    expect(screen.getByText("验证版输入")).toBeInTheDocument();
+    expect(screen.getByText("底层指数标识")).toBeInTheDocument();
+    expect(screen.getByText("主要市场")).toBeInTheDocument();
+    expect(screen.getByText("主要行业")).toBeInTheDocument();
+    expect(screen.queryByText("index_key")).not.toBeInTheDocument();
     expect(chartMocks.CandlestickChart.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
       trades: [{ trade_date: "2026-07-14", side: "buy", shares: 100 }],
-      strategyLabel: "趋势进攻",
+      strategyLabel: "模型迭代",
     }));
   });
 });

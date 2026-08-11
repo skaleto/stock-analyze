@@ -19,8 +19,9 @@ from stock_analyze.store import PortfolioStore
 
 
 class FakeProvider:
-    def __init__(self, price: float = 2.0) -> None:
+    def __init__(self, price: float = 2.0, name: str = "纳斯达克100ETF") -> None:
         self.price = price
+        self.name = name
 
     def execution_quote(self, code: str, execute_after: str, side: str, as_of: str | None = None):
         return ETFExecutionQuote(
@@ -34,7 +35,7 @@ class FakeProvider:
     def price_snapshot(self, code: str, as_of: str | None = None):
         return ETFPriceSnapshot(
             code=code,
-            name=code,
+            name=self.name,
             trade_date=as_of,
             close=self.price,
             open=self.price,
@@ -239,6 +240,35 @@ class ETFSimulatorTests(unittest.TestCase):
         self.assertTrue(all(order["shares"] % 100 == 0 for order in orders))
         self.assertTrue(all(order["side"] == "buy" for order in orders))
 
+    def test_fund_name_flows_from_signal_to_order_trade_and_position(self):
+        with TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            initialize(_config(), store)
+            provider = FakeProvider(price=2.0, name="广发纳斯达克100ETF(QDII)")
+            orders = generate_rebalance_orders(
+                store,
+                provider,
+                [
+                    {
+                        "code": "159941.SZ",
+                        "name": "广发纳斯达克100ETF(QDII)",
+                        "account_id": "us_exposure",
+                        "score": 1.0,
+                    }
+                ],
+                as_of=date(2026, 7, 9),
+                top_n=1,
+                max_single_weight=0.50,
+            )
+
+            trades = execute_due_orders(store, provider, as_of=date(2026, 7, 10))
+            positions = store.read_positions()
+
+        self.assertEqual(orders[0]["name"], "广发纳斯达克100ETF(QDII)")
+        self.assertEqual(trades[0]["name"], "广发纳斯达克100ETF(QDII)")
+        self.assertGreater(trades[0]["slippage"], 0.0)
+        self.assertEqual(positions.iloc[0]["name"], "广发纳斯达克100ETF(QDII)")
+
     def test_rebalance_preserves_an_existing_retry_order(self):
         with TemporaryDirectory() as tmp:
             store = PortfolioStore(tmp)
@@ -377,6 +407,42 @@ class ETFSimulatorTests(unittest.TestCase):
         self.assertEqual(len(trades), 5)
         self.assertEqual(pending, [])
 
+    def test_config_rebalance_uses_risk_adjusted_target_weights(self):
+        config = _config()
+        config["accounts"][0]["cash"] = 100_000.0
+        config["accounts"][0]["top_n"] = 2
+        config["trading"] = {"max_single_weight": 0.80}
+        config["portfolio_controls"] = {
+            "turnover_penalty": 0.0,
+            "min_trade_weight": 0.0,
+        }
+        scored = [
+            {
+                "code": "513100.SH", "account_id": "us_exposure", "score": 1.0,
+                "low_volatility_60": 0.10, "expected_excess_return": 0.12,
+                "prediction_confidence": 0.90, "prediction_applied": True,
+            },
+            {
+                "code": "159941.SZ", "account_id": "us_exposure", "score": 0.9,
+                "low_volatility_60": 0.30, "expected_excess_return": 0.01,
+                "prediction_confidence": 0.75, "prediction_applied": True,
+            },
+        ]
+        with TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            initialize(config, store)
+            with patch("stock_analyze.markets.cn_qdii_etf.run.build_signals", return_value=scored):
+                orders = generate_config_orders(
+                    config,
+                    store,
+                    FakeProvider(price=2.0),
+                    as_of=date(2026, 7, 9),
+                )
+
+        by_code = {order["code"]: order for order in orders}
+        self.assertGreater(by_code["513100.SH"]["target_weight"], by_code["159941.SZ"]["target_weight"])
+        self.assertGreater(by_code["513100.SH"]["shares"], by_code["159941.SZ"]["shares"])
+
     def test_recent_holding_inside_rank_buffer_is_not_sold(self):
         config = _config()
         config["accounts"][0]["top_n"] = 1
@@ -472,6 +538,25 @@ class ETFSimulatorTests(unittest.TestCase):
         self.assertEqual(float(positions.iloc[-1]["last_price"]), 2.0)
         self.assertEqual(float(positions.iloc[-1]["market_value"]), 200.0)
         self.assertEqual(float(positions.iloc[-1]["unrealized_pnl"]), 20.0)
+
+    def test_update_nav_backfills_name_for_existing_position(self):
+        with TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            initialize(_config(), store)
+            state = store.load_state()
+            state["accounts"]["us_exposure"]["positions"] = {
+                "513100.SH": {"shares": 100, "avg_cost": 1.8}
+            }
+            store.save_state(state)
+
+            update_nav(
+                store,
+                FakeProvider(price=2.0, name="国泰纳斯达克100ETF"),
+                as_of=date(2026, 7, 9),
+            )
+            positions = store.read_positions()
+
+        self.assertEqual(positions.iloc[0]["name"], "国泰纳斯达克100ETF")
 
     def test_update_nav_counts_unsettled_sell_proceeds_as_receivable(self):
         with TemporaryDirectory() as tmp:

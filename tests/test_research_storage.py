@@ -44,6 +44,50 @@ class ResearchStorageTest(unittest.TestCase):
         self.assertEqual(loaded.iloc[0]["code"], "000001")
         self.assertEqual(loaded.iloc[0]["trade_date"], "20260710")
 
+    def test_latest_common_snapshot_uses_most_recent_date_not_after_cutoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ResearchStore(Path(tmp))
+            for day in ("2026-07-16", "2026-07-17"):
+                frame = pd.DataFrame([{"code": "000001", "trade_date": day.replace("-", "")}])
+                store.write_feature_snapshot("a_share", day, frame)
+                store.write_label_snapshot("a_share", day, frame.assign(horizon=5, label="up"))
+
+            selected = store.latest_common_snapshot_date(
+                "a_share", as_of="2026-07-18"
+            )
+
+        self.assertEqual(selected, "20260717")
+
+    def test_prune_dated_artifacts_keeps_recent_and_monthly_checkpoints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ResearchStore(Path(tmp))
+            dates = [
+                "20260131", "20260227", "20260331", "20260430",
+                "20260714", "20260715", "20260716", "20260717",
+            ]
+            for category in ("features", "labels", "events"):
+                directory = Path(tmp) / category / "a_share"
+                directory.mkdir(parents=True)
+                for run_key in dates:
+                    (directory / f"{run_key}.parquet").write_bytes(b"snapshot")
+
+            removed = store.prune_dated_artifacts(
+                "a_share",
+                categories=("features", "labels", "events"),
+                keep_recent=3,
+                keep_monthly=3,
+            )
+            remaining = {
+                path.stem
+                for path in (Path(tmp) / "features" / "a_share").glob("*.parquet")
+            }
+
+        self.assertEqual(
+            remaining,
+            {"20260227", "20260331", "20260430", "20260715", "20260716", "20260717"},
+        )
+        self.assertEqual(removed, 6)
+
 
 if __name__ == "__main__":
     unittest.main()

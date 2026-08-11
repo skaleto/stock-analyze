@@ -13,6 +13,7 @@ import pandas as pd
 from ...factor_pipeline import process_factors
 from .data_provider import CNQDIETFProvider
 from ...research.strategy_ensemble import load_and_attach_predictions
+from ...research.regime_policy import apply_regime_policy, load_regime_decision
 
 
 logger = logging.getLogger(__name__)
@@ -207,6 +208,16 @@ def build_signals(
     factor_processing = dict(config.get("factor_processing", {}) or {})
     factor_processing.setdefault("neutralize_industry", False)
     filters = dict(config.get("filters", {}) or {})
+    agent_id = str(config.get("agent_id") or "codex")
+    profile = "trend" if agent_id == "codex" else "defensive"
+    regime_decision = load_regime_decision(
+        repo_root or ".",
+        market="cn_qdii_etf",
+        as_of=as_of,
+        profile=profile,
+    )
+    if regime_decision.warning:
+        logger.warning("cn_qdii_etf regime control: %s", regime_decision.warning)
 
     for account in config.get("accounts", []) or []:
         scope = account["scope"]
@@ -252,15 +263,15 @@ def build_signals(
                 scored["insufficient_factor_coverage"].fillna(False).astype(bool).sum()
             )
             scored = scored.loc[~scored["insufficient_factor_coverage"]].copy()
-        agent_id = str(config.get("agent_id") or "codex")
         scored = load_and_attach_predictions(
             scored,
             repo_root=repo_root or ".",
             market="cn_qdii_etf",
             agent=agent_id,
             as_of=as_of,
-            profile="trend" if agent_id == "codex" else "defensive",
+            profile=profile,
         )
+        scored = apply_regime_policy(scored, regime_decision, profile=profile)
         scored = scored.sort_values("score", ascending=False).reset_index(drop=True)
         metadata_by_code = {
             str(row["code"]): row
@@ -286,6 +297,7 @@ def build_signals(
                 "index_key",
                 "benchmark",
                 "avg_amount_20",
+                "low_volatility_60",
                 "fund_size_yuan",
                 "discount_premium",
                 "peer_tracking_error_60",
@@ -297,6 +309,21 @@ def build_signals(
             ):
                 if key in source:
                     output[key] = source.get(key)
+            for key in (
+                "prediction_applied",
+                "prediction_confidence",
+                "expected_excess_return",
+                "expected_volatility",
+                "regime",
+                "regime_source_date",
+                "regime_coverage",
+                "regime_stale",
+                "regime_gross_exposure",
+                "regime_score_adjustment",
+                "regime_applied",
+            ):
+                if key in r and pd.notna(r.get(key)):
+                    output[key] = r.get(key)
             rows.append(output)
             output_rows.append(output)
         factor_ready = pd.DataFrame(output_rows)

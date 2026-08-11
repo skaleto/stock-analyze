@@ -35,6 +35,9 @@ const FIELDS: Record<string, FieldDefinition> = {
   reason: { label: "策略原因", explanation: "系统生成这笔订单或持仓的原因摘要。", format: "text" },
   exposure_group: { label: "底层市场", explanation: "跨境 ETF 实际跟踪资产所在的市场。", format: "text" },
   theme: { label: "跟踪主题", explanation: "基金主要跟踪的指数、行业或资产主题。", format: "text" },
+  index_key: { label: "底层指数标识", explanation: "系统用于匹配指数资料与成分权重的标准标识。", format: "text" },
+  country: { label: "主要市场", explanation: "基金底层资产主要所在的国家或地区。", format: "text" },
+  sector: { label: "主要行业", explanation: "基金底层资产主要覆盖的行业。", format: "text" },
   industry: { label: "行业", explanation: "A 股公司所属行业。", format: "text" },
   pe: { label: "市盈率 PE", explanation: "股价相对每股盈利的倍数，通常越低越便宜，但需要结合行业和增长判断。", format: "number" },
   pb: { label: "市净率 PB", explanation: "股价相对每股净资产的倍数，反映市场给公司资产的定价。", format: "number" },
@@ -72,6 +75,7 @@ const ACCOUNT_LABELS: Record<string, string> = {
   zz500: "中证500账户",
   us_exposure: "美国市场ETF账户",
   hk_exposure: "香港市场ETF账户",
+  model_shadow: "候选模型模拟组合",
 };
 
 const SIDE_LABELS: Record<string, string> = { buy: "买入", sell: "卖出" };
@@ -132,6 +136,7 @@ export function formatPercent(value: unknown): string {
 
 export function formatFieldValue(key: string, value: unknown, currency = "¥"): string {
   if (value === null || value === undefined || value === "") return "-";
+  if (key === "index_key" && String(value).toLowerCase() === "unknown") return "未知";
   if (key === "side" || key === "side_label") return sideLabel(String(value));
   if (key === "account_id" || key === "account_label") return accountLabel(String(value));
   if (key === "reason") return formatStrategyReason(value);

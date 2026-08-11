@@ -106,6 +106,36 @@ class ScoreWithOverlayTests(unittest.TestCase):
                 self.assertIn(r["ts_code"], _CODES)
                 self.assertIn("score", r)
 
+    def test_each_account_is_ranked_only_inside_its_own_scope(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _build_cache(root)
+            pd.DataFrame({
+                "index_code": ["000300.SH", "000300.SH"],
+                "con_code": ["000001.SZ", "000002.SZ"],
+                "trade_date": ["20240601", "20240601"],
+                "weight": [50.0, 50.0],
+            }).to_csv(root / "index_weight" / "000300_2024-06.csv", index=False)
+            pd.DataFrame({
+                "index_code": ["000905.SH"] * 3,
+                "con_code": ["600000.SH", "600519.SH", "000333.SZ"],
+                "trade_date": ["20240601"] * 3,
+                "weight": [33.0, 33.0, 34.0],
+            }).to_csv(root / "index_weight" / "000905_2024-06.csv", index=False)
+            overlay = _overlay({"pe": {"weight": 1.0, "direction": "low"}}, top_n=1)
+            overlay["accounts"] = [
+                {"id": "hs300", "scope": "hs300", "top_n": 1},
+                {"id": "zz500", "scope": "zz500", "top_n": 1},
+            ]
+
+            rows = score_with_overlay(
+                _view(root), overlay, _AS_OF, ["hs300", "zz500"]
+            )
+
+        by_account = {row["account_id"]: row["ts_code"] for row in rows}
+        self.assertIn(by_account["hs300"], {"000001.SZ", "000002.SZ"})
+        self.assertIn(by_account["zz500"], {"600000.SH", "600519.SH", "000333.SZ"})
+
     def test_low_pe_factor_ranks_cheap_stocks_first(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

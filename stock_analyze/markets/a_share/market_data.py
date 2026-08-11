@@ -51,14 +51,16 @@ def collect_research_sources(
     *,
     as_of: str,
     codes: Iterable[str] = (),
+    benchmark_codes: Iterable[str] = (),
     observed_at: str | None = None,
 ) -> SourceCollection:
     """Fetch the permission-verified research endpoints into normalized frames."""
 
     as_of_key = str(as_of).replace("-", "")[:8]
     end = pd.Timestamp(as_of_key)
-    start_date = (end - pd.Timedelta(days=370)).strftime("%Y%m%d")
-    start_month = (end - pd.DateOffset(months=18)).strftime("%Y%m")
+    start_date = (end - pd.Timedelta(days=1100)).strftime("%Y%m%d")
+    benchmark_start_date = start_date
+    start_month = (end - pd.DateOffset(months=40)).strftime("%Y%m")
     end_month = end.strftime("%Y%m")
     observed = observed_at or datetime.now().astimezone().isoformat(timespec="seconds")
     code_list = [str(code) for code in codes]
@@ -82,6 +84,16 @@ def collect_research_sources(
     for endpoint in ("fina_indicator", "income", "balancesheet", "cashflow"):
         calls[endpoint] = [lambda endpoint=endpoint, code=code: getattr(pro, endpoint)(ts_code=code, end_date=as_of_key) for code in code_list]
     calls["fina_mainbz"] = [lambda code=code: pro.fina_mainbz(ts_code=code, type="P", end_date=as_of_key) for code in code_list]
+    for raw_code in benchmark_codes:
+        code = str(raw_code).split(".")[0].zfill(6)
+        ts_code = f"{code}.SZ" if code.startswith("399") else f"{code}.SH"
+        calls[f"benchmark_{code}"] = [
+            lambda ts_code=ts_code: pro.index_daily(
+                ts_code=ts_code,
+                start_date=benchmark_start_date,
+                end_date=as_of_key,
+            )
+        ]
     return collect_source_calls(calls, observed_at=observed)
 
 
