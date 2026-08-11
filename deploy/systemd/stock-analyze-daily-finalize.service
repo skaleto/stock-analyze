@@ -1,0 +1,17 @@
+[Unit]
+Description=Finalize Stock Analyze daily workflow after all formal strategies finish
+After=network-online.target
+Wants=network-online.target
+OnFailure=stock-analyze-pipeline-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+EnvironmentFile=-/etc/stock-analyze/secrets.env
+SuccessExitStatus=75
+TimeoutStartSec=25min
+ExecStart=/bin/bash -lc 'set +e; /opt/stock-analyze/venv/bin/python -m stock_analyze.cli --logs-dir /opt/stock-analyze/logs notify-workflow-summary --cadence daily --repo-root /opt/stock-analyze/app --require-complete --wait-seconds 1200 --poll-seconds 15; result=$?; if [ "$result" -eq 0 ]; then /bin/systemctl start --no-block stock-analyze-model-iteration.service; fi; exit "$result"'
+ExecStartPost=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --logs-dir /opt/stock-analyze/logs competition-dashboard --market all
+StandardOutput=append:/opt/stock-analyze/logs/daily-finalize.log
+StandardError=append:/opt/stock-analyze/logs/daily-finalize.err

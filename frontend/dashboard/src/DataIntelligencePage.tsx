@@ -1,13 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowLeft, ChevronRight, Database, RadioTower } from "lucide-react";
 import { fetchDataIntelligence } from "./api";
 import { IntelligencePanel } from "./IntelligencePanel";
 import { StageFlow } from "./StageFlow";
-import { BoundedTable, DetailPanel } from "./WorkspacePrimitives";
+import { TermDisplay } from "./TermDisplay";
+import {
+  BoundedTable,
+  DetailPanel,
+  WorkspaceStatusBadge,
+} from "./WorkspacePrimitives";
+import { useSystemOverviewResource } from "./useSystemOverviewResource";
 import { useWorkspaceResource } from "./useWorkspaceResource";
+import type { DashboardMarket } from "./workspaceRoute";
 import type {
   DataIntelligenceData,
   UsageEvidenceCell,
   WorkspaceStage,
+  WorkspaceStatus,
 } from "./workspaceTypes";
 
 type SupplyLane = "structured" | "intelligence";
@@ -82,7 +91,7 @@ function dateLabel(value: string | null | undefined): string {
     : value;
 }
 
-export function DataIntelligencePage({
+function DataIntelligenceDetail({
   market,
   refreshToken,
 }: {
@@ -254,6 +263,202 @@ export function DataIntelligencePage({
   );
 }
 
+function dashboardMarket(value: string | undefined): DashboardMarket | null {
+  if (value === "a_share" || value === "cn_qdii_etf") return value;
+  return null;
+}
+
+function count(value: number | null | undefined): string {
+  return new Intl.NumberFormat("en-US").format(value ?? 0);
+}
+
+function workspaceStatus(status: string | null | undefined): WorkspaceStatus {
+  if (status === "complete" || status === "active" || status === "available") {
+    return "success";
+  }
+  if (status === "running" || status === "research" || status === "failed") {
+    return status;
+  }
+  if (status === "waiting_schedule" || status === "waiting_upstream") {
+    return status;
+  }
+  return "unavailable";
+}
+
+function DataIntelligenceOverview({
+  refreshToken,
+  onFocusMarket,
+}: {
+  refreshToken: number;
+  onFocusMarket: (market: DashboardMarket) => void;
+}) {
+  const resource = useSystemOverviewResource(refreshToken);
+
+  if (resource.loading && !resource.data) {
+    return (
+      <div className="skeleton-grid" aria-label="数据与情报总览加载中">
+        <div /><div /><div /><div />
+      </div>
+    );
+  }
+  if (!resource.data) {
+    return (
+      <div className="error-banner" role="alert">
+        数据与情报总览不可用：{resource.error ?? "未知错误"}
+      </div>
+    );
+  }
+
+  const data = resource.data;
+  const pipeline = data.intelligence.pipeline;
+  const factorSupply = data.intelligence.factorSupply;
+  const impact = data.intelligence.modelImpact;
+  const metrics = [
+    ["公告目录", pipeline.stages.catalogued],
+    ["PDF 就绪", pipeline.stages.pdfReady],
+    ["完成解析", pipeline.stages.parsed],
+    ["语义完成", pipeline.stages.semanticCompleted],
+    ["标准事件", pipeline.stages.canonicalEvents],
+  ] as const;
+
+  return (
+    <section
+      className="workspace-page global-workspace-page data-intelligence-overview"
+      aria-label="数据与情报跨市场总览"
+    >
+      <header className="global-workspace-heading">
+        <div>
+          <h2>情报处理进度</h2>
+          <p>{data.generated_at.replace("T", " ")}</p>
+        </div>
+        <span className="global-heading-status">
+          <WorkspaceStatusBadge status={workspaceStatus(pipeline.status)} />
+        </span>
+      </header>
+
+      {resource.stale ? (
+        <div className="stale-banner" role="status">
+          刷新失败，继续显示最近一次情报总览
+        </div>
+      ) : null}
+      <section className="global-pipeline-band" aria-labelledby="pipeline-progress-title">
+        <header>
+          <span><RadioTower size={17} aria-hidden="true" /></span>
+          <div>
+            <h3 id="pipeline-progress-title">公告处理主链</h3>
+            <small>
+              待下载 {count(pipeline.backlog.download)} · 待解析 {count(pipeline.backlog.parse)} · 待语义 {count(pipeline.backlog.semantic)}
+            </small>
+          </div>
+        </header>
+        <dl className="global-pipeline-metrics">
+          {metrics.map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{count(value)}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+
+      <div className="global-intelligence-status">
+        <article>
+          <Database size={17} aria-hidden="true" />
+          <span><small>已计算因子</small><strong>{factorSupply.suppliedFactors}</strong></span>
+          <span><small>可入模因子</small><strong>{factorSupply.modelEligibleFactors.length}</strong></span>
+          <WorkspaceStatusBadge status={workspaceStatus(factorSupply.status)} />
+        </article>
+        <article>
+          <RadioTower size={17} aria-hidden="true" />
+          <span><small>模型采用</small><strong>{impact.adopted ? "已采用" : "未采用"}</strong></span>
+          <span><small>标准事件</small><strong>{count(data.intelligence.decisions.canonical)}</strong></span>
+          <WorkspaceStatusBadge status={workspaceStatus(impact.status)} />
+        </article>
+      </div>
+
+      <section className="global-market-evidence" aria-labelledby="market-evidence-title">
+        <header className="section-heading">
+          <div><h3 id="market-evidence-title">市场数据证据</h3></div>
+        </header>
+        <div className="global-market-grid">
+          {data.markets.map((item) => {
+            const market = dashboardMarket(item.market);
+            const usage = data.strategy_model_usage.filter(
+              (row) => row.market === item.market,
+            );
+            const active = usage.filter((row) => row.status === "active");
+            return (
+              <article className="global-market-row compact" key={item.market}>
+                <header>
+                  <span className="global-market-identity">
+                    <Database size={17} aria-hidden="true" />
+                    <strong>{item.label}</strong>
+                  </span>
+                  <WorkspaceStatusBadge status={active.length ? "success" : "research"} />
+                </header>
+                <dl className="global-market-metrics two-column">
+                  <div><dt>正式策略账户</dt><dd>{usage.length}</dd></div>
+                  <div><dt>已使用模型</dt><dd>{active.length}</dd></div>
+                </dl>
+                <button
+                  type="button"
+                  className="global-market-drill"
+                  disabled={!market}
+                  aria-label={`查看${item.label}数据证据`}
+                  onClick={() => market && onFocusMarket(market)}
+                >
+                  查看来源、质量与使用清单
+                  <ChevronRight size={15} aria-hidden="true" />
+                </button>
+              </article>
+            );
+          })}
+        </div>
+      </section>
+    </section>
+  );
+}
+
+export function DataIntelligencePage({
+  focus,
+  market: legacyMarket,
+  refreshToken,
+  onFocusMarket,
+}: {
+  focus?: DashboardMarket;
+  market?: string;
+  refreshToken: number;
+  onFocusMarket?: (market?: DashboardMarket) => void;
+}) {
+  const market = focus ?? dashboardMarket(legacyMarket);
+  if (!market) {
+    return (
+      <DataIntelligenceOverview
+        refreshToken={refreshToken}
+        onFocusMarket={(next) => onFocusMarket?.(next)}
+      />
+    );
+  }
+  return (
+    <>
+      {focus && onFocusMarket ? (
+        <div className="workspace-detail-toolbar">
+          <button
+            type="button"
+            className="icon-text-button"
+            aria-label="返回数据与情报总览"
+            onClick={() => onFocusMarket(undefined)}
+          >
+            <ArrowLeft size={15} aria-hidden="true" />跨市场总览
+          </button>
+          <span>{market === "a_share" ? "A股" : "跨境ETF"}</span>
+        </div>
+      ) : null}
+      <DataIntelligenceDetail market={market} refreshToken={refreshToken} />
+    </>
+  );
+}
+
 function SupplyDetail({
   data,
   lane,
@@ -313,7 +518,13 @@ function SupplyDetail({
             rowKey={(row) => row.source}
             emptyLabel="尚无结构化数据源记录"
             columns={[
-              { key: "source", label: "数据源", render: (row) => row.source },
+              {
+                key: "source",
+                label: "数据源",
+                render: (row) => (
+                  <TermDisplay code={row.source} kind="source" />
+                ),
+              },
               {
                 key: "status",
                 label: "状态",
@@ -390,7 +601,13 @@ function SupplyDetail({
             rowKey={(row) => row.family}
             emptyLabel="尚无研究特征分组记录"
             columns={[
-              { key: "family", label: "研究特征组", render: (row) => row.family },
+              {
+                key: "family",
+                label: "研究特征组",
+                render: (row) => (
+                  <TermDisplay code={row.family} kind="family" />
+                ),
+              },
               {
                 key: "defined",
                 label: "已定义",
@@ -412,7 +629,13 @@ function SupplyDetail({
           rowKey={(row) => row.source}
           emptyLabel="尚无情报来源运行记录"
           columns={[
-            { key: "source", label: "来源", render: (row) => row.source },
+            {
+              key: "source",
+              label: "来源",
+              render: (row) => (
+                <TermDisplay code={row.source} kind="source" />
+              ),
+            },
             {
               key: "freshness",
               label: "每日增量新鲜度",
@@ -483,7 +706,13 @@ function SupplyDetail({
             rowKey={(row) => row.name}
             emptyLabel="尚无情报因子验证记录"
             columns={[
-              { key: "name", label: "因子", render: (row) => row.name },
+              {
+                key: "name",
+                label: "因子",
+                render: (row) => (
+                  <TermDisplay code={row.name} kind="factor" />
+                ),
+              },
               {
                 key: "state",
                 label: "生命周期",

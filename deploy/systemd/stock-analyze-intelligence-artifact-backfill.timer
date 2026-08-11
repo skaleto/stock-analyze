@@ -1,0 +1,14 @@
+[Unit]
+Description=Continue historical announcement artifacts outside the daily critical window
+
+[Timer]
+OnCalendar=*-*-* 00..16,23:00,20,40 Asia/Shanghai
+OnCalendar=*-*-* 17:00,20 Asia/Shanghai
+OnCalendar=*-*-* 21:30,50 Asia/Shanghai
+OnCalendar=*-*-* 22:40 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=30s
+Unit=stock-analyze-intelligence-artifact-backfill.service
+
+[Install]
+WantedBy=timers.target

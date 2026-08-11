@@ -79,15 +79,6 @@ def score_with_overlay(
     if daily_basic.empty:
         return []
 
-    available = set(view.universe(as_of=as_of, indices=universe))
-    db = daily_basic[daily_basic["ts_code"].isin(available)].copy()
-    if db.empty:
-        return []
-
-    frame = _assemble_factor_frame(view, db, factors, as_of)
-    if frame.empty:
-        return []
-
     # Resolve broadcast factors (e.g. sentiment) via the view's point-in-time
     # accessor. In the training/validation windows this returns 0.0 (no
     # historical sentiment), so broadcast factors contribute nothing — the
@@ -99,21 +90,27 @@ def score_with_overlay(
             if is_broadcast_factor(name)
         } or None
 
-    factor_processing = overlay.get("factor_processing", {})
-    scored, _factor_table = process_factors(
-        frame,
-        factors=factors,
-        factor_processing=factor_processing,
-        broadcast_values=broadcast_values,
-    )
-
-    # Rank by score desc and take each account's top_n — matching the MVP
-    # _compute_signals contract (it returns exactly top_n rows per account,
-    # which _build_pending_batch then treats as the full target set).
-    ranked = scored.sort_values("score", ascending=False)
     rows: list[dict[str, Any]] = []
     for account in overlay.get("accounts", []):
         acc_id = account["id"]
+        scope = str(account.get("scope") or "")
+        if scope and scope not in universe:
+            continue
+        account_universe = [scope] if scope else universe
+        available = set(view.universe(as_of=as_of, indices=account_universe))
+        db = daily_basic[daily_basic["ts_code"].isin(available)].copy()
+        if db.empty:
+            continue
+        frame = _assemble_factor_frame(view, db, factors, as_of)
+        if frame.empty:
+            continue
+        scored, _factor_table = process_factors(
+            frame,
+            factors=factors,
+            factor_processing=overlay.get("factor_processing", {}),
+            broadcast_values=broadcast_values,
+        )
+        ranked = scored.sort_values("score", ascending=False)
         top_n = int(account.get("top_n", 50))
         for _, r in ranked.head(top_n).iterrows():
             rows.append({

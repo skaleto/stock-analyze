@@ -16,6 +16,7 @@ RUNTIME_SERVICE_UNITS = (
     "stock-analyze-market-data.service",
     "stock-analyze-research.service",
     "stock-analyze-model-iteration.service",
+    "stock-analyze-daily-finalize.service",
     "stock-analyze-claude-daily.service",
     "stock-analyze-codex-daily.service",
     "stock-analyze-claude-cn-qdii-etf-daily.service",
@@ -25,6 +26,7 @@ RUNTIME_SERVICE_UNITS = (
     "stock-analyze-intelligence-artifact-backfill.service",
     "stock-analyze-intelligence-reconcile.service",
     "stock-analyze-intelligence-semantic.service",
+    "stock-analyze-intelligence-quality.service",
     "stock-analyze-ifind-source-audit.service",
     "stock-analyze-weekly-trigger.service",
     "stock-analyze-claude-weekly.service",
@@ -53,6 +55,7 @@ RUNTIME_TIMER_UNITS = (
     "stock-analyze-intelligence-reconcile.timer",
     "stock-analyze-intelligence-artifact-backfill.timer",
     "stock-analyze-intelligence-semantic.timer",
+    "stock-analyze-intelligence-quality.timer",
     "stock-analyze-ifind-source-audit.timer",
 )
 

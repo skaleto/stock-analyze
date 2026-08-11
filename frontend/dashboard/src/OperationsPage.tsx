@@ -65,11 +65,13 @@ const unitLabels: Record<string, string> = {
   "stock-analyze-codex-cn-qdii-etf-daily.service":
     "跨境ETF趋势进攻",
   "stock-analyze-aggregate-dashboard.service": "Dashboard 聚合",
+  "stock-analyze-daily-finalize.service": "完成校验、Dashboard 与日报",
   "stock-analyze-daily-summary.service": "每日运行摘要",
   "stock-analyze-intelligence-artifact-backfill.service":
     "PDF 下载与解析回填",
   "stock-analyze-intelligence-reconcile.service": "情报对账",
   "stock-analyze-intelligence-semantic.service": "LLM 语义抽取",
+  "stock-analyze-intelligence-quality.service": "情报全库质量检查",
 };
 
 function statusLabel(value: string | null | undefined): string {
@@ -115,17 +117,19 @@ function detailUnitStatus(unit: OperationsUnit): string {
 function selectInitialStage(
   rows: OperationsChainStage[],
 ): string {
-  return rows.some((row) => row.key === "intelligence")
-    ? "intelligence"
+  return rows.some((row) => row.key === "market_snapshot")
+    ? "market_snapshot"
     : rows[0]?.key ?? "";
 }
 
 export function OperationsPage({
   scope,
   refreshToken,
+  onScopeChange,
 }: {
   scope: string;
   refreshToken: number;
+  onScopeChange?: (scope: "all" | "exceptions") => void;
 }) {
   const loader = useCallback(
     (signal: AbortSignal) => fetchOperationsCenter(scope, signal),
@@ -136,12 +140,12 @@ export function OperationsPage({
     true,
     loader,
   );
-  const [selected, setSelected] = useState("intelligence");
+  const [selected, setSelected] = useState("market_snapshot");
   const [cadence, setCadence] = useState<Cadence>("daily");
   const previousRequest = useRef({ scope, refreshToken });
 
   useEffect(() => {
-    setSelected("intelligence");
+    setSelected("market_snapshot");
     setCadence("daily");
   }, [scope]);
 
@@ -234,7 +238,32 @@ export function OperationsPage({
             {data.dailyFreshness.asOfDate}
             {" · "}
             {statusLabel(data.dailyFreshness.status)}
+            {typeof data.dailyFreshness.completedTasks === "number"
+              && typeof data.dailyFreshness.expectedTasks === "number"
+              ? ` · ${data.dailyFreshness.completedTasks}/${data.dailyFreshness.expectedTasks}`
+              : ""}
+            {data.dailyFreshness.lastCompleteDate
+              ? ` · 上次完整 ${data.dailyFreshness.lastCompleteDate}`
+              : ""}
           </p>
+        </div>
+        <div className="page-scope-filter" role="group" aria-label="运行过滤">
+          <button
+            type="button"
+            className={scope !== "exceptions" ? "active" : ""}
+            aria-pressed={scope !== "exceptions"}
+            onClick={() => onScopeChange?.("all")}
+          >
+            全部
+          </button>
+          <button
+            type="button"
+            className={scope === "exceptions" ? "active" : ""}
+            aria-pressed={scope === "exceptions"}
+            onClick={() => onScopeChange?.("exceptions")}
+          >
+            仅异常
+          </button>
         </div>
       </header>
 
@@ -319,6 +348,22 @@ export function OperationsPage({
             <dd>
               {timestamp(data.background.artifactWorkers.latestFinishedAt)}
             </dd>
+          </div>
+          <div>
+            <dt>本机回填</dt>
+            <dd>{statusLabel(data.background.localBackfill.status)}</dd>
+          </div>
+          <div>
+            <dt>回填阶段</dt>
+            <dd>{data.background.localBackfill.phase ?? "未记录"}</dd>
+          </div>
+          <div>
+            <dt>暂停原因</dt>
+            <dd>{data.background.localBackfill.reason ?? "无"}</dd>
+          </div>
+          <div>
+            <dt>本机更新</dt>
+            <dd>{timestamp(data.background.localBackfill.updatedAt)}</dd>
           </div>
         </dl>
         <div className="background-worker-grid">

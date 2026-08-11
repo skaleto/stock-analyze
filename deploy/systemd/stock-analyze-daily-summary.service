@@ -1,0 +1,14 @@
+[Unit]
+Description=Stock Analyze consolidated daily workflow summary
+After=network-online.target
+Wants=network-online.target
+OnFailure=stock-analyze-pipeline-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+EnvironmentFile=-/etc/stock-analyze/secrets.env
+ExecStart=/opt/stock-analyze/venv/bin/python -m stock_analyze.cli --logs-dir /opt/stock-analyze/logs notify-workflow-summary --cadence daily --repo-root /opt/stock-analyze/app
+StandardOutput=append:/opt/stock-analyze/logs/daily-summary.log
+StandardError=append:/opt/stock-analyze/logs/daily-summary.err

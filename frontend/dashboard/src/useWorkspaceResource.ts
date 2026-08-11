@@ -1,18 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { workspaceQueryClient } from "./queryClient";
 
 /**
  * Callers must memoize the loader identity, typically with `useCallback`, and
  * should honor the supplied AbortSignal whenever possible.
  */
 export type Loader<T> = (signal: AbortSignal) => Promise<T>;
-
-type ResourceState<T> = {
-  key: string;
-  data: T | null;
-  loading: boolean;
-  error: string | null;
-  stale: boolean;
-};
 
 function message(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
@@ -23,85 +17,42 @@ export function useWorkspaceResource<T>(
   enabled: boolean,
   loader: Loader<T>,
 ) {
-  const [state, setState] = useState<ResourceState<T>>({
-    key: "",
-    data: null,
-    loading: false,
-    error: null,
-    stale: false,
-  });
-  const abortRef = useRef<AbortController | null>(null);
-  const requestRef = useRef(0);
-
-  const load = useCallback((preserve: boolean) => {
-    abortRef.current?.abort();
-    if (!enabled) {
-      requestRef.current += 1;
-      setState({
-        key: "",
-        data: null,
-        loading: false,
-        error: null,
-        stale: false,
-      });
-      return;
-    }
-    const controller = new AbortController();
-    abortRef.current = controller;
-    const requestId = ++requestRef.current;
-    setState((current) => ({
-      key,
-      data: preserve && current.key === key ? current.data : null,
-      loading: true,
-      error: null,
-      stale: false,
-    }));
-    const succeed = (data: T) => {
-      if (requestRef.current === requestId && !controller.signal.aborted) {
-        setState({
-          key,
-          data,
-          loading: false,
-          error: null,
-          stale: false,
-        });
-      }
-    };
-    const fail = (reason: unknown) => {
-      if (requestRef.current === requestId && !controller.signal.aborted) {
-        setState((current) => ({
-          key,
-          data: current.key === key ? current.data : null,
-          loading: false,
-          error: message(reason),
-          stale: current.key === key && current.data !== null,
-        }));
-      }
-    };
-    try {
-      void loader(controller.signal).then(succeed, fail);
-    } catch (reason: unknown) {
-      fail(reason);
-    }
-  }, [enabled, key, loader]);
+  const queryKey = ["workspace-resource", key] as const;
+  const loaderRef = useRef(loader);
+  loaderRef.current = loader;
+  const previousRequest = useRef({ key, loader });
+  const query = useQuery<T, unknown>({
+    queryKey,
+    enabled,
+    queryFn: ({ signal }) => Promise.resolve().then(
+      () => loaderRef.current(signal),
+    ),
+  }, workspaceQueryClient);
 
   useEffect(() => {
-    load(false);
-    return () => {
-      abortRef.current?.abort();
-      requestRef.current += 1;
-    };
-  }, [load]);
+    if (enabled) return;
+    void workspaceQueryClient.cancelQueries({ queryKey, exact: true });
+  }, [enabled, key]);
 
-  const active = !enabled || state.key !== key ? {
-    key,
-    data: null,
-    loading: enabled,
-    error: null,
-    stale: false,
-  } : state;
+  useEffect(() => {
+    const previous = previousRequest.current;
+    previousRequest.current = { key, loader };
+    if (previous.key !== key || previous.loader === loader) return;
+    if (!enabled) return;
+    void workspaceQueryClient.cancelQueries({ queryKey, exact: true }).then(
+      () => query.refetch({ cancelRefetch: false }),
+    );
+  }, [enabled, key, loader, query.refetch]);
+
+  const data = enabled ? query.data ?? null : null;
   return {
-    ...active,
-    refresh: useCallback(() => load(true), [load]),
+    key,
+    data,
+    loading: enabled && query.isFetching,
+    error: enabled && query.error ? message(query.error) : null,
+    stale: Boolean(data && query.isRefetchError),
+    refresh: useCallback(() => {
+      void query.refetch({ cancelRefetch: true });
+    }, [query.refetch]),
   };
 }

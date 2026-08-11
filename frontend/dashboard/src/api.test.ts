@@ -177,6 +177,14 @@ describe("fetchSystemOverview", () => {
     await expect(fetchSystemOverview()).resolves.toEqual(payload);
   });
 
+  it("accepts a model impact report awaiting sufficient event support", async () => {
+    const payload = validSystemOverview();
+    payload.intelligence.modelImpact.status = "insufficient_support";
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(payload))));
+
+    await expect(fetchSystemOverview()).resolves.toEqual(payload);
+  });
+
   it("strictly validates the real nested iteration contract and bounds", async () => {
     const payload = structuredClone(await currentBuilderPayload()) as any;
     payload.models[0].iteration.candidate ??= {

@@ -9,11 +9,17 @@ token/
 __pycache__/
 *.pyc
 .venv/
+.venv-deep/
 venv/
 data/*
 reports/*
 logs/*
 backups/*
+.local-intelligence-artifact-worker/
+.artifacts/
+.superpowers/
+frontend/**/node_modules/
+*.tsbuildinfo
 !data/.gitkeep
 !reports/.gitkeep
 !logs/.gitkeep

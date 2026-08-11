@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -24,6 +25,116 @@ class StrategyProfile:
     name: str
     family_weights: dict[str, float]
     prediction_weight: float
+
+
+@dataclass(frozen=True)
+class CostAwareTransitionResult:
+    weights: dict[str, float]
+    decisions: pd.DataFrame
+
+
+@dataclass(frozen=True)
+class EconomicTradeDecision:
+    trade_allowed: bool
+    economic_score_bps: float
+    required_edge_bps: float
+    reason: str
+
+
+@dataclass(frozen=True)
+class CoreModelTiltResult:
+    weights: dict[str, float]
+    attribution: pd.DataFrame
+
+
+def apply_core_model_tilt(
+    core_weights: Mapping[str, float],
+    model_weights: Mapping[str, float],
+    *,
+    model_status: str,
+    lineage: Mapping[str, str],
+    max_tilt: float = 0.20,
+) -> CoreModelTiltResult:
+    """Blend an immutable rule core with a bounded, lineage-pinned model aim."""
+
+    core = {
+        _normalize_code(code): max(_finite_float(weight), 0.0)
+        for code, weight in core_weights.items()
+        if _finite_float(weight) > 1e-12
+    }
+    model = {
+        _normalize_code(code): max(_finite_float(weight), 0.0)
+        for code, weight in model_weights.items()
+        if _finite_float(weight) > 1e-12
+    }
+    required_lineage = ("model_version", "feature_schema_hash", "calibrator_hash")
+    rejection_reason = ""
+    if str(model_status).strip().lower() != "active":
+        rejection_reason = "model_not_active"
+    elif any(not str(lineage.get(key) or "").strip() for key in required_lineage):
+        rejection_reason = "model_lineage_incomplete"
+    elif not model:
+        rejection_reason = "model_target_missing"
+    core_budget = sum(core.values())
+    if core_budget <= 1e-12:
+        rejection_reason = rejection_reason or "core_target_missing"
+    if rejection_reason:
+        final = dict(core)
+    else:
+        model_budget = sum(model.values())
+        scaled_model = {
+            code: weight * core_budget / model_budget
+            for code, weight in model.items()
+        }
+        tilt = min(max(float(max_tilt), 0.0), 0.20)
+        final = {
+            code: round(
+                (1.0 - tilt) * core.get(code, 0.0)
+                + tilt * scaled_model.get(code, 0.0),
+                12,
+            )
+            for code in sorted(set(core).union(scaled_model))
+        }
+        final = {code: weight for code, weight in final.items() if weight > 1e-12}
+    rows = []
+    for code in sorted(set(core).union(model).union(final)):
+        base_weight = float(core.get(code, 0.0))
+        final_weight = float(final.get(code, 0.0))
+        rows.append({
+            "code": code,
+            "base_weight": base_weight,
+            "model_aim_weight": float(model.get(code, 0.0)),
+            "model_delta": final_weight - base_weight,
+            "final_weight": final_weight,
+            "rejection_reason": rejection_reason,
+            **{key: str(lineage.get(key) or "") for key in required_lineage},
+        })
+    return CoreModelTiltResult(
+        weights=final,
+        attribution=pd.DataFrame(rows),
+    )
+
+
+def economic_trade_decision(
+    *,
+    expected_edge_bps: float,
+    cost_bps: float,
+    uncertainty_bps: float,
+    cost_safety_multiple: float,
+    uncertainty_multiple: float = 1.0,
+) -> EconomicTradeDecision:
+    required = (
+        max(float(cost_bps), 0.0) * max(float(cost_safety_multiple), 0.0)
+        + max(float(uncertainty_bps), 0.0) * max(float(uncertainty_multiple), 0.0)
+    )
+    economic_score = float(expected_edge_bps) - required
+    allowed = economic_score > 0.0
+    return EconomicTradeDecision(
+        trade_allowed=allowed,
+        economic_score_bps=economic_score,
+        required_edge_bps=required,
+        reason="" if allowed else "insufficient_net_edge",
+    )
 
 
 STRATEGY_PROFILES = {
@@ -79,6 +190,227 @@ def _normalize_code(value: object) -> str:
     return raw.zfill(6) if raw.isdigit() else raw
 
 
+def _finite_float(value: object, default: float = 0.0) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return numeric if math.isfinite(numeric) else float(default)
+
+
+def _boolean_flag(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
+def apply_cost_aware_transition(
+    candidates: pd.DataFrame,
+    *,
+    aim_weights: Mapping[str, float],
+    current_weights: Mapping[str, float] | None,
+    top_n: int,
+    rank_buffer_pct: float,
+    minimum_target_change: float,
+    partial_adjustment_rate: float,
+    max_daily_turnover: float,
+    cost_safety_multiple: float,
+    alpha_persistence: float = 1.0,
+    default_round_trip_cost_bps: float = 0.0,
+    gross_exposure: float = 1.0,
+) -> CostAwareTransitionResult:
+    """Move toward an aim portfolio only when forecast edge pays for trading.
+
+    Hard risk exits bypass the target-change band, cost gate, partial move, and
+    daily turnover cap. Ordinary changes retain buffered holdings, observe a
+    no-trade band, and move only part of the distance toward the frictionless
+    target. The returned decisions are the audit contract used by replay,
+    Shadow, and the dashboard.
+    """
+
+    if "code" not in candidates.columns:
+        raise ValueError("cost_aware_candidates_missing_code")
+    frame = candidates.copy()
+    frame["_code"] = frame["code"].map(_normalize_code)
+    if "score" in frame.columns:
+        frame["_score"] = pd.to_numeric(frame["score"], errors="coerce").fillna(-np.inf)
+        frame = frame.sort_values(["_score", "_code"], ascending=[False, True], kind="stable")
+    else:
+        frame = frame.sort_values("_code", kind="stable")
+    frame = frame.drop_duplicates("_code", keep="first").reset_index(drop=True)
+    frame["_rank"] = np.arange(1, len(frame) + 1)
+    by_code = frame.set_index("_code", drop=False)
+
+    current = {
+        _normalize_code(code): max(_finite_float(weight), 0.0)
+        for code, weight in (current_weights or {}).items()
+    }
+    aim = {
+        _normalize_code(code): max(_finite_float(weight), 0.0)
+        for code, weight in aim_weights.items()
+        if _normalize_code(code) in by_code.index and _finite_float(weight) > 0.0
+    }
+    position_limit = max(int(top_n), 1)
+    buffer_count = max(
+        position_limit,
+        int(math.ceil(position_limit * (1.0 + max(float(rank_buffer_pct), 0.0)))),
+    )
+    rank_by_code = {
+        str(code): int(rank)
+        for code, rank in zip(frame["_code"], frame["_rank"])
+    }
+    retained = sorted(
+        (
+            code for code, weight in current.items()
+            if weight > 0.0 and rank_by_code.get(code, buffer_count + 1) <= buffer_count
+        ),
+        key=lambda code: (rank_by_code.get(code, buffer_count + 1), code),
+    )[:position_limit]
+    selected = list(retained)
+    for code in sorted(aim, key=lambda item: (rank_by_code.get(item, len(frame) + 1), item)):
+        if code not in selected:
+            selected.append(code)
+        if len(selected) >= position_limit:
+            break
+    selected_set = set(selected)
+
+    selected_expected = [
+        _finite_float(by_code.loc[code].get("expected_excess_return"))
+        for code in selected
+        if code in by_code.index
+    ]
+    best_selected_expected = max(selected_expected, default=0.0)
+    all_codes = sorted(set(current).union(selected_set))
+    raw_targets: dict[str, float] = {}
+    raw_decisions: dict[str, dict[str, object]] = {}
+    ordinary_deltas: dict[str, float] = {}
+    risk_exit_codes: set[str] = set()
+    band = max(float(minimum_target_change), 0.0)
+    adjustment_rate = min(max(float(partial_adjustment_rate), 0.0), 1.0)
+    persistence = max(float(alpha_persistence), 0.0)
+    safety_multiple = max(float(cost_safety_multiple), 0.0)
+
+    for code in all_codes:
+        row = by_code.loc[code] if code in by_code.index else pd.Series(dtype=object)
+        current_weight = current.get(code, 0.0)
+        desired_weight = aim.get(code, 0.0) if code in selected_set else 0.0
+        buffered_hold = code in retained and code not in aim
+        if buffered_hold:
+            desired_weight = current_weight
+        hard_risk_exit = _boolean_flag(
+            row.get("hard_risk_exit", row.get("risk_exit", False))
+        )
+        expected_return = _finite_float(row.get("expected_excess_return"))
+        round_trip_cost_bps = max(
+            _finite_float(row.get("round_trip_cost_bps"), default_round_trip_cost_bps),
+            0.0,
+        )
+        uncertainty_bps = _finite_float(
+            row.get("prediction_uncertainty_bps", row.get("uncertainty_bps")),
+            -1.0,
+        )
+        if uncertainty_bps < 0.0:
+            lower = _finite_float(row.get("return_q10"), expected_return)
+            upper = _finite_float(row.get("return_q90"), expected_return)
+            confidence = min(max(_finite_float(row.get("confidence"), 1.0), 0.0), 1.0)
+            uncertainty_bps = abs(upper - lower) / (2.0 * 1.281551565545) * (1.0 - confidence) * 10_000.0
+        proposed_delta = desired_weight - current_weight
+        if proposed_delta >= 0.0:
+            gross_edge_bps = max(expected_return, 0.0) * persistence * 10_000.0
+        else:
+            gross_edge_bps = max(
+                best_selected_expected - expected_return,
+                -expected_return,
+                0.0,
+            ) * persistence * 10_000.0
+        economic_decision = economic_trade_decision(
+            expected_edge_bps=gross_edge_bps,
+            cost_bps=round_trip_cost_bps,
+            uncertainty_bps=max(uncertainty_bps, 0.0),
+            cost_safety_multiple=safety_multiple,
+        )
+        required_edge_bps = economic_decision.required_edge_bps
+        net_edge_bps = economic_decision.economic_score_bps
+        reason = ""
+        trade_allowed = False
+        applied_rate = adjustment_rate
+        target_weight = current_weight
+        if hard_risk_exit and current_weight > 0.0:
+            target_weight = 0.0
+            trade_allowed = True
+            applied_rate = 1.0
+            reason = "hard_risk_exit"
+            risk_exit_codes.add(code)
+        elif buffered_hold:
+            reason = "rank_buffer_hold"
+        elif abs(proposed_delta) < band:
+            reason = "target_change_below_band"
+        elif net_edge_bps <= 0.0:
+            reason = "insufficient_net_edge"
+        elif adjustment_rate <= 0.0:
+            reason = "partial_adjustment_disabled"
+        else:
+            target_weight = current_weight + adjustment_rate * proposed_delta
+            trade_allowed = abs(target_weight - current_weight) > 1e-12
+            ordinary_deltas[code] = target_weight - current_weight
+        raw_targets[code] = max(target_weight, 0.0)
+        raw_decisions[code] = {
+            "code": code,
+            "rank": rank_by_code.get(code),
+            "current_weight": current_weight,
+            "aim_weight": desired_weight,
+            "target_weight": max(target_weight, 0.0),
+            "gross_expected_edge_bps": gross_edge_bps,
+            "round_trip_cost_bps": round_trip_cost_bps,
+            "uncertainty_bps": max(uncertainty_bps, 0.0),
+            "net_expected_edge_bps": net_edge_bps,
+            "trade_allowed": trade_allowed,
+            "no_trade_reason": reason,
+            "partial_adjustment_rate": applied_rate,
+        }
+
+    ordinary_turnover = sum(abs(delta) for delta in ordinary_deltas.values())
+    turnover_limit = max(float(max_daily_turnover), 0.0)
+    turnover_scale = (
+        min(turnover_limit / ordinary_turnover, 1.0)
+        if ordinary_turnover > 1e-12 else 1.0
+    )
+    if turnover_scale < 1.0:
+        for code, delta in ordinary_deltas.items():
+            raw_targets[code] = current.get(code, 0.0) + delta * turnover_scale
+
+    exposure_limit = min(max(float(gross_exposure), 0.0), 1.0)
+    excess = sum(raw_targets.values()) - exposure_limit
+    if excess > 1e-12:
+        positive_deltas = {
+            code: max(target - current.get(code, 0.0), 0.0)
+            for code, target in raw_targets.items()
+            if code not in risk_exit_codes
+        }
+        buy_total = sum(positive_deltas.values())
+        buy_scale = max(1.0 - excess / buy_total, 0.0) if buy_total > 1e-12 else 0.0
+        for code, delta in positive_deltas.items():
+            raw_targets[code] = current.get(code, 0.0) + delta * buy_scale
+
+    decision_rows: list[dict[str, object]] = []
+    for code in all_codes:
+        target = max(raw_targets.get(code, 0.0), 0.0)
+        decision = raw_decisions[code]
+        decision["target_weight"] = target
+        changed = abs(target - current.get(code, 0.0)) > 1e-12
+        decision["trade_allowed"] = changed
+        if changed and code not in risk_exit_codes:
+            decision["no_trade_reason"] = ""
+        decision_rows.append(decision)
+
+    return CostAwareTransitionResult(
+        weights={code: float(weight) for code, weight in raw_targets.items() if weight > 1e-10},
+        decisions=pd.DataFrame(decision_rows),
+    )
+
+
 def attach_active_predictions(
     candidates: pd.DataFrame,
     predictions: pd.DataFrame,
@@ -99,6 +431,9 @@ def attach_active_predictions(
     result["expected_excess_return"] = np.nan
     result["prediction_horizons"] = ""
     result["prediction_model_versions"] = ""
+    result["prediction_feature_schema_hash"] = ""
+    result["prediction_calibrator_hash"] = ""
+    result["prediction_feature_snapshot_id"] = ""
     result["prediction_fallback_reason"] = "prediction_artifact_missing"
     if predictions.empty:
         return result
@@ -164,11 +499,23 @@ def attach_active_predictions(
             versions = selected.get(
                 "model_version", pd.Series("", index=selected.index)
             ).astype(str)
+            feature_hashes = selected.get(
+                "feature_schema_hash", pd.Series("", index=selected.index)
+            ).astype(str)
+            calibrator_hashes = selected.get(
+                "calibrator_hash", pd.Series("", index=selected.index)
+            ).astype(str)
+            snapshot_ids = selected.get(
+                "feature_snapshot_id", pd.Series("", index=selected.index)
+            ).astype(str)
             blends[str(code)] = {
                 "confidence": float((selected["_confidence"] * weights).sum()),
                 "expected": float((selected["_expected"] * weights).sum()),
                 "horizons": ",".join(str(value) for value in selected.index),
                 "versions": ",".join(versions.tolist()),
+                "feature_hashes": ",".join(feature_hashes.tolist()),
+                "calibrator_hashes": ",".join(calibrator_hashes.tolist()),
+                "snapshot_ids": ",".join(snapshot_ids.tolist()),
             }
         confidence = result["code"].map(
             {code: values["confidence"] for code, values in blends.items()}
@@ -182,6 +529,15 @@ def attach_active_predictions(
         ).fillna("")
         result["prediction_model_versions"] = result["code"].map(
             {code: values["versions"] for code, values in blends.items()}
+        ).fillna("")
+        result["prediction_feature_schema_hash"] = result["code"].map(
+            {code: values["feature_hashes"] for code, values in blends.items()}
+        ).fillna("")
+        result["prediction_calibrator_hash"] = result["code"].map(
+            {code: values["calibrator_hashes"] for code, values in blends.items()}
+        ).fillna("")
+        result["prediction_feature_snapshot_id"] = result["code"].map(
+            {code: values["snapshot_ids"] for code, values in blends.items()}
         ).fillna("")
         result["prediction_fallback_reason"] = np.where(
             applied, "", "declared_horizon_unavailable_or_ineligible"
@@ -203,6 +559,17 @@ def attach_active_predictions(
             prediction_by_code.get("invalidated", pd.Series(False, index=prediction_by_code.index))
         ).fillna(False).astype(bool)
         applied = active & confidence.ge(min_confidence) & expected.notna() & ~invalidated
+        for output_column, source_column in (
+            ("prediction_model_versions", "model_version"),
+            ("prediction_feature_schema_hash", "feature_schema_hash"),
+            ("prediction_calibrator_hash", "calibrator_hash"),
+            ("prediction_feature_snapshot_id", "feature_snapshot_id"),
+        ):
+            source = prediction_by_code.get(
+                source_column,
+                pd.Series("", index=prediction_by_code.index),
+            ).astype(str)
+            result[output_column] = result["code"].map(source).fillna("")
         result["prediction_fallback_reason"] = np.where(
             applied, "", "prediction_inactive_low_confidence_or_invalid"
         )
@@ -285,10 +652,18 @@ def load_provider_return_history(
     as_of: object,
     days: int = 90,
 ) -> pd.DataFrame | None:
-    normalized_codes = [_normalize_code(code) for code in codes]
+    code_pairs: dict[str, str] = {}
+    for raw_code in codes:
+        code_pairs.setdefault(_normalize_code(raw_code), str(raw_code))
+    normalized_codes = list(code_pairs)
+    requested_codes = list(code_pairs.values())
     if hasattr(provider, "return_history"):
         try:
-            frame = provider.return_history(codes, as_of=str(as_of), days=days)
+            frame = provider.return_history(
+                requested_codes,
+                as_of=str(as_of),
+                days=days,
+            )
             if isinstance(frame, pd.DataFrame) and not frame.empty:
                 frame = frame.copy()
                 frame.columns = [_normalize_code(column) for column in frame.columns]
@@ -298,7 +673,7 @@ def load_provider_return_history(
     series: dict[str, pd.Series] = {}
     if not hasattr(provider, "price_history"):
         return None
-    for raw_code, code in zip(codes, normalized_codes):
+    for code, raw_code in code_pairs.items():
         try:
             history = provider.price_history(raw_code, as_of=str(as_of), days=days + 1)
         except Exception:  # noqa: BLE001 - one unavailable instrument should fail closed to fallback sizing
@@ -377,9 +752,12 @@ def risk_adjusted_target_weights(
     return_history: pd.DataFrame | None = None,
     gross_exposure: float = 1.0,
     group_constraints: Mapping[str, float] | None = None,
+    exposure_constraints: Mapping[str, float] | None = None,
     risk_aversion: float = 1.0,
+    active_risk_aversion: float = 0.35,
     cost_aversion: float = 1.0,
     max_turnover: float = 1.0,
+    max_tracking_error: float | None = None,
     benchmark_weights: Mapping[str, float] | None = None,
     diagnostics: dict[str, object] | None = None,
 ) -> dict[str, float]:
@@ -397,6 +775,13 @@ def risk_adjusted_target_weights(
         if "score" in candidates.columns
         else candidates
     )
+    ranked = ranked.copy()
+    market_beta, market_beta_source = _market_beta_estimates(
+        ranked,
+        return_history=return_history,
+        benchmark_weights=benchmark_weights,
+    )
+    ranked["market_beta"] = market_beta
     joint_solution = _joint_portfolio_solution(
         ranked,
         top_n=top_n,
@@ -405,19 +790,102 @@ def risk_adjusted_target_weights(
         return_history=return_history,
         gross_exposure=gross_exposure,
         group_constraints=group_constraints,
+        exposure_constraints=exposure_constraints,
         risk_aversion=risk_aversion,
+        active_risk_aversion=active_risk_aversion,
         cost_aversion=cost_aversion,
         max_turnover=max_turnover,
+        max_tracking_error=max_tracking_error,
         benchmark_weights=benchmark_weights,
     )
     if diagnostics is not None:
         diagnostics.update(_solution_diagnostics(joint_solution))
+        diagnostics["market_beta_source"] = market_beta_source
+        diagnostics["alpha_semantics"] = (
+            "calibrated_expected_excess_return_or_dimensionless_rule_utility"
+        )
     if joint_solution.fallback_reason is None:
-        return {
+        model_weights = {
             str(code): float(weight)
             for code, weight in joint_solution.weights.items()
             if float(weight) > 1e-10
         }
+        active_mask = ranked.get(
+            "prediction_applied",
+            pd.Series(False, index=ranked.index),
+        ).fillna(False).astype(bool)
+        if not bool(active_mask.any()):
+            if diagnostics is not None:
+                diagnostics["allocation_contract"] = "rule-core-v1"
+            return model_weights
+        core_candidates = ranked.copy()
+        if "base_score" in core_candidates.columns:
+            core_candidates["score"] = pd.to_numeric(
+                core_candidates["base_score"], errors="coerce"
+            )
+        core_candidates["prediction_applied"] = False
+        core_candidates["expected_excess_return"] = np.nan
+        core_candidates["prediction_confidence"] = np.nan
+        core_weights = risk_adjusted_target_weights(
+            core_candidates,
+            top_n=top_n,
+            max_single_weight=max_single_weight,
+            current_weights=current_weights,
+            turnover_penalty=turnover_penalty,
+            min_trade_weight=min_trade_weight,
+            return_history=return_history,
+            gross_exposure=gross_exposure,
+            group_constraints=group_constraints,
+            exposure_constraints=exposure_constraints,
+            risk_aversion=risk_aversion,
+            active_risk_aversion=active_risk_aversion,
+            cost_aversion=cost_aversion,
+            max_turnover=max_turnover,
+            max_tracking_error=max_tracking_error,
+            benchmark_weights=benchmark_weights,
+        )
+
+        def lineage_values(column: str) -> str:
+            if column not in ranked.columns:
+                return ""
+            values = {
+                str(value).strip()
+                for value in ranked.loc[active_mask, column].fillna("").tolist()
+                if str(value).strip()
+            }
+            return "|".join(sorted(values))
+
+        lineage = {
+            "model_version": lineage_values("prediction_model_versions"),
+            "feature_schema_hash": lineage_values(
+                "prediction_feature_schema_hash"
+            ),
+            "calibrator_hash": lineage_values("prediction_calibrator_hash"),
+        }
+        model_only_codes = sorted(set(model_weights).difference(core_weights))
+        model_weights_within_core = {
+            code: weight
+            for code, weight in model_weights.items()
+            if code in core_weights
+        }
+        tilted = apply_core_model_tilt(
+            core_weights,
+            model_weights_within_core,
+            model_status="active",
+            lineage=lineage,
+            max_tilt=0.20,
+        )
+        if diagnostics is not None:
+            diagnostics["allocation_contract"] = "core-plus-tilt-v1"
+            diagnostics["model_tilt_cap"] = 0.20
+            diagnostics["model_lineage"] = lineage
+            diagnostics["model_new_positions_blocked"] = model_only_codes
+            diagnostics["core_model_attribution"] = tilted.attribution.to_dict(
+                orient="records"
+            )
+        return tilted.weights
+    if exposure_constraints:
+        return {}
 
     selected = ranked.head(top_n).copy()
     if selected.empty:
@@ -545,6 +1013,71 @@ def risk_adjusted_target_weights(
     }
 
 
+def _market_beta_estimates(
+    candidates: pd.DataFrame,
+    *,
+    return_history: pd.DataFrame | None,
+    benchmark_weights: Mapping[str, float] | None,
+) -> tuple[pd.Series, str]:
+    supplied = pd.to_numeric(
+        candidates.get("market_beta", pd.Series(np.nan, index=candidates.index)),
+        errors="coerce",
+    )
+    if supplied.notna().all() and not supplied.empty:
+        return supplied.clip(lower=-1.0, upper=3.0), "candidate_exposure"
+    fallback = pd.Series(1.0, index=candidates.index, dtype=float)
+    if return_history is None or return_history.empty or not benchmark_weights:
+        return supplied.fillna(fallback).clip(lower=-1.0, upper=3.0), "fallback_one"
+
+    history = return_history.copy()
+    history.columns = [_normalize_code(column) for column in history.columns]
+    normalized_benchmarks = {
+        _normalize_code(code): max(float(weight), 0.0)
+        for code, weight in benchmark_weights.items()
+        if _normalize_code(code) in history.columns and float(weight) > 0.0
+    }
+    total_benchmark_weight = sum(normalized_benchmarks.values())
+    if total_benchmark_weight <= 0.0:
+        return supplied.fillna(fallback).clip(lower=-1.0, upper=3.0), "fallback_one"
+    normalized_benchmarks = {
+        code: weight / total_benchmark_weight
+        for code, weight in normalized_benchmarks.items()
+    }
+    numeric = history.apply(pd.to_numeric, errors="coerce")
+    benchmark_return = sum(
+        numeric[code] * weight
+        for code, weight in normalized_benchmarks.items()
+    )
+    benchmark_variance = float(benchmark_return.var(ddof=1))
+    if not np.isfinite(benchmark_variance) or benchmark_variance <= 1e-12:
+        return supplied.fillna(fallback).clip(lower=-1.0, upper=3.0), "fallback_one"
+
+    estimates: dict[str, float] = {}
+    for raw_code in candidates["code"].astype(str):
+        code = _normalize_code(raw_code)
+        if code not in numeric.columns:
+            continue
+        aligned = pd.concat(
+            [numeric[code], benchmark_return],
+            axis=1,
+        ).dropna()
+        if len(aligned) < 20:
+            continue
+        covariance = float(aligned.iloc[:, 0].cov(aligned.iloc[:, 1]))
+        if np.isfinite(covariance):
+            estimates[code] = covariance / benchmark_variance
+    if not estimates:
+        return supplied.fillna(fallback).clip(lower=-1.0, upper=3.0), "fallback_one"
+    estimated = candidates["code"].map(
+        lambda code: estimates.get(_normalize_code(code), np.nan)
+    )
+    combined = supplied.where(supplied.notna(), estimated).fillna(1.0)
+    return (
+        combined.clip(lower=-1.0, upper=3.0),
+        "estimated_from_benchmark_returns",
+    )
+
+
 def _joint_portfolio_solution(
     candidates: pd.DataFrame,
     *,
@@ -554,9 +1087,12 @@ def _joint_portfolio_solution(
     return_history: pd.DataFrame | None,
     gross_exposure: float,
     group_constraints: Mapping[str, float] | None,
+    exposure_constraints: Mapping[str, float] | None,
     risk_aversion: float,
+    active_risk_aversion: float,
     cost_aversion: float,
     max_turnover: float,
+    max_tracking_error: float | None,
     benchmark_weights: Mapping[str, float] | None,
 ) -> PortfolioSolution:
     frame = candidates.copy()
@@ -631,7 +1167,10 @@ def _joint_portfolio_solution(
                 )
 
     exposures = pd.DataFrame(index=frame.index)
-    exposures["market_beta"] = 1.0
+    exposures["market_beta"] = pd.to_numeric(
+        frame.get("market_beta", pd.Series(1.0, index=frame.index)),
+        errors="coerce",
+    ).fillna(1.0).clip(lower=-1.0, upper=3.0)
     exposures["volatility_beta"] = volatility / max(float(volatility.median()), 1e-8)
     if "fx_beta" in frame.columns:
         exposures["fx_beta"] = pd.to_numeric(frame["fx_beta"], errors="coerce")
@@ -647,6 +1186,11 @@ def _joint_portfolio_solution(
         for industry in sorted(frame["industry"].fillna("unclassified").astype(str).unique()):
             exposures[f"industry:{industry}"] = (
                 frame["industry"].fillna("unclassified").astype(str).eq(industry).astype(float)
+            )
+    for column in sorted(exposure_constraints or {}):
+        if column in frame.columns:
+            exposures[column] = pd.to_numeric(
+                frame[column], errors="coerce"
             )
 
     normalized_current = {
@@ -665,7 +1209,12 @@ def _joint_portfolio_solution(
         max_gross_exposure=min(max(float(gross_exposure), 0.0), 1.0),
         min_cash_weight=max(0.0, 1.0 - min(max(float(gross_exposure), 0.0), 1.0)),
         max_turnover=min(max(float(max_turnover), 0.0), 1.0),
+        max_tracking_error=(
+            max(float(max_tracking_error), 0.0)
+            if max_tracking_error is not None else None
+        ),
         group_caps=dict(group_constraints or {}),
+        exposure_caps=dict(exposure_constraints or {}),
         required_exposures=("market_beta",),
     )
     return optimize_portfolio(
@@ -678,7 +1227,10 @@ def _joint_portfolio_solution(
             limits=limits,
             cost_bps=15.0,
             risk_aversion=max(float(risk_aversion), 0.0),
-            active_risk_aversion=0.35 if normalized_benchmark else 0.0,
+            active_risk_aversion=(
+                max(float(active_risk_aversion), 0.0)
+                if normalized_benchmark else 0.0
+            ),
             cost_aversion=max(float(cost_aversion), 0.0),
         )
     )

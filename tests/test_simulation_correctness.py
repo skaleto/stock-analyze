@@ -191,6 +191,57 @@ class SimulationCorrectnessTests(unittest.TestCase):
         self.assertEqual({order["target_shares"] for order in orders}, {500})
         self.assertTrue(all(order["target_weight"] <= 0.05 for order in orders))
 
+    def test_target_orders_use_prediction_and_volatility_adjusted_weights(self) -> None:
+        selected = pd.DataFrame([
+            {
+                "code": "000001", "name": "A", "latest_price": 10,
+                "score": 1.0, "low_volatility_60": 0.10,
+                "expected_excess_return": 0.10, "prediction_confidence": 0.90,
+                "prediction_applied": True,
+            },
+            {
+                "code": "000002", "name": "B", "latest_price": 10,
+                "score": 0.9, "low_volatility_60": 0.30,
+                "expected_excess_return": 0.01, "prediction_confidence": 0.75,
+                "prediction_applied": True,
+            },
+        ])
+        config = base_config(100_000)
+        config["trading"]["max_single_weight"] = 0.80
+        config["portfolio_controls"] = {
+            "turnover_penalty": 0.0,
+            "min_trade_weight": 0.0,
+        }
+
+        orders = build_target_orders(config, {"cash": 100_000, "positions": {}}, selected)
+        by_code = {order["code"]: order for order in orders}
+
+        self.assertGreater(by_code["000001"]["target_weight"], by_code["000002"]["target_weight"])
+        self.assertGreater(by_code["000001"]["target_shares"], by_code["000002"]["target_shares"])
+
+    def test_target_orders_preserve_preapproved_cost_aware_weights(self) -> None:
+        selected = pd.DataFrame([{
+            "code": "000001",
+            "name": "A",
+            "latest_price": 10.0,
+            "score": 1.0,
+            "expected_excess_return": 0.05,
+        }])
+        config = base_config(100_000)
+        config["trading"]["max_single_weight"] = 0.80
+
+        orders = build_target_orders(
+            config,
+            {"cash": 100_000, "positions": {}},
+            selected,
+            max_positions=1,
+            target_weights_override={"000001": 0.05},
+        )
+
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(orders[0]["target_shares"], 500)
+        self.assertEqual(orders[0]["target_weight"], 0.05)
+
     def test_execution_quote_ignores_future_rows_after_run_date(self) -> None:
         provider = HistoryProvider(
             pd.DataFrame(

@@ -14,18 +14,18 @@ def _write_executable(path: Path, source: str) -> None:
 
 
 class DeployAppScriptTests(unittest.TestCase):
-    def test_dashboard_service_prewarms_expensive_intelligence_resource(self) -> None:
+    def test_dashboard_service_runs_bounded_cache_warmer(self) -> None:
         service = Path(
             "deploy/systemd/stock-analyze-dashboard.service"
         ).read_text(encoding="utf-8")
 
         self.assertIn("ExecStartPost=", service)
         self.assertIn(
-            "http://127.0.0.1:8765/api/dashboard/intelligence.json",
+            "scripts/warm-dashboard-cache.py",
             service,
         )
-        self.assertIn("--retry-connrefused", service)
-        self.assertIn("--max-time 120", service)
+        self.assertIn("--base-url http://127.0.0.1:8765", service)
+        self.assertNotIn("/api/dashboard/intelligence.json", service)
 
     def test_build_script_creates_the_react_artifact(self) -> None:
         script = Path("scripts/build-dashboard-app.sh").read_text(encoding="utf-8")

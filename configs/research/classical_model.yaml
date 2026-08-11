@@ -1,0 +1,94 @@
+schema_version: 1
+research_only: true
+formal_order_source: false
+market: a_share
+account_scope: zz500
+horizon: 20
+
+development:
+  start: "20180102"
+  end: "20250106"
+  observed_final_start: "20250212"
+  observed_final_end: "20260710"
+  observed_final_status: diagnostic_only_already_observed
+
+training:
+  n_splits: 3
+  training_window_sessions: 1008
+  calibration_fraction: 0.15
+  embargo_sessions: 20
+  recency_half_life_sessions: 504
+  max_fit_rows: 250000
+  minimum_feature_coverage: 0.55
+  random_state: 20260810
+
+model:
+  estimator: lightgbm_regression
+  target: residualized_cross_sectional_rank_v1
+  parameters:
+    n_estimators: 500
+    learning_rate: 0.03
+    num_leaves: 31
+    max_depth: 6
+    min_child_samples: 200
+    subsample: 0.80
+    colsample_bytree: 0.80
+    reg_alpha: 1.0
+    reg_lambda: 5.0
+    early_stopping_rounds: 50
+    num_threads: 8
+
+fallback:
+  enabled: true
+  estimator: lightgbm_lambdarank
+  selection_policy: gate-count-then-net-excess-v1
+  trigger:
+    minimum_raw_rank_ic: 0.0
+    required_failed_gate: top_tail
+  relevance_bins: 5
+  parameters:
+    n_estimators: 500
+    learning_rate: 0.03
+    num_leaves: 31
+    max_depth: 6
+    min_child_samples: 200
+    subsample: 0.80
+    colsample_bytree: 0.80
+    reg_alpha: 1.0
+    reg_lambda: 5.0
+    early_stopping_rounds: 50
+    num_threads: 8
+
+score_construction:
+  core: account_low_volatility_percentile
+  core_weight: 0.80
+  model_weight: 0.20
+  neutralize_score: false
+
+portfolio:
+  rebalance_frequency: monthly
+  allocation_policy:
+    version: benchmark-aware-topn-v1
+    group_constraints:
+      industry: 0.25
+    risk_aversion: 1.0
+    cost_aversion: 1.0
+    max_rebalance_turnover: 0.25
+
+controls:
+  - momentum_20_cs_rank
+  - account_low_volatility_percentile
+  - account_quality_percentile
+
+gates:
+  minimum_rank_ic: 0.03
+  minimum_icir: 0.35
+  minimum_positive_folds: 2
+  minimum_net_excess_return: 0.02
+  maximum_active_drawdown: 0.12
+  maximum_total_drawdown: 0.20
+  maximum_annual_turnover: 8.0
+  minimum_capital_utilization: 0.85
+  minimum_bucket_spearman: 0.60
+  minimum_deflated_sharpe_probability: 0.95
+  maximum_probability_of_backtest_overfit: 0.50

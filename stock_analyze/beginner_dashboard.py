@@ -34,6 +34,7 @@ import pandas as pd
 from ._dashboard_assets import BASE_CSS, NAV_CSS, render_nav_html
 from .beginner_format import cn_date, cn_relative_date, cny, pct
 from .competition import AgentPaths, resolve_agent_paths
+from .strategy_registry import StrategyRegistryInvalid, strategy_display_name
 from .utils import safe_float
 
 
@@ -44,7 +45,7 @@ __all__ = [
 ]
 
 
-AGENT_DISPLAY = {"claude": "Claude", "codex": "Codex"}
+AGENT_DISPLAY = {"claude": "稳健防守", "codex": "趋势进攻"}
 AGENT_LINE_COLOR = {
     # Dark Bloomberg palette — must agree with _dashboard_assets.BASE_CSS
     # token values (--claude / --codex / --bench-hs300 / --bench-zz500).
@@ -88,6 +89,7 @@ def render_beginner_competition_html(
         body=body,
         today_iso=today_iso,
         nav_active="simple",
+        strategy_labels=state["agent_display"],
     )
 
 
@@ -107,12 +109,13 @@ def render_beginner_agent_html(
     sections.append(_render_recent_trades(state, today_iso))
     sections.append(_render_monthly_evolution_summary(state, today_iso))
     body = "\n".join(sections)
-    display = AGENT_DISPLAY.get(paths.agent_id, paths.agent_id)
+    display = _agent_display(state, paths.agent_id)
     return _shell_html(
         title=f"{display} · 简化版",
         body=body,
         today_iso=today_iso,
         nav_active=f"simple-{paths.agent_id}",
+        strategy_labels=state["agent_display"],
     )
 
 
@@ -164,6 +167,7 @@ def _gather_state(paths_by_agent: dict[str, AgentPaths]) -> dict[str, Any]:
 
     state: dict[str, Any] = {
         "agent_order": agent_order,
+        "agent_display": {},
         "paths": paths_by_agent,
         "perf": {},
         "nav": {},
@@ -173,6 +177,13 @@ def _gather_state(paths_by_agent: dict[str, AgentPaths]) -> dict[str, Any]:
         "evolution": {},
         "benchmarks": {},
     }
+    roots = [paths.data_dir.parents[2] for paths in paths_by_agent.values()]
+    repo_root = roots[0] if roots else Path.cwd()
+    for agent_id in agent_order:
+        try:
+            state["agent_display"][agent_id] = strategy_display_name(agent_id, repo_root)
+        except StrategyRegistryInvalid:
+            state["agent_display"][agent_id] = AGENT_DISPLAY.get(agent_id, agent_id)
     for agent_id in agent_order:
         paths = paths_by_agent[agent_id]
         state["perf"][agent_id] = _read_performance_summary(paths.data_dir)
@@ -184,6 +195,13 @@ def _gather_state(paths_by_agent: dict[str, AgentPaths]) -> dict[str, Any]:
 
     state["benchmarks"] = _derive_benchmark_series(state["nav"])
     return state
+
+
+def _agent_display(state: dict[str, Any], agent_id: str) -> str:
+    return str(
+        state.get("agent_display", {}).get(agent_id)
+        or AGENT_DISPLAY.get(agent_id, agent_id)
+    )
 
 
 def _read_performance_summary(data_dir: Path) -> dict[str, Any]:
@@ -351,7 +369,7 @@ def _render_account_card(
         f'<div class="kpi-sub">{html.escape(cny(totals["month_delta"]))}</div></div>'
     )
     if solo_agent:
-        display = AGENT_DISPLAY.get(solo_agent, solo_agent)
+        display = _agent_display(state, solo_agent)
         scope_hint = f"{display} 当前资产"
     else:
         scope_hint = "两个 AI 合计资产"
@@ -378,7 +396,7 @@ def _render_agent_score_cards(
     for agent_id in state["agent_order"]:
         cards.append(_render_single_agent_score(state, agent_id))
     if solo_agent:
-        display = AGENT_DISPLAY.get(solo_agent, solo_agent)
+        display = _agent_display(state, solo_agent)
         title = f"📊 {display} 的成绩"
     else:
         title = "📊 两位 AI 的成绩"
@@ -396,7 +414,7 @@ def _render_single_agent_score(state: dict[str, Any], agent_id: str) -> str:
     if not accounts:
         return (
             f'<div class="agent-score {agent_id}">'
-            f'<div class="agent-name">{html.escape(AGENT_DISPLAY.get(agent_id, agent_id))}</div>'
+            f'<div class="agent-name">{html.escape(_agent_display(state, agent_id))}</div>'
             '<div class="empty">尚未开盘交易</div>'
             '</div>'
         )
@@ -407,7 +425,7 @@ def _render_single_agent_score(state: dict[str, Any], agent_id: str) -> str:
 
     lines: list[str] = []
     lines.append(
-        f'<div class="agent-name">{html.escape(AGENT_DISPLAY.get(agent_id, agent_id))}</div>'
+        f'<div class="agent-name">{html.escape(_agent_display(state, agent_id))}</div>'
     )
     lines.append(
         f'<div class="agent-cumulative big">{pct(cumulative, color=True)}</div>'
@@ -433,7 +451,7 @@ def _render_nav_chart(state: dict[str, Any], today_iso: str) -> str:
     for agent_id in state["agent_order"]:
         points = _normalize_agent_nav(state["nav"].get(agent_id, pd.DataFrame()))
         if points:
-            series.append((agent_id, AGENT_DISPLAY.get(agent_id, agent_id), points))
+            series.append((agent_id, _agent_display(state, agent_id), points))
 
     benchmarks = state.get("benchmarks") or {}
     for code, label in BENCHMARK_LABEL.items():
@@ -478,7 +496,7 @@ def _render_top_holdings(state: dict[str, Any], agent_id: str) -> str:
     """Section 4 / 5: top-10 holdings for one agent."""
 
     positions = state["positions"].get(agent_id, pd.DataFrame())
-    display_name = AGENT_DISPLAY.get(agent_id, agent_id)
+    display_name = _agent_display(state, agent_id)
     data_id = 4 if agent_id == state["agent_order"][0] else 5
     if positions.empty:
         return (
@@ -545,8 +563,8 @@ def _render_position_overlap_summary(state: dict[str, Any]) -> str:
 
     parts: list[str] = []
     parts.append(_overlap_row("两位都持有", shared))
-    parts.append(_overlap_row(f"仅 {AGENT_DISPLAY.get(a, a)} 持有", only_a))
-    parts.append(_overlap_row(f"仅 {AGENT_DISPLAY.get(b, b)} 持有", only_b))
+    parts.append(_overlap_row(f"仅 {_agent_display(state, a)} 持有", only_a))
+    parts.append(_overlap_row(f"仅 {_agent_display(state, b)} 持有", only_b))
     return (
         '<section class="card" data-id="6">'
         '<h2>🔍 持仓重叠</h2>'
@@ -597,7 +615,7 @@ def _render_recent_trades(state: dict[str, Any], today_iso: str) -> str:
     merged = merged.head(SECTION_LIMIT_RECENT_TRADES)
     rows: list[str] = []
     for _, row in merged.iterrows():
-        rows.append(_render_trade_row(row, today_iso))
+        rows.append(_render_trade_row(row, today_iso, state["agent_display"]))
     return (
         '<section class="card" data-id="7">'
         '<h2>🔄 最近 5 笔模拟成交</h2>'
@@ -609,7 +627,11 @@ def _render_recent_trades(state: dict[str, Any], today_iso: str) -> str:
     )
 
 
-def _render_trade_row(row: pd.Series, today_iso: str) -> str:
+def _render_trade_row(
+    row: pd.Series,
+    today_iso: str,
+    strategy_labels: dict[str, str],
+) -> str:
     trade_date = str(row.get("trade_date") or "")
     agent = str(row.get("agent_id") or "")
     code = str(row.get("code") or "").zfill(6)
@@ -623,7 +645,7 @@ def _render_trade_row(row: pd.Series, today_iso: str) -> str:
     return (
         '<tr>'
         f'<td>{html.escape(cn_relative_date(trade_date, today_iso))}</td>'
-        f'<td>{html.escape(AGENT_DISPLAY.get(agent, agent))}</td>'
+        f'<td>{html.escape(strategy_labels.get(agent, AGENT_DISPLAY.get(agent, agent)))}</td>'
         f'<td><span class="stock-name">{html.escape(name)}</span>'
         f'<span class="stock-code">{html.escape(code)}</span></td>'
         f'<td><span class="trade-side {side_class}">{html.escape(side_display)}</span></td>'
@@ -647,7 +669,7 @@ def _render_monthly_evolution_summary(state: dict[str, Any], today_iso: str) -> 
             continue
         blocks.append(
             '<div class="evolution-cell">'
-            f'<h3>{html.escape(AGENT_DISPLAY.get(agent_id, agent_id))} · {html.escape(record.get("month", ""))}</h3>'
+            f'<h3>{html.escape(_agent_display(state, agent_id))} · {html.escape(record.get("month", ""))}</h3>'
             f'<p>{html.escape(summary[:280])}</p>'
             '</div>'
         )
@@ -893,7 +915,7 @@ def _render_differentiation_radar(state: dict[str, Any]) -> str:
             )
         legend_items.append(
             f'<span class="legend-item"><span class="dot" style="background:{color}"></span>'
-            f'{html.escape(AGENT_DISPLAY.get(agent, agent))}</span>'
+            f'{html.escape(_agent_display(state, agent))}</span>'
         )
 
     svg_html = (
@@ -924,6 +946,7 @@ def _shell_html(
     body: str,
     today_iso: str,
     nav_active: str | None = None,
+    strategy_labels: dict[str, str] | None = None,
 ) -> str:
     """Wrap section body HTML in the full <html> document.
 
@@ -934,7 +957,12 @@ def _shell_html(
     generated = datetime.now()
     safe_title = html.escape(title)
     today_display = html.escape(cn_date(today_iso))
-    nav = render_nav_html(active=nav_active, generated_at=generated, data_as_of=today_iso)
+    nav = render_nav_html(
+        active=nav_active,
+        generated_at=generated,
+        data_as_of=today_iso,
+        strategy_labels=strategy_labels,
+    )
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>

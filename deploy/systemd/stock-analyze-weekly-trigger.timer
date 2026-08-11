@@ -4,7 +4,7 @@ Description=Sat 10:00 Asia/Shanghai weekly-agent dispatch (uses Friday's cache)
 
 [Timer]
 OnCalendar=Sat *-*-* 02:00:00 UTC
-Persistent=false
+Persistent=true
 AccuracySec=30s
 Unit=stock-analyze-weekly-trigger.service
 

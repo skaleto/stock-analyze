@@ -42,6 +42,21 @@ BASELINE_CONFIG = {
 
 def _seed_repo(tmp: Path) -> None:
     (tmp / "configs" / "agents").mkdir(parents=True, exist_ok=True)
+    (tmp / "configs" / "strategy_competition.json").write_text(
+        json.dumps(
+            {
+                "season_id": "dual_strategy_2026_s1",
+                "name": "双策略对抗 · 赛季1",
+                "effective_date": "2026-07-11",
+                "factor_distance_floor": 0.45,
+                "slots": {
+                    "claude": {"label": "稳健防守", "description": "", "color": "#d6a84b"},
+                    "codex": {"label": "趋势进攻", "description": "", "color": "#22d3ee"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     (tmp / "configs" / "competition_a_share.yaml").write_text(
         json.dumps(BASELINE_CONFIG), encoding="utf-8"
     )
@@ -428,8 +443,8 @@ class OverlapTests(unittest.TestCase):
             html = render_beginner_competition_html(paths, today="2026-05-23")
             self.assertIn("两位都持有", html)
             self.assertIn("000333", html)
-            self.assertIn("仅 Claude 持有", html)
-            self.assertIn("仅 Codex 持有", html)
+            self.assertIn("仅 稳健防守 持有", html)
+            self.assertIn("仅 趋势进攻 持有", html)
 
 
 class RecentTradesTests(unittest.TestCase):
@@ -647,7 +662,7 @@ class SingleAgentRendererTests(unittest.TestCase):
                 trades=_default_trades(),
             )
             html = render_beginner_agent_html(paths, today="2026-05-23")
-            self.assertIn("Claude · 简化版", html)
+            self.assertIn("稳健防守 · 简化版", html)
             self.assertIn("贵州茅台", html)
             # Single-agent view should NOT include 持仓重叠 (cross-agent).
             self.assertNotIn("持仓重叠", html)

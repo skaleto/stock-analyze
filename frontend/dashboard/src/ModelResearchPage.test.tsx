@@ -4,6 +4,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { ModelResearchPage } from "./ModelResearchPage";
 
+const { fetchSystemOverview } = vi.hoisted(() => ({
+  fetchSystemOverview: vi.fn(),
+}));
+
+vi.mock("./api", async () => {
+  const actual = await vi.importActual<typeof import("./api")>("./api");
+  return { ...actual, fetchSystemOverview };
+});
+
 vi.mock("./OperationsPage", () => ({
   OperationsPage: () => <div>运行中心占位</div>,
 }));
@@ -139,7 +148,9 @@ const payload = {
     cyclesRequired: 12,
     decision: {
       candidateRows: 31,
+      modelEligibleRows: 3,
       eligibleRows: 0,
+      scopeRejectedRows: 3,
       selectedCount: 0,
       tradesExecuted: 0,
       pendingOrders: 0,
@@ -177,11 +188,95 @@ function jsonResponse(body: unknown, ok = true): Response {
 }
 
 afterEach(() => {
+  fetchSystemOverview.mockReset();
   vi.unstubAllGlobals();
   window.history.replaceState({}, "", "/");
 });
 
 describe("ModelResearchPage", () => {
+  it("shows both markets before loading any market detail", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    fetchSystemOverview.mockResolvedValue({
+      generated_at: "2026-08-08T18:00:00+08:00",
+      markets: [],
+      models: [
+        {
+          market: "a_share",
+          market_label: "A股",
+          iteration: {
+            status: "running",
+            candidate: {
+              display_version: "A20-V005",
+              status_label: "影子观察",
+              shadow_cycles: 4,
+              shadow_cycles_remaining: 8,
+            },
+            champion: null,
+          },
+        },
+        {
+          market: "cn_qdii_etf",
+          market_label: "跨境ETF",
+          iteration: {
+            status: "complete",
+            candidate: {
+              display_version: "Q5-V004",
+              status_label: "等待验收",
+              shadow_cycles: 12,
+              shadow_cycles_remaining: 0,
+            },
+            champion: { display_version: "Q5-V003" },
+          },
+        },
+      ],
+      strategy_model_usage: [
+        {
+          market: "a_share",
+          agent: "codex",
+          strategy_label: "趋势进攻",
+          status: "rule_only",
+          applied_candidates: 0,
+          candidate_coverage: 0,
+          model_versions: {},
+          fallback_reason: "no_champion",
+          accounts: 1,
+        },
+        {
+          market: "cn_qdii_etf",
+          agent: "codex",
+          strategy_label: "趋势进攻",
+          status: "active",
+          applied_candidates: 3,
+          candidate_coverage: 0.3,
+          model_versions: { "5": "Q5-V003" },
+          fallback_reason: "",
+          accounts: 1,
+        },
+      ],
+      intelligence: {},
+      errors: [],
+    });
+    const onFocusMarket = vi.fn();
+
+    render(
+      <ModelResearchPage
+        refreshToken={0}
+        onFocusMarket={onFocusMarket}
+      />,
+    );
+
+    expect(await screen.findByText("A20-V005")).toBeInTheDocument();
+    expect(screen.getByText("Q5-V004")).toBeInTheDocument();
+    expect(screen.getByText("Q5-V003")).toBeInTheDocument();
+    expect(fetchSystemOverview).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", {
+      name: "查看A股模型详情",
+    }));
+    expect(onFocusMarket).toHaveBeenCalledWith("a_share");
+  });
+
   it("drills into translated gate failures and requests the selected market", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(payload));
     vi.stubGlobal("fetch", fetchMock);
@@ -202,6 +297,255 @@ describe("ModelResearchPage", () => {
     );
   });
 
+  it("shows the best tabular candidate without implying formal adoption", async () => {
+    const tabularResearch = {
+      status: "available",
+      formalStrategyWeight: 0,
+      formalOrderSource: false,
+      latest: null,
+      best: {
+        status: "research",
+        protocolVersion: "regime-aware-tabular-alpha-v2",
+        configHash: "e7960d4206b5a0c7",
+        accountScope: "zz500",
+        asOf: "20260807",
+        estimator: "lightgbm_regression",
+        target: "residualized_cross_sectional_rank_v1",
+        selectedFeatureCount: 88,
+        developmentStart: "20180102",
+        developmentEnd: "20250106",
+        oosStart: "20201027",
+        oosEnd: "20250106",
+        formalOrderSource: false,
+        registryMutated: false,
+        metrics: {
+          rankIc: 0.0955,
+          icir: 0.5173,
+          rawRankIc: 0.0183,
+          rawIcir: 0.2103,
+          portfolioCagr: 0.051,
+          benchmarkCagr: -0.0266,
+          netExcessReturn: 0.0797,
+          maxDrawdown: 0.1701,
+          activeMaxDrawdown: 0.1818,
+          annualTurnover: 3.57,
+          capitalUtilization: 0.9994,
+          portfolioSharpe: 0.2628,
+          informationRatio: 0.4889,
+          deflatedSharpeProbability: 0.4407,
+          probabilityOfBacktestOverfit: 0.4286,
+        },
+        gate: {
+          passed: false,
+          reasons: [
+            "top_tail",
+            "active_max_drawdown",
+            "deflated_sharpe_probability",
+          ],
+          checks: { rank_ic: true, top_tail: false },
+          positiveFolds: 3,
+          bucketSpearman: 0.9,
+        },
+        buckets: [
+          { bucket: 1, meanExcessReturn: -0.0039, observations: 99_988 },
+          { bucket: 2, meanExcessReturn: -0.0027, observations: 100_431 },
+          { bucket: 3, meanExcessReturn: 0.0029, observations: 100_378 },
+          { bucket: 4, meanExcessReturn: 0.0067, observations: 100_431 },
+          { bucket: 5, meanExcessReturn: 0.0059, observations: 100_634 },
+        ],
+      },
+      experiments: [],
+      forwardObservation: {
+        status: "observing",
+        lifecycleStatus: "forward_observation",
+        modelId: "TABULAR-E7960D4206B5A0C7-FWD1",
+        configHash: "e7960d4206b5a0c7",
+        accountScope: "zz500",
+        horizon: 20,
+        observationStart: "20260810",
+        latestPredictionDate: "20260810",
+        observationDays: 1,
+        predictionRows: 500,
+        latestCandidates: 500,
+        latestSelected: 50,
+        maturedEvidence: {
+          status: "waiting_for_horizon",
+          maturedRows: 0,
+          maturedDays: 0,
+          latestLabelEnd: null,
+          rankIc: null,
+          icir: null,
+          rawRankIc: null,
+          rawIcir: null,
+          topBottomSpread: null,
+          buckets: [],
+        },
+        portfolio: {
+          status: "waiting_for_next_open",
+          periods: 0,
+          rebalancePeriods: 0,
+          trades: 0,
+          netReturn: null,
+          benchmarkReturn: null,
+          netExcessReturn: null,
+          maxDrawdown: null,
+          activeMaxDrawdown: null,
+          informationRatio: null,
+          annualTurnover: null,
+          capitalUtilization: null,
+          executionCostBps: null,
+        },
+        drift: {
+          status: "normal",
+          medianFeatureCoverage: 0.9828,
+          medianOutOfRangeRatio: 0.031,
+        },
+        promotion: {
+          status: "evidence_pending",
+          passedChecks: 1,
+          totalChecks: 7,
+          checks: [
+            { key: "observation_days", passed: false },
+            { key: "feature_drift", passed: true },
+          ],
+          automaticPromotion: false,
+        },
+        formalStrategyWeight: 0,
+        formalOrderSource: false,
+        updatedAt: "2026-08-11T02:30:00+00:00",
+      },
+      closure: {
+        status: "research_blocked",
+        asOf: "20260810",
+        decision: "retain_research_baseline",
+        bestConfigHash: "e7960d4206b5a0c7",
+        officialImmutableTrials: 14,
+        diagnosticExperiments: 29,
+        passedChecks: 9,
+        totalChecks: 12,
+        formalStrategyWeight: 0,
+        blockers: [
+          {
+            code: "top_tail",
+            measured: -0.0008,
+            required: 0,
+            evidence: "score_bucket_spread",
+          },
+          {
+            code: "active_drawdown",
+            measured: 0.1818,
+            required: 0.12,
+            evidence: "exact_cost_walk_forward",
+          },
+          {
+            code: "multiplicity_confidence",
+            measured: 0.4407,
+            required: 0.95,
+            evidence: "deflated_sharpe_probability",
+          },
+        ],
+        nextRunConditions: [
+          {
+            code: "historical_information_coverage",
+            measured: 0.0005,
+            required: 0.55,
+            evidence: "moneyflow_and_events",
+          },
+          {
+            code: "untouched_lockbox",
+            measured: 0,
+            required: 1,
+            evidence: "observed_final_already_opened",
+          },
+        ],
+      },
+    };
+    const calibratedLatest = {
+      ...tabularResearch.best,
+      configHash: "dd0dabd7b01c2d57",
+      metrics: {
+        ...tabularResearch.best.metrics,
+        netExcessReturn: 0.0283,
+        activeMaxDrawdown: 0.3126,
+        capitalUtilization: 0.0444,
+        deflatedSharpeProbability: 0.2004,
+      },
+      gate: {
+        ...tabularResearch.best.gate,
+        reasons: [
+          "top_tail",
+          "active_max_drawdown",
+          "capital_utilization",
+          "deflated_sharpe_probability",
+        ],
+      },
+      calibration: {
+        enabled: true,
+        foldCount: 3,
+        economicPredictionCoverage: 1,
+        positiveLowerBoundCoverage: 0.1492,
+        uncertaintyBpsP50: 89.05,
+        uncertaintyBpsP90: 144.84,
+        optimizerTrackingErrorP50: 0.0699,
+        optimizerTrackingErrorP90: 0.1123,
+        noTradeReasons: [
+          { reason: "scheduled_rebalance_not_due", count: 18_009 },
+          { reason: "insufficient_net_edge", count: 1_713 },
+        ],
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({
+        ...payload,
+        tabularResearch: {
+          ...tabularResearch,
+          latest: calibratedLatest,
+          experiments: [calibratedLatest],
+        },
+      })),
+    );
+    const user = userEvent.setup();
+    render(<ModelResearchPage market="a_share" refreshToken={0} />);
+
+    await screen.findByText("0 / 4 通过");
+    await user.click(screen.getByRole("button", { name: /测试验收/ }));
+    const detail = screen.getByRole("region", { name: "测试验收详情" });
+
+    expect(within(detail).getByText("经典表格模型")).toBeInTheDocument();
+    expect(within(detail).getByText("前瞻研究观察")).toBeInTheDocument();
+    expect(within(detail).getByText("1 / 60")).toBeInTheDocument();
+    expect(within(detail).getByText("0 / 12")).toBeInTheDocument();
+    expect(within(detail).getByText("98.28%")).toBeInTheDocument();
+    expect(within(detail).getByText("未接入正式策略")).toBeInTheDocument();
+    expect(within(detail).getByText("本轮自主优化结论")).toBeInTheDocument();
+    expect(within(detail).getByText("9 / 12")).toBeInTheDocument();
+    expect(within(detail).getByText("14")).toBeInTheDocument();
+    expect(within(detail).getByText("29")).toBeInTheDocument();
+    expect(within(detail).getByText("主动回撤超限")).toBeInTheDocument();
+    expect(within(detail).getByText("下一轮数据条件")).toBeInTheDocument();
+    expect(within(detail).getByText("资金流历史覆盖")).toBeInTheDocument();
+    expect(within(detail).getByText("多次试验后可信度不足")).toBeInTheDocument();
+    expect(within(detail).getByText("新的前瞻验证窗口")).toBeInTheDocument();
+    expect(within(detail).getAllByText("7.97%")).toHaveLength(2);
+    expect(within(detail).getAllByText("正式策略权重")).toHaveLength(2);
+    expect(within(detail).getAllByText("0.00%")).toHaveLength(2);
+    expect(within(detail).getByText(/最高分组未稳定优于次高分组/))
+      .toHaveTextContent("top_tail");
+    expect(within(detail).getByText("最近试验诊断")).toBeInTheDocument();
+    expect(within(detail).getByText("4.44%")).toBeInTheDocument();
+    expect(within(detail).getByText("14.92%")).toBeInTheDocument();
+    expect(within(detail).getByText("89.05 bp")).toBeInTheDocument();
+    expect(within(detail).getByText("成本与置信度过滤")).toBeInTheDocument();
+    expect(within(detail).getByText("1,713")).toBeInTheDocument();
+    const comparison = within(detail).getByRole("region", {
+      name: "最佳与最近试验对比",
+    });
+    expect(within(comparison).getByText("当前最佳")).toBeInTheDocument();
+    expect(within(comparison).getByText("最近试验")).toBeInTheDocument();
+    expect(within(comparison).getByText("20.04%")).toBeInTheDocument();
+  });
+
   it("shows zero selected securities and the evidenced cash reason", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(payload)));
     const user = userEvent.setup();
@@ -210,7 +554,10 @@ describe("ModelResearchPage", () => {
     await screen.findByText("A20-V005");
     await user.click(screen.getByRole("button", { name: /模拟运行/ }));
 
+    const detail = screen.getByRole("region", { name: "模拟运行详情" });
     expect(screen.getByText("0 个入选")).toBeInTheDocument();
+    expect(within(detail).getByText("范围外剔除")).toBeInTheDocument();
+    expect(within(detail).getAllByText("3")).toHaveLength(2);
     expect(screen.getByText(/上涨概率未达到入选门槛/)).toHaveTextContent(
       "probability_gate_not_met",
     );
@@ -230,6 +577,8 @@ describe("ModelResearchPage", () => {
     expect(within(detail).getByRole("columnheader", { name: "产物状态" }))
       .toBeInTheDocument();
     expect(within(detail).getByRole("columnheader", { name: "产物引用" }))
+      .toBeInTheDocument();
+    expect(within(detail).getByRole("columnheader", { name: "资金利用率" }))
       .toBeInTheDocument();
     expect(within(detail).getByText("2026-07-29T23:00:00"))
       .toBeInTheDocument();
@@ -261,6 +610,127 @@ describe("ModelResearchPage", () => {
     expect(within(detail).getByText("预测产物").parentElement)
       .toHaveTextContent("缺失 · -");
     expect(within(detail).queryByText("missing")).not.toBeInTheDocument();
+  });
+
+  it("shows scoped accounts, exact replay baselines, and formal attribution", async () => {
+    const evidencePayload = {
+      ...payload,
+      simulation: {
+        ...payload.simulation,
+        accounts: [
+          {
+            accountId: "hs300",
+            scope: "hs300",
+            benchmark: "000300",
+            selectedCount: 3,
+            totalValue: 503000,
+          },
+          {
+            accountId: "zz500",
+            scope: "zz500",
+            benchmark: "000905",
+            selectedCount: 2,
+            totalValue: 498000,
+          },
+        ],
+        evaluation: {
+          status: "available",
+          modelVersion: "A20-V005",
+          simulatorVersion: "paper-parity-daily-v1",
+          grossReturn: 0.085,
+          netReturn: 0.08,
+          benchmarkReturn: 0.03,
+          netExcessReturn: 0.05,
+          maxDrawdown: 0.08,
+          annualTurnover: 3.2,
+          capitalUtilization: 0.91,
+          cashRatio: 0.09,
+          rebalanceFrequency: "monthly",
+          scheduledRebalancePeriods: 24,
+          sharpe: 0.9,
+          executionCost: 125,
+          executionCostBps: 11.2,
+          impactBpsP50: 6.8,
+          impactBpsP90: 9.3,
+          impactCappedNotionalRatio: 0,
+          missingLiquidityNotionalRatio: 0,
+          executionEvidenceStatus: "available",
+          executionPolicyVersion: "cost-aware-aim-v1",
+          edgeCalibrationVersion: "clustered-date-mean-se-v2",
+          allocationContract: "core-plus-tilt-v1",
+          modelTiltCap: 0.2,
+          decisionCount: 120,
+          tradeAllowedCount: 18,
+          noTradeCount: 102,
+          noTradeReasonCounts: {
+            insufficient_net_edge: 70,
+            rank_buffer_hold: 32,
+          },
+          validTrialCount: 5,
+          baselineComparison: {
+            momentum_20: { net_excess_return: 0.01 },
+            no_trade: { net_excess_return: 0 },
+          },
+          accountMetrics: {},
+        },
+      },
+      attribution: {
+        status: "available",
+        formalModelApplied: false,
+        completeCount: 0,
+        totalCount: 1,
+        rows: [
+          {
+            asOf: "2026-08-07",
+            strategyId: "trend-v2",
+            accountId: "hs300",
+            status: "partial",
+            modelPolicyStatus: "rule_only",
+            modelVersions: {},
+            netPnl: -120,
+            modelSelectionPnl: 0,
+            explainedRatio: 0.97,
+            residualRatio: 0.03,
+            positiveDrivers: [],
+            negativeDrivers: [],
+            unavailableInputs: ["factor_attribution"],
+          },
+        ],
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse(evidencePayload)),
+    );
+    const user = userEvent.setup();
+    render(<ModelResearchPage market="a_share" refreshToken={0} />);
+
+    await screen.findByText("A20-V005");
+    await user.click(screen.getByRole("button", { name: /模拟运行/ }));
+    const simulation = screen.getByRole("region", { name: "模拟运行详情" });
+    expect(within(simulation).getAllByText("hs300")).toHaveLength(2);
+    expect(within(simulation).getAllByText("zz500")).toHaveLength(2);
+    expect(within(simulation).getByText("5.00%")).toBeInTheDocument();
+    expect(within(simulation).getByText("8.50%")).toBeInTheDocument();
+    expect(within(simulation).getByText("11.20 bp")).toBeInTheDocument();
+    expect(within(simulation).getByText("9.30 bp")).toBeInTheDocument();
+    expect(within(simulation).getByText("91.00%")).toBeInTheDocument();
+    expect(within(simulation).getByText("9.00%")).toBeInTheDocument();
+    expect(within(simulation).getByText("每月")).toBeInTheDocument();
+    expect(within(simulation).getByText("24")).toBeInTheDocument();
+    expect(within(simulation).getByText("均值误差校准 v2")).toBeInTheDocument();
+    expect(within(simulation).getByText("规则核心 + 模型倾斜")).toBeInTheDocument();
+    expect(within(simulation).getByText("20.00%")).toBeInTheDocument();
+    expect(within(simulation).getByText("18 / 120")).toBeInTheDocument();
+    expect(within(simulation).getByText("净收益不足以覆盖成本与不确定性")).toBeInTheDocument();
+    expect(within(simulation).getByText("20日动量")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /正式采用/ }));
+    const adoption = screen.getByRole("region", { name: "正式采用详情" });
+    expect(within(adoption).getAllByText("未采用")).toHaveLength(2);
+    expect(within(adoption).getByText("trend-v2 · hs300")).toBeInTheDocument();
+    expect(within(adoption).getByText("规则策略")).toBeInTheDocument();
+    expect(within(adoption).getByText("97.00%")).toBeInTheDocument();
   });
 
   it("shows bounded Champion adoption evidence by model and horizon", async () => {
@@ -354,6 +824,7 @@ describe("ModelResearchPage", () => {
     render(<ModelResearchPage market="a_share" refreshToken={0} />);
 
     const detail = await screen.findByRole("region", { name: "数据准备详情" });
+    expect(within(detail).getByText("行情价格数据")).toBeInTheDocument();
     expect(within(detail).getByText("market")).toBeInTheDocument();
     expect(within(detail).getByText("46")).toBeInTheDocument();
     expect(within(detail).getByText("1 个未分类")).toBeInTheDocument();
@@ -367,6 +838,7 @@ describe("ModelResearchPage", () => {
     expect(
       within(detail).getByText("future_feature_not_registered"),
     ).toBeInTheDocument();
+    expect(within(detail).getByText("未收录特征")).toBeInTheDocument();
     expect(detail).not.toHaveTextContent(
       /\b(?:available|source_unavailable|failed|not_recorded|empty|unavailable|passed)\b/,
     );
@@ -629,6 +1101,14 @@ describe("ModelResearchPage", () => {
   it("loads once when entering model research after refreshing another workspace", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(payload));
     vi.stubGlobal("fetch", fetchMock);
+    fetchSystemOverview.mockResolvedValue({
+      generated_at: "2026-08-08T18:00:00+08:00",
+      markets: [],
+      models: [],
+      strategy_model_usage: [],
+      intelligence: {},
+      errors: [],
+    });
     window.history.replaceState(
       {},
       "",
@@ -640,7 +1120,8 @@ describe("ModelResearchPage", () => {
     await user.click(screen.getByRole("button", { name: "刷新 dashboard" }));
     await user.click(screen.getByRole("button", { name: "模型研究" }));
 
-    expect(await screen.findByText("0 / 4 通过")).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("跨市场模型进度")).toBeInTheDocument();
+    expect(fetchSystemOverview).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

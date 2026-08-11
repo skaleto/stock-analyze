@@ -1,0 +1,24 @@
+[Unit]
+Description=Stock Analyze isolated model iteration portfolios
+After=stock-analyze-research.service
+OnFailure=stock-analyze-pipeline-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stock-analyze/app
+Environment=TZ=Asia/Shanghai
+Environment=MALLOC_ARENA_MAX=2
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=NUMEXPR_NUM_THREADS=1
+ExecStart=/usr/bin/flock --nonblock /run/stock-analyze-model-iteration.lock /bin/bash -lc 'set +e; result=0; for market in a_share cn_qdii_etf; do /opt/stock-analyze/venv/bin/python -m stock_analyze.cli --market "$market" run-model-iteration --offline; status=$?; if [ "$status" -ne 0 ]; then result="$status"; fi; done; exit "$result"'
+Nice=5
+CPUWeight=50
+IOWeight=50
+MemoryAccounting=true
+MemoryHigh=1G
+MemoryMax=1250M
+MemorySwapMax=512M
+StandardOutput=append:/opt/stock-analyze/logs/model-iteration.log
+StandardError=append:/opt/stock-analyze/logs/model-iteration.err

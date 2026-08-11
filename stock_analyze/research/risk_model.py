@@ -26,6 +26,7 @@ class PortfolioLimits:
     min_cash_weight: float = 0.0
     max_turnover: float = 1.0
     group_caps: Mapping[str, float] = field(default_factory=dict)
+    exposure_caps: Mapping[str, float] = field(default_factory=dict)
     liquidity_cap_column: str = "liquidity_cap"
     required_exposures: tuple[str, ...] = ()
     max_tracking_error: float | None = None
@@ -325,13 +326,19 @@ def _prepare_problem(
     if covariance is None:
         return None, covariance_reason
 
+    constrained_exposures = tuple(
+        dict.fromkeys((*limits.required_exposures, *limits.exposure_caps))
+    )
     exposures, exposure_reason = _aligned_exposures(
         problem.exposure_matrix,
         codes,
-        limits.required_exposures,
+        constrained_exposures,
     )
     if exposures is None:
         return None, exposure_reason
+    for column in limits.exposure_caps:
+        if (exposures[column] < 0.0).any():
+            return None, f"invalid_capped_exposure:{column}"
 
     current, current_reason = _aligned_weights(
         problem.current_weights,
@@ -427,6 +434,13 @@ def _validate_limits(limits: PortfolioLimits) -> str | None:
             or not 0.0 <= float(cap) <= 1.0
         ):
             return f"invalid_group_cap:{column}"
+    for column, cap in limits.exposure_caps.items():
+        if (
+            not str(column)
+            or not math.isfinite(float(cap))
+            or not 0.0 <= float(cap) <= 1.0
+        ):
+            return f"invalid_exposure_cap:{column}"
     return None
 
 
@@ -652,6 +666,13 @@ def _project_basic(
         if group_weight > constraint.cap and group_weight > 0.0:
             weights[mask] *= constraint.cap / group_weight
 
+    for column in sorted(limits.exposure_caps):
+        coefficients = problem.exposures[column].to_numpy(dtype=float)
+        exposure = float(coefficients @ weights)
+        cap = float(limits.exposure_caps[column])
+        if exposure > cap and exposure > 0.0:
+            weights[coefficients > 0.0] *= cap / exposure
+
     budget = min(
         float(limits.max_gross_exposure),
         1.0 - float(limits.min_cash_weight),
@@ -846,6 +867,12 @@ def _binding_constraints(
     for constraint in problem.group_constraints:
         if float(weights[constraint.mask].sum()) >= constraint.cap - tolerance:
             bindings.add(f"group:{constraint.column}:{constraint.value}")
+    for column, cap in limits.exposure_caps.items():
+        exposure = float(
+            problem.exposures[column].to_numpy(dtype=float) @ weights
+        )
+        if exposure >= float(cap) - tolerance:
+            bindings.add(f"exposure:{column}")
     return tuple(sorted(bindings))
 
 
@@ -868,3 +895,52 @@ def _cash_solution(
         binding_constraints=("fail_closed",),
         fallback_reason=reason,
     )
+def neutralize_cross_sectional_scores(
+    frame: pd.DataFrame,
+    *,
+    score_column: str = "score",
+    industry_column: str = "industry",
+    size_column: str = "log_total_mv",
+    volatility_column: str = "realized_volatility_20",
+) -> pd.DataFrame:
+    """Residualize scores against same-day industry, size, and volatility."""
+
+    required = {"trade_date", score_column}
+    missing = required.difference(frame.columns)
+    if missing:
+        raise ValueError(f"score_neutralization_missing:{','.join(sorted(missing))}")
+    result = frame.copy()
+    result["raw_score"] = pd.to_numeric(result[score_column], errors="coerce")
+    neutralized = pd.Series(np.nan, index=result.index, dtype=float)
+    for _, group in result.groupby(result["trade_date"].astype(str), sort=False):
+        score = pd.to_numeric(group["raw_score"], errors="coerce")
+        valid = score.notna()
+        if int(valid.sum()) < 3:
+            neutralized.loc[group.index] = score - score.mean()
+            continue
+        design = pd.DataFrame({"intercept": 1.0}, index=group.index)
+        for column in (size_column, volatility_column):
+            values = pd.to_numeric(group.get(column), errors="coerce")
+            if not isinstance(values, pd.Series):
+                values = pd.Series(np.nan, index=group.index, dtype=float)
+            median = float(values.median()) if values.notna().any() else 0.0
+            centered = values.fillna(median) - median
+            scale = float(centered.std(ddof=0))
+            design[column] = centered / scale if scale > 1e-12 else 0.0
+        if industry_column in group.columns:
+            industries = group[industry_column].fillna("unclassified").astype(str)
+            dummies = pd.get_dummies(
+                industries,
+                prefix="industry",
+                drop_first=True,
+                dtype=float,
+            )
+            design = pd.concat([design, dummies], axis=1)
+        matrix = design.loc[valid].to_numpy(dtype=float)
+        target = score.loc[valid].to_numpy(dtype=float)
+        coefficients, *_ = np.linalg.lstsq(matrix, target, rcond=None)
+        residual = target - matrix @ coefficients
+        residual[np.abs(residual) < 1e-12] = 0.0
+        neutralized.loc[group.index[valid]] = residual - float(np.mean(residual))
+    result["neutralized_score"] = neutralized
+    return result

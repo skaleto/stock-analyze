@@ -49,23 +49,23 @@ function defaultRoute(
     return { view: "strategy", mode: "compare", market: marketContext };
   }
   if (view === "model-research") {
-    return { view, market: marketContext };
+    return { view };
   }
   if (view === "data-intelligence") {
-    return { view, market: marketContext };
+    return { view };
   }
   return { view: "operations", scope: "all" };
 }
 
-function marketRoute(
+function strategyMarketRoute(
   route: WorkspaceRoute,
   market: DashboardMarket,
 ): WorkspaceRoute {
-  if (route.view === "system") {
+  if (route.view !== "strategy") {
     return { view: "strategy", mode: "compare", market };
   }
-  if (route.view === "operations") {
-    return { view: "operations", scope: market };
+  if (route.mode === "compare") {
+    return { view: "strategy", mode: "compare", market };
   }
   return { ...route, market };
 }
@@ -89,11 +89,6 @@ export function WorkspaceShell({
   onToggleAutoRefresh,
 }: Props) {
   const strategyOpen = route.view === "strategy";
-  const activeMarket = route.view === "strategy"
-    || route.view === "model-research"
-    || route.view === "data-intelligence"
-    ? route.market
-    : null;
 
   return (
     <main className="app-shell">
@@ -108,75 +103,8 @@ export function WorkspaceShell({
           </div>
         </div>
 
-        <nav
-          className="control-group workspace-scope-slot"
-          aria-label="市场范围"
-        >
-          <label>{route.view === "operations" ? "运行范围" : "投资市场"}</label>
-          <div className={route.view === "operations"
-            ? "segmented segmented-operations"
-            : "segmented"}
-          >
-            {route.view === "operations" ? (
-              <>
-                <button
-                  type="button"
-                  className={route.scope === "all" ? "active" : ""}
-                  aria-pressed={route.scope === "all"}
-                  onClick={() => onNavigate({ view: "operations", scope: "all" })}
-                >
-                  全部
-                </button>
-                <button
-                  type="button"
-                  className={route.scope === "a_share" ? "active" : ""}
-                  aria-pressed={route.scope === "a_share"}
-                  onClick={() => onNavigate({
-                    view: "operations",
-                    scope: "a_share",
-                  })}
-                >
-                  A股
-                </button>
-                <button
-                  type="button"
-                  className={route.scope === "cn_qdii_etf" ? "active" : ""}
-                  aria-pressed={route.scope === "cn_qdii_etf"}
-                  onClick={() => onNavigate({
-                    view: "operations",
-                    scope: "cn_qdii_etf",
-                  })}
-                >
-                  跨境ETF
-                </button>
-                <button
-                  type="button"
-                  className={route.scope === "exceptions" ? "active" : ""}
-                  aria-pressed={route.scope === "exceptions"}
-                  onClick={() => onNavigate({
-                    view: "operations",
-                    scope: "exceptions",
-                  })}
-                >
-                  仅异常
-                </button>
-              </>
-            ) : dashboardMarkets.map((market) => (
-              <button
-                key={market}
-                type="button"
-                className={activeMarket === market ? "active" : ""}
-                aria-pressed={activeMarket === market}
-                onClick={() => onNavigate(marketRoute(route, market))}
-              >
-                {marketLabels[market]}
-              </button>
-            ))}
-          </div>
-        </nav>
-
         <nav className="rail-analysis-nav" aria-label="工作区">
-          <span className="rail-nav-label">工作区</span>
+          <span className="rail-nav-label">全局工作区</span>
           <div className="rail-nav-list">
             <button
               type="button"
@@ -190,6 +118,49 @@ export function WorkspaceShell({
               <strong>决策总览</strong>
             </button>
 
+            <button
+              type="button"
+              className={route.view === "model-research"
+                ? "rail-nav-item active"
+                : "rail-nav-item"}
+              aria-current={currentPage(route.view === "model-research")}
+              onClick={() => onNavigate(
+                defaultRoute("model-research", marketContext),
+              )}
+            >
+              <BrainCircuit size={17} aria-hidden="true" />
+              <strong>模型研究</strong>
+            </button>
+            <button
+              type="button"
+              className={route.view === "data-intelligence"
+                ? "rail-nav-item active"
+                : "rail-nav-item"}
+              aria-current={currentPage(route.view === "data-intelligence")}
+              onClick={() => onNavigate(
+                defaultRoute("data-intelligence", marketContext),
+              )}
+            >
+              <RadioTower size={17} aria-hidden="true" />
+              <strong>数据与情报</strong>
+            </button>
+            <button
+              type="button"
+              className={route.view === "operations"
+                ? "rail-nav-item active"
+                : "rail-nav-item"}
+              aria-current={currentPage(route.view === "operations")}
+              onClick={() => onNavigate(
+                defaultRoute("operations", marketContext),
+              )}
+            >
+              <Activity size={17} aria-hidden="true" />
+              <strong>运行中心</strong>
+            </button>
+
+            <span className="rail-nav-label rail-nav-section-label">
+              模拟策略
+            </span>
             <div className={strategyOpen
               ? "rail-menu-branch active"
               : "rail-menu-branch"}
@@ -214,6 +185,21 @@ export function WorkspaceShell({
               </button>
               {strategyOpen ? (
                 <div className="rail-workspace-children">
+                  <nav className="rail-market-switch" aria-label="策略市场">
+                    {dashboardMarkets.map((market) => (
+                      <button
+                        key={market}
+                        type="button"
+                        className={route.market === market ? "active" : ""}
+                        aria-pressed={route.market === market}
+                        onClick={() => onNavigate(
+                          strategyMarketRoute(route, market),
+                        )}
+                      >
+                        {marketLabels[market]}
+                      </button>
+                    ))}
+                  </nav>
                   <button
                     type="button"
                     className={route.mode === "compare"
@@ -276,46 +262,6 @@ export function WorkspaceShell({
                 </div>
               ) : null}
             </div>
-
-            <button
-              type="button"
-              className={route.view === "model-research"
-                ? "rail-nav-item active"
-                : "rail-nav-item"}
-              aria-current={currentPage(route.view === "model-research")}
-              onClick={() => onNavigate(
-                defaultRoute("model-research", marketContext),
-              )}
-            >
-              <BrainCircuit size={17} aria-hidden="true" />
-              <strong>模型研究</strong>
-            </button>
-            <button
-              type="button"
-              className={route.view === "data-intelligence"
-                ? "rail-nav-item active"
-                : "rail-nav-item"}
-              aria-current={currentPage(route.view === "data-intelligence")}
-              onClick={() => onNavigate(
-                defaultRoute("data-intelligence", marketContext),
-              )}
-            >
-              <RadioTower size={17} aria-hidden="true" />
-              <strong>数据与情报</strong>
-            </button>
-            <button
-              type="button"
-              className={route.view === "operations"
-                ? "rail-nav-item active"
-                : "rail-nav-item"}
-              aria-current={currentPage(route.view === "operations")}
-              onClick={() => onNavigate(
-                defaultRoute("operations", marketContext),
-              )}
-            >
-              <Activity size={17} aria-hidden="true" />
-              <strong>运行中心</strong>
-            </button>
           </div>
         </nav>
 

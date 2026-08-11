@@ -33,29 +33,61 @@ TECHNICAL_FEATURES = tuple(
         "technical",
         lookback,
         0,
-        "technical-v2",
+        "technical-v3-stationary",
         direction=direction,
         source="adjusted_ohlcv",
     )
     for name, lookback, direction in (
-        ("sma_5", 5, "contextual"), ("sma_10", 10, "contextual"),
-        ("sma_20", 20, "contextual"), ("sma_60", 60, "contextual"),
-        ("ema_12", 12, "contextual"), ("ema_26", 26, "contextual"),
-        ("macd_dif", 35, "high"), ("macd_dea", 35, "high"),
-        ("macd_hist", 35, "high"), ("macd_cross", 36, "high"),
-        ("macd_hist_slope", 36, "high"), ("macd_hist_acceleration", 37, "high"),
+        ("sma_distance_5", 5, "contextual"), ("sma_distance_10", 10, "contextual"),
+        ("sma_distance_20", 20, "contextual"), ("sma_distance_60", 60, "contextual"),
+        ("ema_distance_12", 12, "contextual"), ("ema_distance_26", 26, "contextual"),
+        ("macd_dif_pct", 35, "high"), ("macd_dea_pct", 35, "high"),
+        ("macd_hist_pct", 35, "high"), ("macd_cross", 36, "high"),
+        ("macd_hist_slope_pct", 36, "high"), ("macd_hist_acceleration_pct", 37, "high"),
         ("macd_zero_state", 35, "high"), ("macd_cross_age", 36, "contextual"),
         ("rsi_14", 14, "contextual"), ("adx_14", 28, "high"),
-        ("atr_14", 14, "low"), ("natr_14", 14, "low"),
+        ("natr_14", 14, "low"),
         ("bollinger_position", 20, "contextual"), ("bollinger_width", 20, "contextual"),
         ("return_1", 1, "high"), ("momentum_5", 5, "high"),
         ("momentum_20", 20, "high"), ("momentum_60", 60, "high"),
         ("realized_volatility_20", 20, "low"), ("relative_strength_20", 20, "high"),
         ("volume_ratio_5_20", 20, "contextual"), ("volume_zscore_20", 20, "contextual"),
-        ("obv", 1, "high"), ("ad", 1, "high"), ("mfi_14", 14, "contextual"),
+        ("obv_flow_5", 5, "high"), ("ad_flow_5", 5, "high"), ("mfi_14", 14, "contextual"),
         ("amount_ratio_5_20", 20, "contextual"),
         ("turnover_percentile_60", 60, "contextual"),
         ("turnover_change_5", 5, "contextual"),
+    )
+)
+
+
+ALPHA158_LITE_TECHNICAL_FEATURES = tuple(
+    FeatureDefinition(
+        name,
+        "technical",
+        lookback,
+        0,
+        "alpha158-lite-technical-v1",
+        description=description,
+        direction=direction,
+        source="adjusted_ohlcv",
+    )
+    for name, lookback, direction, description in (
+        ("momentum_10", 10, "high", "Ten-session price momentum"),
+        ("momentum_120", 120, "high", "Long-horizon price momentum"),
+        ("reversal_5", 5, "high", "Short-horizon reversal"),
+        ("realized_volatility_5", 5, "low", "Short realized volatility"),
+        ("realized_volatility_60", 60, "low", "Slow realized volatility"),
+        ("downside_volatility_20", 20, "low", "Downside realized volatility"),
+        ("intraday_range", 1, "low", "Scale-free intraday price range"),
+        ("close_location", 1, "contextual", "Close location inside daily range"),
+        ("drawdown_60", 60, "high", "Distance from trailing sixty-session high"),
+        ("breakout_20", 20, "high", "Breakout above prior twenty-session high"),
+        ("amount_zscore_20", 20, "contextual", "Abnormal traded amount"),
+        ("amihud_illiquidity_20", 60, "low", "Relative Amihud-style illiquidity"),
+        ("volume_price_correlation_20", 20, "high", "Price-volume confirmation"),
+        ("up_volume_ratio_20", 20, "high", "Share of volume on positive sessions"),
+        ("turnover_change_20", 20, "contextual", "Turnover versus trailing mean"),
+        ("price_volume_confirmation_20", 20, "high", "Momentum times amount surprise"),
     )
 )
 
@@ -155,6 +187,117 @@ QDII_FEATURES = tuple(
 )
 
 
+ACCOUNT_RELATIVE_FEATURES = tuple(
+    FeatureDefinition(
+        name,
+        family,
+        lookback,
+        0,
+        "account-relative-v1",
+        description=description,
+        direction=direction,
+        source="scope_cross_section",
+    )
+    for name, family, lookback, direction, description in (
+        (
+            "account_residual_momentum_20",
+            "residual_momentum",
+            20,
+            "high",
+            "Momentum relative to the executable account cross-section.",
+        ),
+        (
+            "account_residual_momentum_60",
+            "residual_momentum",
+            60,
+            "high",
+            "Slow momentum relative to the executable account cross-section.",
+        ),
+        (
+            "industry_residual_momentum_20",
+            "residual_momentum",
+            20,
+            "high",
+            "Momentum relative to same-day industry peers.",
+        ),
+        (
+            "account_low_volatility_percentile",
+            "low_volatility",
+            20,
+            "high",
+            "Inverse volatility percentile within the account scope.",
+        ),
+        (
+            "account_liquidity_percentile",
+            "liquidity",
+            20,
+            "high",
+            "Liquidity percentile within the account scope.",
+        ),
+        (
+            "account_quality_percentile",
+            "quality",
+            0,
+            "high",
+            "Composite point-in-time quality percentile within the account scope.",
+        ),
+    )
+)
+
+
+MONEYFLOW_FEATURES = tuple(
+    FeatureDefinition(
+        name,
+        "fund_flow",
+        lookback,
+        0,
+        "moneyflow-pit-v1",
+        description=description,
+        direction=direction,
+        markets=("a_share",),
+        source="tushare_moneyflow",
+    )
+    for name, lookback, direction, description in (
+        (
+            "moneyflow_net_ratio_1",
+            1,
+            "high",
+            "Same-day active net inflow divided by traded amount.",
+        ),
+        (
+            "moneyflow_net_ratio_5",
+            5,
+            "high",
+            "Five-session active net inflow divided by traded amount.",
+        ),
+        (
+            "moneyflow_net_ratio_20",
+            20,
+            "high",
+            "Twenty-session active net inflow divided by traded amount.",
+        ),
+        (
+            "moneyflow_positive_days_5",
+            5,
+            "high",
+            "Share of observed sessions with positive active net inflow.",
+        ),
+        (
+            "moneyflow_large_imbalance_5",
+            5,
+            "high",
+            "Five-session large-order active buy-sell imbalance.",
+        ),
+        (
+            "moneyflow_observed",
+            1,
+            "contextual",
+            "Explicit exact-date money-flow source coverage flag.",
+        ),
+    )
+)
+
+
 MACRO_FEATURES = tuple(
     FeatureDefinition(
         name,
@@ -215,9 +358,12 @@ INTELLIGENCE_FEATURES = tuple(
 
 DEFAULT_REGISTRY = (
     TECHNICAL_FEATURES
+    + ALPHA158_LITE_TECHNICAL_FEATURES
     + FUNDAMENTAL_FEATURES
     + INDUSTRY_CHAIN_FEATURES
     + QDII_FEATURES
+    + ACCOUNT_RELATIVE_FEATURES
+    + MONEYFLOW_FEATURES
     + MACRO_FEATURES
     + INTELLIGENCE_FEATURES
 )

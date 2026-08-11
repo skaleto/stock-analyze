@@ -1,0 +1,43 @@
+{
+  "schema_version": 3,
+  "factor_sets": {
+    "event-lite-v1": {
+      "state": "research",
+      "features": [
+        "event_net_strength_5d",
+        "event_net_materiality_20d",
+        "event_relevance_20d",
+        "event_certainty_20d",
+        "event_revision_risk_20d",
+        "announcement_novelty_20d",
+        "event_source_confirmation",
+        "event_data_coverage"
+      ]
+    }
+  },
+  "factors": {
+    "event_net_strength_5d": {"state": "observing"},
+    "event_net_materiality_20d": {"state": "observing"},
+    "event_positive_decay_5d": {"state": "observing"},
+    "event_negative_decay_5d": {"state": "observing"},
+    "announcement_novelty_20d": {"state": "observing"},
+    "policy_industry_exposure_20d": {"state": "observing"},
+    "news_volume_abnormal_20d": {"state": "observing"},
+    "event_source_confirmation": {"state": "observing"},
+    "event_price_volume_confirmation": {"state": "observing"},
+    "event_data_coverage": {"state": "observing"},
+    "event_relevance_20d": {"state": "observing"},
+    "event_materiality_positive_20d": {"state": "observing"},
+    "event_materiality_negative_20d": {"state": "observing"},
+    "event_certainty_20d": {"state": "observing"},
+    "event_revision_risk_20d": {"state": "observing"},
+    "earnings_event_score_20d": {"state": "observing"},
+    "buyback_event_score_20d": {"state": "observing"},
+    "shareholder_flow_event_score_20d": {"state": "observing"},
+    "contract_event_score_60d": {"state": "observing"},
+    "corporate_action_event_score_60d": {"state": "observing"},
+    "legal_risk_event_score_60d": {"state": "observing"},
+    "delisting_risk_event_score_60d": {"state": "observing"},
+    "capital_structure_event_score_60d": {"state": "observing"}
+  }
+}

@@ -1,204 +1,36 @@
 # Stock Analyze
 
-一个面向 A 股的前向模拟交易系统。它只做模拟交易、净值追踪、报告和 dashboard，不接券商接口，不真实下单，也不构成投资建议。
+面向中国大陆投资者的 A 股与境内跨境 ETF 研究、双策略比较和纸面交易系统。系统不连接券商、不真实下单，也不构成投资建议。
 
-> **新人入门**：先读 [docs/system-overview.md](docs/system-overview.md) —— 一页完整的系统总览。
->
-> **双 agent 竞赛模式**：仓库支持让 Claude 与 Codex（或任意两个策略 overlay）共享起跑线、独立运行、月度对比；详见 [docs/competition-runbook.md](docs/competition-runbook.md)。
-> 本地 agent 分析（无需 API key）的工作流见 [CLAUDE.md](CLAUDE.md) / [AGENTS.md](AGENTS.md) §5b。
->
-> ⚠️ **systemd timer 二选一**：单 agent 用 `stock-analyze-{daily,weekly}.timer`；双 agent 竞赛 pipeline 用 `stock-analyze-market-data.timer`（Mon-Fri 17:25 拉数据 + 触发 daily agent）+ `stock-analyze-weekly-trigger.timer`（Sat 10:00 触发 weekly agent，复用周五 cache）+ `stock-analyze-monthly-review.timer`。agent service **不再有独立 timer**，全部走 pipeline + `--offline`。两套不要同时启用。
->
-> 🔑 **数据源**：主源 Tushare Pro（需要 `TUSHARE_TOKEN` 环境变量，详见 [docs/tushare-token-setup.md](docs/tushare-token-setup.md)），Baostock 兜底。AKShare/东方财富 push2 已弃用。
+当前正式策略：
 
-## 第一版目标
+- `claude`：稳健防守。
+- `codex`：趋势进攻。
 
-- 股票池：沪深300、中证500
-- 基准：沪深300指数、中证500指数
-- 资金：模拟总资金 100 万，两个账户各 50 万
-- 调仓：每周生成信号，下一交易日模拟成交
-- 持仓：竞赛模式每个账户选前 50 只（双账户合计 100 只），单 agent 模式 strategy_v1 仍为 10 只等权
-- 目标：扣除成本后，观察是否能跑出年化超额收益
-- 报告：CSV/JSON、Markdown 周报、静态 HTML dashboard
+内部 ID 为历史兼容字段，两套策略都由当前系统统一维护。直接港股和美股模拟已经归档。
 
-## 策略逻辑
+## 文档入口
 
-因子权重在 [configs/strategy_v1.yaml](configs/strategy_v1.yaml) 中配置：
+- [系统总览](docs/system-overview.md)：完成态架构、技术路线、数据源、功能和定时任务。
+- [P0-P2 成熟化说明](docs/quant-system-p0-p2-closure.md)：模型门禁、联合风控、决策账本、情报证据与降级契约。
+- [系统 Harness](docs/system-harness.md)：开发、运行、部署、验收和故障处理。
+- [竞赛运行手册](docs/competition-runbook.md)：双策略规则、周度复盘和月度演化。
+- [数据源增强策略](docs/data-source-enrichment-strategy.md)：Tushare、Choice、iFinD、富途等接入边界。
 
-- 价值 30%：PE、PB
-- 质量 30%：ROE、毛利率
-- 安全 20%：资产负债率、总市值
-- 动量 20%：20 日收益率、60 日收益率
-
-硬过滤：
-
-- 排除 ST
-- 排除停牌或取不到价格的股票
-- 排除 PE <= 0
-- 排除最近 20 日平均成交额过低的股票
-- 排除关键财务数据缺失严重的股票
-
-交易成本默认：
-
-- 佣金：0.03%，最低 5 元
-- 印花税：卖出 0.05%
-- 滑点：买卖各 0.05%
-- 买入：100 股整数倍
-
-## 使用方法
-
-更完整的环境准备、运行、部署、故障排查说明见 [docs/forward-simulation-runbook.md](docs/forward-simulation-runbook.md)。模型与工程差距 review 见 [docs/quant-model-gap-review-2026-05-18.md](docs/quant-model-gap-review-2026-05-18.md)。本次系统化整理的 OpenSpec 记录在 [openspec/changes/document-forward-simulation-runbook](openspec/changes/document-forward-simulation-runbook)。
-
-安装依赖：
+## 快速检查
 
 ```bash
 python3 -m pip install -r requirements.txt
+./scripts/system-audit.sh
 ```
 
-配置 Tushare Pro Token（主数据源）：
+## Dashboard
 
 ```bash
-export TUSHARE_TOKEN=你的32位token
-```
-
-不要把 Token 写入仓库、配置文件或日志。完整步骤见 [docs/tushare-token-setup.md](docs/tushare-token-setup.md)。如果未设置 `TUSHARE_TOKEN`，系统会自动降级到 Baostock 兜底源。
-
-初始化模拟账户：
-
-```bash
-python3 -m stock_analyze init
-```
-
-每日运行：
-
-```bash
-python3 -m stock_analyze run-daily
-```
-
-每周生成信号和报告：
-
-```bash
-python3 -m stock_analyze run-weekly
-```
-
-只生成 dashboard：
-
-```bash
-python3 -m stock_analyze dashboard
-```
-
-本地查看 dashboard：
-
-```bash
+python3 -m stock_analyze competition-dashboard
 python3 -m stock_analyze serve-dashboard --host 127.0.0.1 --port 8765
 ```
 
-浏览器打开 `http://127.0.0.1:8765/` 看新手简化版，或打开 `http://127.0.0.1:8765/pro.html` 看专业版。
+打开 `http://127.0.0.1:8765/app.html`。
 
-### 简化版 vs 专业版
-
-竞赛 dashboard 同时输出两份视图,共享同一份 `data/*` 但渲染层不同。2026-05-24 重构后,路由对称、视觉统一深色 Bloomberg 风、每页都有跨页 nav + 双时间戳:
-
-| 路径 | 视图 | 适合谁 |
-|---|---|---|
-| `http://127.0.0.1:8765/` | 简化版合并 (`reports/competition/simple.html`) | 新手 / 不想看因子细节 |
-| `http://127.0.0.1:8765/simple/claude.html` | Claude 单 agent 简化 | 只关心其中一个 agent |
-| `http://127.0.0.1:8765/simple/codex.html` | Codex 单 agent 简化 |   |
-| `http://127.0.0.1:8765/pro.html` | 专业版合并 (`reports/competition/dashboard.html`) | 量化老手 / 调参 |
-| `http://127.0.0.1:8765/pro/claude.html` | Claude 单 agent 专业版 (NEW) | Claude 深度看 |
-| `http://127.0.0.1:8765/pro/codex.html` | Codex 单 agent 专业版 (NEW) | Codex 深度看 |
-| `http://127.0.0.1:8765/competition/dashboard.html` | 同 `/pro.html`(向后兼容)   |   |
-
-**简化版内容** (7 个 card,合计 ≤ 80 KB):
-1. 👤 我的账户 (总资产 / 今日 / 本月)
-2. 📊 两位 AI 的成绩 (累计收益 / vs 基准 / 信息比率)
-3. 📈 净值曲线
-4. 🌐 市场环境 — 沪深300 / 中证500 近 12 周 sparkline (NEW 2026-05-24)
-5. 🎯 差异化雷达 — Claude vs Codex 6 因子持仓均值 (NEW 2026-05-24)
-6. 📦 持仓 Top 10 × 2
-7. 🔍 持仓重叠 / 🔄 最近 5 笔成交 / 🧭 本月策略调整摘要
-
-**专业版内容** (4 个二级 Tab,每 Tab 3-5 section):
-- **📊 结果**: 净值曲线 / 绩效解释 / 待执行订单 / 当前持仓 / 近期交易
-- **💡 洞察**: 本期信号 + 因子贡献 / 候选股走势 / 因子覆盖率 + 前向 IC
-- **🩺 健康**: 数据源状态 / 最近运行 / 本期分析任务包
-- **📜 演化**: agent 笔记 / 策略演进时间线
-
-**构建产物位置**:
-- 用户面向 HTML 仅在 `reports/` 下
-- Per-agent fragment 编译中间产物在 `data/_dashboard_build/<agent>/fragment.html`,不污染 `reports/`
-
-跑 `python3 -m stock_analyze competition-dashboard` 一次同时生成专业版 + 简化版,不需要额外指令。
-
-## 运行输出
-
-运行数据默认写到本地目录，不提交进 Git：
-
-- `data/state.json`
-- `data/pending_orders.json`
-- `data/daily_nav.csv`
-- `data/trades.csv`
-- `data/positions.csv`
-- `data/performance_summary.json`
-- `reports/weekly_report.md`
-- `reports/dashboard.html`
-
-## 服务器部署
-
-第一版推荐部署到 Linux 服务器的 `/opt/stock-analyze`：
-
-```text
-/opt/stock-analyze/
-  app/
-  data/
-  reports/
-  logs/
-  backups/
-  venv/
-```
-
-仓库包含 systemd 模板：
-
-- `deploy/systemd/stock-analyze-market-data.service`
-- `deploy/systemd/stock-analyze-market-data.timer`
-- `deploy/systemd/stock-analyze-weekly-trigger.service`
-- `deploy/systemd/stock-analyze-weekly-trigger.timer`
-- `deploy/systemd/stock-analyze-claude-daily.service`
-- `deploy/systemd/stock-analyze-codex-daily.service`
-- `deploy/systemd/stock-analyze-claude-weekly.service`
-- `deploy/systemd/stock-analyze-codex-weekly.service`
-- `deploy/systemd/stock-analyze-monthly-review.service`
-- `deploy/systemd/stock-analyze-monthly-review.timer`
-- `deploy/systemd/stock-analyze-dashboard.service`
-
-dashboard 服务只监听 `127.0.0.1:8765`。建议通过 SSH 隧道访问：
-
-```bash
-ssh -L 8765:127.0.0.1:8765 user@your-server
-```
-
-然后打开 `http://127.0.0.1:8765/` 或 `http://127.0.0.1:8765/pro.html`。
-
-## 旧版筛选器
-
-仓库仍保留一个单文件筛选器 [quant_value_quality_strategy.py](quant_value_quality_strategy.py)，用于手动生成观察池：
-
-```bash
-python3 quant_value_quality_strategy.py
-```
-
-## 怎么看结果
-
-不要把最高分当作“马上买”。更合理的用法是：
-
-1. 先看 `warnings`，有高负债、利润负增长、数据缺失的公司要谨慎。
-2. 再看业务是否能理解，不懂公司怎么赚钱就先不碰。
-3. 对候选股票逐只做 F10、年报、同行对比。
-4. 用模拟结果验证模型稳定性，不用短期胜负直接调参。
-
-## 风险边界
-
-- 数据来自公开接口，可能受网络、接口变更、限流影响。
-- 财务指标可能有缺失或口径差异，不能只看脚本输出。
-- 第一版做前向模拟，不代表未来收益。
-- PE、PB、ROE、动量都只是工具，不是买卖指令。
+生产部署、SSH 隧道和完整验收命令见 [docs/system-harness.md](docs/system-harness.md)。

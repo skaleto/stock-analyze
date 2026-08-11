@@ -19,10 +19,16 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
+from math import ceil, isnan
+from pathlib import Path
 from typing import Any, Protocol
+
+from ..research.execution_policy import estimate_execution_cost
+from ..utils import read_json, write_json
 
 
 logger = logging.getLogger(__name__)
+SETTLEMENT_TRANSACTION_FILE = ".settlement_transaction.json"
 
 
 class MechanicsProtocol(Protocol):
@@ -105,12 +111,13 @@ class SettlementSimulatorBase:
     # --- execute due orders ------------------------------------------
 
     def execute_due_orders(self, store: Any, provider: Any, *, as_of: date | None = None) -> list[dict[str, Any]]:
-        """Execute all pending orders with trade_date == as_of.
+        """Execute all pending orders with trade_date on or before ``as_of``.
 
         Drains the settlement queue first (so freshly-settled cash is
         available for same-day buys).
         """
         as_of = as_of or date.today()
+        self._recover_settlement_transaction(store)
         state = store.load_state()
         pending = store.read_pending()
         trades: list[dict[str, Any]] = []
@@ -121,23 +128,89 @@ class SettlementSimulatorBase:
 
         for raw in pending:
             order = self._coerce_order(raw)
-            if order.trade_date != as_of.isoformat():
+            if date.fromisoformat(order.trade_date) > as_of:
                 remaining_pending.append(raw)
                 continue
             account_state = state["accounts"].get(order.account_id)
             if account_state is None:
                 logger.warning("order references unknown account %s", order.account_id)
+                remaining_pending.append({**raw, "unfilled_reason": "unknown account"})
                 continue
-            trade = self._execute_order(order, account_state, provider, as_of)
+            trade, unfilled_reason = self._execute_order(order, account_state, provider, as_of)
             if trade is not None:
                 trades.append(trade)
+            else:
+                remaining_pending.append({**raw, "unfilled_reason": unfilled_reason or "not filled"})
 
-        store.save_state(state)
-        store.write_pending(remaining_pending)
+        transaction_path = self._settlement_transaction_path(store)
+        if transaction_path is not None:
+            existing_trades = self._json_records(store.read_trades().to_dict(orient="records"))
+            transaction = {
+                "state": state,
+                "pending": remaining_pending,
+                "trades": [*existing_trades, *trades],
+            }
+            write_json(transaction_path, transaction)
+            self._commit_settlement_transaction(store, transaction, transaction_path)
+        else:
+            store.save_state(state)
+            store.write_pending(remaining_pending)
+            if hasattr(store, "append_trades"):
+                store.append_trades(trades)
+            if hasattr(store, "write_positions"):
+                store.write_positions(state)
         return trades
 
+    @staticmethod
+    def _settlement_transaction_path(store: Any) -> Path | None:
+        data_dir = getattr(store, "data_dir", None)
+        if data_dir is None or not hasattr(store, "write_trades"):
+            return None
+        return Path(data_dir) / SETTLEMENT_TRANSACTION_FILE
+
+    def _recover_settlement_transaction(self, store: Any) -> None:
+        path = self._settlement_transaction_path(store)
+        if path is None or not path.exists():
+            return
+        transaction = read_json(path, None)
+        if not isinstance(transaction, dict):
+            raise RuntimeError("invalid settlement transaction journal")
+        self._commit_settlement_transaction(store, transaction, path)
+
+    @staticmethod
+    def _commit_settlement_transaction(
+        store: Any,
+        transaction: dict[str, Any],
+        path: Path,
+    ) -> None:
+        state = transaction.get("state")
+        pending = transaction.get("pending")
+        trades = transaction.get("trades")
+        if not isinstance(state, dict) or not isinstance(pending, list) or not isinstance(trades, list):
+            raise RuntimeError("invalid settlement transaction payload")
+        store.save_state(state)
+        store.write_pending(pending)
+        store.write_trades(trades)
+        store.write_positions(state)
+        path.unlink(missing_ok=True)
+
+    @classmethod
+    def _json_records(cls, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {key: cls._json_scalar(value) for key, value in row.items()}
+            for row in rows
+        ]
+
+    @staticmethod
+    def _json_scalar(value: Any) -> Any:
+        if hasattr(value, "item"):
+            value = value.item()
+        if isinstance(value, float) and isnan(value):
+            return None
+        return value
+
     def _coerce_order(self, raw: dict[str, Any]):
-        return self.order_cls(
+        values = dict(
             code=raw["code"],
             side=raw["side"],
             shares=int(raw.get("shares", 0)),
@@ -146,16 +219,34 @@ class SettlementSimulatorBase:
             account_id=raw.get("account_id", ""),
             score=raw.get("score"),
             reason=raw.get("reason", ""),
+            name=str(raw.get("name") or ""),
         )
+        if "impact_bps" in getattr(self.order_cls, "__dataclass_fields__", {}):
+            values["impact_bps"] = raw.get("impact_bps")
+        return self.order_cls(**values)
 
-    def _execute_order(self, order, account_state: dict[str, Any], provider: Any, as_of: date) -> dict[str, Any] | None:
+    def _execute_order(
+        self,
+        order,
+        account_state: dict[str, Any],
+        provider: Any,
+        as_of: date,
+    ) -> tuple[dict[str, Any] | None, str | None]:
         quote = provider.execution_quote(
-            order.code, execute_after=as_of.isoformat(), side=self._quote_side(order.side)
+            order.code,
+            execute_after=as_of.isoformat(),
+            side=self._quote_side(order.side),
+            as_of=as_of.isoformat(),
         )
         if quote.paused or quote.price is None or quote.price <= 0:
-            return None
+            return None, quote.reason or "no quote"
 
         px = float(quote.price)
+        baseline_bps = max(float(getattr(self.mechanics, "SLIPPAGE_BPS", 0.0)), 0.0)
+        impact_bps = max(float(getattr(order, "impact_bps", 0.0) or 0.0), baseline_bps)
+        additional_impact = max(impact_bps - baseline_bps, 0.0) / 10_000.0
+        if additional_impact > 0.0:
+            px *= 1.0 + additional_impact if self._quote_side(order.side) == "buy" else 1.0 - additional_impact
         settle_date = self._next_business_day(as_of, self.mechanics.SETTLEMENT_DAYS).isoformat()
         stamp_rate = self.mechanics.STAMP_TAX_RATE
         commission_rate = self.mechanics.COMMISSION_RATE
@@ -172,26 +263,38 @@ class SettlementSimulatorBase:
             total_debit = cost + stamp + commission
             if total_debit > cash:
                 logger.info("insufficient cash for buy %s shares=%d", order.code, order.shares)
-                return None
+                return None, "insufficient cash"
             account_state["cash"] = cash - total_debit
             existing = positions.get(order.code, {"shares": 0, "avg_cost": 0.0})
             new_shares = int(existing.get("shares", 0)) + order.shares
             old_cost_basis = float(existing.get("avg_cost", 0.0)) * int(existing.get("shares", 0))
             new_cost_basis = old_cost_basis + cost
             positions[order.code] = {
+                "name": existing.get("name") or order.name,
                 "shares": new_shares,
                 "avg_cost": new_cost_basis / new_shares if new_shares != 0 else 0.0,
                 "last_buy_date": as_of.isoformat(),
                 "hold_since": existing.get("hold_since", as_of.isoformat()),
                 "short_collateral": float(existing.get("short_collateral", 0.0)),
             }
-            return self._trade_record(order, px, cost, stamp, commission, settle_date, "buy")
+            return self._trade_record(
+                order,
+                px,
+                cost,
+                stamp,
+                commission,
+                settle_date,
+                "buy",
+                as_of,
+                net_amount=-total_debit,
+                cash_after=float(account_state["cash"]),
+            ), None
 
         if order.side == "sell":
             existing = positions.get(order.code)
             if not existing or int(existing.get("shares", 0)) < order.shares:
                 logger.info("insufficient shares for sell %s shares=%d", order.code, order.shares)
-                return None
+                return None, "insufficient shares"
             gross = order.shares * px
             stamp = gross * stamp_rate
             commission = gross * commission_rate
@@ -205,7 +308,18 @@ class SettlementSimulatorBase:
                 del positions[order.code]
             else:
                 positions[order.code] = {**existing, "shares": new_shares}
-            return self._trade_record(order, px, gross, stamp, commission, settle_date, "sell")
+            return self._trade_record(
+                order,
+                px,
+                gross,
+                stamp,
+                commission,
+                settle_date,
+                "sell",
+                as_of,
+                net_amount=net,
+                cash_after=float(account_state.get("cash", 0.0)),
+            ), None
 
         if order.side == "short":
             # Model A (OpenSpec change fix-short-sale-nav-accounting): route
@@ -220,34 +334,46 @@ class SettlementSimulatorBase:
             prior_shares = int(existing.get("shares", 0))
             # Shorting on top of an existing long is not supported in v1.
             if prior_shares > 0:
-                return None
+                return None, "existing long position"
             gross = order.shares * px
             stamp = gross * stamp_rate
             commission = gross * commission_rate
             fees = stamp + commission
             if fees > cash:
-                return None
+                return None, "insufficient cash"
             account_state["cash"] = cash - fees
             account_state["cash_collateral"] = collateral + gross
             new_shares = prior_shares - order.shares  # more negative
             old_cost_basis = abs(prior_shares) * float(existing.get("avg_cost", 0.0))
             new_cost_basis = old_cost_basis + gross
             positions[order.code] = {
+                "name": existing.get("name") or order.name,
                 "shares": new_shares,
                 "avg_cost": new_cost_basis / abs(new_shares) if new_shares != 0 else 0.0,
                 "last_buy_date": as_of.isoformat(),
                 "hold_since": existing.get("hold_since", as_of.isoformat()),
                 "short_collateral": float(existing.get("short_collateral", 0.0)) + gross,
             }
-            return self._trade_record(order, px, gross, stamp, commission, settle_date, "short")
+            return self._trade_record(
+                order,
+                px,
+                gross,
+                stamp,
+                commission,
+                settle_date,
+                "short",
+                as_of,
+                net_amount=-fees,
+                cash_after=float(account_state["cash"]),
+            ), None
 
         if order.side == "cover":
             existing = positions.get(order.code)
             if not existing or int(existing.get("shares", 0)) >= 0:
-                return None
+                return None, "no short position"
             prior_shares = int(existing["shares"])  # negative
             if order.shares > -prior_shares:
-                return None  # can't cover more than open short
+                return None, "cover exceeds short position"
             gross = order.shares * px  # buyback cost
             stamp = gross * stamp_rate
             commission = gross * commission_rate
@@ -270,37 +396,94 @@ class SettlementSimulatorBase:
                     "shares": new_shares,
                     "short_collateral": per_pos_coll - coll_released,
                 }
-            return self._trade_record(order, px, gross, stamp, commission, settle_date, "cover")
+            return self._trade_record(
+                order,
+                px,
+                gross,
+                stamp,
+                commission,
+                settle_date,
+                "cover",
+                as_of,
+                net_amount=cash_back,
+                cash_after=float(account_state["cash"]),
+            ), None
 
-        return None
+        return None, "unsupported side"
 
     @staticmethod
     def _quote_side(side: str) -> str:
         """Map order side to provider quote-side ('buy' or 'sell')."""
         return "buy" if side in ("buy", "cover") else "sell"
 
-    def _trade_record(self, order, price, gross, stamp, commission, settle_date, side_label) -> dict[str, Any]:
+    def _trade_record(
+        self,
+        order,
+        price,
+        gross,
+        stamp,
+        commission,
+        settle_date,
+        side_label,
+        execution_date: date,
+        *,
+        net_amount: float,
+        cash_after: float,
+    ) -> dict[str, Any]:
+        slippage = self._slippage_cost(
+            price,
+            order.shares,
+            side_label,
+            impact_bps=float(getattr(order, "impact_bps", 0.0) or 0.0),
+        )
         return {
-            "trade_date": order.trade_date,
+            "trade_date": execution_date.isoformat(),
             "settle_date": settle_date,
             "account_id": order.account_id,
             "code": order.code,
+            "name": order.name,
             "side": side_label,
             "shares": order.shares,
             "price": price,
             "gross_amount": gross,
             "commission": commission,
             "stamp_tax": stamp,
+            "slippage": slippage,
+            "net_amount": net_amount,
+            "cash_after": cash_after,
             "score": order.score,
             "reason": order.reason,
         }
+
+    def _slippage_cost(
+        self,
+        execution_price: float,
+        shares: int,
+        side: str,
+        *,
+        impact_bps: float = 0.0,
+    ) -> float:
+        """Recover the cash slippage embedded in a provider execution quote."""
+        rate = max(
+            float(getattr(self.mechanics, "SLIPPAGE_BPS", 0.0)),
+            float(impact_bps),
+            0.0,
+        ) / 10_000.0
+        if rate <= 0.0:
+            return 0.0
+        divisor = 1.0 + rate if side in {"buy", "cover"} else 1.0 - rate
+        if divisor <= 0.0:
+            return 0.0
+        reference_price = float(execution_price) / divisor
+        return abs(float(execution_price) - reference_price) * int(shares)
 
     # --- update NAV --------------------------------------------------
 
     def update_nav(self, store: Any, provider: Any, *, as_of: date | None = None) -> list[dict[str, Any]]:
         """Compute and persist daily NAV for each account.
 
-        total_value = cash + cash_collateral + Σ(position_market_value),
+        total_value = cash + cash_collateral + settlement_receivable
+                      + Σ(position_market_value),
         where a short position contributes ``-|shares| × current_price``.
         """
         as_of = as_of or date.today()
@@ -310,6 +493,10 @@ class SettlementSimulatorBase:
             self._drain_settlement(account_state, as_of)
             cash = float(account_state.get("cash", 0.0))
             coll = float(account_state.get("cash_collateral", 0.0))
+            settlement_receivable = sum(
+                float(item.get("amount", 0.0))
+                for item in account_state.get("settlement_queue", [])
+            )
             positions_value = 0.0
             for code, pos in account_state.get("positions", {}).items():
                 shares = int(pos.get("shares", 0))
@@ -317,24 +504,49 @@ class SettlementSimulatorBase:
                     continue
                 quote = provider.price_snapshot(code, as_of=as_of.isoformat())
                 px = quote.close or float(pos.get("avg_cost", 0.0))
+                quote_name = str(getattr(quote, "name", "") or "")
+                if quote_name and not pos.get("name"):
+                    pos["name"] = quote_name
                 if shares > 0:
-                    positions_value += shares * px
+                    market_value = shares * px
                 else:
-                    positions_value -= abs(shares) * px
-            total = cash + coll + positions_value
+                    market_value = -abs(shares) * px
+                positions_value += market_value
+                avg_cost = float(pos.get("avg_cost", 0.0))
+                pos["last_price"] = px
+                pos["market_value"] = market_value
+                pos["unrealized_pnl"] = (px - avg_cost) * shares
+            total = cash + coll + settlement_receivable + positions_value
+            benchmark_code = account_state.get("benchmark", "")
+            benchmark_close = None
+            benchmark_date = as_of.isoformat()
+            if benchmark_code:
+                benchmark_quote = provider.price_snapshot(
+                    benchmark_code,
+                    as_of=as_of.isoformat(),
+                )
+                benchmark_close = benchmark_quote.close
+                benchmark_date = benchmark_quote.trade_date or benchmark_date
             rows.append({
                 "date": as_of.isoformat(),
                 "account_id": account_id,
                 "cash": cash,
                 "cash_collateral": coll,
+                "settlement_receivable": settlement_receivable,
+                "market_value": positions_value,
                 "positions_value": positions_value,
                 "total_value": total,
-                "benchmark_code": account_state.get("benchmark", ""),
+                "benchmark_code": benchmark_code,
+                "benchmark_close": benchmark_close,
                 "benchmark_value": None,
-                "benchmark_date": as_of.isoformat(),
+                "benchmark_date": benchmark_date,
+                "notes": None,
                 "source": f"{self.market_id}-daily",
             })
         store.append_nav(rows)
+        store.save_state(state)
+        if hasattr(store, "write_positions"):
+            store.write_positions(state)
         return rows
 
     # --- generate rebalance orders -----------------------------------
@@ -348,12 +560,23 @@ class SettlementSimulatorBase:
         as_of: date | None = None,
         top_n: int = 50,
         max_single_weight: float = 0.05,
+        top_n_by_account: dict[str, int] | None = None,
+        hold_buffer_pct: float = 0.0,
+        max_holding_days: int | None = None,
+        cash_reserve_pct: float = 0.0,
+        min_trade_weight: float = 0.0,
     ) -> list[dict[str, Any]]:
         """Generate buy/sell orders to bring portfolio toward the top-N of ``scored``."""
         as_of = as_of or date.today()
         trade_date = self._next_business_day(as_of, 1).isoformat()
         state = store.load_state()
         new_orders: list[dict[str, Any]] = []
+        existing_pending = store.read_pending()
+        existing_keys = {
+            (str(order.get("account_id", "")), str(order.get("code", "")))
+            for order in existing_pending
+            if isinstance(order, dict)
+        }
 
         by_account: dict[str, list[dict[str, Any]]] = {}
         for row in scored:
@@ -362,7 +585,15 @@ class SettlementSimulatorBase:
         for account_id, account_state in state.get("accounts", {}).items():
             rows = by_account.get(account_id, [])
             rows.sort(key=lambda r: float(r.get("score", 0.0)), reverse=True)
-            target_codes = {r["code"] for r in rows[:top_n]}
+            rows_by_code = {str(row.get("code")): row for row in rows}
+            account_top_n = max(int((top_n_by_account or {}).get(account_id, top_n)), 1)
+            target_rows = rows[:account_top_n]
+            target_codes = {r["code"] for r in target_rows}
+            retention_count = max(
+                account_top_n,
+                ceil(account_top_n * (1.0 + max(float(hold_buffer_pct), 0.0))),
+            )
+            retention_codes = {r["code"] for r in rows[:retention_count]}
             cash = float(account_state.get("cash", 0.0))
             account_value = cash + float(account_state.get("cash_collateral", 0.0))
             for code, pos in account_state.get("positions", {}).items():
@@ -371,23 +602,63 @@ class SettlementSimulatorBase:
                 px = quote.close or float(pos.get("avg_cost", 0.0))
                 account_value += shares * px
 
+            reserve = min(max(float(cash_reserve_pct), 0.0), 0.5)
+            investable_value = account_value * (1.0 - reserve)
             per_target = min(
-                account_value / max(top_n, 1),
-                account_value * max_single_weight,
+                investable_value / account_top_n,
+                investable_value * max_single_weight,
             )
+            remaining_buying_power = max(cash * (1.0 - reserve), 0.0)
 
             # Sell what's no longer wanted
             for code, pos in list(account_state.get("positions", {}).items()):
                 shares = int(pos.get("shares", 0))
-                if shares > 0 and code not in target_codes:
+                holding_expired = False
+                hold_since = pos.get("hold_since")
+                if max_holding_days is not None and hold_since:
+                    try:
+                        holding_expired = (
+                            as_of - date.fromisoformat(str(hold_since))
+                        ).days >= int(max_holding_days)
+                    except ValueError:
+                        holding_expired = False
+                outside_retention = code not in retention_codes
+                expired_outside_target = holding_expired and code not in target_codes
+                order_key = (str(account_id), str(code))
+                if (
+                    shares > 0
+                    and (outside_retention or expired_outside_target)
+                    and order_key not in existing_keys
+                ):
+                    liquidity_row = rows_by_code.get(str(code), {})
+                    avg_daily_amount = (
+                        liquidity_row.get("avg_amount_20")
+                        or pos.get("avg_daily_amount")
+                    )
+                    if avg_daily_amount is None:
+                        liquidity_quote = provider.price_snapshot(code, as_of=as_of.isoformat())
+                        avg_daily_amount = getattr(liquidity_quote, "avg_amount_20", None)
+                    cost_estimate = estimate_execution_cost(
+                        order_value=shares * float(pos.get("last_price") or pos.get("avg_cost") or 0.0),
+                        avg_daily_amount=avg_daily_amount,
+                        volatility=pos.get("expected_volatility"),
+                        baseline_bps=float(getattr(self.mechanics, "SLIPPAGE_BPS", 0.0)),
+                    )
                     new_orders.append({
                         "code": code, "side": "sell", "shares": shares,
                         "trade_date": trade_date, "account_id": account_id,
-                        "target_value": 0.0, "reason": "not_in_top_n",
+                        "name": pos.get("name") or "",
+                        "target_value": 0.0,
+                        "reason": "max_holding_days" if expired_outside_target else "not_in_top_n",
+                        "impact_bps": cost_estimate.total_bps,
+                        "avg_daily_amount": avg_daily_amount,
+                        "participation_rate": cost_estimate.participation_rate,
+                        "liquidity_status": cost_estimate.liquidity_status,
+                        "impact_capped": cost_estimate.capped,
                     })
 
             # Buy / top-up for target
-            for r in rows[:top_n]:
+            for r in target_rows:
                 code = r["code"]
                 quote = provider.price_snapshot(code, as_of=as_of.isoformat())
                 px = quote.close
@@ -395,18 +666,79 @@ class SettlementSimulatorBase:
                     continue
                 lot = self.mechanics.lot_size_for(code)
                 current_shares = int(account_state.get("positions", {}).get(code, {}).get("shares", 0))
-                target_shares = max(int(per_target / (px * lot)), 0) * lot
+                try:
+                    requested_weight = float(r.get("target_weight"))
+                except (TypeError, ValueError):
+                    requested_weight = 0.0
+                target_value = (
+                    min(investable_value * requested_weight, investable_value * max_single_weight)
+                    if requested_weight > 0.0
+                    else per_target
+                )
+                target_shares = max(int(target_value / (px * lot)), 0) * lot
                 delta = target_shares - current_shares
-                if delta > 0:
+                order_key = (str(account_id), str(code))
+                actual_target_weight = target_shares * px / account_value if account_value > 0 else 0.0
+                avg_daily_amount = r.get("avg_amount_20")
+                if avg_daily_amount is None:
+                    avg_daily_amount = getattr(quote, "avg_amount_20", None)
+                cost_estimate = estimate_execution_cost(
+                    order_value=abs(delta) * px,
+                    avg_daily_amount=avg_daily_amount,
+                    volatility=r.get("expected_volatility", r.get("low_volatility_60")),
+                    baseline_bps=float(getattr(self.mechanics, "SLIPPAGE_BPS", 0.0)),
+                )
+                if (
+                    account_value > 0
+                    and abs(delta) * px / account_value < max(float(min_trade_weight), 0.0)
+                ):
+                    continue
+                if delta < 0 and order_key not in existing_keys:
                     new_orders.append({
-                        "code": code, "side": "buy", "shares": delta,
+                        "code": code,
+                        "side": "sell",
+                        "shares": abs(delta),
+                        "trade_date": trade_date,
+                        "account_id": account_id,
+                        "name": r.get("name") or getattr(quote, "name", "") or "",
+                        "target_value": target_shares * px,
+                        "target_weight": actual_target_weight,
+                        "score": float(r.get("score", 0.0)),
+                        "reason": "risk_adjusted_rebalance",
+                        "impact_bps": cost_estimate.total_bps,
+                        "avg_daily_amount": avg_daily_amount,
+                        "participation_rate": cost_estimate.participation_rate,
+                        "liquidity_status": cost_estimate.liquidity_status,
+                        "impact_capped": cost_estimate.capped,
+                    })
+                    continue
+                estimated_share_cost = px * (
+                    1.0 + self.mechanics.STAMP_TAX_RATE + self.mechanics.COMMISSION_RATE
+                )
+                affordable_shares = (
+                    max(int(remaining_buying_power / (estimated_share_cost * lot)), 0) * lot
+                    if estimated_share_cost > 0
+                    else 0
+                )
+                buy_shares = min(delta, affordable_shares)
+                if buy_shares > 0 and order_key not in existing_keys:
+                    new_orders.append({
+                        "code": code, "side": "buy", "shares": buy_shares,
                         "trade_date": trade_date, "account_id": account_id,
-                        "target_value": per_target,
+                        "name": r.get("name") or getattr(quote, "name", "") or "",
+                        "target_value": buy_shares * px,
+                        "target_weight": actual_target_weight,
                         "score": float(r.get("score", 0.0)),
                         "reason": r.get("reason", "top_n"),
+                        "impact_bps": cost_estimate.total_bps,
+                        "avg_daily_amount": avg_daily_amount,
+                        "participation_rate": cost_estimate.participation_rate,
+                        "liquidity_status": cost_estimate.liquidity_status,
+                        "impact_capped": cost_estimate.capped,
                     })
+                    remaining_buying_power -= buy_shares * estimated_share_cost
 
-        store.write_pending(new_orders)
+        store.write_pending([*existing_pending, *new_orders])
         return new_orders
 
 

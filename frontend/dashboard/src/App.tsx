@@ -59,36 +59,17 @@ function workspaceTitle(route: WorkspaceRoute): string {
 
 function workspaceSubtitle(route: WorkspaceRoute): string {
   if (route.view === "system") return "双市场 · 双策略 · 研究闭环";
-  if (route.view === "operations") {
-    const labels = {
-      all: "全部市场",
-      a_share: "A股",
-      cn_qdii_etf: "跨境ETF",
-      exceptions: "仅异常",
-    };
-    return labels[route.scope];
-  }
+  if (route.view === "operations") return "全部任务 · 当前运行状态";
+  if (route.view === "model-research") return "跨市场 · 训练、验收、模拟与采用";
+  if (route.view === "data-intelligence") return "全链路 · 数据供给与实际使用";
   const marketLabel = route.market === "a_share" ? "A股" : "跨境ETF";
   if (route.view === "strategy") return `${marketLabel} · 正式模拟策略`;
-  if (route.view === "model-research") {
-    return `${marketLabel} · 训练、验收、模拟与采用`;
-  }
-  return `${marketLabel} · 数据供给与实际使用`;
+  return "";
 }
 
 function marketFromRoute(route: WorkspaceRoute): DashboardMarket | null {
-  if (
-    route.view === "strategy"
-    || route.view === "model-research"
-    || route.view === "data-intelligence"
-  ) {
+  if (route.view === "strategy") {
     return route.market;
-  }
-  if (
-    route.view === "operations"
-    && (route.scope === "a_share" || route.scope === "cn_qdii_etf")
-  ) {
-    return route.scope;
   }
   return null;
 }
@@ -143,6 +124,11 @@ export default function App() {
   }, [route]);
 
   useEffect(() => {
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+  }, [route]);
+
+  useEffect(() => {
     if (!autoRefresh) return undefined;
     const timer = window.setInterval(
       () => setRefreshToken((value) => value + 1),
@@ -156,6 +142,7 @@ export default function App() {
     page = (
       <SystemOverviewPanel
         refreshToken={refreshToken}
+        strategyMarket={marketContext}
         onNavigate={navigate}
       />
     );
@@ -179,14 +166,22 @@ export default function App() {
   } else if (route.view === "model-research") {
     page = (
       <ModelResearchPage
-        market={route.market}
+        focus={route.focus}
+        onFocusMarket={(focus) => navigate({
+          view: "model-research",
+          ...(focus ? { focus } : {}),
+        })}
         refreshToken={refreshToken}
       />
     );
   } else if (route.view === "data-intelligence") {
     page = (
       <DataIntelligencePage
-        market={route.market}
+        focus={route.focus}
+        onFocusMarket={(focus) => navigate({
+          view: "data-intelligence",
+          ...(focus ? { focus } : {}),
+        })}
         refreshToken={refreshToken}
       />
     );
@@ -195,6 +190,7 @@ export default function App() {
       <OperationsPage
         scope={route.scope}
         refreshToken={refreshToken}
+        onScopeChange={(scope) => navigate({ view: "operations", scope })}
       />
     );
   }

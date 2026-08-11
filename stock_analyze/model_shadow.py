@@ -26,7 +26,11 @@ from .model_iteration import (
     iteration_prediction_dir,
     read_model_registry,
 )
-from .research.strategy_ensemble import risk_adjusted_target_weights
+from .research.strategy_ensemble import (
+    apply_cost_aware_transition,
+    load_provider_return_history,
+    risk_adjusted_target_weights,
+)
 from .run_ledger import RunLedger
 from .store import PortfolioStore
 from .utils import next_business_day, now_iso, read_json, safe_float, write_json
@@ -45,12 +49,14 @@ def _decision_fingerprint(selected: pd.DataFrame) -> str:
         column
         for column in (
             "code",
+            "account_id",
             "horizon",
             "model_version",
             "confidence",
             "p_up",
             "p_down",
             "expected_excess_return",
+            "target_weight",
         )
         if column in selected.columns
     ]
@@ -58,7 +64,10 @@ def _decision_fingerprint(selected: pd.DataFrame) -> str:
         return "empty"
     payload = (
         selected.loc[:, columns]
-        .sort_values("code", kind="stable")
+        .sort_values(
+            [column for column in ("account_id", "code") if column in columns],
+            kind="stable",
+        )
         .to_json(orient="records", double_precision=15)
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
@@ -90,18 +99,32 @@ def load_shadow_profile(repo_root: str | Path, market: str) -> dict[str, Any]:
         **market_profile,
         "market": market,
     }
-    required = {
-        "horizon",
-        "initial_cash",
-        "account_id",
-        "benchmark",
-        "top_n",
-        "max_single_weight",
-    }
+    accounts = [dict(account) for account in profile.get("accounts") or []]
+    if not accounts and profile.get("account_id"):
+        accounts = [{
+            "id": str(profile["account_id"]),
+            "name": str(profile.get("account_name") or MODEL_SHADOW_LABEL),
+            "scope": str(profile.get("scope") or "model_long_only"),
+            "benchmark": str(profile.get("benchmark") or ""),
+            "cash": float(profile.get("initial_cash") or 0.0),
+            "top_n": int(profile.get("top_n") or 1),
+        }]
+    profile["accounts"] = accounts
+    required = {"horizon", "initial_cash", "max_single_weight", "accounts"}
     if required.difference(profile):
         raise ValueError(f"model_shadow_profile_schema:{market}")
-    if int(profile["top_n"]) <= 0 or not 0 < float(profile["max_single_weight"]) <= 1:
+    account_fields = {"id", "scope", "benchmark", "cash", "top_n"}
+    if (
+        not accounts
+        or any(account_fields.difference(account) for account in accounts)
+        or any(int(account["top_n"]) <= 0 or float(account["cash"]) <= 0 for account in accounts)
+        or not 0 < float(profile["max_single_weight"]) <= 1
+    ):
         raise ValueError(f"model_shadow_profile_limits:{market}")
+    if abs(sum(float(account["cash"]) for account in accounts) - float(profile["initial_cash"])) > 0.01:
+        raise ValueError(f"model_shadow_profile_cash:{market}")
+    profile["account_id"] = str(accounts[0]["id"]) if len(accounts) == 1 else "multi_scope"
+    profile["top_n"] = max(int(account["top_n"]) for account in accounts)
     return profile
 
 
@@ -315,10 +338,15 @@ def _decision_diagnostics_status(
         near_misses.append(row)
     selected_count = int(len(selected))
     if selected_count:
+        qualified_count = counts.get(
+            "scope_eligible", counts.get("positive_excess", selected_count)
+        )
         summary = (
-            f"{counts.get('positive_excess', selected_count)}只证券满足全部做多条件，"
+            f"{qualified_count}只证券满足模型与可投资范围条件，"
             f"最终选择{selected_count}只进入候选模拟组合"
         )
+    elif counts.get("positive_excess", 0) and not counts.get("scope_eligible", 0):
+        summary = "模型条件通过的证券均不在配置可投资范围，候选模拟组合保持现金"
     elif counts.get("confidence", 0) and not counts.get("direction", 0):
         summary = (
             f"{counts['confidence']}只证券通过置信度门槛，但下跌概率均不低于上涨概率，"
@@ -342,7 +370,6 @@ def _decision_diagnostics_status(
 
 def synthetic_config(profile: Mapping[str, Any]) -> dict[str, Any]:
     market = str(profile["market"])
-    account_id = str(profile["account_id"])
     trading = dict(profile.get("trading") or {})
     trading["max_single_weight"] = float(profile["max_single_weight"])
     return {
@@ -351,16 +378,7 @@ def synthetic_config(profile: Mapping[str, Any]) -> dict[str, Any]:
         "agent_id": MODEL_SHADOW_AGENT,
         "name": MODEL_SHADOW_LABEL,
         "initial_cash": float(profile["initial_cash"]),
-        "accounts": [
-            {
-                "id": account_id,
-                "name": str(profile.get("account_name") or MODEL_SHADOW_LABEL),
-                "scope": "model_long_only",
-                "benchmark": str(profile["benchmark"]),
-                "cash": float(profile["initial_cash"]),
-                "top_n": int(profile["top_n"]),
-            }
-        ],
+        "accounts": [dict(account) for account in profile.get("accounts") or []],
         "trading": trading,
         "portfolio_controls": {
             "turnover_penalty": float(profile.get("turnover_penalty", 0.35)),
@@ -400,6 +418,74 @@ def _current_weights(
     return {code: value / total for code, value in values.items()}
 
 
+def _default_round_trip_cost_bps(profile: Mapping[str, Any]) -> float:
+    trading = dict(profile.get("trading") or {})
+    baseline_bps = (
+        float(trading.get("slippage_bps") or 0.0)
+        if trading.get("slippage_bps") is not None
+        else float(trading.get("slippage_rate") or 0.0) * 10_000.0
+    )
+    return (
+        2.0 * baseline_bps
+        + 2.0 * float(trading.get("commission_rate") or 0.0) * 10_000.0
+        + float(trading.get("stamp_tax_rate") or 0.0) * 10_000.0
+    )
+
+
+def _materialize_transition_selection(
+    pool: pd.DataFrame,
+    *,
+    weights: Mapping[str, float],
+    account: Mapping[str, Any],
+    state: Mapping[str, Any],
+    provider: Any,
+    as_of: str,
+    market: str,
+) -> pd.DataFrame:
+    frame = pool.copy()
+    if not frame.empty:
+        frame["target_weight"] = frame["code"].map(
+            lambda code: float(weights.get(_normalise_code(code), 0.0))
+        )
+    known_codes = set(frame.get("code", pd.Series(dtype=str)).map(_normalise_code))
+    account_state = (state.get("accounts") or {}).get(str(account["id"]), {})
+    additions: list[dict[str, Any]] = []
+    for code, weight in weights.items():
+        if code in known_codes or float(weight) <= 1e-10:
+            continue
+        position = (account_state.get("positions") or {}).get(code, {})
+        quote = provider.price_snapshot(code, as_of=as_of)
+        price = safe_float(getattr(quote, "close", None)) or safe_float(
+            position.get("last_price")
+        ) or safe_float(position.get("avg_cost"))
+        if price is None or price <= 0.0:
+            continue
+        metadata: dict[str, Any] = {}
+        if market == "cn_qdii_etf":
+            from .markets.cn_qdii_etf.universe import metadata_for_code
+
+            metadata = metadata_for_code(code)
+        additions.append({
+            **metadata,
+            "code": code,
+            "name": str(position.get("name") or getattr(quote, "name", "") or code),
+            "industry": str(position.get("industry") or "模型组合"),
+            "account_id": str(account["id"]),
+            "research_scope": str(account.get("scope") or account["id"]),
+            "latest_price": price,
+            "score": None,
+            "reason": "cost_aware_retained_holding",
+            "target_weight": float(weight),
+        })
+    if additions:
+        frame = pd.concat([frame, pd.DataFrame(additions)], ignore_index=True, sort=False)
+    if frame.empty:
+        return frame
+    return frame.loc[
+        pd.to_numeric(frame["target_weight"], errors="coerce").fillna(0.0).gt(1e-10)
+    ].copy()
+
+
 def _enrich_candidates(
     candidates: pd.DataFrame,
     *,
@@ -407,8 +493,10 @@ def _enrich_candidates(
     provider: Any,
     as_of: str,
     name_lookup: Mapping[str, str] | None,
+    account: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
-    top_n = int(profile["top_n"])
+    account = dict(account or {})
+    top_n = int(account.get("top_n") or profile["top_n"])
     rows: list[dict[str, Any]] = []
     for raw in candidates.head(max(top_n * 4, top_n)).to_dict(orient="records"):
         code = _normalise_code(raw.get("code"))
@@ -418,21 +506,122 @@ def _enrich_candidates(
             continue
         quote_name = str(getattr(quote, "name", "") or "").strip()
         name = quote_name or str((name_lookup or {}).get(code) or code)
+        market_metadata: dict[str, Any] = {}
+        if str(profile.get("market") or "") == "cn_qdii_etf":
+            from .markets.cn_qdii_etf.universe import metadata_for_code
+
+            market_metadata = metadata_for_code(code)
         rows.append(
             {
+                **market_metadata,
                 **raw,
                 "code": code,
                 "name": name,
                 "industry": "模型组合",
-                "account_id": str(profile["account_id"]),
+                "account_id": str(account.get("id") or profile["account_id"]),
                 "latest_price": price,
             }
         )
     return pd.DataFrame(rows)
 
 
+def _dimension_value(value: Any) -> str:
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    text = str(value or "").strip()
+    return "" if text.lower() in {"nan", "none", "<na>"} else text
+
+
+def _route_candidates_to_accounts(
+    candidates: pd.DataFrame,
+    *,
+    market: str,
+    accounts: list[dict[str, Any]],
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Map candidates to configured accounts and reject scope leakage."""
+
+    account_to_scope = {
+        str(account["id"]): str(account.get("scope") or account["id"])
+        for account in accounts
+    }
+    scope_to_account = {
+        scope: account_id for account_id, scope in account_to_scope.items()
+    }
+    accepted: list[dict[str, Any]] = []
+    rejected_scopes: dict[str, int] = {}
+    rejected_codes: list[str] = []
+    routing_sources: dict[str, int] = {}
+    for raw in candidates.to_dict(orient="records"):
+        row = dict(raw)
+        code = _normalise_code(row.get("code"))
+        explicit_account = _dimension_value(row.get("account_id"))
+        explicit_scope = _dimension_value(row.get("research_scope"))
+        account_id = ""
+        scope = ""
+        source = ""
+
+        if explicit_scope in scope_to_account:
+            mapped_account = scope_to_account[explicit_scope]
+            if explicit_account in account_to_scope and explicit_account != mapped_account:
+                source = "conflicting_account_scope"
+            else:
+                account_id = mapped_account
+                scope = explicit_scope
+                source = "research_scope"
+        elif explicit_scope:
+            source = "unsupported_scope"
+        elif explicit_account in account_to_scope:
+            account_id = explicit_account
+            scope = account_to_scope[explicit_account]
+            source = "account_id"
+        elif explicit_account:
+            source = "unsupported_account"
+        elif market == "cn_qdii_etf":
+            from .markets.cn_qdii_etf.universe import metadata_for_code
+
+            inferred_scope = _dimension_value(metadata_for_code(code).get("scope"))
+            if inferred_scope in scope_to_account:
+                account_id = scope_to_account[inferred_scope]
+                scope = inferred_scope
+                source = "etf_metadata"
+            else:
+                explicit_scope = inferred_scope
+                source = "metadata_scope_unavailable"
+        else:
+            source = "scope_missing"
+
+        if not account_id:
+            rejected_scope = explicit_scope or explicit_account or source
+            rejected_scopes[rejected_scope] = rejected_scopes.get(rejected_scope, 0) + 1
+            if len(rejected_codes) < 20:
+                rejected_codes.append(code)
+            continue
+        row["code"] = code
+        row["account_id"] = account_id
+        row["research_scope"] = scope
+        accepted.append(row)
+        routing_sources[source] = routing_sources.get(source, 0) + 1
+
+    routed = pd.DataFrame(accepted) if accepted else candidates.iloc[0:0].copy()
+    for column in ("account_id", "research_scope"):
+        if column not in routed.columns:
+            routed[column] = pd.Series(dtype="string")
+    return routed, {
+        "source_rows": int(len(candidates)),
+        "eligible_rows": int(len(routed)),
+        "rejected_rows": int(len(candidates) - len(routed)),
+        "rejected_scopes": dict(sorted(rejected_scopes.items())),
+        "rejected_codes": rejected_codes,
+        "routing_sources": dict(sorted(routing_sources.items())),
+    }
+
+
 def _selected_status_rows(frame: pd.DataFrame) -> list[dict[str, Any]]:
     fields = (
+        "account_id",
         "code",
         "name",
         "score",
@@ -441,6 +630,13 @@ def _selected_status_rows(frame: pd.DataFrame) -> list[dict[str, Any]]:
         "p_up",
         "p_down",
         "expected_excess_return",
+        "gross_expected_edge_bps",
+        "round_trip_cost_bps",
+        "uncertainty_bps",
+        "net_expected_edge_bps",
+        "trade_allowed",
+        "no_trade_reason",
+        "partial_adjustment_rate",
         "model_version",
         "reason",
     )
@@ -475,7 +671,8 @@ def run_shadow_cycle(
     if market not in competition.MARKETS:
         raise competition.UnknownMarket(market)
     config = synthetic_config(profile)
-    account_id = str(profile["account_id"])
+    accounts = [dict(account) for account in profile.get("accounts") or []]
+    account_id = "multi_scope" if len(accounts) > 1 else str(accounts[0]["id"])
     market_module = competition.get_market_module(market)
     if not store.state_path.exists():
         market_module.initialize(config, store)
@@ -494,13 +691,150 @@ def run_shadow_cycle(
         notes=f"model shadow; trades={len(trades)}",
     )
     candidates, diagnostics = build_model_candidates(predictions, profile)
-    selected = _enrich_candidates(
+    candidates, scope_routing = _route_candidates_to_accounts(
         candidates,
-        profile=profile,
-        provider=provider,
-        as_of=as_of,
-        name_lookup=name_lookup,
-    ).head(int(profile["top_n"]))
+        market=market,
+        accounts=accounts,
+    )
+    diagnostics["funnel"] = [
+        *(diagnostics.get("funnel") or []),
+        {
+            "key": "scope_eligible",
+            "label": "可投资范围内",
+            "count": scope_routing["eligible_rows"],
+        },
+    ]
+    selected_parts: list[pd.DataFrame] = []
+    account_optimizer_diagnostics: dict[str, dict[str, Any]] = {}
+    cost_aware_decisions: list[dict[str, Any]] = []
+    state_snapshot = store.load_state()
+    for account in accounts:
+        scoped_candidates = candidates.loc[
+            candidates["account_id"].astype(str).eq(str(account["id"]))
+        ]
+        scoped_pool = _enrich_candidates(
+            scoped_candidates,
+            profile=profile,
+            provider=provider,
+            as_of=as_of,
+            name_lookup=name_lookup,
+            account=account,
+        )
+        if scoped_pool.empty:
+            continue
+        scoped_selected = scoped_pool.head(max(int(account["top_n"]) * 3, 3)).copy()
+        company_exposure_constraints: dict[str, float] = {}
+        company_exposure_metadata: dict[str, Any] = {}
+        if market == "cn_qdii_etf":
+            from .markets.cn_qdii_etf.run import (
+                _attach_underlying_company_exposures,
+                _underlying_company_diagnostics,
+            )
+
+            (
+                scoped_selected,
+                company_exposure_constraints,
+                company_exposure_metadata,
+            ) = _attach_underlying_company_exposures(scoped_selected, dict(profile))
+        benchmark = str(account.get("benchmark") or "")
+        history_codes = scoped_selected["code"].astype(str).tolist()
+        if benchmark:
+            history_codes.append(benchmark)
+        return_history = load_provider_return_history(
+            provider,
+            history_codes,
+            as_of=as_of,
+        )
+        group_constraints: dict[str, float] = {}
+        if market == "cn_qdii_etf":
+            for column, key, default in (
+                ("index_key", "max_index_weight", 0.40),
+                ("country", "max_country_weight", 0.60),
+            ):
+                cap = float(profile.get(key, default))
+                if column in scoped_selected.columns and cap < 1.0:
+                    group_constraints[column] = cap
+        optimizer_diagnostics: dict[str, object] = {}
+        current_weights = _current_weights(
+            state_snapshot, str(account["id"]), provider, as_of
+        )
+        aim_weights = risk_adjusted_target_weights(
+            scoped_selected,
+            top_n=int(account["top_n"]),
+            max_single_weight=float(profile["max_single_weight"]),
+            current_weights=current_weights,
+            return_history=return_history,
+            benchmark_weights={benchmark: 1.0} if benchmark else None,
+            group_constraints=group_constraints,
+            exposure_constraints=company_exposure_constraints,
+            turnover_penalty=float(profile.get("turnover_penalty", 0.35)),
+            min_trade_weight=float(profile.get("min_trade_weight", 0.005)),
+            risk_aversion=float(profile.get("risk_aversion", 1.0)),
+            cost_aversion=float(profile.get("cost_aversion", 1.0)),
+            max_turnover=float(profile.get("max_turnover", 1.0)),
+            diagnostics=optimizer_diagnostics,
+        )
+        transition = apply_cost_aware_transition(
+            scoped_selected,
+            aim_weights=aim_weights,
+            current_weights=current_weights,
+            top_n=int(account["top_n"]),
+            rank_buffer_pct=float(profile.get("rank_buffer_pct", 0.0)),
+            minimum_target_change=float(profile.get("minimum_target_change", 0.0)),
+            partial_adjustment_rate=float(profile.get("partial_adjustment_rate", 1.0)),
+            max_daily_turnover=float(profile.get("max_daily_turnover", 1.0)),
+            cost_safety_multiple=float(profile.get("cost_safety_multiple", 1.0)),
+            alpha_persistence=float(profile.get("alpha_persistence", 1.0)),
+            default_round_trip_cost_bps=_default_round_trip_cost_bps(profile),
+            gross_exposure=1.0 - float(profile.get("cash_reserve_pct", 0.0)),
+        )
+        for raw in transition.decisions.to_dict(orient="records"):
+            cost_aware_decisions.append({**raw, "account_id": str(account["id"])})
+        scoped_selected = _materialize_transition_selection(
+            scoped_selected,
+            weights=transition.weights,
+            account=account,
+            state=state_snapshot,
+            provider=provider,
+            as_of=as_of,
+            market=market,
+        )
+        if not scoped_selected.empty and not transition.decisions.empty:
+            decision_columns = transition.decisions.drop(
+                columns=["rank", "current_weight", "aim_weight", "target_weight"],
+                errors="ignore",
+            ).copy()
+            scoped_selected = scoped_selected.merge(
+                decision_columns,
+                on="code",
+                how="left",
+                validate="many_to_one",
+            )
+        account_diagnostics: dict[str, Any] = {
+            **optimizer_diagnostics,
+            **company_exposure_metadata,
+            "execution_policy_version": "cost-aware-aim-v1",
+            "cost_aware_decision_count": int(len(transition.decisions)),
+            "cost_aware_trade_count": int(
+                transition.decisions.get(
+                    "trade_allowed", pd.Series(dtype=bool)
+                ).fillna(False).astype(bool).sum()
+            ),
+        }
+        if market == "cn_qdii_etf":
+            account_diagnostics.update(
+                _underlying_company_diagnostics(
+                    scoped_selected,
+                    transition.weights,
+                    optimizer_diagnostics,
+                )
+            )
+        account_optimizer_diagnostics[str(account["id"])] = account_diagnostics
+        selected_parts.append(scoped_selected)
+    selected = (
+        pd.concat(selected_parts, ignore_index=True, sort=False)
+        if selected_parts else pd.DataFrame()
+    )
     model_versions = sorted(
         {
             str(value)
@@ -524,23 +858,6 @@ def run_shadow_cycle(
     previous_status = read_json(store.data_dir / "shadow_status.json", {})
     decision_changed = previous_status.get("decision_key") != decision_key
 
-    if market == "cn_qdii_etf":
-        weights = risk_adjusted_target_weights(
-            selected,
-            top_n=int(profile["top_n"]),
-            max_single_weight=float(profile["max_single_weight"]),
-            current_weights=_current_weights(
-                store.load_state(), account_id, provider, as_of
-            ),
-            turnover_penalty=float(profile.get("turnover_penalty", 0.35)),
-            min_trade_weight=float(profile.get("min_trade_weight", 0.005)),
-        )
-        if not selected.empty:
-            selected = selected.copy()
-            selected["target_weight"] = selected["code"].map(
-                lambda code: weights.get(_normalise_code(code), 0.0)
-            )
-
     if decision_changed:
         previous_pending = store.load_pending()
         store.save_pending([])
@@ -549,29 +866,53 @@ def run_shadow_cycle(
                 from .markets.a_share.simulator import build_target_orders
 
                 state = store.load_state()
-                orders = build_target_orders(
-                    config,
-                    state["accounts"][account_id],
-                    selected,
+                execute_after = (
+                    provider.next_trading_day(as_of)
+                    if hasattr(provider, "next_trading_day")
+                    else next_business_day(as_of)
                 )
-                if orders:
-                    execute_after = (
-                        provider.next_trading_day(as_of)
-                        if hasattr(provider, "next_trading_day")
-                        else next_business_day(as_of)
+                pending_batches = []
+                for account in accounts:
+                    scoped = selected.loc[
+                        selected.get("account_id", pd.Series(dtype=str)).astype(str).eq(str(account["id"]))
+                    ]
+                    benchmark = str(account.get("benchmark") or "")
+                    history_codes = scoped.get(
+                        "code", pd.Series(dtype=str)
+                    ).astype(str).tolist()
+                    if benchmark:
+                        history_codes.append(benchmark)
+                    return_history = load_provider_return_history(
+                        provider,
+                        history_codes,
+                        as_of=as_of,
                     )
-                    store.save_pending(
-                        [
-                            {
-                                "run_id": run_id,
-                                "signal_date": prediction_as_of,
-                                "execute_after": execute_after,
-                                "account_id": account_id,
-                                "warnings": [],
-                                "orders": orders,
-                            }
-                        ]
+                    orders = build_target_orders(
+                        config,
+                        state["accounts"][str(account["id"])],
+                        scoped,
+                        max_positions=int(account["top_n"]),
+                        return_history=return_history,
+                        benchmark_weights=(
+                            {benchmark: 1.0} if benchmark else None
+                        ),
+                        target_weights_override={
+                            _normalise_code(row["code"]): float(row["target_weight"])
+                            for row in scoped.to_dict(orient="records")
+                            if safe_float(row.get("target_weight")) is not None
+                        },
                     )
+                    if orders:
+                        pending_batches.append({
+                            "run_id": run_id,
+                            "signal_date": prediction_as_of,
+                            "execute_after": execute_after,
+                            "account_id": str(account["id"]),
+                            "warnings": [],
+                            "orders": orders,
+                        })
+                if pending_batches:
+                    store.save_pending(pending_batches)
             else:
                 from .markets.cn_qdii_etf import simulator as etf_simulator
 
@@ -582,7 +923,10 @@ def run_shadow_cycle(
                     as_of=date.fromisoformat(as_of),
                     top_n=int(profile["top_n"]),
                     max_single_weight=float(profile["max_single_weight"]),
-                    top_n_by_account={account_id: int(profile["top_n"])},
+                    top_n_by_account={
+                        str(account["id"]): int(account["top_n"])
+                        for account in accounts
+                    },
                     cash_reserve_pct=float(profile.get("cash_reserve_pct", 0.0)),
                     min_trade_weight=float(profile.get("min_trade_weight", 0.005)),
                 )
@@ -597,6 +941,11 @@ def run_shadow_cycle(
         selected,
         name_lookup=name_lookup,
     )
+    latest_nav_by_account = {
+        str(row.get("account_id") or ""): dict(row)
+        for row in nav_rows
+        if str(row.get("account_id") or "")
+    }
     status = {
         "schema_version": 1,
         "market": market,
@@ -612,7 +961,10 @@ def run_shadow_cycle(
         "decision_key": decision_key,
         "decision_changed": decision_changed,
         "candidate_rows": diagnostics["source_rows"],
-        "eligible_rows": diagnostics["eligible_rows"],
+        "model_eligible_rows": diagnostics["eligible_rows"],
+        "eligible_rows": scope_routing["eligible_rows"],
+        "scope_rejected_rows": scope_routing["rejected_rows"],
+        "scope_routing": scope_routing,
         "selected_count": int(len(selected)),
         "invalidated_rows": diagnostics["invalidated_rows"],
         "minimum_confidence": diagnostics["minimum_confidence"],
@@ -621,10 +973,38 @@ def run_shadow_cycle(
             "模型未发现满足条件的上行机会" if selected.empty else None
         ),
         "decision_diagnostics": decision_diagnostics,
+        "execution_policy_version": "cost-aware-aim-v1",
+        "cost_aware_decisions": cost_aware_decisions,
         "trades_executed": int(len(trades)),
         "pending_orders": pending_orders,
         "nav_rows": int(len(nav_rows)),
         "selected": _selected_status_rows(selected),
+        "accounts": [
+            {
+                "account_id": str(account["id"]),
+                "scope": str(account["scope"]),
+                "benchmark": str(account["benchmark"]),
+                "selected_count": int(
+                    selected.get("account_id", pd.Series(dtype=str)).astype(str).eq(str(account["id"])).sum()
+                ),
+                "optimizer_diagnostics": account_optimizer_diagnostics.get(
+                    str(account["id"]), {}
+                ),
+                **{
+                    key: latest_nav_by_account.get(
+                        str(account["id"]), {}
+                    ).get(key)
+                    for key in (
+                        "date",
+                        "cash",
+                        "market_value",
+                        "total_value",
+                        "benchmark_close",
+                    )
+                },
+            }
+            for account in accounts
+        ],
         "run_id": run_id,
         "updated_at": now_iso(),
     }

@@ -1,0 +1,122 @@
+schema_version: 1
+source_contract:
+  point_in_time_fields: [published_at, first_seen_at, effective_at, revised_at]
+  required_provenance: [source_url, content_hash, source_id]
+  raw_documents_tradable: false
+  promotion_requires: [coverage, timeliness, false_positive_rate, ic_stability, ablation]
+secondary_sources:
+  ifind:
+    enabled: true
+    role: validation_and_gap_fill
+    runtime: isolated_sdk_subprocess
+    primary_source: tushare
+    history_parameters: "Interval:D,CPS:1,Currency:YSHB,fill:Omit"
+    market_policy: query_only_current_materialized_universe
+    announcement_policy:
+      operational: daily
+      full_market: weekly_friday_audit
+    quota_guard:
+      quotes_monthly_limit: 7500000
+      announcements_monthly_limit: 10000
+      full_market_audits_per_month: 4
+    credential_files:
+      username_file: /etc/stock-analyze/secrets/ifind_username
+      password_file: /etc/stock-analyze/secrets/ifind_password
+    license_note: Licensed iFinD trial API; secondary validation and bounded supplementation only.
+sources:
+  gov_policy:
+    type: official_html
+    enabled: true
+    allowed_hosts: [www.gov.cn, sousuo.www.gov.cn]
+    listing_urls: [https://www.gov.cn/zhengce/]
+    include_path: '/zhengce/'
+    min_interval_seconds: 1.2
+    license_note: Official public policy documents; low-rate metadata and document retrieval.
+  csrc_policy:
+    type: official_html
+    enabled: false
+    allowed_hosts: [www.csrc.gov.cn]
+    listing_urls: [https://www.csrc.gov.cn/csrc/c100028/common_list.shtml]
+    include_path: '/csrc/'
+    min_interval_seconds: 1.2
+    license_note: Disabled because the legacy list redirects historical details to the home page.
+  ndrc_policy:
+    type: ndrc_api
+    enabled: true
+    allowed_hosts: [fwfx.ndrc.gov.cn]
+    endpoint: https://fwfx.ndrc.gov.cn/api/query
+    site_code: bm04000fgk
+    public_site_key: CAB549A94CF659904A7D6B0E8FC8A7E9
+    credential_class: public_client_identifier
+    page_size: 50
+    max_pages: 100
+    min_interval_seconds: 0.5
+    license_note: Official NDRC public search API; metadata and official excerpts only.
+  tushare_announcement:
+    type: tushare_announcement
+    enabled: true
+    entitled: true
+    endpoint: https://api.tushare.pro
+    fields: [ann_date, ts_code, name, title, url, rec_time]
+    full_history_start: "1990-12-19"
+    history_partition: month
+    history_min_partition: day
+    history_completeness: adaptive_date_split
+    single_day_fallback: fixed_authoritative_security_universe
+    stock_basic_list_statuses: [L, D, P, G]
+    stock_basic_page_size: 6000
+    fund_basic_market: E
+    fund_basic_statuses: [L, D, I]
+    fund_basic_include_unfiltered: true
+    fund_basic_page_size: 15000
+    trade_calendar_mode: full_natural_days
+    trade_calendar_boundary_buffer_days: 45
+    trade_calendar_max_next_open_gap_days: 45
+    trade_calendar_cache: reference/tushare_sse_trade_calendar.csv
+    backfill_lease_seconds: 300
+    backfill_verification_rounds: 5
+    reconcile_lookback_days: 2
+    exclude_security_prefixes: ["200", "900"]
+    initial_lookback_days: 7
+    page_size: 2000
+    max_pages_per_day: 20
+    license_note: Licensed Tushare anns_d metadata with official CNINFO document links.
+    activation_requires: [TUSHARE_TOKEN, anns_d_entitlement]
+  cninfo_announcement:
+    type: contract_only
+    enabled: false
+    unavailable_reason: official_api_contract_pending
+    allowed_hosts: [www.cninfo.com.cn, static.cninfo.com.cn]
+    authority: Statutory disclosure platform designated by CSRC.
+    license_note: Public disclosure metadata only; automated API use must be confirmed before activation.
+    activation_requires: [official_api_contract, rate_limit_policy, historical_backfill]
+  exchange_fund_announcement:
+    type: contract_only
+    enabled: false
+    unavailable_reason: official_cross_check_adapter_pending
+    allowed_hosts: [www.sse.com.cn, www.szse.cn]
+    authority: Shanghai and Shenzhen stock exchanges.
+    license_note: Official ETF trading and suspension notices; no aggregator-only hard block.
+    activation_requires: [sse_adapter, szse_adapter, source_cross_check]
+  fund_manager_announcement:
+    type: contract_only
+    enabled: false
+    unavailable_reason: issuer_registry_pending
+    authority: Fund managers and custodians.
+    license_note: Official issuer pages are the confirmation layer for fund restrictions and resumptions.
+    activation_requires: [issuer_registry, official_document_signature, scope_state_machine]
+  macro_policy_extended:
+    type: contract_only
+    enabled: false
+    unavailable_reason: official_adapter_pending
+    allowed_hosts: [www.pbc.gov.cn, www.mof.gov.cn, www.stats.gov.cn, www.customs.gov.cn]
+    authority: PBOC, MOF, NBS, and GACC.
+    license_note: Public macro releases; each adapter must preserve first-seen and revision history.
+    activation_requires: [per_site_adapter, revision_tracking, release_calendar]
+  licensed_market_news:
+    type: contract_only
+    enabled: false
+    unavailable_reason: entitlement_required
+    authority: Licensed commercial news provider.
+    license_note: No private-app scraping. Activate only through a licensed API or export contract.
+    activation_requires: [licensed_provider, entitlement, retention_terms]

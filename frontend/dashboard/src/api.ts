@@ -69,6 +69,11 @@ const systemLifecycleStatuses = new Set([
   "active",
   "retired",
 ]);
+const systemModelImpactStatuses = new Set([
+  "complete",
+  "insufficient_support",
+  "unavailable",
+]);
 const systemErrorContracts = {
   market_summary_read_unavailable: {
     section: "markets",
@@ -407,6 +412,7 @@ function validateSystemModelVersion(
       "shadow_cycles_remaining",
       "registered_at",
       "artifact",
+      "account_scope",
       "selected_at",
       "outcome",
       "ended_at",
@@ -429,6 +435,7 @@ function validateSystemModelVersion(
     "selected_at",
     "outcome",
     "ended_at",
+    "account_scope",
   ].forEach((key) => systemOptionalString(version[key], `${path}.${key}`));
   ["horizon", "shadow_cycles", "shadow_cycles_remaining"].forEach(
     (key) => systemInteger(version[key], `${path}.${key}`),
@@ -957,7 +964,7 @@ function validateSystemIntelligence(value: unknown): void {
     modelImpact.status,
     "intelligence.modelImpact.status",
   );
-  if (!systemSectionStatuses.has(impactStatus)) {
+  if (!systemModelImpactStatuses.has(impactStatus)) {
     systemOverviewError("intelligence.modelImpact.status");
   }
   systemNumber(
@@ -1259,6 +1266,217 @@ function validateModel(value: unknown, path: string): void {
   objectAt(model.metrics, `${path}.metrics`);
 }
 
+function validateTabularResearchRun(value: unknown, path: string): void {
+  const run = objectAt(value, path);
+  [
+    "status",
+    "protocolVersion",
+    "configHash",
+    "accountScope",
+    "asOf",
+    "estimator",
+    "target",
+    "developmentStart",
+    "developmentEnd",
+    "oosStart",
+    "oosEnd",
+  ].forEach((key) => stringAt(run[key], `${path}.${key}`));
+  numberAt(run.selectedFeatureCount, `${path}.selectedFeatureCount`);
+  booleanAt(run.formalOrderSource, `${path}.formalOrderSource`);
+  booleanAt(run.registryMutated, `${path}.registryMutated`);
+
+  const metrics = objectAt(run.metrics, `${path}.metrics`);
+  [
+    "rankIc",
+    "icir",
+    "rawRankIc",
+    "rawIcir",
+    "portfolioCagr",
+    "benchmarkCagr",
+    "netExcessReturn",
+    "maxDrawdown",
+    "activeMaxDrawdown",
+    "annualTurnover",
+    "capitalUtilization",
+    "portfolioSharpe",
+    "informationRatio",
+    "deflatedSharpeProbability",
+    "probabilityOfBacktestOverfit",
+  ].forEach((key) => {
+    if (metrics[key] != null) numberAt(metrics[key], `${path}.metrics.${key}`);
+  });
+
+  const gate = objectAt(run.gate, `${path}.gate`);
+  booleanAt(gate.passed, `${path}.gate.passed`);
+  stringArray(gate.reasons, `${path}.gate.reasons`);
+  numberAt(gate.positiveFolds, `${path}.gate.positiveFolds`);
+  if (gate.bucketSpearman != null) {
+    numberAt(gate.bucketSpearman, `${path}.gate.bucketSpearman`);
+  }
+  const checks = objectAt(gate.checks, `${path}.gate.checks`);
+  Object.entries(checks).forEach(([key, check]) => {
+    booleanAt(check, `${path}.gate.checks.${key}`);
+  });
+
+  arrayAt(run.buckets, `${path}.buckets`, 5).forEach((item, index) => {
+    const bucketPath = `${path}.buckets[${index}]`;
+    const bucket = objectAt(item, bucketPath);
+    numberAt(bucket.bucket, `${bucketPath}.bucket`);
+    if (bucket.meanExcessReturn != null) {
+      numberAt(bucket.meanExcessReturn, `${bucketPath}.meanExcessReturn`);
+    }
+    numberAt(bucket.observations, `${bucketPath}.observations`);
+  });
+
+  if (run.calibration !== undefined) {
+    const calibration = objectAt(run.calibration, `${path}.calibration`);
+    booleanAt(calibration.enabled, `${path}.calibration.enabled`);
+    numberAt(calibration.foldCount, `${path}.calibration.foldCount`);
+    [
+      "economicPredictionCoverage",
+      "positiveLowerBoundCoverage",
+      "uncertaintyBpsP50",
+      "uncertaintyBpsP90",
+      "optimizerTrackingErrorP50",
+      "optimizerTrackingErrorP90",
+    ].forEach((key) => {
+      if (calibration[key] != null) {
+        numberAt(calibration[key], `${path}.calibration.${key}`);
+      }
+    });
+    arrayAt(
+      calibration.noTradeReasons,
+      `${path}.calibration.noTradeReasons`,
+      8,
+    ).forEach((item, index) => {
+      const reasonPath = `${path}.calibration.noTradeReasons[${index}]`;
+      const reason = objectAt(item, reasonPath);
+      stringAt(reason.reason, `${reasonPath}.reason`);
+      numberAt(reason.count, `${reasonPath}.count`);
+    });
+  }
+}
+
+function validateTabularForwardObservation(value: unknown, path: string): void {
+  const observation = objectAt(value, path);
+  [
+    "status",
+    "lifecycleStatus",
+    "modelId",
+    "configHash",
+    "accountScope",
+    "observationStart",
+  ].forEach((key) => stringAt(observation[key], `${path}.${key}`));
+  optionalString(observation.latestPredictionDate, `${path}.latestPredictionDate`);
+  optionalString(observation.updatedAt, `${path}.updatedAt`);
+  [
+    "horizon",
+    "observationDays",
+    "predictionRows",
+    "latestCandidates",
+    "latestSelected",
+    "formalStrategyWeight",
+  ].forEach((key) => numberAt(observation[key], `${path}.${key}`));
+  booleanAt(observation.formalOrderSource, `${path}.formalOrderSource`);
+
+  const matured = objectAt(
+    observation.maturedEvidence,
+    `${path}.maturedEvidence`,
+  );
+  stringAt(matured.status, `${path}.maturedEvidence.status`);
+  numberAt(matured.maturedRows, `${path}.maturedEvidence.maturedRows`);
+  numberAt(matured.maturedDays, `${path}.maturedEvidence.maturedDays`);
+  optionalString(
+    matured.latestLabelEnd,
+    `${path}.maturedEvidence.latestLabelEnd`,
+  );
+  ["rankIc", "icir", "rawRankIc", "rawIcir", "topBottomSpread"].forEach(
+    (key) => {
+      if (matured[key] != null) {
+        numberAt(matured[key], `${path}.maturedEvidence.${key}`);
+      }
+    },
+  );
+  arrayAt(matured.buckets, `${path}.maturedEvidence.buckets`, 5).forEach(
+    (item, index) => {
+      const bucketPath = `${path}.maturedEvidence.buckets[${index}]`;
+      const bucket = objectAt(item, bucketPath);
+      numberAt(bucket.bucket, `${bucketPath}.bucket`);
+      if (bucket.meanExcessReturn != null) {
+        numberAt(bucket.meanExcessReturn, `${bucketPath}.meanExcessReturn`);
+      }
+      numberAt(bucket.observations, `${bucketPath}.observations`);
+    },
+  );
+
+  const portfolio = objectAt(observation.portfolio, `${path}.portfolio`);
+  stringAt(portfolio.status, `${path}.portfolio.status`);
+  ["periods", "rebalancePeriods", "trades"].forEach((key) =>
+    numberAt(portfolio[key], `${path}.portfolio.${key}`),
+  );
+  [
+    "netReturn",
+    "benchmarkReturn",
+    "netExcessReturn",
+    "maxDrawdown",
+    "activeMaxDrawdown",
+    "informationRatio",
+    "annualTurnover",
+    "capitalUtilization",
+    "executionCostBps",
+  ].forEach((key) => {
+    if (portfolio[key] != null) {
+      numberAt(portfolio[key], `${path}.portfolio.${key}`);
+    }
+  });
+
+  const drift = objectAt(observation.drift, `${path}.drift`);
+  stringAt(drift.status, `${path}.drift.status`);
+  ["medianFeatureCoverage", "medianOutOfRangeRatio"].forEach((key) => {
+    if (drift[key] != null) numberAt(drift[key], `${path}.drift.${key}`);
+  });
+
+  const promotion = objectAt(observation.promotion, `${path}.promotion`);
+  stringAt(promotion.status, `${path}.promotion.status`);
+  numberAt(promotion.passedChecks, `${path}.promotion.passedChecks`);
+  numberAt(promotion.totalChecks, `${path}.promotion.totalChecks`);
+  booleanAt(promotion.automaticPromotion, `${path}.promotion.automaticPromotion`);
+  arrayAt(promotion.checks, `${path}.promotion.checks`, 12).forEach(
+    (item, index) => {
+      const checkPath = `${path}.promotion.checks[${index}]`;
+      const check = objectAt(item, checkPath);
+      stringAt(check.key, `${checkPath}.key`);
+      booleanAt(check.passed, `${checkPath}.passed`);
+    },
+  );
+}
+
+function validateTabularClosure(value: unknown, path: string): void {
+  const closure = objectAt(value, path);
+  ["status", "asOf", "decision", "bestConfigHash"].forEach((key) =>
+    stringAt(closure[key], `${path}.${key}`),
+  );
+  [
+    "officialImmutableTrials",
+    "diagnosticExperiments",
+    "passedChecks",
+    "totalChecks",
+  ].forEach((key) => numberAt(closure[key], `${path}.${key}`));
+  if (closure.formalStrategyWeight != null) {
+    numberAt(closure.formalStrategyWeight, `${path}.formalStrategyWeight`);
+  }
+  for (const key of ["blockers", "nextRunConditions"] as const) {
+    arrayAt(closure[key], `${path}.${key}`, 12).forEach((item, index) => {
+      const rowPath = `${path}.${key}[${index}]`;
+      const row = objectAt(item, rowPath);
+      stringAt(row.code, `${rowPath}.code`);
+      if (row.measured != null) numberAt(row.measured, `${rowPath}.measured`);
+      if (row.required != null) numberAt(row.required, `${rowPath}.required`);
+      stringAt(row.evidence, `${rowPath}.evidence`);
+    });
+  }
+}
+
 function validateModelResearch(value: unknown): ModelResearchData {
   const data = objectAt(value, "root");
   stringAt(data.generated_at, "generated_at");
@@ -1361,6 +1579,48 @@ function validateModelResearch(value: unknown): ModelResearchData {
     );
   });
 
+  if (data.tabularResearch !== undefined) {
+    const tabular = objectAt(data.tabularResearch, "tabularResearch");
+    stringAt(tabular.status, "tabularResearch.status");
+    numberAt(
+      tabular.formalStrategyWeight,
+      "tabularResearch.formalStrategyWeight",
+    );
+    booleanAt(tabular.formalOrderSource, "tabularResearch.formalOrderSource");
+    if (
+      tabular.forwardObservation !== undefined &&
+      tabular.forwardObservation !== null
+    ) {
+      validateTabularForwardObservation(
+        tabular.forwardObservation,
+        "tabularResearch.forwardObservation",
+      );
+    }
+    if (tabular.latest !== null) {
+      validateTabularResearchRun(tabular.latest, "tabularResearch.latest");
+    }
+    if (tabular.best !== null) {
+      validateTabularResearchRun(tabular.best, "tabularResearch.best");
+    }
+    if (tabular.closure !== undefined && tabular.closure !== null) {
+      validateTabularClosure(tabular.closure, "tabularResearch.closure");
+    }
+    const experimentHashes = new Set<string>();
+    arrayAt(tabular.experiments, "tabularResearch.experiments", 8).forEach(
+      (item, index) => {
+        const path = `tabularResearch.experiments[${index}]`;
+        validateTabularResearchRun(item, path);
+        const row = item as Record<string, unknown>;
+        rejectDuplicateIdentity(
+          experimentHashes,
+          [row.configHash],
+          path,
+          "configHash",
+        );
+      },
+    );
+  }
+
   const simulation = objectAt(data.simulation, "simulation");
   stringAt(simulation.status, "simulation.status");
   if (simulation.candidate !== null) {
@@ -1378,6 +1638,95 @@ function validateModelResearch(value: unknown): ModelResearchData {
     numberAt(account.navRows, "simulation.account.navRows");
     optionalString(account.portfolioRef, "simulation.account.portfolioRef");
   }
+  if (simulation.accounts !== undefined) {
+    const accountIds = new Set<string>();
+    arrayAt(simulation.accounts, "simulation.accounts").forEach(
+      (item, index) => {
+        const path = `simulation.accounts[${index}]`;
+        const account = objectAt(item, path);
+        const accountId = stringAt(account.accountId, `${path}.accountId`);
+        rejectDuplicateIdentity(
+          accountIds,
+          [accountId],
+          `${path}.accountId`,
+          "accountId",
+        );
+        stringAt(account.scope, `${path}.scope`);
+        stringAt(account.benchmark, `${path}.benchmark`);
+        numberAt(account.selectedCount, `${path}.selectedCount`);
+        optionalString(account.date, `${path}.date`);
+        ["cash", "marketValue", "totalValue", "benchmarkClose"].forEach(
+          (key) => {
+            if (account[key] != null) numberAt(account[key], `${path}.${key}`);
+          },
+        );
+      },
+    );
+  }
+  if (simulation.evaluation !== undefined) {
+    const evaluation = objectAt(
+      simulation.evaluation,
+      "simulation.evaluation",
+    );
+    stringAt(evaluation.status, "simulation.evaluation.status");
+    optionalString(
+      evaluation.modelVersion,
+      "simulation.evaluation.modelVersion",
+    );
+    optionalString(
+      evaluation.simulatorVersion,
+      "simulation.evaluation.simulatorVersion",
+    );
+    [
+      "grossReturn",
+      "netReturn",
+      "benchmarkReturn",
+      "netExcessReturn",
+      "maxDrawdown",
+      "annualTurnover",
+      "sharpe",
+      "executionCost",
+      "executionCostBps",
+      "impactBpsP50",
+      "impactBpsP90",
+      "impactCappedNotionalRatio",
+      "missingLiquidityNotionalRatio",
+      "decisionCount",
+      "tradeAllowedCount",
+      "noTradeCount",
+      "effectivePeriods",
+      "validTrialCount",
+    ].forEach((key) => {
+      if (evaluation[key] != null) {
+        numberAt(evaluation[key], `simulation.evaluation.${key}`);
+      }
+    });
+    optionalString(
+      evaluation.executionEvidenceStatus,
+      "simulation.evaluation.executionEvidenceStatus",
+    );
+    optionalString(
+      evaluation.executionPolicyVersion,
+      "simulation.evaluation.executionPolicyVersion",
+    );
+    if (evaluation.noTradeReasonCounts !== undefined) {
+      const noTradeReasonCounts = objectAt(
+        evaluation.noTradeReasonCounts,
+        "simulation.evaluation.noTradeReasonCounts",
+      );
+      Object.entries(noTradeReasonCounts).forEach(([key, count]) => {
+        numberAt(count, `simulation.evaluation.noTradeReasonCounts.${key}`);
+      });
+    }
+    objectAt(
+      evaluation.baselineComparison,
+      "simulation.evaluation.baselineComparison",
+    );
+    objectAt(
+      evaluation.accountMetrics,
+      "simulation.evaluation.accountMetrics",
+    );
+  }
   optionalString(simulation.predictionAsOf, "simulation.predictionAsOf");
   stringAt(simulation.predictionStatus, "simulation.predictionStatus");
   numberAt(simulation.cyclesCompleted, "simulation.cyclesCompleted");
@@ -1385,7 +1734,9 @@ function validateModelResearch(value: unknown): ModelResearchData {
   const decision = objectAt(simulation.decision, "simulation.decision");
   [
     "candidateRows",
+    "modelEligibleRows",
     "eligibleRows",
+    "scopeRejectedRows",
     "selectedCount",
     "tradesExecuted",
     "pendingOrders",
@@ -1441,10 +1792,40 @@ function validateModelResearch(value: unknown): ModelResearchData {
       );
     },
   );
+  if (data.attribution !== undefined) {
+    const attribution = objectAt(data.attribution, "attribution");
+    stringAt(attribution.status, "attribution.status");
+    booleanAt(
+      attribution.formalModelApplied,
+      "attribution.formalModelApplied",
+    );
+    numberAt(attribution.completeCount, "attribution.completeCount");
+    numberAt(attribution.totalCount, "attribution.totalCount");
+    arrayAt(attribution.rows, "attribution.rows").forEach((item, index) => {
+      const path = `attribution.rows[${index}]`;
+      const row = objectAt(item, path);
+      optionalString(row.asOf, `${path}.asOf`);
+      stringAt(row.strategyId, `${path}.strategyId`);
+      stringAt(row.accountId, `${path}.accountId`);
+      stringAt(row.status, `${path}.status`);
+      stringAt(row.modelPolicyStatus, `${path}.modelPolicyStatus`);
+      objectAt(row.modelVersions, `${path}.modelVersions`);
+      [
+        "netPnl",
+        "modelSelectionPnl",
+        "explainedRatio",
+        "residualRatio",
+      ].forEach((key) => {
+        if (row[key] != null) numberAt(row[key], `${path}.${key}`);
+      });
+      stringArray(row.unavailableInputs, `${path}.unavailableInputs`);
+    });
+  }
   return data as unknown as ModelResearchData;
 }
 
 const DATA_INTELLIGENCE_LIST_LIMIT = 20;
+const DATA_INTELLIGENCE_OBJECT_KEY_LIMIT = 32;
 const DATA_INTELLIGENCE_STRING_LIMIT = 1_000;
 const DATA_INTELLIGENCE_DEPTH_LIMIT = 8;
 const DATA_INTELLIGENCE_NODE_LIMIT = 512;
@@ -1547,7 +1928,7 @@ function validateBoundedNested(value: unknown, path: string): void {
     }
     if (typeof item === "object") {
       const entries = Object.entries(item);
-      if (entries.length > DATA_INTELLIGENCE_LIST_LIMIT) {
+      if (entries.length > DATA_INTELLIGENCE_OBJECT_KEY_LIMIT) {
         dataIntelligenceError(`${itemPath} key limit`);
       }
       entries.forEach(([key, child]) => {
@@ -1684,7 +2065,17 @@ function normalizeDataIntelligence(value: unknown): unknown {
           parse: workerStage("parse"),
         },
       },
-      sources: Array.isArray(pipeline.sources) ? pipeline.sources : [],
+      sources: Array.isArray(pipeline.sources)
+        ? pipeline.sources.filter((item) => {
+          const source = looseObject(item);
+          return (
+            typeof source?.source === "string"
+            && source.source.length > 0
+            && typeof source.freshnessStatus === "string"
+            && source.freshnessStatus.length > 0
+          );
+        })
+        : [],
     };
   }
 
@@ -2369,16 +2760,18 @@ const OPERATIONS_SCOPES = new Set([
   "exceptions",
 ]);
 const OPERATIONS_MAIN_KEYS = new Set([
-  "intelligence",
   "market_snapshot",
   "research",
   "simulation",
   "publish",
 ]);
 const OPERATIONS_BACKGROUND_KEYS = new Set([
+  "intelligence_refresh",
+  "model_iteration",
   "artifact_backfill",
   "reconcile",
   "semantic",
+  "quality",
 ]);
 const OPERATIONS_SCHEDULE_UNITS: Record<string, Set<string>> = {
   daily: new Set([
@@ -2391,6 +2784,7 @@ const OPERATIONS_SCHEDULE_UNITS: Record<string, Set<string>> = {
     "stock-analyze-market-data.timer",
   ]),
   weekly: new Set([
+    "stock-analyze-intelligence-quality.timer",
     "stock-analyze-claude-cn-qdii-etf-weekly.timer",
     "stock-analyze-codex-cn-qdii-etf-weekly.timer",
     "stock-analyze-qdii-research.timer",
@@ -2605,6 +2999,12 @@ function normalizeTruncatedOperations(value: unknown): unknown {
         activeLeases: 0,
         latestFinishedAt: null,
       } : background.artifactWorkers,
+      localBackfill: background.localBackfill === undefined ? {
+        status: "unavailable",
+        phase: null,
+        reason: null,
+        updatedAt: null,
+      } : background.localBackfill,
     } : root.background,
     backgroundWorkers: normalizeRows(root.backgroundWorkers, (row) => ({
       ...row,
@@ -2680,6 +3080,16 @@ function validateOperationsCenter(value: unknown): OperationsCenterData {
   ) {
     operationsError("dailyFreshness.status");
   }
+  operationsOptionalString(
+    freshness.lastCompleteDate,
+    "dailyFreshness.lastCompleteDate",
+  );
+  if (freshness.completedTasks !== undefined) {
+    operationsNumber(freshness.completedTasks, "dailyFreshness.completedTasks");
+  }
+  if (freshness.expectedTasks !== undefined) {
+    operationsNumber(freshness.expectedTasks, "dailyFreshness.expectedTasks");
+  }
 
   const chain = operationsUniqueRows(data.mainChain, "mainChain", "key");
   operationsExactKeys(
@@ -2750,6 +3160,17 @@ function validateOperationsCenter(value: unknown): OperationsCenterData {
     artifacts.latestFinishedAt,
     "background.artifactWorkers.latestFinishedAt",
   );
+  const localBackfill = operationsObject(
+    background.localBackfill,
+    "background.localBackfill",
+  );
+  operationsString(localBackfill.status, "background.localBackfill.status");
+  operationsOptionalString(localBackfill.phase, "background.localBackfill.phase");
+  operationsOptionalString(localBackfill.reason, "background.localBackfill.reason");
+  operationsOptionalString(
+    localBackfill.updatedAt,
+    "background.localBackfill.updatedAt",
+  );
 
   const workers = operationsUniqueRows(
     data.backgroundWorkers,
@@ -2768,7 +3189,9 @@ function validateOperationsCenter(value: unknown): OperationsCenterData {
     operationsString(worker.label, `${path}.label`);
     operationsStatus(worker.status, `${path}.status`);
     operationsString(worker.serviceUnit, `${path}.serviceUnit`);
-    operationsString(worker.timerUnit, `${path}.timerUnit`);
+    if (worker.timerUnit !== null) {
+      operationsString(worker.timerUnit, `${path}.timerUnit`);
+    }
     operationsOptionalString(worker.loadState, `${path}.loadState`);
     operationsOptionalString(worker.lastResult, `${path}.lastResult`);
     operationsOptionalString(worker.startedAt, `${path}.startedAt`);

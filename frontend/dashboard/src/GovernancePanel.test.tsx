@@ -115,6 +115,7 @@ describe("GovernancePanel", () => {
 
     await user.click(within(panel).getByRole("tab", { name: "模型与情报" }));
     expect(within(panel).getByText((_, element) => element?.textContent === "未达标：每日决策过于一致")).toBeInTheDocument();
+    expect(within(panel).getByText("政策事件信号")).toBeInTheDocument();
     expect(within(panel).getByText("policy_event")).toBeInTheDocument();
   });
 });

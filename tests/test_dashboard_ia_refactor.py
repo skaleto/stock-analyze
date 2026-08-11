@@ -170,8 +170,8 @@ class DashboardRoutesTests(unittest.TestCase):
             "/pro.html",
             "/pro/a_share/claude.html",
             "/pro/a_share/codex.html",
-            "/pro/hk/claude.html",
-            "/pro/us/codex.html",
+            "/pro/cn_qdii_etf/claude.html",
+            "/pro/cn_qdii_etf/codex.html",
         ):
             self.assertIn(url, cli.DASHBOARD_ROUTES, f"missing route alias: {url}")
 

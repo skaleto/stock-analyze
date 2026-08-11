@@ -216,7 +216,7 @@ def generate_weekly_report(
 
     lines.extend(["", "## 近期交易", ""])
     if trades.empty:
-        lines.append("暂无交易。周度调仓会先生成待执行订单，下一交易日再按模拟成交价入账。")
+        lines.append("暂无交易。每日收盘决策会生成下一交易日订单，达到执行日后按模拟成交价入账。")
     else:
         recent = trades.tail(20)
         lines.extend(["| 日期 | 账户 | 方向 | 代码 | 名称 | 股数 | 成交价 | 成本 |", "|---|---|---|---|---|---:|---:|---:|"])
@@ -299,8 +299,8 @@ def generate_dashboard(
     positions_html = dataframe_html(display_positions(positions), POSITION_COLUMNS, "暂无持仓。请先运行周度信号，等待下一交易日模拟成交后再观察。")
     trades_html = dataframe_html(display_trades(trades.tail(30)), TRADE_COLUMNS, "暂无交易。周度任务会先生成待执行订单，下一交易日由日度任务模拟成交。")
     health_html = dataframe_html(display_health(health.tail(40)), HEALTH_COLUMNS, "暂无数据源状态。运行周度或日度任务后会显示接口、缓存和降级情况。")
-    signals_html = dataframe_html(display_signals(signals), SIGNAL_COLUMNS, "暂无选股信号。请先运行 run-weekly。")
-    pending_html = dataframe_html(display_pending_orders(pending_orders), PENDING_COLUMNS, "暂无待执行订单。请先运行 run-weekly 生成调仓计划。")
+    signals_html = dataframe_html(display_signals(signals), SIGNAL_COLUMNS, "暂无选股信号。请先运行 run-daily。")
+    pending_html = dataframe_html(display_pending_orders(pending_orders), PENDING_COLUMNS, "暂无待执行订单。每日决策没有产生调仓计划。")
     execution_hint = pending_execution_hint(pending_orders)
     performance_cards_html = render_performance_cards(summary)
     runs_html = render_runs_table(runs)
@@ -496,7 +496,7 @@ def generate_dashboard(
     function drawPricePanels(panels) {{
       const grid = document.getElementById('priceGrid');
       if (!panels.length) {{
-        grid.innerHTML = '<div class="panel"><p class="empty">暂无可用历史行情缓存。运行 run-weekly 后会展示入选股票走势。</p></div>';
+        grid.innerHTML = '<div class="panel"><p class="empty">暂无可用历史行情缓存。运行 run-daily 后会展示入选股票走势。</p></div>';
         return;
       }}
       panels.forEach((panel, idx) => {{

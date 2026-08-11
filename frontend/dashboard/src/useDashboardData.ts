@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useQueries } from "@tanstack/react-query";
 import {
   fetchIntelligence,
   fetchIntelligenceDocument,
@@ -24,6 +25,7 @@ import type {
   IntelligenceEventDetail,
   IntelligenceSummary,
 } from "./types";
+import { workspaceQueryClient } from "./queryClient";
 
 type ResourceName = "overview" | "performance" | "portfolio" | "predictions" | "research" | "operations" | "governance";
 
@@ -37,12 +39,6 @@ type Resources = {
   governance: DashboardGovernance;
 };
 
-type Snapshot = {
-  key: string;
-  resources: Partial<Resources>;
-  errors: Partial<Record<ResourceName, string>>;
-};
-
 const labels: Record<ResourceName, string> = {
   overview: "账户概览",
   performance: "净值轨迹",
@@ -51,6 +47,32 @@ const labels: Record<ResourceName, string> = {
   research: "ETF研究",
   operations: "运行历史",
   governance: "决策与风控",
+};
+
+const primaryResourceNames: ResourceName[] = [
+  "overview",
+  "performance",
+  "portfolio",
+  "predictions",
+];
+
+const secondaryResourceNames: ResourceName[] = [
+  "research",
+  "operations",
+  "governance",
+];
+
+const resourceLoaders: Record<
+  ResourceName,
+  (market: string, agent: string, signal: AbortSignal) => Promise<unknown>
+> = {
+  overview: fetchOverview,
+  performance: fetchPerformance,
+  portfolio: fetchPortfolio,
+  predictions: fetchPredictions,
+  research: fetchResearch,
+  operations: fetchOperations,
+  governance: fetchGovernance,
 };
 
 function reasonMessage(reason: unknown): string {
@@ -220,100 +242,71 @@ export function useIntelligenceData(
 
 export function useDashboardData(market: string, agent: string, enabled = true) {
   const key = `${market}:${agent}`;
-  const [snapshot, setSnapshot] = useState<Snapshot>({ key: "", resources: {}, errors: {} });
-  const [loadingKey, setLoadingKey] = useState<string | null>(null);
-  const requestIdRef = useRef(0);
-  const abortRef = useRef<AbortController | null>(null);
+  const [secondaryKey, setSecondaryKey] = useState("");
 
-  const load = useCallback(async (preserve: boolean) => {
+  const primaryQueries = useQueries({
+    queries: primaryResourceNames.map((name) => ({
+      queryKey: ["strategy-resource", market, agent, name] as const,
+      enabled,
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        resourceLoaders[name](market, agent, signal),
+    })),
+  }, workspaceQueryClient);
+
+  const primarySettled = primaryQueries.every((query) => !query.isPending);
+
+  useEffect(() => {
+    setSecondaryKey("");
     if (!enabled) {
-      abortRef.current?.abort();
-      requestIdRef.current += 1;
-      setLoadingKey(null);
-      setSnapshot({ key: "", resources: {}, errors: {} });
+      void workspaceQueryClient.cancelQueries({
+        queryKey: ["strategy-resource", market, agent],
+      });
       return;
     }
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    const requestId = ++requestIdRef.current;
-    setLoadingKey(key);
-    setSnapshot((current) => ({
-      key,
-      resources: preserve && current.key === key ? current.resources : {},
-      errors: {},
-    }));
-
-    const settle = (name: ResourceName, result: PromiseSettledResult<unknown>, primary: boolean) => {
-      if (requestId !== requestIdRef.current || controller.signal.aborted) return;
-      setSnapshot((current) => {
-        if (current.key !== key) return current;
-        const resources = { ...current.resources };
-        const errors = { ...current.errors };
-        if (result.status === "fulfilled") {
-          resources[name] = result.value as never;
-          delete errors[name];
-        } else {
-          delete resources[name];
-          errors[name] = reasonMessage(result.reason);
-        }
-        return { key, resources, errors };
-      });
-      if (primary) {
-        setLoadingKey((current) => current === key ? null : current);
-      }
-    };
-    const request = async (
-      name: ResourceName,
-      resource: Promise<unknown>,
-      primary: boolean,
-    ) => {
-      try {
-        settle(name, { status: "fulfilled", value: await resource }, primary);
-      } catch (reason) {
-        settle(name, { status: "rejected", reason }, primary);
-      }
-    };
-
-    const primary: [ResourceName, Promise<unknown>][] = [
-      ["overview", fetchOverview(market, agent, controller.signal)],
-      ["performance", fetchPerformance(market, agent, controller.signal)],
-      ["portfolio", fetchPortfolio(market, agent, controller.signal)],
-      ["predictions", fetchPredictions(market, agent, controller.signal)],
-    ];
-    const primaryTasks = primary.map(([name, resource]) => request(name, resource, true));
-
-    await Promise.resolve();
-    const deferred: [ResourceName, Promise<unknown>][] = [
-      ["research", fetchResearch(market, agent, controller.signal)],
-      ["operations", fetchOperations(market, agent, controller.signal)],
-      ["governance", fetchGovernance(market, agent, controller.signal)],
-    ];
-    const deferredTasks = deferred.map(([name, resource]) => request(name, resource, false));
-    await Promise.all([...primaryTasks, ...deferredTasks]);
+    const idleFallback = window.setTimeout(() => setSecondaryKey(key), 800);
+    return () => window.clearTimeout(idleFallback);
   }, [agent, enabled, key, market]);
 
   useEffect(() => {
-    void load(false);
-    return () => {
-      abortRef.current?.abort();
-      requestIdRef.current += 1;
-    };
-  }, [load]);
+    if (enabled && primarySettled) setSecondaryKey(key);
+  }, [enabled, key, primarySettled]);
 
-  const active = snapshot.key === key ? snapshot : { key, resources: {}, errors: {} };
-  const detail = useMemo(
-    () => mergeDetail(market, agent, active.resources),
-    [active.resources, agent, market],
-  );
-  const error = Object.entries(active.errors)
+  const secondaryQueries = useQueries({
+    queries: secondaryResourceNames.map((name) => ({
+      queryKey: ["strategy-resource", market, agent, name] as const,
+      enabled: enabled && secondaryKey === key,
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        resourceLoaders[name](market, agent, signal),
+    })),
+  }, workspaceQueryClient);
+
+  const resources: Partial<Resources> = {};
+  const errors: Partial<Record<ResourceName, string>> = {};
+  [...primaryQueries, ...secondaryQueries].forEach((query, index) => {
+    const name = [...primaryResourceNames, ...secondaryResourceNames][index];
+    if (query.data !== undefined) {
+      Object.assign(resources, { [name]: query.data });
+    }
+    if (query.error) errors[name] = reasonMessage(query.error);
+  });
+
+  const detail = mergeDetail(market, agent, resources);
+  const error = Object.entries(errors)
     .map(([name, message]) => `${labels[name as ResourceName]}：${message}`)
     .join("；") || null;
+
+  const reload = useCallback(() => {
+    setSecondaryKey(key);
+    void workspaceQueryClient.invalidateQueries({
+      queryKey: ["strategy-resource", market, agent],
+      refetchType: "active",
+    });
+  }, [agent, key, market]);
 
   return {
     detail,
     error,
-    loading: loadingKey === key,
-    reload: useCallback(() => load(true), [load]),
+    loading: enabled && primaryQueries.some((query) => query.isFetching),
+    reload,
   };
 }

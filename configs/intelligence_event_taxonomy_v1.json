@@ -1,0 +1,1117 @@
+{
+  "schema_version": 1,
+  "taxonomy_version": "cn-announcement-taxonomy-v1",
+  "events": [
+    {
+      "event_type": "earnings_forecast",
+      "allowed_lifecycle": [
+        "approved",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "period",
+            "yoy_lower",
+            "yoy_upper"
+          ],
+          "one_of_sets": [
+            [
+              "net_profit_lower",
+              "net_profit_upper"
+            ],
+            [
+              "revenue_lower",
+              "revenue_upper"
+            ]
+          ],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [
+              "period"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "previous_period_net_profit",
+        "forecast_reason",
+        "currency"
+      ],
+      "direction_rule": "earnings_forecast_midpoint_growth_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "fact:period"
+      ],
+      "default_horizon_days": 20
+    },
+    {
+      "event_type": "earnings_flash",
+      "allowed_lifecycle": [
+        "completed",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "period",
+            "revenue",
+            "net_profit"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "completed": {
+            "all_of": [
+              "period",
+              "revenue",
+              "net_profit"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "never",
+            "unmatched_fallback": "not_applicable"
+          },
+          "revised": {
+            "all_of": [
+              "period"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "revenue_yoy",
+        "net_profit_yoy",
+        "total_assets",
+        "net_assets",
+        "currency"
+      ],
+      "direction_rule": "earnings_flash_profit_growth_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "fact:period"
+      ],
+      "default_horizon_days": 20
+    },
+    {
+      "event_type": "buyback",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "price_cap"
+          ],
+          "one_of_sets": [
+            [
+              "amount_lower",
+              "amount_upper"
+            ],
+            [
+              "share_count_lower",
+              "share_count_upper"
+            ]
+          ],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "share_ratio_lower",
+        "share_ratio_upper",
+        "funding_source",
+        "purpose",
+        "implementation_period",
+        "executed_amount",
+        "executed_share_count"
+      ],
+      "direction_rule": "buyback_completion_materiality_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "date:approval_date",
+        "fact:price_cap"
+      ],
+      "default_horizon_days": 60
+    },
+    {
+      "event_type": "shareholder_change",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer",
+        "holder"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "action"
+          ],
+          "one_of_sets": [
+            [
+              "share_count"
+            ],
+            [
+              "share_ratio"
+            ]
+          ],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [
+              "action"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [
+              "action"
+            ],
+            "one_of_sets": [
+              [
+                "share_count"
+              ],
+              [
+                "share_ratio"
+              ]
+            ],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [
+              "action"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [
+              "action"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "price_lower",
+        "price_upper",
+        "holding_after",
+        "change_period",
+        "change_method"
+      ],
+      "direction_rule": "shareholder_net_change_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "subject:holder",
+        "fact:action",
+        "date:change_date"
+      ],
+      "default_horizon_days": 20
+    },
+    {
+      "event_type": "dividend",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "distribution_plan"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "completed": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [
+              "record_date"
+            ],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "distribution_period",
+        "cash_per_share",
+        "stock_per_share",
+        "tax_included"
+      ],
+      "direction_rule": "dividend_yield_lifecycle_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "fact:distribution_period",
+        "date:record_date"
+      ],
+      "default_horizon_days": 60
+    },
+    {
+      "event_type": "major_contract",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer",
+        "counterparty"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "contract_amount",
+            "contract_period"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "contract_subject",
+        "currency",
+        "performance_conditions",
+        "recognized_revenue"
+      ],
+      "direction_rule": "contract_revenue_materiality_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "subject:counterparty",
+        "fact:contract_subject",
+        "date:contract_date"
+      ],
+      "default_horizon_days": 60
+    },
+    {
+      "event_type": "merger_restructuring",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer",
+        "target"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "transaction_type",
+            "consideration"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "cash_consideration",
+        "share_consideration",
+        "issue_price",
+        "dilution_ratio",
+        "regulatory_approval"
+      ],
+      "direction_rule": "restructuring_lifecycle_dilution_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "fact:transaction_type",
+        "subject:target"
+      ],
+      "default_horizon_days": 60
+    },
+    {
+      "event_type": "equity_financing",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "financing_method",
+            "amount",
+            "use_of_proceeds"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "issue_price",
+        "share_count",
+        "dilution_ratio",
+        "lockup_period",
+        "net_proceeds"
+      ],
+      "direction_rule": "equity_financing_dilution_use_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "fact:financing_method",
+        "date:board_approval_date"
+      ],
+      "default_horizon_days": 60
+    },
+    {
+      "event_type": "guarantee",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer",
+        "beneficiary"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "guarantee_amount"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "guarantee_balance",
+        "net_asset_ratio",
+        "related_party",
+        "guarantee_period",
+        "counter_guarantee"
+      ],
+      "direction_rule": "guarantee_net_asset_risk_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "subject:beneficiary",
+        "date:guarantee_date",
+        "fact:guarantee_amount"
+      ],
+      "default_horizon_days": 60
+    },
+    {
+      "event_type": "pledge_freeze",
+      "allowed_lifecycle": [
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer",
+        "holder"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "action"
+          ],
+          "one_of_sets": [
+            [
+              "share_count"
+            ],
+            [
+              "share_ratio"
+            ]
+          ],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [
+              "action"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [
+              "action"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [
+              "action"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [
+              "action"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "cumulative_share_count",
+        "cumulative_share_ratio",
+        "purpose"
+      ],
+      "direction_rule": "pledge_freeze_action_risk_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "subject:holder",
+        "fact:action",
+        "date:start_date"
+      ],
+      "default_horizon_days": 20
+    },
+    {
+      "event_type": "litigation_arbitration",
+      "allowed_lifecycle": [
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer",
+        "counterparty"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "issuer_role",
+            "case_amount",
+            "case_stage"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [
+              "case_stage"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [
+              "issuer_role",
+              "case_stage"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [
+              "case_stage"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [
+              "case_stage"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "case_number",
+        "claim",
+        "judgment_amount",
+        "provision_amount"
+      ],
+      "direction_rule": "litigation_role_stage_loss_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "fact:case_number",
+        "subject:counterparty"
+      ],
+      "default_horizon_days": 60
+    },
+    {
+      "event_type": "investigation_penalty",
+      "allowed_lifecycle": [
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer",
+        "authority"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "action_type"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [
+              "action_type"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [
+              "action_type"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [
+              "action_type"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [
+              "action_type"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "document_number",
+        "reason",
+        "penalty_amount",
+        "remediation"
+      ],
+      "direction_rule": "regulatory_action_stage_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "subject:authority",
+        "fact:document_number"
+      ],
+      "default_horizon_days": 60
+    },
+    {
+      "event_type": "risk_warning_delisting",
+      "allowed_lifecycle": [
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "risk_type",
+            "trigger"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [
+              "risk_type"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [
+              "risk_type"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [
+              "risk_type"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [
+              "risk_type"
+            ],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "removal_conditions",
+        "exchange_decision",
+        "security_name_change"
+      ],
+      "direction_rule": "listing_risk_state_transition_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "fact:risk_type",
+        "date:effective_date"
+      ],
+      "default_horizon_days": 60
+    },
+    {
+      "event_type": "capacity_project",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "project_type",
+            "expected_operation_date"
+          ],
+          "one_of_sets": [
+            [
+              "capex"
+            ],
+            [
+              "capacity"
+            ]
+          ],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "project_location",
+        "funding_source",
+        "construction_period",
+        "expected_revenue",
+        "expected_profit"
+      ],
+      "direction_rule": "capacity_lifecycle_asset_materiality_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "fact:project_type"
+      ],
+      "default_horizon_days": 120
+    },
+    {
+      "event_type": "control_change",
+      "allowed_lifecycle": [
+        "planned",
+        "approved",
+        "in_progress",
+        "completed",
+        "cancelled",
+        "revised",
+        "uncertain"
+      ],
+      "required_subject_roles": [
+        "issuer",
+        "old_controller",
+        "new_controller"
+      ],
+      "required_facts": {
+        "default": {
+          "all_of": [
+            "change_method"
+          ],
+          "one_of_sets": [],
+          "required_dates": [],
+          "inherit_prior": "never",
+          "unmatched_fallback": "not_applicable"
+        },
+        "by_lifecycle": {
+          "in_progress": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "completed": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "if_matched",
+            "unmatched_fallback": "validate_default"
+          },
+          "cancelled": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          },
+          "revised": {
+            "all_of": [],
+            "one_of_sets": [],
+            "required_dates": [],
+            "inherit_prior": "required",
+            "unmatched_fallback": "reject"
+          }
+        }
+      },
+      "optional_facts": [
+        "share_ratio_before",
+        "share_ratio_after",
+        "consideration",
+        "approval_conditions"
+      ],
+      "direction_rule": "control_change_completion_financing_v1",
+      "dedupe_fields": [
+        "subject:issuer",
+        "subject:old_controller",
+        "subject:new_controller",
+        "fact:change_method"
+      ],
+      "default_horizon_days": 60
+    }
+  ]
+}

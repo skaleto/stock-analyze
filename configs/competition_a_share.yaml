@@ -20,8 +20,8 @@
     }
   ],
   "schedule": {
-    "rebalance": "weekly_after_close",
-    "signal_day": "last_trading_day_of_week",
+    "rebalance": "daily_after_close",
+    "signal_day": "every_trading_day",
     "execution": "next_trading_day_open"
   },
   "trading": {

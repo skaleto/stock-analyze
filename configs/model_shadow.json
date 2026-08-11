@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "source_agent": "codex",
   "minimum_confidence": 0.55,
   "turnover_penalty": 0.35,
@@ -7,11 +7,17 @@
   "markets": {
     "a_share": {
       "horizon": 20,
+      "rank_buffer_pct": 0.50,
+      "minimum_target_change": 0.01,
+      "partial_adjustment_rate": 0.35,
+      "max_daily_turnover": 0.10,
+      "cost_safety_multiple": 1.50,
+      "alpha_persistence": 1.0,
       "initial_cash": 1000000,
-      "account_id": "model_shadow",
-      "account_name": "候选模型模拟组合",
-      "benchmark": "000300",
-      "top_n": 10,
+      "accounts": [
+        {"id": "hs300", "name": "沪深300模型组合", "scope": "hs300", "benchmark": "000300", "cash": 500000, "top_n": 10},
+        {"id": "zz500", "name": "中证500模型组合", "scope": "zz500", "benchmark": "000905", "cash": 500000, "top_n": 10}
+      ],
       "max_single_weight": 0.10,
       "cash_reserve_pct": 0.0,
       "trading": {
@@ -24,18 +30,25 @@
     },
     "cn_qdii_etf": {
       "horizon": 5,
+      "rank_buffer_pct": 0.80,
+      "minimum_target_change": 0.02,
+      "partial_adjustment_rate": 0.25,
+      "max_daily_turnover": 0.08,
+      "cost_safety_multiple": 2.00,
+      "alpha_persistence": 1.0,
       "initial_cash": 1000000,
-      "account_id": "model_shadow",
-      "account_name": "候选模型模拟组合",
-      "benchmark": "513100.SH",
-      "top_n": 5,
+      "accounts": [
+        {"id": "us_exposure", "name": "美国暴露模型组合", "scope": "us_exposure", "benchmark": "513100.SH", "cash": 500000, "top_n": 5},
+        {"id": "hk_exposure", "name": "香港暴露模型组合", "scope": "hk_exposure", "benchmark": "159920.SZ", "cash": 500000, "top_n": 5}
+      ],
       "max_single_weight": 0.20,
       "cash_reserve_pct": 0.02,
       "trading": {
         "lot_size_default": 100,
         "commission_rate": 0.0003,
         "stamp_tax_rate": 0.0,
-        "slippage_bps": 5
+        "slippage_bps": 5,
+        "settlement_days": 1
       }
     }
   }
