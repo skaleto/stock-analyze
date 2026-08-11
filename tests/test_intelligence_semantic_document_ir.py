@@ -79,6 +79,28 @@ def _ir(*, tables: list[dict[str, object]] | None = None) -> dict[str, object]:
 
 
 class DocumentIRTest(unittest.TestCase):
+    def test_multiline_grouped_number_is_a_value_cell(self) -> None:
+        table = _table(
+            cells=[
+                _cell(0, 0, "股东名称"),
+                _cell(0, 1, "本次质押数量（股）"),
+                _cell(1, 0, "测试股东"),
+                _cell(1, 1, "6,000,\n000"),
+            ]
+        )
+
+        document_ir = build_document_ir(
+            document={"id": 1, "title": "股份质押公告", "name": "测试股份"},
+            chunks=[],
+            tables=[table],
+            parser_version="test-v1",
+        )
+        value = ir_nodes_by_id(document_ir)["table-1-r1-c1"]
+
+        self.assertEqual(value["semantic_role"], "value")
+        self.assertEqual(value["unit_resolution"]["value"], "股")
+        self.assertTrue(value["row_header_path"])
+
     def test_builds_complete_multilevel_table_semantics_deterministically(self) -> None:
         first = _ir()
         second = _ir()

@@ -1,6 +1,6 @@
 # 公告情报生产运维手册
 
-更新日期：2026-08-06
+更新日期：2026-08-11
 
 本系统只保留一条生产主线：
 
@@ -86,7 +86,7 @@ done
 ```bash
 python -m stock_analyze.cli intelligence-semantic-daily \
   --repo-root /opt/stock-analyze/app \
-  --profile a-share-announcement-mentions-v1 \
+  --profile a-share-announcement-mentions-v27 \
   --limit 3 \
   --max-input-characters 40000 \
   --executor-config /etc/stock-analyze/intelligence-semantic-executor.yaml
@@ -97,7 +97,7 @@ Claude 或其他 Coding Plan 时，只生成相同任务并导入相同输出，
 
 ```bash
 python -m stock_analyze.cli intelligence-semantic-prepare \
-  --repo-root . --profile a-share-announcement-mentions-v1 --limit 20
+  --repo-root . --profile a-share-announcement-mentions-v27 --limit 20
 python -m stock_analyze.cli intelligence-semantic-import \
   --repo-root . --job <job_id>
 ```
@@ -113,15 +113,35 @@ python -m stock_analyze.cli intelligence-semantic-import \
 旧的多模型投票和独立晋升状态机已经退出代码主线。执行器质量通过同一任务契约上的
 小规模分层抽检和漂移复查验证。
 
-当前生产 profile 是 `a-share-announcement-mentions-v1`：大模型按
-`semantic-mentions-v1` 只抽取带逐字证据的主体、事实、日期和状态 mention；本地
-`mention-compiler-v1` 再依据 taxonomy v4 确定性编译成 canonical event。模型不能
-自行补齐缺失事实或直接构造交易信号。逐字引用、实体、类型和必要事实任一校验失败就
-隔离；高风险标题被回答为 `no_event` 时也进入复查，不静默接受。
+当前生产 profile 是 `a-share-announcement-mentions-v27`：Document IR v1 先完整
+冻结正文、表格、页码和实体关系，检索器再投影成不超过 24,000 字符的证据包；大模型按
+`semantic-mentions-v17` 只抽取带逐字证据的主体、事实、日期和状态 mention；本地
+`mention-compiler-v3-ir` 再依据 taxonomy v12 确定性编译成 canonical event。
+`long_document`、`table_heavy` 只是难度标签，不再单独触发 LLM。投资者关系、定期
+报告、法律意见和治理文件若没有明确当前事件信号，会在路由层直接结束。
 
-DeepSeek 生产批次当前按每日 3 篇、25 万输入 token 封顶。该保守阈值来自真实小批
-验收：在输出质量稳定前先控制成本与隔离队列规模；通过率和分层抽检达到门槛后再逐步
-扩大，不以积压量倒逼无约束放量。
+模型不能自行补齐缺失事实或构造交易信号。有效 mention 可独立通过，失败的同文
+mention 保留在 source output/quarantine 中，不再抹掉已验证事件；所有 mention 都
+失败时仍整篇隔离。高信号事件标题第一次得到 `no_event` 后只允许一次有界复核，复核
+仍无法证明事件时保持无事件或隔离，绝不由规则凭空创建 canonical event。
+
+v27 在冻结的 80 篇独立参考集上通过上线门槛：Schema 80/80，有效事件精确率
+46/46（100%），召回率 46/51（90.20%），证据 grounding 295/295（100%），实体
+53/53（100%），已抽取数值 47/47（100%），31 篇无事件误报 0。参考集中仍有 30 个
+数值没有被抽出，数值覆盖率为 61.04%；这表示丰富度仍可提升，不是已抽取数值有误。
+验收是独立 DeepSeek 全量执行，不是 Candidate A/B 自一致性分数，也没有导入生产库。
+
+DeepSeek 生产批次当前按每次定时执行最多 3 篇、25 万输入 token 封顶。80 篇验收共
+消耗 863,505 token，平均每篇约 10,794 total token；真实消耗会随表格和长文变化。
+正常情况下 systemd 每个工作日只调用一次，额外人工重跑会产生新的批次预算，因此
+只能用于明确的 canary 或修复，不能拿积压量倒逼无约束放量。
+
+2026-08-11 的最终生产批次 `sj-d6bed9a34296a8ff4b8f845c` 真实处理 3 篇公告：
+3/3 执行、3/3 导入，生成 2 个股权融资事件和 1 个担保事件，零隔离、零失败；共
+消耗 33,669 token。导入后生产库新增 17 条逐字证据、11 条结构化事实和 3 组事件
+评分。上线 canary 先后暴露并修复了程序性股东名册误路由、完整 IR 证据在导入端不可见
+以及单篇完整 IR 超过普通交换行上限三个边界；对应回归已进入测试集。历史失败行保留
+原审计血缘，不通过删除或重置伪装成功。
 
 API 直连结果会在写入 `output.jsonl` 前做完整本地校验。证据不存在或不唯一时只允许
 一次有界纠正；仍失败则只在 `semantic_runs` 保留 `failed_terminal` 错误码，不保存
@@ -136,14 +156,15 @@ API 直连结果会在写入 `output.jsonl` 前做完整本地校验。证据不
 | 目录 | SQLite `documents` | 公告、来源、时间和证券映射 |
 | 原文 | 私有 OSS `announcements/pdf/` | PDF 原文；ECS 不保留重复 PDF |
 | 解析 | SQLite chunks/tables + OSS 解析产物 | 带页码的正文、表格和 OCR |
-| 语义 | `semantic_runs`、`event_candidates`、`events` | 执行血缘、隔离候选和可信结构化事件 |
+| 语义 | `semantic_runs`、`event_candidates`、`events`、`event_evidence/event_facts/event_scores` | 执行血缘、逐字证据、结构化事实、评分和可信事件 |
 | 因子 | 研究特征快照中的 `event-lite-v1` 八因子 | 5/20 日事件强度、相关性、确定性、修订风险、覆盖率等 |
 | 模型影响 | `reports/research/model_incremental_effect_*.json` | 同切分、同随机种子的 Base 与 Base+Event 对比 |
 
-当前公告因子状态是 `observing`，因此**未自动入模**。语义抽取成功只代表事实可用，
-不代表有预测收益。至少具备 20 个活跃交易日和 100 行活跃样本后，系统才计算
-覆盖率、IC、稳定性和增量效果；门槛未通过时保持观察。状态提升到
-`model_iteration` 或 `active` 后，训练矩阵才会读取这些因子。
+当前公告因子状态是 `observing`，因此**未自动入模**。2026-08-11 最新研究快照的
+语义覆盖率是 37.35%，尚低于 55% 门槛；多数细分事件因子活跃样本不足。暂时相对
+积极的 `policy_industry_exposure_20d` 5 日 Rank IC 为 0.064、多空差约 0.91%，但
+只有 12 个有效交易日，仍不足以晋升。语义抽取成功只代表事实可用，不代表有预测
+收益。状态提升到 `model_iteration` 或 `active` 后，训练矩阵才会读取这些因子。
 
 这条门禁回答三个不同问题：
 
@@ -213,7 +234,9 @@ ossutil du oss://stock-analyze-hz/announcements/
 ## Dashboard 与通知
 
 Dashboard 的“情报与模型影响”页面按四层展示：语料覆盖、语义事件、因子供给、
-模型采用与增量效果。页面中的“最近执行器”只描述最近生产批次，不代表模型已采用。
+模型采用与增量效果。生产版本来源统一由
+`configs/intelligence_semantic.yaml.production_extraction_profile` 提供，当前必须显示
+v27；页面中的“最近执行器”只描述最近生产批次，不代表模型已采用。
 采集与语义任务会刷新 `semantic_status_latest.json`；PDF 回填直接维护
 `artifact_backfill_state.json`，Dashboard 合并这两份轻量状态与有界最近明细，
 不在用户请求或每个回填批次中扫描完整公告库。全量质量扫描只在周日低峰执行。
@@ -223,3 +246,7 @@ semantic timer 和 service；“timer active”不能替代最近一次服务结
 模型影响报告。
 
 质量抽检和漂移复查不属于每日生产依赖，也不能阻塞这条主线。
+
+路由器会在调用执行器前排除制度、定期报告、普通法律意见、调研记录和程序性披露。
+例如“回购股份事项前十名股东持股情况”只披露股东名册，不代表新的回购生命周期，
+必须标记为 `procedural_disclosure/context_only`，不能消耗 LLM token 或形成事件因子。

@@ -36,6 +36,14 @@ ROOT = Path(__file__).parents[1]
 
 
 class SemanticValidationTest(unittest.TestCase):
+    def test_pdf_layout_space_after_thousands_separator_is_one_number(self) -> None:
+        self.assertFalse(
+            semantic_validation.numeric_raw_value_is_ambiguous(
+                "约人民币29, 957万元",
+                "contract_amount",
+            )
+        )
+
     def test_external_entity_names_ignore_pdf_layout_whitespace(self) -> None:
         self.assertEqual(
             semantic_validation._normalize_entity_name(
@@ -59,11 +67,15 @@ class SemanticValidationTest(unittest.TestCase):
     def test_grounded_chinese_reporting_periods_are_canonicalized(self) -> None:
         for raw_value, expected in (
             ("2026年半年度", "2026H1"),
+            ("2007年1-6月", "2007H1"),
             ("2009 年度", "2009"),
             ("2004年", "2004"),
             ("2006 年度三季度", "2006Q3"),
             ("2009年1月1日—2009年12月31日", "2009"),
+            ("2008年1月1日——2008年12月31日", "2008"),
             ("2026年1月1日至2026年6月30日", "2026H1"),
+            ("2005年1月1日至2005年9月30日", "2005Q1-Q3"),
+            ("2005年1月1日至9月30日", "2005Q1-Q3"),
         ):
             with self.subTest(raw_value=raw_value):
                 self.assertEqual(
@@ -210,6 +222,7 @@ class SemanticValidationTest(unittest.TestCase):
     def test_chinese_numeric_parsers_are_exact_decimal(self) -> None:
         self.assertEqual(parse_cn_number("1.20亿元"), Decimal("120000000"))
         self.assertEqual(parse_cn_number("3,500万股"), Decimal("35000000"))
+        self.assertEqual(parse_cn_number("6,000,\n000股"), Decimal("6000000"))
         self.assertEqual(parse_cn_number("人民币12.50元"), Decimal("12.50"))
         self.assertEqual(parse_cn_percent("3.5%"), Decimal("0.035"))
         self.assertEqual(parse_cn_percent("百分之十二点五"), Decimal("0.125"))
@@ -1684,6 +1697,14 @@ class SemanticCanonicalizationStoreTest(unittest.TestCase):
         self.assertEqual(counts["event_facts"], 3)
         self.assertEqual(counts["event_scores"], 1)
         self.assertEqual(event["extraction_method"], "semantic-v1-validated")
+        metadata = json.loads(event["metadata_json"])
+        self.assertTrue(metadata["core_complete"])
+        self.assertEqual(metadata["extracted_fact_count"], 3)
+        self.assertGreaterEqual(metadata["declared_fact_count"], 3)
+        self.assertGreaterEqual(metadata["fact_coverage"], 0)
+        self.assertLessEqual(metadata["fact_coverage"], 1)
+        self.assertGreaterEqual(metadata["enrichment_completeness"], 0)
+        self.assertLessEqual(metadata["enrichment_completeness"], 1)
 
 
 if __name__ == "__main__":

@@ -213,7 +213,7 @@ class EventTaxonomy:
             _fail("taxonomy_schema_invalid", "root")
         if (
             type(payload["schema_version"]) is not int
-            or payload["schema_version"] not in {1, 2}
+            or payload["schema_version"] not in {1, 2, 3}
         ):
             _fail("taxonomy_schema_version_unsupported", "schema_version")
         taxonomy_version = payload["taxonomy_version"]
@@ -269,7 +269,7 @@ def _parse_event(
     location = f"events[{index}]"
     if not isinstance(raw_event, dict):
         _fail("taxonomy_schema_invalid", location)
-    event_keys = _EVENT_V2_KEYS if schema_version == 2 else _EVENT_KEYS
+    event_keys = _EVENT_V2_KEYS if schema_version >= 2 else _EVENT_KEYS
     if set(raw_event) != event_keys:
         if set(raw_event) - event_keys:
             _fail("taxonomy_extra_property", location)
@@ -347,7 +347,7 @@ def _parse_event(
             )
         override_required_facts.update(requirement.facts)
         lifecycle_requirements.append((lifecycle, requirement))
-    if override_required_facts & set(optional_facts):
+    if schema_version < 3 and override_required_facts & set(optional_facts):
         _fail("taxonomy_fact_overlap", event_type)
 
     direction_rule = raw_event["direction_rule"]
@@ -377,7 +377,7 @@ def _parse_event(
         _fail("taxonomy_horizon_invalid", event_type)
 
     fact_specs: dict[str, FactSpec] = {}
-    if schema_version == 2:
+    if schema_version >= 2:
         raw_specs = raw_event["fact_specs"]
         if not isinstance(raw_specs, dict):
             _fail("taxonomy_fact_specs_invalid", event_type)
