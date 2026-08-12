@@ -345,6 +345,35 @@ _AUTHORITATIVE_CONTRACT_TOTAL_PATTERN = re.compile(
 _DISMISSED_ALL_CLAIMS_PATTERN = re.compile(
     r"驳回[^。；;\n]{0,96}?(?:全部|所有)[^。；;\n]{0,24}?请求"
 )
+_LITIGATION_CASE_AMOUNT_PATTERN = re.compile(
+    r"(?:涉案(?:的)?金额|涉诉金额|诉讼金额)\s*[:：为]?\s*"
+    r"(?P<amount>[-+]?\d[\d,]*(?:\.\d+)?)\s*"
+    r"(?P<unit>亿元|万元|元)"
+)
+_CURRENT_GUARANTEE_AMOUNT_PATTERNS = (
+    re.compile(
+        r"(?:本次(?:公告)?(?:涉及|新增|提供|发生)?(?:的)?|上述)"
+        r"[^。；;\n]{0,20}?"
+        r"(?P<amount>[-+]?\d[\d,]*(?:\.\d+)?)\s*"
+        r"(?P<unit>亿元|万元|元)"
+        r"[^。；;\n]{0,12}?担保(?:事项|金额|额度)?"
+    ),
+    re.compile(
+        r"本次担保(?:金额|额度)?(?:为|合计|总计|不超过|不超)?\s*"
+        r"(?P<amount>[-+]?\d[\d,]*(?:\.\d+)?)\s*"
+        r"(?P<unit>亿元|万元|元)"
+    ),
+)
+_CUMULATIVE_GUARANTEE_CONTEXT_PATTERN = re.compile(
+    r"(?:(?:截至|截止)[^。；;\n]{0,36}?(?:担保)?(?:总额|余额|累计)|"
+    r"累计[^。；;\n]{0,24}?(?:担保)?(?:总额|余额|金额))"
+)
+_GUARANTEE_NET_ASSET_RATIO_PATTERN = re.compile(
+    r"(?:担保)(?:总额|余额|金额)?[^。；;\n]{0,96}?"
+    r"占[^。；;\n]{0,48}?净资产(?:的)?\s*"
+    r"(?P<amount>[-+]?\d[\d,]*(?:\.\d+)?)\s*"
+    r"(?P<unit>%)"
+)
 _ISSUER_CASH_CONTRIBUTION_PATTERN = re.compile(
     r"(?P<contributor>[^。；;\n]{2,80}?)"
     r"以(?:人民币)?现金出资"
@@ -377,6 +406,12 @@ def _normalize_core_numeric_semantics(
     chunks: Mapping[str, Mapping[str, object]],
     document_ir: Mapping[str, object] | None,
 ) -> tuple[EventMention, ...]:
+    event_type_counts = {
+        event_type: sum(
+            mention.event_type == event_type for mention in mentions
+        )
+        for event_type in {mention.event_type for mention in mentions}
+    }
     normalized: list[EventMention] = []
     for mention in mentions:
         current = _normalize_pledge_date_aliases(mention)
@@ -384,7 +419,20 @@ def _normalize_core_numeric_semantics(
             current,
             document_ir=document_ir,
         )
-        current = _normalize_dismissed_litigation(current, chunks=chunks)
+        current = _normalize_litigation_semantics(
+            current,
+            chunks=chunks,
+            allow_document_fallback=(
+                event_type_counts.get("litigation_arbitration") == 1
+            ),
+        )
+        current = _normalize_guarantee_semantics(
+            current,
+            chunks=chunks,
+            allow_document_fallback=(
+                event_type_counts.get("guarantee") == 1
+            ),
+        )
         current = _normalize_capacity_issuer_contribution(
             current,
             document=document,
@@ -401,6 +449,140 @@ def _normalize_core_numeric_semantics(
         )
         normalized.append(current)
     return tuple(normalized)
+
+
+def _normalize_litigation_semantics(
+    mention: EventMention,
+    *,
+    chunks: Mapping[str, Mapping[str, object]],
+    allow_document_fallback: bool,
+) -> EventMention:
+    if mention.event_type != "litigation_arbitration":
+        return mention
+    normalized = mention
+    if allow_document_fallback:
+        candidates = _adjacent_scalar_candidates(
+            chunks,
+            pattern=_LITIGATION_CASE_AMOUNT_PATTERN,
+        )
+        unique_values = {raw_value for raw_value, _ in candidates}
+        if len(unique_values) == 1:
+            raw_value = next(iter(unique_values))
+            evidence = min(
+                (
+                    items
+                    for value, items in candidates
+                    if value == raw_value
+                ),
+                key=lambda items: (
+                    len(items),
+                    tuple(item.chunk_id for item in items),
+                ),
+            )
+            replacement = MentionFact(
+                name="case_amount",
+                raw_value=raw_value,
+                evidence=evidence,
+            )
+            normalized = replace(
+                normalized,
+                facts=tuple(
+                    fact
+                    for fact in normalized.facts
+                    if fact.name != "case_amount"
+                ) + (replacement,),
+            )
+    return _normalize_dismissed_litigation(
+        normalized,
+        chunks=chunks,
+    )
+
+
+def _normalize_guarantee_semantics(
+    mention: EventMention,
+    *,
+    chunks: Mapping[str, Mapping[str, object]],
+    allow_document_fallback: bool,
+) -> EventMention:
+    if mention.event_type != "guarantee":
+        return mention
+    has_balance = any(
+        fact.name == "guarantee_balance" for fact in mention.facts
+    )
+    normalized_facts: list[MentionFact] = []
+    for fact in mention.facts:
+        if fact.name != "guarantee_amount":
+            normalized_facts.append(fact)
+            continue
+        context = _compact(_fact_source_context(fact, chunks))
+        if not _CUMULATIVE_GUARANTEE_CONTEXT_PATTERN.search(context):
+            normalized_facts.append(fact)
+            continue
+        if not has_balance:
+            normalized_facts.append(replace(fact, name="guarantee_balance"))
+            has_balance = True
+
+    if allow_document_fallback and not any(
+        fact.name == "guarantee_amount" for fact in normalized_facts
+    ):
+        candidates: list[tuple[str, tuple[MentionEvidence, ...]]] = []
+        for pattern in _CURRENT_GUARANTEE_AMOUNT_PATTERNS:
+            candidates.extend(
+                _adjacent_scalar_candidates(chunks, pattern=pattern)
+            )
+        unique_values = {raw_value for raw_value, _ in candidates}
+        if len(unique_values) == 1:
+            raw_value = next(iter(unique_values))
+            evidence = min(
+                (
+                    items
+                    for value, items in candidates
+                    if value == raw_value
+                ),
+                key=lambda items: (
+                    len(items),
+                    tuple(item.chunk_id for item in items),
+                ),
+            )
+            normalized_facts.append(
+                MentionFact(
+                    name="guarantee_amount",
+                    raw_value=raw_value,
+                    evidence=evidence,
+                )
+            )
+    if allow_document_fallback and not any(
+        fact.name == "net_asset_ratio" for fact in normalized_facts
+    ):
+        ratio_candidates = _adjacent_scalar_candidates(
+            chunks,
+            pattern=_GUARANTEE_NET_ASSET_RATIO_PATTERN,
+        )
+        unique_ratios = {
+            raw_value for raw_value, _ in ratio_candidates
+        }
+        if len(unique_ratios) == 1:
+            raw_value = next(iter(unique_ratios))
+            evidence = min(
+                (
+                    items
+                    for value, items in ratio_candidates
+                    if value == raw_value
+                ),
+                key=lambda items: (
+                    len(items),
+                    tuple(item.chunk_id for item in items),
+                ),
+            )
+            normalized_facts.append(
+                MentionFact(
+                    name="net_asset_ratio",
+                    raw_value=raw_value,
+                    evidence=evidence,
+                )
+            )
+    facts = tuple(normalized_facts)
+    return replace(mention, facts=facts) if facts != mention.facts else mention
 
 
 def _normalize_pledge_date_aliases(mention: EventMention) -> EventMention:

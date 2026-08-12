@@ -55,14 +55,14 @@ python3 -m stock_analyze.cli intelligence-semantic-frozen-prepare \
   --workbench data/shared/intelligence/benchmarks/announcement-v1/anchor_workbench \
   --profile a-share-announcement-mentions-v27 \
   --job .artifacts/semantic-v27-coding-plan-qualification \
-  --provider codex \
-  --model coding-plan-current \
-  --client-version semantic-provider-v1
+  --provider claude \
+  --model claude-fable-5 \
+  --client-version claude-code-2.1.215
 ```
 
-如果换成 Claude、其他 Coding Plan 或明确的模型版本，应重新生成一个新目录，并修改
-`provider/model/client-version`。不能直接改已生成任务的 manifest，因为执行器身份已经
-进入不可变任务 ID。
+上面只是 Claude Code 示例。使用 Codex 或其他 Coding Plan 时，必须在生成任务前把
+`provider/model/client-version` 改成实际执行器。切换执行器或模型必须重新生成一个新
+目录，不能复用旧任务或直接修改 manifest，因为执行器身份已经进入不可变任务 ID。
 
 导出的任务包登记 80 篇冻结样本；其中当前 65 篇需要 Coding Plan 抽取，15 篇由
 确定性路由器直接判为无事件。任务包包含这 65 篇的输入和完整 Document IR，不包含
@@ -91,6 +91,38 @@ python3 -m stock_analyze.cli intelligence-semantic-quality-evaluate \
 逐字证据和事件编译；任何失败都保留稳定错误码。第二条命令才读取隐藏参考答案计算质量，
 两条命令均为离线验收，`production_import=false`。
 
+如果首轮 compile report 为 `partial`，只允许生成一次受约束修复：
+
+```bash
+python3 -m stock_analyze.cli intelligence-semantic-frozen-repair-prepare \
+  --repo-root . \
+  --workbench data/shared/intelligence/benchmarks/announcement-v1/anchor_workbench \
+  --source-job .artifacts/semantic-v27-coding-plan-qualification \
+  --source-predictions .artifacts/semantic-v27-coding-plan-qualification/predictions.jsonl \
+  --repair-job .artifacts/semantic-v27-coding-plan-repair-1 \
+  --provider claude \
+  --model claude-fable-5 \
+  --client-version claude-code-2.1.215
+```
+
+修复执行器只处理 `repair-job/input.jsonl`，并按其中的 `payload.repair_context` 修正
+稳定错误码，仍然看不到 Gold。返回 `repair-job/output.jsonl` 后执行：
+
+```bash
+python3 -m stock_analyze.cli intelligence-semantic-frozen-repair-collect \
+  --repo-root . \
+  --workbench data/shared/intelligence/benchmarks/announcement-v1/anchor_workbench \
+  --source-job .artifacts/semantic-v27-coding-plan-qualification \
+  --source-predictions .artifacts/semantic-v27-coding-plan-qualification/predictions.jsonl \
+  --repair-job .artifacts/semantic-v27-coding-plan-repair-1 \
+  --predictions .artifacts/semantic-v27-coding-plan-repair-1/predictions.jsonl \
+  --report .artifacts/semantic-v27-coding-plan-repair-1/compile-report.json
+```
+
+修复结果必须返回完整对象而不是字段补丁。系统会验证源输出哈希、首次编译结果哈希、
+修复任务身份并重新编译全量 80 篇；第二次仍失败就保留失败，不允许继续循环修复或读取
+Gold 调参。
+
 ## 判定口径
 
 合同最低合格线：
@@ -111,6 +143,18 @@ python3 -m stock_analyze.cli intelligence-semantic-quality-evaluate \
 当前 DeepSeek v27 冻结基线为 80 篇、precision 100%、recall 90.20%、grounding
 100%、已抽取数值 precision 100%、no-event 误报 0、数值参考覆盖率 61.04%。最低线
 通过只说明合同可用，不自动说明已经达到 DeepSeek 水平，更不代表因子具备投资有效性。
+
+## 2026-08-12 Claude 内容验收
+
+Claude 完成首轮 65 篇输出和一次限定修复后，本地确定性编译覆盖 80/80 篇，最终事件
+precision 100%、recall 92.16%、grounding 100%、已抽取数值 precision 100%、数值参考
+覆盖率 61.04%、no-event 误报 0。按内容指标已达到 DeepSeek v27 非劣化线，且事件召回
+高 1.96 个百分点；这些结果只来自离线冻结集，没有导入生产或触发交易。
+
+本轮首任务在执行前错误地绑定为 `codex/coding-plan-current`，实际却由 Claude 执行；限定
+修复任务已正确绑定 `claude/claude-fable-5/claude-code-2.1.215`。因此本轮可证明内容与
+编译链路合格，但不能登记为审计完备的 Claude 正式基线。下一次正式资格运行必须从
+`frozen-prepare` 开始填写真实 provider/model/client-version，不得事后改 manifest。
 
 ## 我会回传的结论
 

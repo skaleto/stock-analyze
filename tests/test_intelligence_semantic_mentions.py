@@ -943,6 +943,95 @@ class MentionCompilerTest(unittest.TestCase):
         self.assertEqual(facts["case_stage"]["raw_value"], "判决")
         self.assertEqual(facts["issuer_role"]["raw_value"], "偿还")
 
+    def test_litigation_prefers_explicit_case_amount_label(self) -> None:
+        payload = {
+            "document_id": 72840,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "litigation-amount",
+                "event_type": "litigation_arbitration",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "泸州老窖股份有限公司",
+                    "evidence": [{"chunk_id": "issuer", "quote": "泸州老窖股份有限公司"}],
+                }, {
+                    "role": "counterparty",
+                    "name": "原告公司",
+                    "evidence": [{"chunk_id": "counterparty", "quote": "原告公司"}],
+                }],
+                "facts": [
+                    {"name": "case_stage", "raw_value": "一审判决", "evidence": [{"chunk_id": "stage", "quote": "一审判决"}]},
+                    {"name": "case_amount", "raw_value": "117,804,981.89 元", "evidence": [{"chunk_id": "claim-total", "quote": "调整为117,804,981.89 元"}]},
+                    {"name": "issuer_role", "raw_value": "被告", "evidence": [{"chunk_id": "role", "quote": "被告"}]},
+                ],
+                "dates": [],
+                "status": {"raw_value": "一审判决", "evidence": [{"chunk_id": "stage", "quote": "一审判决"}]},
+            }],
+            "no_event_reason": None,
+        }
+        chunks = {
+            "issuer": {"page_number": 1, "text": "泸州老窖股份有限公司"},
+            "counterparty": {"page_number": 1, "text": "原告公司"},
+            "role": {"page_number": 1, "text": "公司所处的当事人地位：被告"},
+            "case-amount": {"page_number": 1, "text": "涉案的金额：47,121,992.76 元。"},
+            "claim-total": {"page_number": 2, "text": "原告诉请合计金额调整为117,804,981.89 元"},
+            "stage": {"page_number": 3, "text": "本次诉讼的一审判决情况"},
+            "judgment": {"page_number": 3, "text": "驳回原告的全部诉讼请求。"},
+        }
+
+        compiled = self._compile(payload, chunks)
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        facts = {row["name"]: row for row in compiled.result["events"][0]["facts"]}
+        self.assertEqual(facts["case_amount"]["raw_value"], "47,121,992.76元")
+
+    def test_guarantee_separates_current_amount_from_cumulative_balance(self) -> None:
+        payload = {
+            "document_id": 136848,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "guarantee-summary",
+                "event_type": "guarantee",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "泸州老窖股份有限公司",
+                    "evidence": [{"chunk_id": "issuer", "quote": "泸州老窖股份有限公司"}],
+                }, {
+                    "role": "beneficiary",
+                    "name": "被担保公司",
+                    "evidence": [{"chunk_id": "beneficiary", "quote": "被担保公司"}],
+                }],
+                "facts": [{
+                    "name": "guarantee_amount",
+                    "raw_value": "30760 万元",
+                    "evidence": [{"chunk_id": "balance", "quote": "截止至公告日止，本公司已披露对外担保总额为30760 万元"}],
+                }],
+                "dates": [{
+                    "kind": "guarantee_date",
+                    "raw_value": "2004年9月23日",
+                    "evidence": [{"chunk_id": "date", "quote": "2004年9月23日"}],
+                }],
+                "status": None,
+            }],
+            "no_event_reason": None,
+        }
+        chunks = {
+            "issuer": {"page_number": 1, "text": "泸州老窖股份有限公司"},
+            "beneficiary": {"page_number": 1, "text": "被担保公司"},
+            "date": {"page_number": 1, "text": "2004年9月23日"},
+            "current": {"page_number": 2, "text": "本次公告涉及的25600 万元担保事项没有履行正常的审议程序"},
+            "balance": {"page_number": 3, "text": "截止至公告日止，本公司已披露对外担保总额为30760 万元"},
+            "ratio": {"page_number": 3, "text": "占公司经审计净资产的129%"},
+        }
+
+        compiled = self._compile(payload, chunks)
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        facts = {row["name"]: row for row in compiled.result["events"][0]["facts"]}
+        self.assertEqual(facts["guarantee_amount"]["raw_value"], "25600万元")
+        self.assertEqual(facts["guarantee_balance"]["raw_value"], "30760 万元")
+        self.assertEqual(facts["net_asset_ratio"]["raw_value"], "129%")
+
     def test_multichunk_text_drops_model_inserted_separator(self) -> None:
         payload = {
             "document_id": 73193,

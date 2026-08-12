@@ -103,6 +103,10 @@ python -m stock_analyze.cli intelligence-semantic-import \
 `intelligence-semantic-frozen-prepare` 导出不含参考答案的任务包，结果返回后使用
 `intelligence-semantic-frozen-collect` 做统一校验和事件编译。完整交接词、命令与
 非劣化验收口径见 `docs/coding-plan-semantic-extraction-handoff.md`。
+首轮编译失败项使用 `intelligence-semantic-frozen-repair-prepare` 生成唯一一次
+受约束修复包，再由 `intelligence-semantic-frozen-repair-collect` 合并复验；不得自行
+循环到第二次修复。任务生成时的 provider、model 和 client version 必须与实际执行器
+一致，不能把 Claude 结果写成 Codex 血缘或反向复用。
 
 ## OpenAI-Compatible API
 

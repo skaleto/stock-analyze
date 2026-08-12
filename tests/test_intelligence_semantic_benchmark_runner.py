@@ -8,7 +8,9 @@ from pathlib import Path
 from stock_analyze.intelligence.semantic.benchmark_runner import (
     build_frozen_benchmark_input,
     collect_frozen_coding_plan_job,
+    collect_frozen_coding_plan_repair_job,
     prepare_frozen_coding_plan_job,
+    prepare_frozen_coding_plan_repair_job,
     run_frozen_benchmark,
 )
 from stock_analyze.intelligence.semantic.provider import (
@@ -770,6 +772,159 @@ class FrozenBenchmarkRunnerTest(unittest.TestCase):
         self.assertEqual(prediction["executor"]["provider"], "codex")
         self.assertEqual(tampered_result["status"], "partial")
         self.assertEqual(tampered_result["failed"], 1)
+
+    def test_external_coding_plan_gets_one_bounded_repair_round(self) -> None:
+        workbench = (
+            ROOT
+            / "data/shared/intelligence/benchmarks/announcement-v1/anchor_workbench"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_job = root / "source-job"
+            prepare_frozen_coding_plan_job(
+                ROOT,
+                workbench,
+                profile_id="a-share-announcement-mentions-v27",
+                job_dir=source_job,
+                provider="claude",
+                model="claude-fable-5",
+                client_version="claude-code-2.1.215",
+                document_ids=[829],
+            )
+            source_input = json.loads(
+                (source_job / "input.jsonl").read_text(encoding="utf-8")
+            )
+            source_output = self._output_envelope(
+                source_input,
+                result={
+                    "document_id": 829,
+                    "schema_version": "announcement-mentions-v1-lite",
+                    "mentions": [],
+                    "no_event_reason": "未发现当前事件",
+                },
+            )
+            (source_job / "output.jsonl").write_text(
+                json.dumps(source_output, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            source_predictions = root / "source-predictions.jsonl"
+            source_report = root / "source-report.json"
+            first = collect_frozen_coding_plan_job(
+                ROOT,
+                workbench,
+                job_dir=source_job,
+                predictions_path=source_predictions,
+                report_path=source_report,
+            )
+            self.assertEqual(first["failed"], 1)
+
+            repair_job = root / "repair-job"
+            prepared = prepare_frozen_coding_plan_repair_job(
+                ROOT,
+                workbench,
+                source_job_dir=source_job,
+                source_predictions_path=source_predictions,
+                repair_job_dir=repair_job,
+                provider="claude",
+                model="claude-fable-5",
+                client_version="claude-code-2.1.215",
+            )
+            repair_input = json.loads(
+                (repair_job / "input.jsonl").read_text(encoding="utf-8")
+            )
+            repair_context = repair_input["payload"]["repair_context"]
+            pledge_result = PledgeCoreProvider().extract(
+                build_frozen_benchmark_input(
+                    ROOT,
+                    workbench / "829",
+                    profile_id="a-share-announcement-mentions-v27",
+                ).bundle,
+                response_schema={},
+            ).parsed_output
+            repair_output = self._output_envelope(
+                repair_input,
+                result=pledge_result,
+            )
+            (repair_job / "output.jsonl").write_text(
+                json.dumps(repair_output, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+            merged_predictions = root / "merged-predictions.jsonl"
+            repair_report = root / "repair-report.json"
+            repaired = collect_frozen_coding_plan_repair_job(
+                ROOT,
+                workbench,
+                source_job_dir=source_job,
+                source_predictions_path=source_predictions,
+                repair_job_dir=repair_job,
+                predictions_path=merged_predictions,
+                report_path=repair_report,
+            )
+            merged = json.loads(merged_predictions.read_text(encoding="utf-8"))
+            tampered_source = json.loads(
+                source_predictions.read_text(encoding="utf-8")
+            )
+            tampered_source["status"] = "complete"
+            source_predictions.write_text(
+                json.dumps(tampered_source, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                "semantic_frozen_repair_source_predictions_changed",
+            ):
+                collect_frozen_coding_plan_repair_job(
+                    ROOT,
+                    workbench,
+                    source_job_dir=source_job,
+                    source_predictions_path=source_predictions,
+                    repair_job_dir=repair_job,
+                    predictions_path=root / "tampered-merged.jsonl",
+                    report_path=root / "tampered-report.json",
+                )
+
+        self.assertEqual(prepared["documents"], 1)
+        self.assertEqual(repair_context["attempt"], 1)
+        self.assertEqual(
+            repair_context["validation_error"]["code"],
+            "no_event_review_required",
+        )
+        self.assertEqual(
+            repair_context["previous_output"]["no_event_reason"],
+            "未发现当前事件",
+        )
+        self.assertEqual(repaired["status"], "complete")
+        self.assertEqual(repaired["repaired"], 1)
+        self.assertEqual(repaired["failed"], 0)
+        self.assertFalse(repaired["production_import"])
+        self.assertEqual(merged["events"][0]["event_type"], "pledge_freeze")
+
+    @staticmethod
+    def _output_envelope(
+        input_row: dict[str, object],
+        *,
+        result: dict[str, object],
+    ) -> dict[str, object]:
+        executor = input_row["executor"]
+        assert isinstance(executor, dict)
+        return {
+            "contract_version": "semantic-extraction-output-v1",
+            "document_id": input_row["document_id"],
+            "artifact_hash": input_row["artifact_hash"],
+            "input_hash": input_row["input_hash"],
+            "semantic_task_id": input_row["semantic_task_id"],
+            "execution_job_id": input_row["execution_job_id"],
+            "binding_id": input_row["binding_id"],
+            "executor": {
+                "kind": "coding-plan",
+                "provider": executor["provider"],
+                "model": executor["model"],
+                "client_version": executor["client_version"],
+            },
+            "usage": {},
+            "result": result,
+        }
 
 
 if __name__ == "__main__":
