@@ -63,10 +63,14 @@ client_version`。切换 API、Coding Plan 或模型时必须新建 execution jo
   "document_id": 123,
   "artifact_hash": "sha256...",
   "input_hash": "sha256...",
+  "semantic_task_id": "st-...",
+  "execution_job_id": "sej-...",
+  "binding_id": "seb-...",
   "executor": {
     "kind": "coding-plan",
     "provider": "codex",
-    "model": "codex"
+    "model": "coding-plan-current",
+    "client_version": "semantic-provider-v1"
   },
   "usage": {},
   "result": {}
@@ -94,6 +98,11 @@ python -m stock_analyze.cli intelligence-semantic-import \
   --repo-root /opt/stock-analyze/app \
   --job <job-id-or-directory>
 ```
+
+冻结集交给外部 Coding Plan 盲测时，使用
+`intelligence-semantic-frozen-prepare` 导出不含参考答案的任务包，结果返回后使用
+`intelligence-semantic-frozen-collect` 做统一校验和事件编译。完整交接词、命令与
+非劣化验收口径见 `docs/coding-plan-semantic-extraction-handoff.md`。
 
 ## OpenAI-Compatible API
 
