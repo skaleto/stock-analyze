@@ -28,6 +28,7 @@ from stock_analyze.intelligence.semantic.exchange import (
     _packet_visible_evidence_ids,
     _render_daily_markdown,
     _taxonomy_requirements,
+    collect_coding_plan_outputs,
     import_job,
     job_status,
     prepare_job,
@@ -1500,6 +1501,153 @@ class SemanticExchangeTest(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(task_count, 1)
         self.assertEqual(execution_count, 2)
+
+    def test_coding_plan_job_writes_bounded_execution_shards(self) -> None:
+        second_document_id = self._seed_document(
+            "000002.SZ",
+            "a-share-second-shard",
+        )
+        prepared = prepare_job(
+            self.root,
+            profile_id="a-share-announcement-mentions-v24",
+            limit=20,
+            max_input_characters=24_000,
+            executor_mode="coding_plan",
+            executor_provider="claude",
+            executor_model="claude-fable-5",
+            executor_client_version="claude-code-test",
+        )
+        job_dir = Path(prepared["job_dir"])
+        shards = json.loads(
+            (job_dir / "coding_plan" / "shards.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertEqual(shards["contract_version"], "semantic-coding-plan-shards-v1")
+        self.assertEqual(shards["total_documents"], 2)
+        self.assertEqual(
+            sorted(shards["shards"][0]["document_ids"]),
+            sorted([self.a_share_id, second_document_id]),
+        )
+        self.assertTrue(
+            (job_dir / "coding_plan" / "input_parts" / "part-0001.jsonl").is_file()
+        )
+        self.assertTrue(
+            (job_dir / "coding_plan" / "document_ir_parts" / "part-0001.jsonl").is_file()
+        )
+        self.assertTrue((job_dir / "CODING_PLAN.md").is_file())
+
+    def test_coding_plan_collect_validates_before_import_and_allows_one_repair(self) -> None:
+        prepared = prepare_job(
+            self.root,
+            profile_id="a-share-announcement-mentions-v24",
+            limit=1,
+            max_input_characters=24_000,
+            executor_mode="coding_plan",
+            executor_provider="claude",
+            executor_model="claude-fable-5",
+            executor_client_version="claude-code-test",
+        )
+        job_dir = Path(prepared["job_dir"])
+        manifest = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+        item = manifest["items"][0]
+        output_dir = job_dir / "coding_plan" / "output_parts"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        def envelope(result: dict) -> dict:
+            return {
+                "contract_version": "semantic-extraction-output-v1",
+                "document_id": item["document_id"],
+                "artifact_hash": item["artifact_hash"],
+                "input_hash": item["input_hash"],
+                "semantic_task_id": item["semantic_task_id"],
+                "execution_job_id": item["execution_job_id"],
+                "binding_id": item["binding_id"],
+                "executor": {
+                    "kind": "coding-plan",
+                    "provider": "claude",
+                    "model": "claude-fable-5",
+                    "client_version": "claude-code-test",
+                },
+                "usage": {},
+                "result": result,
+            }
+
+        first_result = {
+            "document_id": self.a_share_id,
+            "schema_version": "announcement-mentions-v1-lite",
+            "mentions": [],
+            "no_event_reason": "未发现当前事件",
+        }
+        (output_dir / "part-0001.jsonl").write_text(
+            json.dumps(envelope(first_result), ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        first = collect_coding_plan_outputs(self.root, job_dir)
+
+        self.assertEqual(first["status"], "partial")
+        self.assertEqual(first["failed"], 1)
+        self.assertEqual(first["validation_attempt"], 1)
+        with self.store.connect() as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM semantic_runs").fetchone()[0],
+                0,
+            )
+
+        valid_result = MentionProvider().extract(
+            SemanticInputBundle(
+                document_id=self.a_share_id,
+                artifact_hash=item["artifact_hash"],
+                parser_version=item["parser_version"],
+                prompt_version=manifest["prompt_version"],
+                schema_version=manifest["schema_version"],
+                taxonomy_version=manifest["taxonomy_version"],
+                payload=json.loads(
+                    (job_dir / "input.jsonl").read_text(encoding="utf-8")
+                )["payload"],
+            ),
+            response_schema={},
+        ).parsed_output
+        (output_dir / "part-0001.jsonl").write_text(
+            json.dumps(envelope(valid_result), ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        second = collect_coding_plan_outputs(self.root, job_dir)
+
+        self.assertEqual(second["status"], "ready_to_import", second)
+        self.assertEqual(second["valid"], 1)
+        self.assertEqual(second["failed"], 0)
+        self.assertEqual(second["validation_attempt"], 2)
+        compiled = json.loads(
+            (job_dir / "output.jsonl").read_text(encoding="utf-8")
+        )
+        self.assertEqual(compiled["result"]["events"][0]["event_type"], "buyback")
+
+        third_result = dict(first_result)
+        third_result["no_event_reason"] = "第三种不同输出"
+        (output_dir / "part-0001.jsonl").write_text(
+            json.dumps(envelope(third_result), ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            SemanticExchangeError,
+            "semantic_coding_plan_repair_limit_exceeded",
+        ):
+            collect_coding_plan_outputs(self.root, job_dir)
+
+        imported = import_job(self.root, job_dir)
+        self.assertEqual(imported["valid"], 1, imported)
+        with self.store.connect() as connection:
+            semantic_run = connection.execute(
+                "SELECT provider, model, status FROM semantic_runs"
+            ).fetchone()
+        self.assertEqual(
+            tuple(semantic_run),
+            ("claude", "claude-fable-5", "succeeded"),
+        )
 
     def test_v21_rejects_runtime_executor_mismatch_before_call(self) -> None:
         prepared = prepare_job(

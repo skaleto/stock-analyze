@@ -77,6 +77,8 @@ OUTPUT_CONTRACT_VERSION = "semantic-extraction-output-v1"
 DEFAULT_PROFILE_ID = "a-share-announcement-mentions-v1"
 DEFAULT_LIMIT = 50
 DEFAULT_MAX_INPUT_CHARACTERS = 40_000
+CODING_PLAN_SHARD_SIZE = 25
+CODING_PLAN_MAX_VALIDATION_ATTEMPTS = 2
 PAYLOAD_CONTRACT_VERSION = "semantic-payload-v3"
 MAX_JOB_FILE_BYTES = 64 * 1024 * 1024
 MAX_JOB_LINE_BYTES = 2 * 1024 * 1024
@@ -851,6 +853,14 @@ def prepare_job(
                     temporary / "evidence_packets.jsonl",
                     evidence_packet_rows,
                 )
+                if binding is not None and binding.executor_mode == "coding_plan":
+                    _write_coding_plan_execution_view(
+                        temporary,
+                        manifest=manifest,
+                        inputs=inputs,
+                        document_ir_rows=document_ir_rows,
+                        evidence_packet_rows=evidence_packet_rows,
+                    )
             os.replace(temporary, job_dir)
         finally:
             if temporary.exists():
@@ -858,6 +868,389 @@ def prepare_job(
     if uses_v21_contract:
         _register_v21_lineage(store, manifest=manifest, inputs=inputs)
     return _prepare_summary(manifest, job_dir, reused=False)
+
+
+def _write_coding_plan_execution_view(
+    job_dir: Path,
+    *,
+    manifest: Mapping[str, object],
+    inputs: Sequence[Mapping[str, object]],
+    document_ir_rows: Sequence[Mapping[str, object]],
+    evidence_packet_rows: Sequence[Mapping[str, object]],
+) -> None:
+    coding_plan_dir = job_dir / "coding_plan"
+    input_dir = coding_plan_dir / "input_parts"
+    ir_dir = coding_plan_dir / "document_ir_parts"
+    packet_dir = coding_plan_dir / "evidence_packet_parts"
+    output_dir = coding_plan_dir / "output_parts"
+    for path in (input_dir, ir_dir, packet_dir, output_dir):
+        path.mkdir(parents=True, exist_ok=True)
+
+    shards: list[dict[str, object]] = []
+    for offset in range(0, len(inputs), CODING_PLAN_SHARD_SIZE):
+        part_number = offset // CODING_PLAN_SHARD_SIZE + 1
+        part_name = f"part-{part_number:04d}.jsonl"
+        input_part = list(inputs[offset : offset + CODING_PLAN_SHARD_SIZE])
+        ir_part = list(
+            document_ir_rows[offset : offset + CODING_PLAN_SHARD_SIZE]
+        )
+        packet_part = list(
+            evidence_packet_rows[offset : offset + CODING_PLAN_SHARD_SIZE]
+        )
+        _write_jsonl(input_dir / part_name, input_part)
+        _write_jsonl(ir_dir / part_name, ir_part)
+        _write_jsonl(packet_dir / part_name, packet_part)
+        shards.append(
+            {
+                "part": part_number,
+                "input_file": f"coding_plan/input_parts/{part_name}",
+                "document_ir_file": (
+                    f"coding_plan/document_ir_parts/{part_name}"
+                ),
+                "evidence_packet_file": (
+                    f"coding_plan/evidence_packet_parts/{part_name}"
+                ),
+                "output_file": f"coding_plan/output_parts/{part_name}",
+                "documents": len(input_part),
+                "document_ids": [
+                    _positive_int(row.get("document_id")) for row in input_part
+                ],
+                "input_hash": canonical_json_hash(input_part),
+                "document_ir_hash": canonical_json_hash(ir_part),
+                "evidence_packet_hash": canonical_json_hash(packet_part),
+            }
+        )
+    shard_manifest = {
+        "contract_version": "semantic-coding-plan-shards-v1",
+        "job_id": str(manifest.get("job_id") or ""),
+        "shard_size": CODING_PLAN_SHARD_SIZE,
+        "total_documents": len(inputs),
+        "shards": shards,
+    }
+    _write_json(coding_plan_dir / "shards.json", shard_manifest)
+    write_text_atomic(
+        job_dir / "CODING_PLAN.md",
+        _render_coding_plan_handoff(manifest, shard_manifest),
+        encoding="utf-8",
+    )
+
+
+def _render_coding_plan_handoff(
+    manifest: Mapping[str, object],
+    shard_manifest: Mapping[str, object],
+) -> str:
+    binding = _mapping(
+        manifest.get("executor_binding"),
+        "semantic_executor_binding_invalid",
+    )
+    return f"""# Claude 历史公告语义抽取任务
+
+任务 ID：`{manifest.get('job_id')}`
+文档数：{shard_manifest.get('total_documents')}
+分片数：{len(_sequence(shard_manifest.get('shards'), 'semantic_coding_plan_shards_invalid'))}
+固定执行身份：`{binding.get('provider')}` / `{binding.get('model')}` / `{binding.get('client_version')}`
+
+## 执行合同
+
+1. 逐个处理 `coding_plan/input_parts/part-*.jsonl`；每个分片最多 {CODING_PLAN_SHARD_SIZE} 篇。
+2. `prompt.md` 是唯一语义规则；`schema.json`、`taxonomy.json` 是唯一输出结构与事件字典。
+3. `document_ir_parts` 只用于核对完整原文；不得把未出现在输入证据包中的内容伪造成引用。
+4. 每个输入必须恰好输出一行，写入对应的 `coding_plan/output_parts/part-*.jsonl`。
+5. 输出必须是 `semantic-extraction-output-v1` envelope，保留所有输入身份字段；`result` 使用 `schema.json`。
+6. `executor.kind` 固定为 `coding-plan`，provider/model/client_version 必须与上面的身份一致。
+7. 不读取 Gold、历史模型答案、canonical 事件、数据库或其他批次输出；不导入、不改生产数据。
+8. 先写 `.tmp` 文件，完成 JSONL 解析和 document_id 去重检查后再原子替换正式 part 文件。
+9. 本地验收最多允许一次纠错；不要反复改写同一批次来迎合校验器。
+
+完成全部分片后停止，只报告产物路径、成功行数和你发现的歧义，不运行 import。
+"""
+
+
+def _verify_coding_plan_execution_view(
+    job_dir: Path,
+    *,
+    manifest: Mapping[str, object],
+    inputs: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    shard_manifest = _read_json(job_dir / "coding_plan" / "shards.json")
+    if shard_manifest.get("contract_version") != "semantic-coding-plan-shards-v1":
+        raise SemanticExchangeError("semantic_coding_plan_shards_invalid")
+    if str(shard_manifest.get("job_id") or "") != str(manifest.get("job_id") or ""):
+        raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+    if int(shard_manifest.get("shard_size") or 0) != CODING_PLAN_SHARD_SIZE:
+        raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+    raw_shards = _sequence(
+        shard_manifest.get("shards"),
+        "semantic_coding_plan_shards_invalid",
+    )
+    collected: list[dict[str, object]] = []
+    collected_ir: list[dict[str, object]] = []
+    collected_packets: list[dict[str, object]] = []
+    for expected_part, raw_shard in enumerate(raw_shards, start=1):
+        shard = _mapping(raw_shard, "semantic_coding_plan_shards_invalid")
+        if int(shard.get("part") or 0) != expected_part:
+            raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+        input_path = job_dir / str(shard.get("input_file") or "")
+        if not input_path.resolve().is_relative_to(job_dir.resolve()):
+            raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+        part_rows = _read_jsonl(input_path, max_rows=CODING_PLAN_SHARD_SIZE)
+        if canonical_json_hash(part_rows) != str(shard.get("input_hash") or ""):
+            raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+        for path_key, hash_key, max_line_bytes in (
+            ("document_ir_file", "document_ir_hash", MAX_DOCUMENT_IR_LINE_BYTES),
+            ("evidence_packet_file", "evidence_packet_hash", MAX_JOB_LINE_BYTES),
+        ):
+            asset_path = job_dir / str(shard.get(path_key) or "")
+            if not asset_path.resolve().is_relative_to(job_dir.resolve()):
+                raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+            asset_rows = _read_jsonl(
+                asset_path,
+                max_rows=CODING_PLAN_SHARD_SIZE,
+                max_line_bytes=max_line_bytes,
+            )
+            if canonical_json_hash(asset_rows) != str(shard.get(hash_key) or ""):
+                raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+            if path_key == "document_ir_file":
+                collected_ir.extend(asset_rows)
+            else:
+                collected_packets.extend(asset_rows)
+        if [
+            _positive_int(row.get("document_id")) for row in part_rows
+        ] != [
+            _positive_int(value)
+            for value in _sequence(
+                shard.get("document_ids"),
+                "semantic_coding_plan_shards_invalid",
+            )
+        ]:
+            raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+        collected.extend(part_rows)
+    if list(collected) != list(inputs):
+        raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+    if collected_ir != _read_jsonl(
+        job_dir / "document_ir.jsonl",
+        max_rows=len(inputs),
+        max_line_bytes=MAX_DOCUMENT_IR_LINE_BYTES,
+    ):
+        raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+    if collected_packets != _read_jsonl(
+        job_dir / "evidence_packets.jsonl",
+        max_rows=len(inputs),
+    ):
+        raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+    if int(shard_manifest.get("total_documents") or 0) != len(inputs):
+        raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+    return shard_manifest
+
+
+def collect_coding_plan_outputs(
+    repo_root: str | Path,
+    job_path: str | Path,
+) -> dict[str, object]:
+    """Validate Coding Plan output without persisting semantic runs/events."""
+
+    root = Path(repo_root).resolve()
+    job_dir = _resolve_job_dir(root, job_path)
+    manifest = _read_json(job_dir / "job.json")
+    _verify_manifest(manifest, job_dir=job_dir)
+    inputs = _verified_inputs(job_dir, manifest)
+    try:
+        binding = ExecutorBinding.from_mapping(
+            _mapping(
+                manifest.get("executor_binding"),
+                "semantic_executor_binding_invalid",
+            )
+        )
+    except SemanticExecutionContractError as exc:
+        raise SemanticExchangeError(exc.code, detail=exc.detail) from exc
+    if binding.executor_mode != "coding_plan":
+        raise SemanticExchangeError("semantic_coding_plan_job_required")
+    shard_manifest = _verify_coding_plan_execution_view(
+        job_dir,
+        manifest=manifest,
+        inputs=inputs,
+    )
+    output_dir = job_dir / "coding_plan" / "output_parts"
+    raw_outputs: list[dict[str, object]] = []
+    expected_output_paths = [
+        job_dir / str(
+            _mapping(value, "semantic_coding_plan_shards_invalid").get(
+                "output_file"
+            )
+            or ""
+        )
+        for value in _sequence(
+            shard_manifest.get("shards"),
+            "semantic_coding_plan_shards_invalid",
+        )
+    ]
+    unexpected_outputs = set(output_dir.glob("part-*.jsonl")) - set(
+        expected_output_paths
+    )
+    if unexpected_outputs:
+        raise SemanticExchangeError("semantic_coding_plan_output_part_unexpected")
+    for output_path in expected_output_paths:
+        if not output_path.exists():
+            continue
+        raw_outputs.extend(
+            _read_jsonl(output_path, max_rows=CODING_PLAN_SHARD_SIZE)
+        )
+    output_hash = canonical_json_hash(raw_outputs)
+    history_path = job_dir / "coding_plan" / "validation_history.jsonl"
+    history = _read_jsonl(history_path) if history_path.exists() else []
+    previous_hashes = [str(row.get("output_hash") or "") for row in history]
+
+    item_by_id = {
+        _positive_int(item.get("document_id")): item
+        for item in (
+            _mapping(value, "semantic_job_item_invalid")
+            for value in manifest["items"]
+        )
+    }
+    input_by_id = {
+        _positive_int(row.get("document_id")): row for row in inputs
+    }
+    full_ir_by_task = _job_document_ir_by_task(job_dir, manifest)
+    profile, _ = _load_profile(root, str(manifest["profile_id"]))
+    taxonomy = EventTaxonomy.load(
+        _rooted_path(root, str(profile["taxonomy_path"]))
+    )
+    store = IntelligenceStore(root / "data" / "shared" / "intelligence")
+    normalized_outputs: list[dict[str, object]] = []
+    quarantined: list[dict[str, object]] = []
+    errors: list[dict[str, object]] = []
+    seen: set[int] = set()
+    for envelope in raw_outputs:
+        document_id = _positive_int(envelope.get("document_id"))
+        try:
+            if document_id in seen:
+                raise SemanticExchangeError("semantic_job_duplicate_output")
+            seen.add(document_id)
+            item = item_by_id.get(document_id)
+            if item is None:
+                raise SemanticExchangeError("semantic_job_unexpected_output")
+            _verify_output_identity(envelope, item)
+            executor = _mapping(
+                envelope.get("executor"),
+                "semantic_job_executor_invalid",
+            )
+            if str(executor.get("kind") or "") != "coding-plan":
+                raise SemanticExchangeError("semantic_job_executor_invalid")
+            try:
+                verify_executor_identity(binding, executor)
+            except SemanticExecutionContractError as exc:
+                raise SemanticExchangeError(exc.code, detail=exc.detail) from exc
+            result = _mapping(
+                envelope.get("result"),
+                "semantic_job_result_invalid",
+            )
+            input_row = input_by_id[document_id]
+            bundle = SemanticInputBundle(
+                document_id=document_id,
+                artifact_hash=str(input_row["artifact_hash"]),
+                parser_version=str(input_row["parser_version"]),
+                prompt_version=str(input_row["prompt_version"]),
+                schema_version=str(input_row["schema_version"]),
+                taxonomy_version=str(input_row["taxonomy_version"]),
+                payload=_mapping(
+                    input_row.get("payload"),
+                    "semantic_job_payload_invalid",
+                ),
+                input_token_estimate=max(
+                    1,
+                    (len(_canonical_json(input_row.get("payload"))) + 3) // 4,
+                ),
+            )
+            normalized, _, _ = _validate_provider_result(
+                result,
+                taxonomy=taxonomy,
+                bundle=bundle,
+                store=store,
+                full_document_ir=full_ir_by_task.get(
+                    str(input_row.get("semantic_task_id") or "")
+                ),
+            )
+            missing_types = _missing_routed_event_types(normalized, bundle)
+            if missing_types:
+                raise SemanticContractError(
+                    "semantic_candidate_family_unreviewed",
+                    detail=",".join(missing_types),
+                )
+            normalized_outputs.append(
+                {
+                    **dict(envelope),
+                    "executor": {
+                        **executor,
+                        "identity_trust": "runner-configured",
+                    },
+                    "result": normalized,
+                }
+            )
+        except (SemanticExchangeError, SemanticContractError) as exc:
+            error = {
+                "document_id": document_id,
+                "error": getattr(exc, "code", str(exc)),
+                "detail": str(getattr(exc, "detail", "") or ""),
+            }
+            errors.append(error)
+            quarantined.append({"error": error, "output": dict(envelope)})
+
+    expected_ids = set(item_by_id)
+    awaiting_ids = sorted(expected_ids - seen)
+    complete_submission = bool(raw_outputs) and not awaiting_ids
+    if complete_submission and output_hash not in previous_hashes:
+        if len(set(previous_hashes)) >= CODING_PLAN_MAX_VALIDATION_ATTEMPTS:
+            raise SemanticExchangeError(
+                "semantic_coding_plan_repair_limit_exceeded"
+            )
+        validation_attempt = len(set(previous_hashes)) + 1
+    elif complete_submission:
+        validation_attempt = previous_hashes.index(output_hash) + 1
+    else:
+        validation_attempt = len(set(previous_hashes))
+    if not raw_outputs:
+        status = "awaiting_executor"
+    elif errors or awaiting_ids:
+        status = "partial"
+    else:
+        status = "ready_to_import"
+    report = {
+        "status": status,
+        "job_id": str(manifest["job_id"]),
+        "expected": len(expected_ids),
+        "outputs": len(raw_outputs),
+        "valid": len(normalized_outputs),
+        "failed": len(errors),
+        "awaiting": len(awaiting_ids),
+        "awaiting_document_ids": awaiting_ids,
+        "validation_attempt": validation_attempt,
+        "errors": errors,
+        "executor": {
+            "kind": "coding-plan",
+            "provider": binding.provider,
+            "model": binding.model,
+            "client_version": binding.client_version,
+        },
+    }
+    _write_jsonl(job_dir / "coding_plan" / "provider_output.jsonl", raw_outputs)
+    _write_jsonl(job_dir / "output.jsonl", normalized_outputs)
+    _write_jsonl(job_dir / "validation_quarantine.jsonl", quarantined)
+    _write_json(job_dir / "validation_report.json", report)
+    _write_json(job_dir / "run_report.json", report)
+    if complete_submission and output_hash not in previous_hashes:
+        history.append(
+            {
+                "attempt": validation_attempt,
+                "validated_at": datetime.now(timezone.utc).isoformat(),
+                "output_hash": output_hash,
+                "status": status,
+                "valid": len(normalized_outputs),
+                "failed": len(errors),
+                "awaiting": len(awaiting_ids),
+            }
+        )
+        _write_jsonl(history_path, history)
+    return report
 
 
 def prepare_repair_job(
@@ -4370,6 +4763,7 @@ __all__ = [
     "OUTPUT_CONTRACT_VERSION",
     "SemanticExchangeError",
     "canonical_json_hash",
+    "collect_coding_plan_outputs",
     "import_job",
     "job_status",
     "prepare_job",

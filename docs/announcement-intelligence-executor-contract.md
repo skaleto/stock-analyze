@@ -83,13 +83,24 @@ client_version`。切换 API、Coding Plan 或模型时必须新建 execution jo
 
 ## Coding Plan / Codex / Claude
 
-1. 逐行读取 `input.jsonl`。
+生产历史回填任务在准备时额外生成：
+
+- `CODING_PLAN.md`：当前任务的自包含执行合同；
+- `coding_plan/shards.json`：分片清单和逐片哈希；
+- `coding_plan/input_parts/`：每片最多 25 篇；
+- `coding_plan/document_ir_parts/` 与 `evidence_packet_parts/`：同序原文与证据；
+- `coding_plan/output_parts/`：外部执行器唯一允许写入的结果目录。
+
+一次生产历史批次建议 100 篇，即 4 个 25 篇分片。500 篇只是底层硬上限，
+不是推荐单次上下文规模。
+
+1. 逐片读取 `coding_plan/input_parts/part-*.jsonl`。
 2. 将 `prompt.md`、`profile.json` 和该行 `payload` 作为抽取上下文，
    并逐项执行 `payload.taxonomy_requirements`。
 3. 只输出 `schema.json` 允许的字段。
-4. 将完整外层记录追加到临时文件。
-5. 全部完成后原子替换为 `output.jsonl`。
-6. 先由统一 runner 做本地 Schema、IR、grounding 和 compiler 校验；
+4. 将完整外层记录写入对应 `output_parts/part-*.jsonl.tmp`。
+5. 每片自检后原子替换同名正式 part 文件。
+6. 先运行 `intelligence-semantic-coding-plan-collect` 做本地 Schema、IR、grounding 和 compiler 校验；
    Coding Plan 本身不连接生产数据库，也不直接导入。
 7. 只有通过发布门槛的指定 execution job 才执行导入命令：
 
@@ -98,6 +109,11 @@ python -m stock_analyze.cli intelligence-semantic-import \
   --repo-root /opt/stock-analyze/app \
   --job <job-id-or-directory>
 ```
+
+历史回填的完整 Claude 提示词见
+`docs/claude-historical-semantic-backfill-prompt.md`。`collect` 不写数据库；完整提交
+校验失败只允许修正一次，第二次仍失败的文档保留隔离。冻结集资格验收继续使用下述
+`frozen-*` 命令，两者不可混用。
 
 冻结集交给外部 Coding Plan 盲测时，使用
 `intelligence-semantic-frozen-prepare` 导出不含参考答案的任务包，结果返回后使用

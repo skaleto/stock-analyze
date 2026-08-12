@@ -93,19 +93,33 @@ python -m stock_analyze.cli intelligence-semantic-daily \
 ```
 
 Prompt、Schema、taxonomy、输入和输出契约与执行器解耦。需要临时改用 Codex、
-Claude 或其他 Coding Plan 时，只生成相同任务并导入相同输出，不修改下游：
+Claude 或其他 Coding Plan 时，生成相同合同的分片任务，先验收再导入，不修改下游：
 
 ```bash
 python -m stock_analyze.cli intelligence-semantic-prepare \
-  --repo-root . --profile a-share-announcement-mentions-v27 --limit 20
+  --repo-root . \
+  --profile a-share-announcement-mentions-v27 \
+  --limit 100 \
+  --max-input-characters 24000 \
+  --executor-mode coding_plan \
+  --provider claude \
+  --model claude-fable-5 \
+  --client-version claude-code-2.1.215
+python -m stock_analyze.cli intelligence-semantic-coding-plan-collect \
+  --repo-root . --job <job_id>
 python -m stock_analyze.cli intelligence-semantic-import \
   --repo-root . --job <job_id>
 ```
 
-生产主 CLI 只保留以下五个统一契约命令：
+任务自动按 25 篇切分，Claude 提示词见
+`docs/claude-historical-semantic-backfill-prompt.md`。`collect` 只生成校验报告、
+规范化输出和隔离清单，不写生产数据库；只有 Codex 验收后才执行 `import`。
+
+生产主 CLI 保留以下六个统一契约命令：
 
 - `intelligence-semantic-prepare`
 - `intelligence-semantic-run`
+- `intelligence-semantic-coding-plan-collect`
 - `intelligence-semantic-import`
 - `intelligence-semantic-job-status`
 - `intelligence-semantic-daily`

@@ -758,6 +758,15 @@ def build_parser() -> argparse.ArgumentParser:
     semantic_run.add_argument("--job", required=True)
     semantic_run.add_argument("--executor-config", required=True)
 
+    semantic_coding_plan_collect = sub.add_parser(
+        "intelligence-semantic-coding-plan-collect",
+        help="Validate Coding Plan output without importing production data.",
+    )
+    semantic_coding_plan_collect.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    semantic_coding_plan_collect.add_argument("--job", required=True)
+
     semantic_import = sub.add_parser(
         "intelligence-semantic-import",
         help="Validate and persist one provider-neutral extraction job.",
@@ -1354,6 +1363,7 @@ def main(argv: list[str] | None = None) -> int:
         "intelligence-semantic-repair-prepare",
         "intelligence-semantic-repair-rollback",
         "intelligence-semantic-run",
+        "intelligence-semantic-coding-plan-collect",
         "intelligence-semantic-import",
         "intelligence-semantic-job-status",
         "intelligence-semantic-daily",
@@ -1854,6 +1864,7 @@ def _command_intelligence_model_effect(args: argparse.Namespace) -> int:
 def _command_intelligence_exchange(args: argparse.Namespace) -> int:
     from .intelligence.semantic.exchange import (
         SemanticExchangeError,
+        collect_coding_plan_outputs,
         import_job,
         job_status,
         prepare_job,
@@ -1904,6 +1915,8 @@ def _command_intelligence_exchange(args: argparse.Namespace) -> int:
                 args.job,
                 executor_config=args.executor_config,
             )
+        elif args.command == "intelligence-semantic-coding-plan-collect":
+            result = collect_coding_plan_outputs(args.repo_root, args.job)
         elif args.command == "intelligence-semantic-import":
             result = import_job(
                 args.repo_root,
@@ -1932,6 +1945,11 @@ def _command_intelligence_exchange(args: argparse.Namespace) -> int:
     status = str(result.get("status") or "")
     if status in {"failed"}:
         return 2
+    if (
+        args.command == "intelligence-semantic-coding-plan-collect"
+        and status == "ready_to_import"
+    ):
+        return 0
     if status in {"partial", "awaiting_executor", "ready_to_import"}:
         return 3
     return 0
