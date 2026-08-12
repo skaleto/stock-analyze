@@ -1,4 +1,8 @@
-# Coding Plan 公告语义抽取交接与盲测验收
+# Coding Plan 公告语义抽取资格盲测交接
+
+本文只用于 80 篇冻结参考集的执行器资格验收，不用于生产历史回填。
+生产历史回填请使用 `docs/claude-historical-semantic-backfill-prompt.md` 和
+`intelligence-semantic-coding-plan-collect`，不要读取 Gold 或运行质量 benchmark。
 
 ## 直接交给 Coding Plan 的任务指令
 

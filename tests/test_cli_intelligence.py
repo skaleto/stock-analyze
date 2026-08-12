@@ -361,6 +361,33 @@ class IntelligenceCliTest(unittest.TestCase):
             executor_config="/etc/stock-analyze/executor.yaml",
         )
 
+    def test_semantic_coding_plan_collect_is_read_only(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "stock_analyze.intelligence.semantic.exchange."
+                "collect_coding_plan_outputs",
+                return_value={
+                    "status": "ready_to_import",
+                    "valid": 100,
+                    "failed": 0,
+                },
+            ) as collect,
+            redirect_stdout(output),
+        ):
+            exit_code = main([
+                "intelligence-semantic-coding-plan-collect",
+                "--repo-root", "/tmp/repo",
+                "--job", "sj-history",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        collect.assert_called_once_with(Path("/tmp/repo"), "sj-history")
+        self.assertEqual(
+            json.loads(output.getvalue())["status"],
+            "ready_to_import",
+        )
+
     def test_semantic_prepare_accepts_an_immutable_executor_binding(self) -> None:
         output = io.StringIO()
         with (
