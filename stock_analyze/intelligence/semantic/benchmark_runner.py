@@ -13,6 +13,11 @@ from typing import Mapping, Sequence
 from ..store import IntelligenceStore
 from .contracts import SemanticContractError, load_semantic_prompt
 from .document_ir import build_document_ir, ir_nodes_by_id
+from .execution_contract import (
+    ExecutorBinding,
+    execution_job_id,
+    semantic_task_id,
+)
 from .exchange import (
     SemanticExchangeError,
     _bound_v21_payload,
@@ -49,6 +54,10 @@ class FrozenBenchmarkInput:
     route: SemanticRoute
     profile_id: str
     profile_hash: str
+
+
+FROZEN_CODING_PLAN_INPUT_VERSION = "semantic-payload-v4"
+FROZEN_CODING_PLAN_OUTPUT_VERSION = "semantic-extraction-output-v1"
 
 
 def build_frozen_benchmark_input(
@@ -485,6 +494,358 @@ def run_frozen_benchmark(
     return report
 
 
+def prepare_frozen_coding_plan_job(
+    repo_root: str | Path,
+    workbench_root: str | Path,
+    *,
+    profile_id: str,
+    job_dir: str | Path,
+    provider: str,
+    model: str,
+    client_version: str,
+    limit: int | None = None,
+    document_ids: Sequence[int] | None = None,
+) -> dict[str, object]:
+    """Export a self-contained blind benchmark package for a Coding Plan."""
+    root = Path(repo_root).resolve()
+    benchmark_root = Path(workbench_root).resolve()
+    target = Path(job_dir).resolve()
+    if target.exists() and any(target.iterdir()):
+        raise ValueError("semantic_frozen_coding_plan_job_not_empty")
+    target.mkdir(parents=True, exist_ok=True)
+
+    profile_path = _profile_path(root, profile_id)
+    profile = _read_mapping(profile_path)
+    profile_hash = canonical_json_hash(profile)
+    binding = ExecutorBinding(
+        executor_mode="coding_plan",
+        provider=provider,
+        model=model,
+        client_version=client_version,
+    )
+    document_roots = _selected_document_roots(
+        benchmark_root,
+        limit=limit,
+        document_ids=document_ids,
+    )
+    input_rows: list[dict[str, object]] = []
+    document_ir_rows: list[dict[str, object]] = []
+    manifest_documents: list[dict[str, object]] = []
+    for document_root in document_roots:
+        benchmark_input = build_frozen_benchmark_input(
+            root,
+            document_root,
+            profile_id=profile_id,
+        )
+        bundle = benchmark_input.bundle
+        input_hash = canonical_json_hash(bundle.payload)
+        task_id = semantic_task_id(
+            profile_hash=profile_hash,
+            document_id=bundle.document_id,
+            artifact_hash=bundle.artifact_hash,
+            input_hash=input_hash,
+        )
+        task_execution_job_id = execution_job_id(task_id, binding)
+        common = {
+            "document_id": int(bundle.document_id),
+            "artifact_hash": bundle.artifact_hash,
+            "input_hash": input_hash,
+            "semantic_task_id": task_id,
+            "execution_job_id": task_execution_job_id,
+            "binding_id": binding.binding_id,
+        }
+        requires_execution = bool(benchmark_input.route.requires_deep_extraction)
+        manifest_documents.append(
+            {
+                **common,
+                "requires_execution": requires_execution,
+                "route": _route_payload(benchmark_input.route),
+            }
+        )
+        if not requires_execution:
+            continue
+        input_rows.append(
+            {
+                "contract_version": FROZEN_CODING_PLAN_INPUT_VERSION,
+                **common,
+                "profile_id": profile_id,
+                "profile_hash": profile_hash,
+                "executor": {
+                    **binding.to_mapping(),
+                    "binding_id": binding.binding_id,
+                },
+                "payload": bundle.payload,
+            }
+        )
+        document_ir_rows.append(
+            {
+                "contract_version": FROZEN_CODING_PLAN_INPUT_VERSION,
+                **common,
+                "document_ir": benchmark_input.full_document_ir,
+            }
+        )
+
+    job_identity = {
+        "profile_hash": profile_hash,
+        "binding_id": binding.binding_id,
+        "document_ids": [item["document_id"] for item in manifest_documents],
+    }
+    manifest = {
+        "contract_version": "semantic-frozen-coding-plan-job-v1",
+        "job_id": "sfj-" + canonical_json_hash(job_identity)[:24],
+        "status": "prepared",
+        "profile_id": profile_id,
+        "profile_hash": profile_hash,
+        "executor": {
+            **binding.to_mapping(),
+            "binding_id": binding.binding_id,
+        },
+        "documents": manifest_documents,
+        "document_count": len(manifest_documents),
+        "input_document_count": len(input_rows),
+        "routed_no_event_count": len(manifest_documents) - len(input_rows),
+        "output_contract_version": FROZEN_CODING_PLAN_OUTPUT_VERSION,
+        "output_path": "output.jsonl",
+        "reference_annotations_included": False,
+        "production_import": False,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    taxonomy = _read_mapping(root / str(profile["taxonomy_path"]))
+    _write_json(target / "manifest.json", manifest)
+    _write_json(target / "profile.json", profile)
+    _write_json(target / "schema.json", announcement_mention_lite_schema())
+    _write_json(target / "taxonomy.json", taxonomy)
+    (target / "prompt.md").write_text(
+        load_semantic_prompt(root, str(profile["prompt_version"])).rstrip() + "\n",
+        encoding="utf-8",
+    )
+    _write_jsonl(target / "input.jsonl", input_rows)
+    _write_jsonl(target / "document_ir.jsonl", document_ir_rows)
+    (target / "README.md").write_text(
+        _frozen_coding_plan_readme(manifest),
+        encoding="utf-8",
+    )
+    return {
+        "status": "prepared",
+        "job_id": manifest["job_id"],
+        "job_dir": str(target),
+        "documents": len(manifest_documents),
+        "input_documents": len(input_rows),
+        "routed_no_event": len(manifest_documents) - len(input_rows),
+        "production_import": False,
+    }
+
+
+def collect_frozen_coding_plan_job(
+    repo_root: str | Path,
+    workbench_root: str | Path,
+    *,
+    job_dir: str | Path,
+    predictions_path: str | Path,
+    report_path: str | Path,
+) -> dict[str, object]:
+    """Validate and compile Coding Plan output without importing production data."""
+    root = Path(repo_root).resolve()
+    benchmark_root = Path(workbench_root).resolve()
+    job = Path(job_dir).resolve()
+    predictions_target = Path(predictions_path).resolve()
+    report_target = Path(report_path).resolve()
+    manifest = _read_mapping(job / "manifest.json")
+    if manifest.get("contract_version") != "semantic-frozen-coding-plan-job-v1":
+        raise ValueError("semantic_frozen_coding_plan_manifest_invalid")
+    profile_id = str(manifest.get("profile_id") or "")
+    profile = _read_mapping(_profile_path(root, profile_id))
+    if canonical_json_hash(profile) != str(manifest.get("profile_hash") or ""):
+        raise ValueError("semantic_frozen_coding_plan_profile_hash_mismatch")
+    taxonomy = EventTaxonomy.load(root / str(profile["taxonomy_path"]))
+    binding_payload = manifest.get("executor")
+    if not isinstance(binding_payload, Mapping):
+        raise ValueError("semantic_frozen_coding_plan_executor_missing")
+    binding = ExecutorBinding.from_mapping(binding_payload)
+    if str(binding_payload.get("binding_id") or "") != binding.binding_id:
+        raise ValueError("semantic_frozen_coding_plan_binding_mismatch")
+
+    input_rows = _read_jsonl_mappings(job / "input.jsonl")
+    inputs = _unique_rows_by_document(input_rows, "semantic_frozen_input_duplicate")
+    output_rows = _read_jsonl_mappings(job / "output.jsonl")
+    outputs = _unique_rows_by_document(output_rows, "semantic_frozen_output_duplicate")
+    raw_documents = manifest.get("documents")
+    if not isinstance(raw_documents, list) or any(
+        not isinstance(item, Mapping) for item in raw_documents
+    ):
+        raise ValueError("semantic_frozen_coding_plan_documents_invalid")
+
+    rows: list[dict[str, object]] = []
+    completed = failed = routed_no_event = 0
+    usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "latency_ms": 0,
+        "request_count": 0,
+    }
+    expected_output_ids: set[int] = set()
+    with tempfile.TemporaryDirectory(prefix="semantic-coding-plan-collect-") as tmp:
+        store = IntelligenceStore(Path(tmp) / "intelligence")
+        for manifest_document in raw_documents:
+            document_id = _positive_int(manifest_document.get("document_id"))
+            benchmark_input: FrozenBenchmarkInput | None = None
+            try:
+                benchmark_input = build_frozen_benchmark_input(
+                    root,
+                    benchmark_root / str(document_id),
+                    profile_id=profile_id,
+                )
+                bundle = benchmark_input.bundle
+                if not bool(manifest_document.get("requires_execution")):
+                    normalized = {
+                        "document_id": document_id,
+                        "schema_version": "announcement-event-lite-v1",
+                        "events": [],
+                        "evidence": [],
+                        "no_event_reason": "router:" + benchmark_input.route.decision,
+                    }
+                    compilation = {
+                        "accepted": 0,
+                        "rejected": 0,
+                        "dropped": 0,
+                        "rejected_mentions": [],
+                    }
+                    provider_result = None
+                    executor = None
+                    document_usage = None
+                    status = "routed_no_event"
+                    routed_no_event += 1
+                else:
+                    expected_output_ids.add(document_id)
+                    input_row = inputs.get(document_id)
+                    output_row = outputs.get(document_id)
+                    if input_row is None:
+                        raise ValueError("semantic_frozen_coding_plan_input_missing")
+                    _verify_frozen_input_contract(
+                        manifest_document,
+                        input_row,
+                        bundle=bundle,
+                        profile_id=profile_id,
+                        profile_hash=benchmark_input.profile_hash,
+                        binding=binding,
+                    )
+                    if output_row is None:
+                        raise ValueError("semantic_frozen_coding_plan_output_missing")
+                    _verify_frozen_output_envelope(input_row, output_row, binding)
+                    provider_result = output_row.get("result")
+                    if not isinstance(provider_result, Mapping):
+                        raise ValueError("semantic_frozen_coding_plan_result_invalid")
+                    normalized, _, compilation = _validate_provider_result(
+                        provider_result,
+                        taxonomy=taxonomy,
+                        bundle=bundle,
+                        store=store,
+                        full_document_ir=benchmark_input.full_document_ir,
+                    )
+                    missing_event_types = _missing_routed_event_types(normalized, bundle)
+                    if missing_event_types:
+                        raise SemanticContractError(
+                            "semantic_candidate_family_unreviewed",
+                            detail=",".join(missing_event_types),
+                        )
+                    raw_usage = output_row.get("usage")
+                    document_usage = (
+                        {str(key): int(value or 0) for key, value in raw_usage.items()}
+                        if isinstance(raw_usage, Mapping)
+                        else {}
+                    )
+                    document_usage.setdefault("request_count", 1)
+                    _accumulate_usage(usage, document_usage)
+                    executor = {
+                        "provider": binding.provider,
+                        "model": binding.model,
+                        "client_version": binding.client_version,
+                        "endpoint_host": "coding-plan",
+                    }
+                    status = "complete"
+                    completed += 1
+                rows.append(
+                    {
+                        **normalized,
+                        "status": status,
+                        "schema_valid": True,
+                        "route": _route_payload(benchmark_input.route),
+                        "source_chunks": _source_chunks(
+                            bundle.payload,
+                            full_document_ir=benchmark_input.full_document_ir,
+                        ),
+                        "compilation": compilation,
+                        "executor": executor,
+                        "usage": document_usage,
+                        "profile_id": profile_id,
+                        "profile_hash": benchmark_input.profile_hash,
+                        "input_hash": canonical_json_hash(bundle.payload),
+                        **(
+                            {"provider_result": dict(provider_result)}
+                            if provider_result is not None
+                            else {}
+                        ),
+                    }
+                )
+            except (
+                KeyError,
+                OSError,
+                TypeError,
+                ValueError,
+                SemanticContractError,
+                SemanticExchangeError,
+            ) as exc:
+                failed += 1
+                failed_row: dict[str, object] = {
+                    "document_id": document_id,
+                    "schema_version": "announcement-event-lite-v1",
+                    "events": [],
+                    "evidence": [],
+                    "no_event_reason": None,
+                    "status": "failed",
+                    "schema_valid": False,
+                    "error": getattr(exc, "code", type(exc).__name__),
+                    "error_detail": getattr(exc, "detail", str(exc)),
+                    "profile_id": profile_id,
+                }
+                if benchmark_input is not None:
+                    failed_row["route"] = _route_payload(benchmark_input.route)
+                    failed_row["source_chunks"] = _source_chunks(
+                        benchmark_input.bundle.payload,
+                        full_document_ir=benchmark_input.full_document_ir,
+                    )
+                rows.append(failed_row)
+    _write_jsonl(predictions_target, rows)
+    unexpected_output_ids = sorted(set(outputs) - expected_output_ids)
+    if unexpected_output_ids:
+        failed += len(unexpected_output_ids)
+    report = {
+        "schema_version": 1,
+        "status": "complete" if failed == 0 else "partial",
+        "profile_id": profile_id,
+        "profile_hash": canonical_json_hash(profile),
+        "job_id": str(manifest.get("job_id") or ""),
+        "executor": {
+            "kind": "coding-plan",
+            "provider": binding.provider,
+            "model": binding.model,
+            "client_version": binding.client_version,
+        },
+        "documents": len(rows),
+        "completed": completed,
+        "routed_no_event": routed_no_event,
+        "failed": failed,
+        "unexpected_output_document_ids": unexpected_output_ids,
+        "usage": usage,
+        "predictions_path": str(predictions_target),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "production_import": False,
+    }
+    _write_json(report_target, report)
+    return report
+
+
 def _response_usage(responses) -> dict[str, int]:
     return {
         "input_tokens": sum(int(item.input_tokens or 0) for item in responses),
@@ -493,6 +854,194 @@ def _response_usage(responses) -> dict[str, int]:
         "latency_ms": sum(int(item.latency_ms or 0) for item in responses),
         "request_count": len(responses),
     }
+
+
+def _selected_document_roots(
+    workbench_root: Path,
+    *,
+    limit: int | None,
+    document_ids: Sequence[int] | None,
+) -> list[Path]:
+    wanted = {int(value) for value in document_ids or ()}
+    roots = sorted(
+        (
+            path
+            for path in workbench_root.iterdir()
+            if path.is_dir()
+            and path.name.isdigit()
+            and (not wanted or int(path.name) in wanted)
+        ),
+        key=lambda path: int(path.name),
+    )
+    if limit is not None:
+        roots = roots[: max(0, int(limit))]
+    return roots
+
+
+def _verify_frozen_output_envelope(
+    input_row: Mapping[str, object],
+    output_row: Mapping[str, object],
+    binding: ExecutorBinding,
+) -> None:
+    if output_row.get("contract_version") != FROZEN_CODING_PLAN_OUTPUT_VERSION:
+        raise ValueError("semantic_frozen_output_contract_invalid")
+    for field in (
+        "document_id",
+        "artifact_hash",
+        "input_hash",
+        "semantic_task_id",
+        "execution_job_id",
+        "binding_id",
+    ):
+        if output_row.get(field) != input_row.get(field):
+            raise ValueError(f"semantic_frozen_output_{field}_mismatch")
+    executor = output_row.get("executor")
+    if not isinstance(executor, Mapping):
+        raise ValueError("semantic_frozen_output_executor_missing")
+    expected = {
+        "kind": "coding-plan",
+        "provider": binding.provider,
+        "model": binding.model,
+        "client_version": binding.client_version,
+    }
+    actual = {key: str(executor.get(key) or "") for key in expected}
+    if actual != expected:
+        raise ValueError("semantic_frozen_output_executor_mismatch")
+
+
+def _verify_frozen_input_contract(
+    manifest_document: Mapping[str, object],
+    input_row: Mapping[str, object],
+    *,
+    bundle: SemanticInputBundle,
+    profile_id: str,
+    profile_hash: str,
+    binding: ExecutorBinding,
+) -> None:
+    if input_row.get("contract_version") != FROZEN_CODING_PLAN_INPUT_VERSION:
+        raise ValueError("semantic_frozen_input_contract_invalid")
+    for field in (
+        "document_id",
+        "artifact_hash",
+        "input_hash",
+        "semantic_task_id",
+        "execution_job_id",
+        "binding_id",
+    ):
+        if input_row.get(field) != manifest_document.get(field):
+            raise ValueError(f"semantic_frozen_input_{field}_mismatch")
+    if _positive_int(input_row.get("document_id")) != int(bundle.document_id):
+        raise ValueError("semantic_frozen_input_document_id_mismatch")
+    if str(input_row.get("artifact_hash") or "") != bundle.artifact_hash:
+        raise ValueError("semantic_frozen_input_artifact_hash_mismatch")
+    if str(input_row.get("profile_id") or "") != profile_id:
+        raise ValueError("semantic_frozen_input_profile_id_mismatch")
+    if str(input_row.get("profile_hash") or "") != profile_hash:
+        raise ValueError("semantic_frozen_input_profile_hash_mismatch")
+    payload = input_row.get("payload")
+    if not isinstance(payload, Mapping):
+        raise ValueError("semantic_frozen_input_payload_invalid")
+    expected_input_hash = canonical_json_hash(bundle.payload)
+    if canonical_json_hash(payload) != expected_input_hash:
+        raise ValueError("semantic_frozen_input_payload_hash_mismatch")
+    if str(input_row.get("input_hash") or "") != expected_input_hash:
+        raise ValueError("semantic_frozen_input_input_hash_mismatch")
+    expected_task_id = semantic_task_id(
+        profile_hash=profile_hash,
+        document_id=bundle.document_id,
+        artifact_hash=bundle.artifact_hash,
+        input_hash=expected_input_hash,
+    )
+    if str(input_row.get("semantic_task_id") or "") != expected_task_id:
+        raise ValueError("semantic_frozen_input_semantic_task_id_mismatch")
+    if str(input_row.get("execution_job_id") or "") != execution_job_id(
+        expected_task_id,
+        binding,
+    ):
+        raise ValueError("semantic_frozen_input_execution_job_id_mismatch")
+    executor = input_row.get("executor")
+    if not isinstance(executor, Mapping):
+        raise ValueError("semantic_frozen_input_executor_missing")
+    if ExecutorBinding.from_mapping(executor) != binding:
+        raise ValueError("semantic_frozen_input_executor_mismatch")
+    if str(executor.get("binding_id") or "") != binding.binding_id:
+        raise ValueError("semantic_frozen_input_binding_mismatch")
+
+
+def _read_jsonl_mappings(path: Path) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for line_number, raw_line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(),
+        start=1,
+    ):
+        if not raw_line.strip():
+            continue
+        value = json.loads(raw_line)
+        if not isinstance(value, Mapping):
+            raise ValueError(f"semantic_frozen_jsonl_row_invalid:{path}:{line_number}")
+        rows.append(dict(value))
+    return rows
+
+
+def _unique_rows_by_document(
+    rows: Sequence[Mapping[str, object]],
+    duplicate_error: str,
+) -> dict[int, dict[str, object]]:
+    result: dict[int, dict[str, object]] = {}
+    for row in rows:
+        document_id = _positive_int(row.get("document_id"))
+        if document_id in result:
+            raise ValueError(duplicate_error)
+        result[document_id] = dict(row)
+    return result
+
+
+def _frozen_coding_plan_readme(manifest: Mapping[str, object]) -> str:
+    executor = manifest.get("executor")
+    binding = executor if isinstance(executor, Mapping) else {}
+    return f"""# Frozen Coding Plan semantic extraction job
+
+This is a blind, non-production qualification package. Do not search for or
+read reference annotations, Gold labels, prior predictions, acceptance reports,
+or production semantic outputs.
+
+Read `prompt.md`, `profile.json`, `schema.json`, `taxonomy.json`, and each row
+of `input.jsonl`. Use `document_ir.jsonl` only as the full frozen evidence
+source. Write exactly one output row for every input row to `output.jsonl.tmp`,
+then atomically rename it to `output.jsonl` after all rows are complete.
+
+The outer output envelope must copy all immutable identity fields from the
+input row and use:
+
+```json
+{{
+  "contract_version": "{FROZEN_CODING_PLAN_OUTPUT_VERSION}",
+  "document_id": 123,
+  "artifact_hash": "copy from input",
+  "input_hash": "copy from input",
+  "semantic_task_id": "copy from input",
+  "execution_job_id": "copy from input",
+  "binding_id": "copy from input",
+  "executor": {{
+    "kind": "coding-plan",
+    "provider": "{binding.get('provider', '')}",
+    "model": "{binding.get('model', '')}",
+    "client_version": "{binding.get('client_version', '')}"
+  }},
+  "usage": {{}},
+  "result": {{}}
+}}
+```
+
+`result` must satisfy `schema.json`. Every evidence item is an exact
+`chunk_id + quote` pair from the frozen input. Never add outside knowledge,
+scores, forecasts, trading opinions, or recommendations. Do not modify source
+code, configuration, databases, benchmark inputs, or any file other than the
+temporary/final output JSONL.
+
+Expected input rows: {manifest.get('input_document_count', 0)}.
+Production import: forbidden.
+"""
 
 
 def _accumulate_usage(
@@ -668,5 +1217,7 @@ def _write_json(path: Path, value: Mapping[str, object]) -> None:
 __all__ = [
     "FrozenBenchmarkInput",
     "build_frozen_benchmark_input",
+    "collect_frozen_coding_plan_job",
+    "prepare_frozen_coding_plan_job",
     "run_frozen_benchmark",
 ]

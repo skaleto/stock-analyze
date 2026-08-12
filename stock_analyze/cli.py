@@ -815,6 +815,34 @@ def build_parser() -> argparse.ArgumentParser:
     semantic_frozen.add_argument("--limit", type=int, default=None)
     semantic_frozen.add_argument("--document-id", type=int, action="append")
 
+    semantic_frozen_prepare = sub.add_parser(
+        "intelligence-semantic-frozen-prepare",
+        help="Export a blind frozen semantic job for a Coding Plan.",
+    )
+    semantic_frozen_prepare.add_argument("--repo-root", type=Path, default=Path("."))
+    semantic_frozen_prepare.add_argument("--workbench", type=Path, required=True)
+    semantic_frozen_prepare.add_argument(
+        "--profile", default="a-share-announcement-mentions-v27"
+    )
+    semantic_frozen_prepare.add_argument("--job", type=Path, required=True)
+    semantic_frozen_prepare.add_argument("--provider", required=True)
+    semantic_frozen_prepare.add_argument("--model", required=True)
+    semantic_frozen_prepare.add_argument(
+        "--client-version", default="coding-plan-v1"
+    )
+    semantic_frozen_prepare.add_argument("--limit", type=int, default=None)
+    semantic_frozen_prepare.add_argument("--document-id", type=int, action="append")
+
+    semantic_frozen_collect = sub.add_parser(
+        "intelligence-semantic-frozen-collect",
+        help="Validate and compile Coding Plan frozen output without imports.",
+    )
+    semantic_frozen_collect.add_argument("--repo-root", type=Path, default=Path("."))
+    semantic_frozen_collect.add_argument("--workbench", type=Path, required=True)
+    semantic_frozen_collect.add_argument("--job", type=Path, required=True)
+    semantic_frozen_collect.add_argument("--predictions", type=Path, required=True)
+    semantic_frozen_collect.add_argument("--report", type=Path, required=True)
+
     artifact_job_export = sub.add_parser(
         "intelligence-artifact-job-export",
         help="Lease and export a bounded historical artifact worker job.",
@@ -1291,6 +1319,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "intelligence-semantic-frozen-run":
         ensure_dirs(args.logs_dir)
         return _command_intelligence_semantic_frozen(args)
+    if args.command in {
+        "intelligence-semantic-frozen-prepare",
+        "intelligence-semantic-frozen-collect",
+    }:
+        ensure_dirs(args.logs_dir)
+        return _command_intelligence_semantic_frozen_exchange(args)
     if args.command in {
         "intelligence-artifact-job-export",
         "intelligence-artifact-job-run",
@@ -1901,6 +1935,46 @@ def _command_intelligence_semantic_frozen(args: argparse.Namespace) -> int:
         return 2
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0 if result.get("status") == "complete" else 3
+
+
+def _command_intelligence_semantic_frozen_exchange(args: argparse.Namespace) -> int:
+    from .intelligence.semantic.benchmark_runner import (
+        collect_frozen_coding_plan_job,
+        prepare_frozen_coding_plan_job,
+    )
+
+    try:
+        if args.command == "intelligence-semantic-frozen-prepare":
+            result = prepare_frozen_coding_plan_job(
+                args.repo_root,
+                args.workbench,
+                profile_id=args.profile,
+                job_dir=args.job,
+                provider=args.provider,
+                model=args.model,
+                client_version=args.client_version,
+                limit=args.limit,
+                document_ids=args.document_id,
+            )
+        else:
+            result = collect_frozen_coding_plan_job(
+                args.repo_root,
+                args.workbench,
+                job_dir=args.job,
+                predictions_path=args.predictions,
+                report_path=args.report,
+            )
+    except (OSError, TypeError, ValueError) as exc:
+        print(
+            json.dumps(
+                {"status": "failed", "error": str(exc)},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 2
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0 if result.get("status") in {"prepared", "complete"} else 3
 
 
 def _command_intelligence_artifact_exchange(

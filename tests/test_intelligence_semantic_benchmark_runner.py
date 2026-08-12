@@ -7,6 +7,8 @@ from pathlib import Path
 
 from stock_analyze.intelligence.semantic.benchmark_runner import (
     build_frozen_benchmark_input,
+    collect_frozen_coding_plan_job,
+    prepare_frozen_coding_plan_job,
     run_frozen_benchmark,
 )
 from stock_analyze.intelligence.semantic.provider import (
@@ -655,6 +657,119 @@ class FrozenBenchmarkRunnerTest(unittest.TestCase):
             "fixture found no current event",
         )
         self.assertEqual(len(provider.payloads), 1)
+
+    def test_prepares_blind_coding_plan_package_without_reference_leakage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workbench = root / "workbench"
+            self._write_workbench(workbench)
+            job = root / "coding-plan-job"
+
+            result = prepare_frozen_coding_plan_job(
+                ROOT,
+                workbench,
+                profile_id="a-share-announcement-mentions-v27",
+                job_dir=job,
+                provider="codex",
+                model="gpt-5.6",
+                client_version="coding-plan-v1",
+            )
+
+            manifest = json.loads((job / "manifest.json").read_text(encoding="utf-8"))
+            input_row = json.loads((job / "input.jsonl").read_text(encoding="utf-8"))
+            exported = "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in job.iterdir()
+                if path.is_file()
+            )
+
+        self.assertEqual(result["status"], "prepared")
+        self.assertEqual(result["documents"], 1)
+        self.assertEqual(result["production_import"], False)
+        self.assertEqual(manifest["executor"]["executor_mode"], "coding_plan")
+        self.assertEqual(input_row["contract_version"], "semantic-payload-v4")
+        self.assertTrue(input_row["semantic_task_id"].startswith("st-"))
+        self.assertTrue(input_row["execution_job_id"].startswith("sej-"))
+        self.assertEqual(input_row["binding_id"], manifest["executor"]["binding_id"])
+        self.assertNotIn("GOLD_SECRET_MUST_NOT_LEAK", exported)
+        self.assertNotIn("reference.json", exported)
+
+    def test_collects_coding_plan_output_through_frozen_validator(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workbench = root / "workbench"
+            self._write_workbench(workbench)
+            job = root / "coding-plan-job"
+            prepare_frozen_coding_plan_job(
+                ROOT,
+                workbench,
+                profile_id="a-share-announcement-mentions-v24",
+                job_dir=job,
+                provider="codex",
+                model="gpt-5.6",
+                client_version="coding-plan-v1",
+            )
+            input_row = json.loads((job / "input.jsonl").read_text(encoding="utf-8"))
+            output_row = {
+                "contract_version": "semantic-extraction-output-v1",
+                "document_id": input_row["document_id"],
+                "artifact_hash": input_row["artifact_hash"],
+                "input_hash": input_row["input_hash"],
+                "semantic_task_id": input_row["semantic_task_id"],
+                "execution_job_id": input_row["execution_job_id"],
+                "binding_id": input_row["binding_id"],
+                "executor": {
+                    "kind": "coding-plan",
+                    "provider": "codex",
+                    "model": "gpt-5.6",
+                    "client_version": "coding-plan-v1",
+                },
+                "usage": {"total_tokens": 321},
+                "result": {
+                    "document_id": input_row["document_id"],
+                    "schema_version": "announcement-mentions-v1-lite",
+                    "mentions": [],
+                    "no_event_reason": "未发现满足合同的当前事件",
+                },
+            }
+            (job / "output.jsonl").write_text(
+                json.dumps(output_row, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            predictions = root / "predictions.jsonl"
+            report = root / "report.json"
+
+            result = collect_frozen_coding_plan_job(
+                ROOT,
+                workbench,
+                job_dir=job,
+                predictions_path=predictions,
+                report_path=report,
+            )
+            prediction = json.loads(predictions.read_text(encoding="utf-8"))
+
+            input_row["payload"]["document"]["title"] = "tampered title"
+            (job / "input.jsonl").write_text(
+                json.dumps(input_row, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            tampered_result = collect_frozen_coding_plan_job(
+                ROOT,
+                workbench,
+                job_dir=job,
+                predictions_path=root / "tampered-predictions.jsonl",
+                report_path=root / "tampered-report.json",
+            )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["completed"], 1)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["production_import"], False)
+        self.assertEqual(prediction["status"], "complete")
+        self.assertEqual(prediction["provider_result"], output_row["result"])
+        self.assertEqual(prediction["executor"]["provider"], "codex")
+        self.assertEqual(tampered_result["status"], "partial")
+        self.assertEqual(tampered_result["failed"], 1)
 
 
 if __name__ == "__main__":
