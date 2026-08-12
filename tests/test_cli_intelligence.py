@@ -177,6 +177,82 @@ class IntelligenceCliTest(unittest.TestCase):
         )
         self.assertFalse(json.loads(output.getvalue())["production_import"])
 
+    def test_semantic_frozen_repair_prepare_is_bounded_and_non_production(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "stock_analyze.intelligence.semantic.benchmark_runner."
+                "prepare_frozen_coding_plan_repair_job",
+                return_value={
+                    "status": "prepared",
+                    "documents": 12,
+                    "repair_attempt": 1,
+                    "production_import": False,
+                },
+            ) as prepare,
+            redirect_stdout(output),
+        ):
+            exit_code = main([
+                "intelligence-semantic-frozen-repair-prepare",
+                "--repo-root", "/tmp/repo",
+                "--workbench", "/tmp/workbench",
+                "--source-job", "/tmp/source-job",
+                "--source-predictions", "/tmp/source-predictions.jsonl",
+                "--repair-job", "/tmp/repair-job",
+                "--provider", "claude",
+                "--model", "claude-fable-5",
+                "--client-version", "claude-code-2.1.215",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        prepare.assert_called_once_with(
+            Path("/tmp/repo"),
+            Path("/tmp/workbench"),
+            source_job_dir=Path("/tmp/source-job"),
+            source_predictions_path=Path("/tmp/source-predictions.jsonl"),
+            repair_job_dir=Path("/tmp/repair-job"),
+            provider="claude",
+            model="claude-fable-5",
+            client_version="claude-code-2.1.215",
+        )
+
+    def test_semantic_frozen_repair_collect_is_non_production(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "stock_analyze.intelligence.semantic.benchmark_runner."
+                "collect_frozen_coding_plan_repair_job",
+                return_value={
+                    "status": "complete",
+                    "repaired": 12,
+                    "failed": 0,
+                    "production_import": False,
+                },
+            ) as collect,
+            redirect_stdout(output),
+        ):
+            exit_code = main([
+                "intelligence-semantic-frozen-repair-collect",
+                "--repo-root", "/tmp/repo",
+                "--workbench", "/tmp/workbench",
+                "--source-job", "/tmp/source-job",
+                "--source-predictions", "/tmp/source-predictions.jsonl",
+                "--repair-job", "/tmp/repair-job",
+                "--predictions", "/tmp/predictions.jsonl",
+                "--report", "/tmp/report.json",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        collect.assert_called_once_with(
+            Path("/tmp/repo"),
+            Path("/tmp/workbench"),
+            source_job_dir=Path("/tmp/source-job"),
+            source_predictions_path=Path("/tmp/source-predictions.jsonl"),
+            repair_job_dir=Path("/tmp/repair-job"),
+            predictions_path=Path("/tmp/predictions.jsonl"),
+            report_path=Path("/tmp/report.json"),
+        )
+
     def test_semantic_repair_commands_are_explicit_and_auditable(self) -> None:
         output = io.StringIO()
         with (

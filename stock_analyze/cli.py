@@ -843,6 +843,53 @@ def build_parser() -> argparse.ArgumentParser:
     semantic_frozen_collect.add_argument("--predictions", type=Path, required=True)
     semantic_frozen_collect.add_argument("--report", type=Path, required=True)
 
+    semantic_frozen_repair_prepare = sub.add_parser(
+        "intelligence-semantic-frozen-repair-prepare",
+        help="Export the single bounded repair round for a frozen Coding Plan job.",
+    )
+    semantic_frozen_repair_prepare.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    semantic_frozen_repair_prepare.add_argument(
+        "--workbench", type=Path, required=True
+    )
+    semantic_frozen_repair_prepare.add_argument(
+        "--source-job", type=Path, required=True
+    )
+    semantic_frozen_repair_prepare.add_argument(
+        "--source-predictions", type=Path, required=True
+    )
+    semantic_frozen_repair_prepare.add_argument(
+        "--repair-job", type=Path, required=True
+    )
+    semantic_frozen_repair_prepare.add_argument("--provider", required=True)
+    semantic_frozen_repair_prepare.add_argument("--model", required=True)
+    semantic_frozen_repair_prepare.add_argument("--client-version", required=True)
+
+    semantic_frozen_repair_collect = sub.add_parser(
+        "intelligence-semantic-frozen-repair-collect",
+        help="Merge and validate the single frozen Coding Plan repair round.",
+    )
+    semantic_frozen_repair_collect.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    semantic_frozen_repair_collect.add_argument(
+        "--workbench", type=Path, required=True
+    )
+    semantic_frozen_repair_collect.add_argument(
+        "--source-job", type=Path, required=True
+    )
+    semantic_frozen_repair_collect.add_argument(
+        "--source-predictions", type=Path, required=True
+    )
+    semantic_frozen_repair_collect.add_argument(
+        "--repair-job", type=Path, required=True
+    )
+    semantic_frozen_repair_collect.add_argument(
+        "--predictions", type=Path, required=True
+    )
+    semantic_frozen_repair_collect.add_argument("--report", type=Path, required=True)
+
     artifact_job_export = sub.add_parser(
         "intelligence-artifact-job-export",
         help="Lease and export a bounded historical artifact worker job.",
@@ -1322,6 +1369,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in {
         "intelligence-semantic-frozen-prepare",
         "intelligence-semantic-frozen-collect",
+        "intelligence-semantic-frozen-repair-prepare",
+        "intelligence-semantic-frozen-repair-collect",
     }:
         ensure_dirs(args.logs_dir)
         return _command_intelligence_semantic_frozen_exchange(args)
@@ -1940,7 +1989,9 @@ def _command_intelligence_semantic_frozen(args: argparse.Namespace) -> int:
 def _command_intelligence_semantic_frozen_exchange(args: argparse.Namespace) -> int:
     from .intelligence.semantic.benchmark_runner import (
         collect_frozen_coding_plan_job,
+        collect_frozen_coding_plan_repair_job,
         prepare_frozen_coding_plan_job,
+        prepare_frozen_coding_plan_repair_job,
     )
 
     try:
@@ -1956,11 +2007,32 @@ def _command_intelligence_semantic_frozen_exchange(args: argparse.Namespace) -> 
                 limit=args.limit,
                 document_ids=args.document_id,
             )
-        else:
+        elif args.command == "intelligence-semantic-frozen-collect":
             result = collect_frozen_coding_plan_job(
                 args.repo_root,
                 args.workbench,
                 job_dir=args.job,
+                predictions_path=args.predictions,
+                report_path=args.report,
+            )
+        elif args.command == "intelligence-semantic-frozen-repair-prepare":
+            result = prepare_frozen_coding_plan_repair_job(
+                args.repo_root,
+                args.workbench,
+                source_job_dir=args.source_job,
+                source_predictions_path=args.source_predictions,
+                repair_job_dir=args.repair_job,
+                provider=args.provider,
+                model=args.model,
+                client_version=args.client_version,
+            )
+        else:
+            result = collect_frozen_coding_plan_repair_job(
+                args.repo_root,
+                args.workbench,
+                source_job_dir=args.source_job,
+                source_predictions_path=args.source_predictions,
+                repair_job_dir=args.repair_job,
                 predictions_path=args.predictions,
                 report_path=args.report,
             )
@@ -1974,7 +2046,11 @@ def _command_intelligence_semantic_frozen_exchange(args: argparse.Namespace) -> 
         )
         return 2
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    return 0 if result.get("status") in {"prepared", "complete"} else 3
+    return 0 if result.get("status") in {
+        "prepared",
+        "complete",
+        "not_needed",
+    } else 3
 
 
 def _command_intelligence_artifact_exchange(
