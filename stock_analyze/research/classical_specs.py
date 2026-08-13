@@ -218,9 +218,64 @@ def qdii_h10_specs(account_scope: str) -> tuple[ClassicalModelSpec, ...]:
     )
 
 
+def qdii_h5_specs(account_scope: str) -> tuple[ClassicalModelSpec, ...]:
+    common = {
+        "market": "cn_qdii_etf",
+        "account_scope": str(account_scope),
+        "horizon": 5,
+        "feature_profile": "qdii_nav_tracking_compact_v1",
+    }
+    return (
+        ClassicalModelSpec(
+            spec_id="h5_ridge_nav_tracking",
+            estimator="ridge",
+            parameters=_parameters(alpha=35.0, ranking_linear_weight=1.0),
+            **common,
+        ),
+        ClassicalModelSpec(
+            spec_id="h5_elastic_net_nav_fx",
+            estimator="elastic_net",
+            parameters=_parameters(
+                alpha=0.001,
+                l1_ratio=0.20,
+                ranking_linear_weight=1.0,
+            ),
+            **common,
+        ),
+        ClassicalModelSpec(
+            spec_id="h5_hgbr_bounded_nav_tracking",
+            estimator="hgbr",
+            parameters=_parameters(
+                learning_rate=0.035,
+                max_iter=100,
+                max_leaf_nodes=9,
+                min_samples_leaf=80,
+                l2_regularization=3.0,
+                ranking_linear_weight=0.0,
+            ),
+            **common,
+        ),
+        ClassicalModelSpec(
+            spec_id="h5_ridge_hgbr_fixed_blend",
+            estimator="fixed_blend",
+            parameters=_parameters(
+                ridge_alpha=35.0,
+                learning_rate=0.035,
+                max_iter=100,
+                max_leaf_nodes=9,
+                min_samples_leaf=80,
+                l2_regularization=3.0,
+                ranking_linear_weight=0.75,
+            ),
+            **common,
+        ),
+    )
+
+
 __all__ = [
     "ClassicalModelSpec",
     "a_share_h3_specs",
     "a_share_h20_specs",
+    "qdii_h5_specs",
     "qdii_h10_specs",
 ]

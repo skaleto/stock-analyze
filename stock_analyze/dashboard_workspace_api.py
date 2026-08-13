@@ -792,6 +792,100 @@ def _latest_tournament_health(root: Path, market: str) -> dict[str, Any]:
     }
 
 
+def _latest_unified_arena(root: Path, market: str) -> dict[str, Any]:
+    arena_root = root / "data" / "research" / "unified_arena" / market
+    reports = sorted(
+        path / "report.json"
+        for path in arena_root.iterdir()
+        if path.is_dir() and path.name.isdigit()
+    ) if arena_root.exists() else []
+    if not reports:
+        return {
+            "status": "unavailable",
+            "evidenceType": "historical_diagnostic",
+            "asOf": None,
+            "horizon": 0,
+            "scopes": [],
+        }
+    try:
+        payload = json.loads(reports[-1].read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("unified_arena_report_invalid") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("unified_arena_report_invalid")
+    metric_names = {
+        "net_return": "netReturn",
+        "benchmark_return": "benchmarkReturn",
+        "net_excess_return": "netExcessReturn",
+        "information_ratio": "informationRatio",
+        "portfolio_sharpe": "sharpe",
+        "max_drawdown": "maxDrawdown",
+        "annual_turnover": "annualTurnover",
+        "trade_count": "tradeCount",
+        "capital_utilization": "capitalUtilization",
+    }
+    scopes: list[dict[str, Any]] = []
+    for raw_scope in _rows(payload.get("scopes"))[:MAX_TABLE_ROWS]:
+        participants = []
+        for row in _rows(raw_scope.get("participants"))[:MAX_TABLE_ROWS]:
+            metrics = _mapping(row.get("metrics"))
+            participants.append({
+                "participantId": _text(
+                    row.get("participant_id"),
+                    limit=256,
+                ),
+                "participantType": _text(
+                    row.get("participant_type"),
+                    limit=64,
+                ),
+                "name": _text(row.get("name"), limit=256),
+                "status": _text(row.get("status"), limit=64),
+                "metrics": {
+                    public: _finite_number(metrics.get(source))
+                    for source, public in metric_names.items()
+                    if source in metrics
+                },
+            })
+        winner = _mapping(raw_scope.get("winner"))
+        scopes.append({
+            "accountScope": _text(
+                raw_scope.get("account_scope"),
+                limit=128,
+            ),
+            "finalWindow": [
+                _text(value, limit=32)
+                for value in list(raw_scope.get("final_window") or [])[:2]
+            ],
+            "evaluationDateCount": _integer(
+                raw_scope.get("evaluation_date_count")
+            ),
+            "winner": (
+                {
+                    "participantId": _text(
+                        winner.get("participant_id"),
+                        limit=256,
+                    ),
+                    "name": _text(winner.get("name"), limit=256),
+                    "netExcessReturn": _finite_number(
+                        winner.get("net_excess_return")
+                    ),
+                }
+                if winner else None
+            ),
+            "participants": participants,
+        })
+    return {
+        "status": _text(payload.get("status"), limit=64) or "unavailable",
+        "evidenceType": (
+            _text(payload.get("evidence_type"), limit=64)
+            or "historical_diagnostic"
+        ),
+        "asOf": _scalar(payload.get("as_of"), text_limit=32),
+        "horizon": _integer(payload.get("horizon")),
+        "scopes": scopes,
+    }
+
+
 def _source_rows(value: Any) -> list[dict[str, Any]]:
     bounded: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -2217,6 +2311,22 @@ def build_dashboard_model_research_data(
             market,
         )
     )
+    historical_comparison = _mapping(
+        _safe_workspace_read(
+            errors,
+            "unified_model_arena",
+            {
+                "status": "unavailable",
+                "evidenceType": "historical_diagnostic",
+                "asOf": None,
+                "horizon": 0,
+                "scopes": [],
+            },
+            _latest_unified_arena,
+            root,
+            market,
+        )
+    )
     tabular_run = _mapping(
         tabular_research.get("best") or tabular_research.get("latest")
     )
@@ -2424,6 +2534,7 @@ def build_dashboard_model_research_data(
             "accounts": account_summaries,
         },
         "tabularResearch": tabular_research,
+        "historicalComparison": historical_comparison,
         "simulation": {
             "status": _text(iteration.get("status"), limit=128) or "unavailable",
             "candidate": candidate or None,

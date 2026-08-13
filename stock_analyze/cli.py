@@ -504,6 +504,28 @@ def build_parser() -> argparse.ArgumentParser:
     tournament.add_argument("--account-scope", default=None)
     tournament.add_argument("--horizon", type=int, default=None)
 
+    unified_arena = sub.add_parser(
+        "run-unified-model-arena",
+        help="Compare formal rules and candidate models on one sealed window.",
+    )
+    unified_arena.add_argument(
+        "--offline",
+        action="store_true",
+        help="Use immutable local research snapshots only.",
+    )
+    unified_arena.add_argument("--repo-root", type=Path, default=Path("."))
+    unified_arena.add_argument(
+        "--force",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    unified_arena.add_argument(
+        "--max-full-history-instruments",
+        type=int,
+        default=500,
+    )
+    unified_arena.add_argument("--horizon", type=int, default=None)
+
     cross_sectional_repair = sub.add_parser(
         "run-cross-sectional-alpha-repair",
         help="Run the frozen development-only H20 target ablation.",
@@ -1220,6 +1242,7 @@ def main(argv: list[str] | None = None) -> int:
         "run-prediction-research",
         "train-prediction-models",
         "run-classical-tournament",
+        "run-unified-model-arena",
         "run-cross-sectional-alpha-repair",
         "run-regime-tabular-alpha",
         "freeze-regime-tabular-forward",
@@ -1498,6 +1521,10 @@ def _command_research_workflow(args: argparse.Namespace) -> int:
         elif args.command == "run-classical-tournament":
             result = pipeline.run_classical_tournament(
                 account_scope=args.account_scope,
+                horizon=args.horizon,
+            )
+        elif args.command == "run-unified-model-arena":
+            result = pipeline.run_unified_model_arena(
                 horizon=args.horizon,
             )
         elif args.command == "run-cross-sectional-alpha-repair":
