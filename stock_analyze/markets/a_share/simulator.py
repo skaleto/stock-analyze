@@ -17,7 +17,7 @@ from ...research.strategy_ensemble import (
     risk_adjusted_target_weights,
 )
 from .strategy import build_signals
-from ...utils import next_business_day, now_iso, safe_float
+from ...utils import next_business_day, now_iso, parse_date, safe_float
 
 
 def initialize(config: dict[str, Any], store: PortfolioStore, force: bool = False) -> dict[str, Any]:
@@ -109,6 +109,7 @@ def generate_rebalance_orders(
             account_state,
             config,
             top_n,
+            run_date=run_date,
         )
         warnings = list(signal.warnings) + pool_warnings
 
@@ -233,8 +234,28 @@ def _controlled_candidate_pool(
     account_state: dict[str, Any],
     config: dict[str, Any],
     top_n: int,
+    run_date: str | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     controls = dict(config.get("portfolio_controls", {}) or {})
+    warnings: list[str] = []
+    expired_holdings: set[str] = set()
+    max_holding_days = max(int(controls.get("max_holding_days") or 0), 0)
+    if max_holding_days > 0 and run_date:
+        current_date = parse_date(run_date)
+        for raw_code, position in (
+            account_state.get("positions", {}) or {}
+        ).items():
+            opened = position.get("last_buy_date") or position.get("hold_since")
+            if not opened:
+                continue
+            try:
+                holding_days = (current_date - parse_date(opened)).days
+            except (TypeError, ValueError):
+                continue
+            if holding_days >= max_holding_days:
+                code = str(raw_code).zfill(6)
+                expired_holdings.add(code)
+                warnings.append(f"optimizer_max_holding_exit:{code}")
     multiple = max(int(controls.get("candidate_pool_multiple", 3)), 3)
     required_size = max(int(top_n), 1) * multiple
     ranked = scored.copy()
@@ -244,6 +265,10 @@ def _controlled_candidate_pool(
         ranked["score"] = pd.Series(dtype=float)
     ranked = ranked.sort_values("score", ascending=False)
     ranked["_allocation_code"] = ranked["code"].map(lambda code: str(code).zfill(6))
+    if expired_holdings:
+        ranked = ranked.loc[
+            ~ranked["_allocation_code"].isin(expired_holdings)
+        ].copy()
     pool = ranked.head(required_size)
     prediction_applied = ranked.get(
         "prediction_applied",
@@ -262,7 +287,7 @@ def _controlled_candidate_pool(
     held_codes = {
         str(code).zfill(6)
         for code in (account_state.get("positions", {}) or {})
-    }
+    }.difference(expired_holdings)
     if held_codes:
         held_rows = ranked[ranked["_allocation_code"].isin(held_codes)]
         pool = pd.concat([pool, held_rows], ignore_index=False)
@@ -276,6 +301,8 @@ def _controlled_candidate_pool(
         start=1,
     ):
         code = str(raw_code).zfill(6)
+        if code in expired_holdings:
+            continue
         if code in existing_codes:
             continue
         synthetic_rows.append(
@@ -306,7 +333,6 @@ def _controlled_candidate_pool(
         .drop(columns=["_allocation_code"])
         .reset_index(drop=True)
     )
-    warnings: list[str] = []
     if len(ranked) < required_size:
         warnings.append(f"optimizer_candidate_pool_short:{len(ranked)}/{required_size}")
     warnings.extend(

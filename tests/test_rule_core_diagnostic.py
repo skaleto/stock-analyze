@@ -12,6 +12,7 @@ from stock_analyze.research.rule_core_diagnostic import (
     DataAudit,
     RuleCoreSpec,
     _apply_filters,
+    _portfolio_contract,
     _run_overlay,
     _score_rule_frame,
     attach_entry_execution_constraints,
@@ -24,6 +25,48 @@ from stock_analyze.research.rule_core_diagnostic import (
 
 
 class RuleCoreDiagnosticTest(unittest.TestCase):
+    def test_formal_replay_uses_live_default_execution_controls(self) -> None:
+        baseline = {
+            "accounts": [{"id": "hs300", "top_n": 50}],
+            "trading": {"max_single_weight": 0.05},
+        }
+
+        trend = _portfolio_contract(
+            baseline,
+            {
+                "agent_id": "codex",
+                "portfolio_controls": {"hold_buffer_pct": 0.20},
+            },
+        )
+        defensive = _portfolio_contract(
+            baseline,
+            {
+                "agent_id": "claude",
+                "portfolio_controls": {
+                    "hold_buffer_pct": 0.80,
+                    "min_trade_weight": 0.02,
+                    "max_turnover": 0.35,
+                },
+            },
+        )
+
+        self.assertEqual(
+            trend["rule_execution_policy"]["max_daily_turnover"],
+            1.0,
+        )
+        self.assertEqual(
+            trend["rule_execution_policy"]["minimum_target_change"],
+            0.001,
+        )
+        self.assertEqual(
+            defensive["rule_execution_policy"]["max_daily_turnover"],
+            0.35,
+        )
+        self.assertEqual(
+            defensive["rule_execution_policy"]["minimum_target_change"],
+            0.02,
+        )
+
     def test_development_window_uses_only_oldest_sixty_percent(self) -> None:
         dates = pd.date_range("2024-01-02", periods=10, freq="B")
         frame = pd.DataFrame({"trade_date": dates.strftime("%Y%m%d")})

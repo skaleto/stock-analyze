@@ -188,6 +188,33 @@ class PortfolioDecisionContractTests(unittest.TestCase):
         self.assertTrue({"000001", "000002", "000003"}.issubset(set(pool["code"])))
         self.assertTrue({"000006", "000007", "000008"}.issubset(set(pool["code"])))
 
+    def test_a_share_candidate_pool_excludes_expired_holdings(self) -> None:
+        scored = pd.DataFrame([
+            {"code": "000001", "score": 3.0},
+            {"code": "000002", "score": 2.0},
+            {"code": "000003", "score": 1.0},
+        ])
+        config = _a_share_config()
+        config["portfolio_controls"]["max_holding_days"] = 30
+        state = {
+            "positions": {
+                "000001": {"hold_since": "2026-07-30", "last_price": 10.0},
+                "000002": {"hold_since": "2026-01-02", "last_price": 10.0},
+            }
+        }
+
+        pool, warnings = _controlled_candidate_pool(
+            scored,
+            state,
+            config,
+            top_n=1,
+            run_date="2026-08-14",
+        )
+
+        self.assertIn("000001", set(pool["code"]))
+        self.assertNotIn("000002", set(pool["code"]))
+        self.assertIn("optimizer_max_holding_exit:000002", warnings)
+
     def test_a_share_formal_path_jointly_selects_from_three_x_pool(self) -> None:
         config = _a_share_config()
         candidates = _a_share_candidates()

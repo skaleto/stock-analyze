@@ -830,6 +830,7 @@ def _portfolio_contract(
 ) -> dict[str, Any]:
     controls = dict(overlay.get("portfolio_controls") or {})
     hold_buffer = float(controls.get("hold_buffer_pct") or 0.0)
+    defensive = str(overlay.get("agent_id") or "").strip().lower() == "claude"
     accounts = [
         {**dict(account), "hold_buffer_pct": hold_buffer}
         for account in baseline.get("accounts") or []
@@ -841,9 +842,14 @@ def _portfolio_contract(
         "rule_execution_policy": {
             "version": "mechanical-rule-v1",
             "rank_buffer_pct": hold_buffer,
-            "minimum_target_change": 0.01,
+            "minimum_target_change": float(
+                controls.get(
+                    "min_trade_weight",
+                    0.003 if defensive else 0.001,
+                )
+            ),
             "partial_adjustment_rate": 1.0,
-            "max_daily_turnover": 0.08,
+            "max_daily_turnover": float(controls.get("max_turnover", 1.0)),
             "max_industry_weight": float(controls.get("max_industry_weight") or 1.0),
             "max_holding_days": int(controls.get("max_holding_days") or 0),
             "industry_column": "industry",
