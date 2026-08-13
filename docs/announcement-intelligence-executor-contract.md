@@ -112,7 +112,8 @@ python -m stock_analyze.cli intelligence-semantic-import \
 
 历史回填的完整 Claude 提示词见
 `docs/claude-historical-semantic-backfill-prompt.md`。`collect` 不写数据库；完整提交
-校验失败只允许修正一次，第二次仍失败的文档保留隔离。冻结集资格验收继续使用下述
+校验失败时自动生成只含失败文档的 `coding_plan/repair-1/`。修复结果作为覆盖层重新
+验收，原始分片和首轮已通过结果保持不可变；只允许修正一次，第二次仍失败的文档保留隔离。冻结集资格验收继续使用下述
 `frozen-*` 命令，两者不可混用。
 
 冻结集交给外部 Coding Plan 盲测时，使用

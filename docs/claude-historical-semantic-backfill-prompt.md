@@ -55,9 +55,11 @@ python3 -m stock_analyze.cli intelligence-semantic-coding-plan-collect \
 ```
 
 `collect` 只写任务目录内的原始输出、规范化输出、隔离清单和校验报告，
-不写 `semantic_runs`、canonical events 或研究因子。首次完整提交失败时，Claude
-只允许按 `validation_report.json` 修正失败文档一次；第二次仍失败则保留隔离，
-不继续循环。
+不写 `semantic_runs`、canonical events 或研究因子。首次完整提交失败时，系统会生成
+`coding_plan/repair-1/`，其中只有失败输入、完整 IR、原输出、错误码和 `REPAIR.md`。
+Claude 只写 `repair-1/output.jsonl`，不得修改原四个输出分片；修复结果必须一次覆盖全部
+失败 document_id，缺行或混入已通过文档都会被拒绝且不消耗修复机会。第二次仍失败则
+保留隔离，不继续循环。
 
 只有 Codex 确认 `status=ready_to_import`，或明确接受“有效行入库、失败行隔离”的
 部分结果后，才执行现有 `intelligence-semantic-import`。

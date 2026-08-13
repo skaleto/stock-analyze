@@ -1095,6 +1095,11 @@ def collect_coding_plan_outputs(
         raw_outputs.extend(
             _read_jsonl(output_path, max_rows=CODING_PLAN_SHARD_SIZE)
         )
+    raw_outputs = _apply_coding_plan_repair_overlay(
+        job_dir,
+        manifest=manifest,
+        base_outputs=raw_outputs,
+    )
     output_hash = canonical_json_hash(raw_outputs)
     history_path = job_dir / "coding_plan" / "validation_history.jsonl"
     history = _read_jsonl(history_path) if history_path.exists() else []
@@ -1250,7 +1255,202 @@ def collect_coding_plan_outputs(
             }
         )
         _write_jsonl(history_path, history)
+    if (
+        complete_submission
+        and validation_attempt == 1
+        and errors
+    ):
+        _write_coding_plan_repair_view(
+            job_dir,
+            manifest=manifest,
+            inputs=inputs,
+            base_outputs=raw_outputs,
+            output_hash=output_hash,
+            errors=errors,
+        )
     return report
+
+
+def _apply_coding_plan_repair_overlay(
+    job_dir: Path,
+    *,
+    manifest: Mapping[str, object],
+    base_outputs: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    repair_dir = job_dir / "coding_plan" / "repair-1"
+    repair_manifest_path = repair_dir / "manifest.json"
+    repair_output_path = repair_dir / "output.jsonl"
+    normalized_base = [dict(row) for row in base_outputs]
+    if not repair_manifest_path.exists() or not repair_output_path.exists():
+        return normalized_base
+    repair_manifest = _read_json(repair_manifest_path)
+    if (
+        repair_manifest.get("contract_version")
+        != "semantic-coding-plan-repair-v1"
+        or str(repair_manifest.get("job_id") or "")
+        != str(manifest.get("job_id") or "")
+        or str(repair_manifest.get("source_output_hash") or "")
+        != canonical_json_hash(normalized_base)
+    ):
+        raise SemanticExchangeError("semantic_coding_plan_repair_tampered")
+    expected_ids = {
+        _positive_int(value)
+        for value in _sequence(
+            repair_manifest.get("failed_document_ids"),
+            "semantic_coding_plan_repair_invalid",
+        )
+    }
+    repair_outputs = _read_jsonl(
+        repair_output_path,
+        max_rows=len(expected_ids),
+    )
+    repair_by_id: dict[int, dict[str, object]] = {}
+    for row in repair_outputs:
+        document_id = _positive_int(row.get("document_id"))
+        if document_id in repair_by_id:
+            raise SemanticExchangeError(
+                "semantic_coding_plan_repair_duplicate_output"
+            )
+        repair_by_id[document_id] = row
+    supplied_ids = set(repair_by_id)
+    if supplied_ids != expected_ids:
+        detail = _canonical_json(
+            {
+                "missing": sorted(expected_ids - supplied_ids),
+                "unexpected": sorted(supplied_ids - expected_ids),
+            }
+        )
+        raise SemanticExchangeError(
+            "semantic_coding_plan_repair_output_incomplete",
+            detail=detail,
+        )
+    base_ids = {
+        _positive_int(row.get("document_id")) for row in normalized_base
+    }
+    if not expected_ids.issubset(base_ids):
+        raise SemanticExchangeError("semantic_coding_plan_repair_tampered")
+    return [
+        repair_by_id.get(_positive_int(row.get("document_id")), dict(row))
+        for row in normalized_base
+    ]
+
+
+def _write_coding_plan_repair_view(
+    job_dir: Path,
+    *,
+    manifest: Mapping[str, object],
+    inputs: Sequence[Mapping[str, object]],
+    base_outputs: Sequence[Mapping[str, object]],
+    output_hash: str,
+    errors: Sequence[Mapping[str, object]],
+) -> None:
+    repair_dir = job_dir / "coding_plan" / "repair-1"
+    repair_manifest_path = repair_dir / "manifest.json"
+    failed_ids = sorted(
+        {_positive_int(error.get("document_id")) for error in errors}
+    )
+    expected_manifest = {
+        "contract_version": "semantic-coding-plan-repair-v1",
+        "job_id": str(manifest.get("job_id") or ""),
+        "source_output_hash": output_hash,
+        "failed_document_ids": failed_ids,
+        "executor_binding": dict(
+            _mapping(
+                manifest.get("executor_binding"),
+                "semantic_executor_binding_invalid",
+            )
+        ),
+        "maximum_repair_rounds": 1,
+        "output_file": "coding_plan/repair-1/output.jsonl",
+    }
+    if repair_manifest_path.exists():
+        if _read_json(repair_manifest_path) != expected_manifest:
+            raise SemanticExchangeError("semantic_coding_plan_repair_tampered")
+        return
+    repair_dir.mkdir(parents=True, exist_ok=True)
+    failed_set = set(failed_ids)
+    input_rows = [
+        dict(row)
+        for row in inputs
+        if _positive_int(row.get("document_id")) in failed_set
+    ]
+    document_ir_rows = [
+        row
+        for row in _read_jsonl(
+            job_dir / "document_ir.jsonl",
+            max_rows=len(inputs),
+            max_line_bytes=MAX_DOCUMENT_IR_LINE_BYTES,
+        )
+        if _positive_int(row.get("document_id")) in failed_set
+    ]
+    evidence_packet_rows = [
+        row
+        for row in _read_jsonl(
+            job_dir / "evidence_packets.jsonl",
+            max_rows=len(inputs),
+        )
+        if _positive_int(row.get("document_id")) in failed_set
+    ]
+    previous_outputs = [
+        dict(row)
+        for row in base_outputs
+        if _positive_int(row.get("document_id")) in failed_set
+    ]
+    ordered_errors = sorted(
+        (dict(error) for error in errors),
+        key=lambda value: _positive_int(value.get("document_id")),
+    )
+    _write_json(repair_manifest_path, expected_manifest)
+    _write_jsonl(repair_dir / "input.jsonl", input_rows)
+    _write_jsonl(repair_dir / "document_ir.jsonl", document_ir_rows)
+    _write_jsonl(repair_dir / "evidence_packets.jsonl", evidence_packet_rows)
+    _write_jsonl(repair_dir / "previous_output.jsonl", previous_outputs)
+    _write_jsonl(repair_dir / "validation_errors.jsonl", ordered_errors)
+    write_text_atomic(
+        repair_dir / "REPAIR.md",
+        _render_coding_plan_repair_handoff(
+            manifest,
+            failed_documents=len(failed_ids),
+        ),
+        encoding="utf-8",
+    )
+
+
+def _render_coding_plan_repair_handoff(
+    manifest: Mapping[str, object],
+    *,
+    failed_documents: int,
+) -> str:
+    binding = _mapping(
+        manifest.get("executor_binding"),
+        "semantic_executor_binding_invalid",
+    )
+    return f"""# Claude 公告语义抽取唯一修复轮
+
+任务 ID：`{manifest.get('job_id')}`
+只修复：{failed_documents} 篇
+执行身份：`{binding.get('provider')}` / `{binding.get('model')}` / `{binding.get('client_version')}`
+
+## 输入
+
+- `input.jsonl`：只含首轮失败文档；
+- `document_ir.jsonl` 与 `evidence_packets.jsonl`：对应冻结原文和证据；
+- `previous_output.jsonl`：首轮失败输出，仅用于定位问题；
+- `validation_errors.jsonl`：本地确定性错误码；
+- `../../prompt.md`、`../../schema.json`、`../../taxonomy.json`：规则仍保持不变。
+
+## 修复要求
+
+1. 每个失败文档输出一个完整 envelope 到 `output.jsonl.tmp`，不得返回字段补丁。
+2. 只处理本目录列出的 document_id，不改首轮已通过文档，不改任何输入或验证文件。
+3. `no_event_review_required`：重新检查标题对应的当前事件及正文证据，不能用泛化 no_event 回避高信号事件。
+4. `table_semantic_label_mismatch/raw_value_mismatch`：从对应表格单元格逐字引用标签和值，不把跨行或跨列内容拼接为一个事实。
+5. `mention_candidate_required_fact_missing`：补齐 taxonomy 要求且原文明确存在的事实；原文不支持时不要臆造。
+6. `semantic_candidate_family_unreviewed`：逐一复核缺失事件族；存在则输出独立 mention，不把不同事件拼接。
+7. 其他错误按稳定错误码、`prompt.md` 和 Schema 修复，quote 必须逐字存在。
+8. 自检行数和 document_id 集合与 `manifest.json.failed_document_ids` 完全一致后，原子替换为 `output.jsonl`。
+9. 不运行 collect/import，不连接 ECS；这是唯一一次修复，完成后停止。
+"""
 
 
 def prepare_repair_job(

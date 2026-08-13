@@ -1590,11 +1590,33 @@ class SemanticExchangeTest(unittest.TestCase):
         self.assertEqual(first["status"], "partial")
         self.assertEqual(first["failed"], 1)
         self.assertEqual(first["validation_attempt"], 1)
+        repair_dir = job_dir / "coding_plan" / "repair-1"
+        self.assertTrue((repair_dir / "REPAIR.md").is_file())
+        repair_manifest = json.loads(
+            (repair_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            repair_manifest["failed_document_ids"],
+            [self.a_share_id],
+        )
+        self.assertEqual(
+            len((repair_dir / "input.jsonl").read_text().splitlines()),
+            1,
+        )
         with self.store.connect() as connection:
             self.assertEqual(
                 connection.execute("SELECT COUNT(*) FROM semantic_runs").fetchone()[0],
                 0,
             )
+
+        (repair_dir / "output.jsonl").write_text("", encoding="utf-8")
+        with self.assertRaisesRegex(
+            SemanticExchangeError,
+            "semantic_coding_plan_repair_output_incomplete",
+        ):
+            collect_coding_plan_outputs(self.root, job_dir)
+        history = (job_dir / "coding_plan" / "validation_history.jsonl")
+        self.assertEqual(len(history.read_text().splitlines()), 1)
 
         valid_result = MentionProvider().extract(
             SemanticInputBundle(
@@ -1610,7 +1632,7 @@ class SemanticExchangeTest(unittest.TestCase):
             ),
             response_schema={},
         ).parsed_output
-        (output_dir / "part-0001.jsonl").write_text(
+        (repair_dir / "output.jsonl").write_text(
             json.dumps(envelope(valid_result), ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
@@ -1628,7 +1650,7 @@ class SemanticExchangeTest(unittest.TestCase):
 
         third_result = dict(first_result)
         third_result["no_event_reason"] = "第三种不同输出"
-        (output_dir / "part-0001.jsonl").write_text(
+        (repair_dir / "output.jsonl").write_text(
             json.dumps(envelope(third_result), ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
