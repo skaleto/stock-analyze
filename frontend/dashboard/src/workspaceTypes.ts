@@ -249,6 +249,40 @@ export type ModelResearchTabularEvidence = {
   } | null;
 };
 
+export type ModelResearchHistoricalComparison = {
+  status: string;
+  evidenceType: "historical_diagnostic" | string;
+  asOf: string | null;
+  horizon: number;
+  scopes: {
+    accountScope: string;
+    finalWindow: string[];
+    evaluationDateCount: number;
+    winner: {
+      participantId: string;
+      name: string;
+      netExcessReturn: number;
+    } | null;
+    participants: {
+      participantId: string;
+      participantType: string;
+      name: string;
+      status: string;
+      metrics: {
+        netReturn?: number;
+        benchmarkReturn?: number;
+        netExcessReturn?: number;
+        informationRatio?: number;
+        sharpe?: number;
+        maxDrawdown?: number;
+        annualTurnover?: number;
+        tradeCount?: number;
+        capitalUtilization?: number;
+      };
+    }[];
+  }[];
+};
+
 export type ModelResearchData = {
   generated_at: string;
   errors?: WorkspacePartialError[];
@@ -287,6 +321,7 @@ export type ModelResearchData = {
     accounts?: ModelResearchAccountSummary[];
   };
   tabularResearch?: ModelResearchTabularEvidence;
+  historicalComparison?: ModelResearchHistoricalComparison;
   simulation: {
     status: string;
     candidate: ModelResearchCandidate | null;

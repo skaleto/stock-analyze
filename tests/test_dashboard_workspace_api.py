@@ -20,6 +20,7 @@ from stock_analyze.dashboard_workspace_api import (
     _bounded_resource,
     _bounded_intelligence_lane,
     _latest_tournament_health,
+    _latest_unified_arena,
     _operations_disk,
     _operations_timestamp,
     _sanitize_run_error,
@@ -187,6 +188,56 @@ def _intelligence(**overrides: object) -> dict:
 
 
 class DashboardWorkspaceApiTests(unittest.TestCase):
+    def test_latest_unified_arena_projects_bounded_comparison(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_dir = (
+                root / "data" / "research" / "unified_arena"
+                / "cn_qdii_etf" / "20260813"
+            )
+            report_dir.mkdir(parents=True)
+            (report_dir / "report.json").write_text(json.dumps({
+                "status": "complete",
+                "evidence_type": "historical_diagnostic",
+                "as_of": "20260813",
+                "horizon": 5,
+                "scopes": [{
+                    "account_scope": "us_exposure",
+                    "final_window": ["20260701", "20260731"],
+                    "evaluation_date_count": 23,
+                    "winner": {
+                        "participant_id": "model:q5-v1",
+                        "name": "Q5",
+                        "net_excess_return": 0.03,
+                    },
+                    "participants": [{
+                        "participant_id": "rule:defensive",
+                        "participant_type": "formal_rule",
+                        "name": "稳健防守",
+                        "status": "historical_replay",
+                        "metrics": {
+                            "net_return": 0.04,
+                            "benchmark_return": 0.02,
+                            "net_excess_return": 0.02,
+                            "information_ratio": 0.5,
+                            "max_drawdown": 0.03,
+                            "annual_turnover": 2.0,
+                            "trade_count": 4,
+                        },
+                    }],
+                }],
+            }), encoding="utf-8")
+
+            result = _latest_unified_arena(root, "cn_qdii_etf")
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["horizon"], 5)
+        self.assertEqual(result["scopes"][0]["accountScope"], "us_exposure")
+        participant = result["scopes"][0]["participants"][0]
+        self.assertEqual(participant["participantType"], "formal_rule")
+        self.assertEqual(participant["metrics"]["netExcessReturn"], 0.02)
+        self.assertNotIn("candidate_root", result["scopes"][0])
+
     def _build(
         self,
         root: Path,

@@ -1153,6 +1153,54 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(artifact.name, "shadow.joblib")
         self.assertEqual(status, "shadow")
 
+    def test_resolve_model_falls_back_to_market_registry_when_scoped_artifact_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="codex",
+                as_of="2026-07-10",
+            )
+            scoped_root = (
+                root / "data" / "research" / "models" / "a_share" / "hs300" / "5"
+            )
+            scoped_root.mkdir(parents=True)
+            (scoped_root / "registry.json").write_text(json.dumps({
+                "champion_model_version": "scoped-v1",
+                "models": {
+                    "scoped-v1": {
+                        "status": "active",
+                        "artifact": str(scoped_root / "missing-scoped.joblib"),
+                    },
+                },
+            }), encoding="utf-8")
+            market_root = (
+                root / "data" / "research" / "models" / "a_share" / "5"
+            )
+            market_root.mkdir(parents=True)
+            market_artifact = market_root / "market-v1.joblib"
+            market_artifact.touch()
+            (market_root / "registry.json").write_text(json.dumps({
+                "champion_model_version": None,
+                "models": {
+                    "market-v1": {
+                        "status": "research",
+                        "artifact": str(market_artifact),
+                    },
+                },
+            }), encoding="utf-8")
+
+            artifact, statuses, provenance = (
+                pipeline._resolve_model_roles_with_provenance(5, "hs300")
+            )
+
+        self.assertEqual(artifact, market_artifact)
+        self.assertEqual(statuses["ranker"], "research")
+        self.assertEqual(provenance["requested_scope"], "hs300")
+        self.assertEqual(provenance["selected_scope"], "")
+        self.assertEqual(provenance["resolution"], "market_fallback")
+
     def test_predict_routes_each_account_to_its_scoped_model(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1255,6 +1303,124 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(
             set(predictions["account_scope"]),
             {"hs300", "zz500"},
+        )
+
+    def test_predict_runs_market_fallback_once_then_partitions_account_scopes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="test",
+                as_of="2026-07-10",
+                offline=True,
+            )
+            pipeline.store.write_feature_snapshot(
+                "a_share",
+                "2026-07-10",
+                pd.DataFrame([
+                    self._scoped_feature("000001"),
+                    {
+                        **self._scoped_feature("000002"),
+                        "account_id": "zz500",
+                        "research_scope": "zz500",
+                        "benchmark_code": "000905",
+                    },
+                ]),
+            )
+            market_root = (
+                root / "data/research/models/a_share/5"
+            )
+            market_root.mkdir(parents=True)
+            artifact = market_root / "market-active.joblib"
+            artifact.touch()
+            (market_root / "registry.json").write_text(
+                json.dumps({
+                    "champion_model_version": "market-active",
+                    "models": {
+                        "market-active": {
+                            "status": "active",
+                            "role_status": {
+                                "classifier": "active",
+                                "ranker": "active",
+                                "portfolio": "active",
+                            },
+                            "artifact": str(artifact),
+                        }
+                    },
+                }),
+                encoding="utf-8",
+            )
+            bundle = SimpleNamespace(
+                horizon=5,
+                account_scope=None,
+                model_version="market-active",
+                metrics={},
+            )
+            prediction_calls = []
+            drift_calls = []
+
+            def prediction(_bundle, features, *_args, **_kwargs):
+                prediction_calls.append(len(features))
+                return [
+                    PredictionRecord(
+                        code=str(row["code"]),
+                        as_of="2026-07-10",
+                        horizon=5,
+                        p_up=0.5,
+                        p_flat=0.3,
+                        p_down=0.2,
+                        model_version="market-active",
+                        account_scope="",
+                        metadata={
+                            "account_id": str(row["account_id"]),
+                            "research_scope": str(row["research_scope"]),
+                        },
+                    )
+                    for _, row in features.iterrows()
+                ]
+
+            def drift(_horizon, _bundle, records, **kwargs):
+                drift_calls.append((len(records), kwargs["account_scope"]))
+                return records, {"status": "current"}
+
+            with (
+                patch(
+                    "stock_analyze.research.pipeline.load_model_bundle",
+                    return_value=bundle,
+                ),
+                patch(
+                    "stock_analyze.research.pipeline.generate_predictions",
+                    side_effect=prediction,
+                ),
+                patch.object(
+                    pipeline,
+                    "_assess_model_drift",
+                    side_effect=drift,
+                ),
+            ):
+                result = pipeline.predict(horizon=5)
+
+            predictions = pd.read_parquet(
+                root / "data/a_share/test/predictions/20260710.parquet"
+            )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(prediction_calls, [2])
+        self.assertEqual(drift_calls, [(2, None)])
+        self.assertEqual(
+            set(predictions["research_scope"]),
+            {"hs300", "zz500"},
+        )
+        self.assertEqual(
+            set(predictions["account_scope"]),
+            {"hs300", "zz500"},
+        )
+        self.assertTrue(
+            all(
+                item["resolution"] == "market_fallback"
+                for item in result["model_resolution"].values()
+            )
         )
 
     def test_training_records_research_to_shadow_gate(self):
@@ -1509,6 +1675,126 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(challenger.iloc[0]["model_version"], "challenger")
         self.assertEqual(len(cycles["models"]["challenger"]["cycles"]), 1)
         self.assertEqual(iteration_state["current_candidate"]["model_version"], "challenger")
+
+    def test_market_candidate_prediction_contains_all_account_scopes_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="codex",
+                as_of="2026-07-10",
+                offline=True,
+            )
+            pipeline.store.write_feature_snapshot(
+                "a_share",
+                "2026-07-10",
+                pd.DataFrame([
+                    self._scoped_feature("000001"),
+                    {
+                        **self._scoped_feature("000002"),
+                        "account_id": "zz500",
+                        "research_scope": "zz500",
+                        "benchmark_code": "000905",
+                    },
+                ]),
+            )
+            bundles = {}
+            for scope in ("hs300", "zz500"):
+                model_root = (
+                    root / "data" / "research" / "models"
+                    / "a_share" / scope / "5"
+                )
+                model_root.mkdir(parents=True)
+                artifact = model_root / f"{scope}.joblib"
+                artifact.touch()
+                (model_root / "registry.json").write_text(json.dumps({
+                    "champion_model_version": f"{scope}-active",
+                    "models": {
+                        f"{scope}-active": {
+                            "status": "active",
+                            "artifact": str(artifact),
+                        },
+                    },
+                }), encoding="utf-8")
+                bundles[artifact.name] = SimpleNamespace(
+                    horizon=5,
+                    account_scope=scope,
+                    model_version=f"{scope}-active",
+                    metrics={},
+                )
+            market_root = (
+                root / "data" / "research" / "models" / "a_share" / "5"
+            )
+            market_root.mkdir(parents=True)
+            market_artifact = market_root / "market-candidate.joblib"
+            market_artifact.touch()
+            (market_root / "registry.json").write_text(json.dumps({
+                "champion_model_version": None,
+                "models": {
+                    "market-candidate": {
+                        "status": "research",
+                        "artifact": str(market_artifact),
+                        "registered_at": "2026-07-10T00:00:00+00:00",
+                    },
+                },
+            }), encoding="utf-8")
+            bundles[market_artifact.name] = SimpleNamespace(
+                horizon=5,
+                account_scope=None,
+                model_version="market-candidate",
+                metrics={},
+            )
+            candidate_batch_sizes = []
+
+            def load(path):
+                return bundles[Path(path).name]
+
+            def prediction(bundle, features, *_args, **_kwargs):
+                if bundle.model_version == "market-candidate":
+                    candidate_batch_sizes.append(len(features))
+                return [
+                    PredictionRecord(
+                        code=str(row["code"]),
+                        as_of="2026-07-10",
+                        horizon=5,
+                        p_up=0.5,
+                        p_flat=0.3,
+                        p_down=0.2,
+                        model_version=bundle.model_version,
+                        account_scope=str(bundle.account_scope or ""),
+                        metadata={
+                            "account_id": str(row["account_id"]),
+                            "research_scope": str(row["research_scope"]),
+                        },
+                    )
+                    for _, row in features.iterrows()
+                ]
+
+            with (
+                patch("stock_analyze.research.pipeline.load_model_bundle", side_effect=load),
+                patch("stock_analyze.research.pipeline.generate_predictions", side_effect=prediction),
+                patch.object(
+                    pipeline,
+                    "_assess_model_drift",
+                    side_effect=lambda _h, _b, records, **_kwargs: (
+                        records,
+                        {"status": "current"},
+                    ),
+                ),
+            ):
+                result = pipeline.predict(horizon=5)
+
+            candidate = pd.read_parquet(
+                root
+                / "data" / "research" / "iteration_predictions"
+                / "a_share" / "5" / "market-candidate" / "20260710.parquet"
+            )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(candidate_batch_sizes, [2])
+        self.assertEqual(set(candidate["research_scope"]), {"hs300", "zz500"})
+        self.assertEqual(len(candidate), 2)
 
     def test_online_prepare_persists_normalized_source_frames(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1967,6 +2253,38 @@ class ResearchPipelineTest(unittest.TestCase):
                 ValueError, "a_share_materialization_in_progress"
             ):
                 pipeline._history_files()
+
+    def test_unified_arena_requires_a_share_materialization_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="codex",
+                as_of="2026-07-10",
+                offline=True,
+            )
+            pipeline.store.write_feature_snapshot(
+                "a_share",
+                "2026-07-10",
+                pd.DataFrame([self._scoped_feature()]),
+            )
+            pipeline.store.write_label_snapshot(
+                "a_share",
+                "2026-07-10",
+                pd.DataFrame([{
+                    "code": "000001",
+                    "trade_date": "20260710",
+                    "horizon": 20,
+                    "label": "up",
+                }]),
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "unified_arena_a_share_materialization_required:20260710",
+            ):
+                pipeline.run_unified_model_arena()
 
     def test_a_share_history_files_follow_materialization_manifest_whitelist(self):
         with tempfile.TemporaryDirectory() as tmp:

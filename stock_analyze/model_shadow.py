@@ -1111,6 +1111,31 @@ def run_model_iteration(
             "cash_reason": "候选模型预测尚未生成，未使用正式模型替代",
             "updated_at": now_iso(),
         })
+    expected_prediction_key = str(as_of).replace("-", "")[:8]
+    if prediction_path.stem != expected_prediction_key:
+        observed = (
+            f"{prediction_path.stem[:4]}-{prediction_path.stem[4:6]}-"
+            f"{prediction_path.stem[6:]}"
+        )
+        return _write_current_status(root, market, horizon, {
+            "schema_version": 2,
+            "status": "prediction_stale",
+            "market": market,
+            "horizon": horizon,
+            "label": MODEL_ITERATION_LABEL,
+            "portfolio_label": MODEL_ITERATION_PORTFOLIO_LABEL,
+            "model_version": model_version,
+            "display_version": candidate["display_version"],
+            "lifecycle_status": candidate["status"],
+            "lifecycle_status_label": candidate["status_label"],
+            "champion_model_version": candidate.get(
+                "champion_model_version"
+            ),
+            "prediction_as_of": observed,
+            "cash_only": True,
+            "cash_reason": "候选模型当日预测缺失，未复用历史预测",
+            "updated_at": now_iso(),
+        })
     predictions = pd.read_parquet(prediction_path)
     prediction_as_of = next(
         (
