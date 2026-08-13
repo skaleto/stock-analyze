@@ -272,10 +272,42 @@ def qdii_h5_specs(account_scope: str) -> tuple[ClassicalModelSpec, ...]:
     )
 
 
+_MAINLINE_HORIZONS = {
+    "a_share": 20,
+    "cn_qdii_etf": 10,
+}
+
+
+def mainline_horizon(market: str) -> int:
+    normalized = str(market).strip()
+    try:
+        return _MAINLINE_HORIZONS[normalized]
+    except KeyError as exc:
+        raise ValueError(f"classical_mainline_market:{normalized}") from exc
+
+
+def mainline_specs(
+    market: str,
+    account_scope: str,
+) -> tuple[ClassicalModelSpec, ...]:
+    normalized = str(market).strip()
+    if normalized == "a_share":
+        return a_share_h20_specs(account_scope)
+    if normalized == "cn_qdii_etf":
+        return tuple(
+            spec
+            for spec in qdii_h10_specs(account_scope)
+            if spec.spec_id == "hgbr_bounded_nav_tracking"
+        )
+    raise ValueError(f"classical_mainline_market:{normalized}")
+
+
 __all__ = [
     "ClassicalModelSpec",
     "a_share_h3_specs",
     "a_share_h20_specs",
+    "mainline_horizon",
+    "mainline_specs",
     "qdii_h5_specs",
     "qdii_h10_specs",
 ]
