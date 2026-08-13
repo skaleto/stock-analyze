@@ -51,14 +51,20 @@ class ResearchClassicalSpecsTest(unittest.TestCase):
 
         self.assertEqual(len(specs), 1)
         self.assertEqual({item.horizon for item in specs}, {20})
-        self.assertEqual({item.hypothesis_id for item in specs}, {"quality_lowvol"})
+        self.assertEqual(
+            {item.hypothesis_id for item in specs},
+            {"momentum_anchor_quality_residual"},
+        )
         self.assertEqual({item.rebalance_frequency for item in specs}, {"monthly"})
         self.assertTrue(all(item.feature_allowlist for item in specs))
-        self.assertTrue(all("momentum_20" not in item.feature_allowlist for item in specs))
+        self.assertTrue(all(
+            {"momentum_20", "momentum_60"}.issubset(item.feature_allowlist)
+            for item in specs
+        ))
         self.assertEqual({item.estimator for item in specs}, {"ridge"})
         self.assertEqual(
             {item.ranking_target for item in specs},
-            {"daily_cross_sectional_percentile_v1"},
+            {"momentum_anchor_residual_v1"},
         )
         self.assertEqual(
             {item.feature_selection_mode for item in specs},
@@ -66,7 +72,7 @@ class ResearchClassicalSpecsTest(unittest.TestCase):
         )
         self.assertEqual(
             specs[0].spec_id,
-            "h20_cross_sectional_quality_lowvol_ridge_v1",
+            "h20_momentum_anchor_quality_residual_ridge_v2",
         )
 
     def test_specs_are_serializable_for_the_trial_ledger(self) -> None:

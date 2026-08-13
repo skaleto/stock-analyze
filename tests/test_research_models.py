@@ -11,6 +11,7 @@ from stock_analyze.research.models import (
     MultiClassCalibrator,
     _activation_metrics,
     _bounded_cross_section_sample,
+    _momentum_anchor_values,
     _portfolio_oos_metrics,
     _ranking_target_values,
     _select_features,
@@ -70,6 +71,30 @@ class ResearchModelsTest(unittest.TestCase):
         )
         raw = _ranking_target_values(frame, "raw_excess_return")
         np.testing.assert_allclose(raw, frame["excess_return"].to_numpy())
+
+    def test_momentum_anchor_residual_target_preserves_only_incremental_rank(self):
+        frame = pd.DataFrame({
+            "trade_date": ["20260102"] * 4,
+            "account_id": ["hs300"] * 4,
+            "momentum_20": [-0.3, -0.1, 0.1, 0.3],
+            "momentum_60": [-0.4, -0.2, 0.2, 0.4],
+            "excess_return": [-0.02, -0.01, 0.01, 0.02],
+        })
+
+        anchor = _momentum_anchor_values(frame)
+        residual = _ranking_target_values(
+            frame,
+            "momentum_anchor_residual_v1",
+        )
+
+        np.testing.assert_allclose(
+            residual + anchor,
+            _ranking_target_values(
+                frame,
+                "daily_cross_sectional_percentile_v1",
+            ),
+        )
+        np.testing.assert_allclose(residual, np.zeros(4), atol=1e-12)
 
     def test_development_rank_ic_uses_raw_ranking_not_calibrated_edge(self):
         self.assertIn(
@@ -508,7 +533,11 @@ class ResearchModelsTest(unittest.TestCase):
         self.assertEqual(len(trial_dates), 1)
 
     def test_model_metadata_versions_ranking_target_and_feature_selection(self):
-        data = model_dataset().assign(research_scope="test_account")
+        data = model_dataset().assign(
+            research_scope="test_account",
+            momentum_20=lambda frame: frame["factor_a"],
+            momentum_60=lambda frame: frame["factor_a"] - frame["factor_b"],
+        )
         spec = ClassicalModelSpec(
             spec_id="cross_sectional_fixture",
             market="a_share",
@@ -517,7 +546,7 @@ class ResearchModelsTest(unittest.TestCase):
             estimator="ridge",
             feature_profile="fixture",
             parameters=(("alpha", "20.0"), ("ranking_linear_weight", "1.0")),
-            ranking_target="daily_cross_sectional_percentile_v1",
+            ranking_target="momentum_anchor_residual_v1",
             feature_selection_mode="fixed_profile_v1",
         )
 
@@ -531,7 +560,11 @@ class ResearchModelsTest(unittest.TestCase):
 
         self.assertEqual(
             bundle.metrics["ranking_target"],
-            "daily_cross_sectional_percentile_v1",
+            "momentum_anchor_residual_v1",
+        )
+        self.assertEqual(
+            bundle.ranking_target,
+            "momentum_anchor_residual_v1",
         )
         self.assertEqual(
             bundle.metrics["feature_selection_mode"],

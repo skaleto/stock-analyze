@@ -80,16 +80,17 @@ class ResearchAccountFeaturesTest(unittest.TestCase):
             )
         )
 
-    def test_h20_contract_prioritizes_slow_quality_value_features(self):
+    def test_h20_contract_adds_momentum_anchor_to_quality_value_features(self):
         contract = account_feature_contract("a_share", "hs300", 20)
 
         self.assertTrue({
             "pe_ttm", "pb", "roe", "roic", "cash_conversion",
             "accrual_ratio", "free_cashflow_to_assets",
             "gross_profit_to_assets", "account_low_volatility_percentile",
+            "momentum_20", "momentum_60",
         }.issubset(contract.allowed_features))
         self.assertTrue({
-            "momentum_20", "macd_hist_slope_pct", "amount_ratio_5_20",
+            "macd_hist_slope_pct", "amount_ratio_5_20",
         }.isdisjoint(contract.allowed_features))
 
     def test_alpha158_lite_view_exposes_cross_section_industry_and_regime_inputs(self):

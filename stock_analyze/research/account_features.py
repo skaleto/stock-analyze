@@ -48,6 +48,8 @@ _A_SHARE_FEATURES = (
 )
 
 _A_SHARE_H20_FEATURES = (
+    "momentum_20",
+    "momentum_60",
     "account_low_volatility_percentile",
     "account_liquidity_percentile",
     "account_quality_percentile",
