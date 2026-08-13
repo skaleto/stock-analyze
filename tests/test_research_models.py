@@ -339,7 +339,16 @@ class ResearchModelsTest(unittest.TestCase):
         self.assertEqual(first.metrics["walk_forward_splits"], 3)
         self.assertEqual(
             first.metrics["training_protocol_version"],
-            "purged_walk_forward_v4_dual_head_multiseed",
+            "purged_walk_forward_v5_isotonic_edge",
+        )
+        self.assertIsNotNone(first.edge_calibrator)
+        self.assertEqual(
+            first.edge_calibrator.calibration_version,
+            "clustered-date-isotonic-mean-se-v3",
+        )
+        self.assertEqual(
+            first.metrics["edge_calibrator_hash"],
+            first.edge_calibrator.calibrator_hash,
         )
         self.assertGreater(first.metrics["oos_predictions"], len(data) * 0.20)
         self.assertEqual(first.split_dates["validation_mode"], "purged_walk_forward")
@@ -559,7 +568,7 @@ class ResearchModelsTest(unittest.TestCase):
         self.assertIn("ranking_ensemble_linear_weight", bundle.metrics)
         self.assertEqual(
             bundle.metrics["training_protocol_version"],
-            "purged_walk_forward_v4_dual_head_multiseed",
+            "purged_walk_forward_v5_isotonic_edge",
         )
 
     def test_training_reference_detects_out_of_distribution_values(self):
