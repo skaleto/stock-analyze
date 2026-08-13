@@ -1671,6 +1671,78 @@ class SemanticExchangeTest(unittest.TestCase):
             ("claude", "claude-fable-5", "succeeded"),
         )
 
+    def test_coding_plan_second_failure_is_not_selected_by_later_batches(
+        self,
+    ) -> None:
+        prepared = prepare_job(
+            self.root,
+            profile_id="a-share-announcement-mentions-v24",
+            limit=1,
+            max_input_characters=24_000,
+            executor_mode="coding_plan",
+            executor_provider="claude",
+            executor_model="claude-fable-5",
+            executor_client_version="claude-code-test",
+        )
+        job_dir = Path(prepared["job_dir"])
+        manifest = json.loads((job_dir / "job.json").read_text(encoding="utf-8"))
+        item = manifest["items"][0]
+        output_dir = job_dir / "coding_plan" / "output_parts"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        envelope = {
+            "contract_version": "semantic-extraction-output-v1",
+            "document_id": item["document_id"],
+            "artifact_hash": item["artifact_hash"],
+            "input_hash": item["input_hash"],
+            "semantic_task_id": item["semantic_task_id"],
+            "execution_job_id": item["execution_job_id"],
+            "binding_id": item["binding_id"],
+            "executor": {
+                "kind": "coding-plan",
+                "provider": "claude",
+                "model": "claude-fable-5",
+                "client_version": "claude-code-test",
+            },
+            "usage": {},
+            "result": {
+                "document_id": self.a_share_id,
+                "schema_version": "announcement-mentions-v1-lite",
+                "mentions": [],
+                "no_event_reason": "未发现当前事件",
+            },
+        }
+        (output_dir / "part-0001.jsonl").write_text(
+            json.dumps(envelope, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        first = collect_coding_plan_outputs(self.root, job_dir)
+        self.assertEqual(first["validation_attempt"], 1)
+        repair_dir = job_dir / "coding_plan" / "repair-1"
+        repair_envelope = json.loads(json.dumps(envelope, ensure_ascii=False))
+        repair_envelope["result"]["no_event_reason"] = (
+            "复核后仍未发现当前事件"
+        )
+        (repair_dir / "output.jsonl").write_text(
+            json.dumps(repair_envelope, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        second = collect_coding_plan_outputs(self.root, job_dir)
+
+        self.assertEqual(second["validation_attempt"], 2)
+        self.assertEqual(second["failed"], 1)
+        later = prepare_job(
+            self.root,
+            profile_id="a-share-announcement-mentions-v24",
+            limit=1,
+            max_input_characters=24_000,
+            executor_mode="coding_plan",
+            executor_provider="trae",
+            executor_model="gpt-5.6-sol",
+            executor_client_version="traecli-test",
+        )
+        self.assertEqual(later["documents"], 0)
+
     def test_v21_rejects_runtime_executor_mismatch_before_call(self) -> None:
         prepared = prepare_job(
             self.root,
@@ -2928,6 +3000,60 @@ class SemanticExchangeTest(unittest.TestCase):
                 ),
             )
         return document_id
+
+    def test_prepare_prioritizes_title_signals_before_loading_plain_snapshots(
+        self,
+    ) -> None:
+        plain_document_ids = [
+            self._seed_document("000001.SZ", f"plain-{index}")
+            for index in range(4)
+        ]
+        with self.store.connect() as connection:
+            connection.executemany(
+                "UPDATE documents SET title=? WHERE id=?",
+                (
+                    ("投资者关系活动记录表", document_id)
+                    for document_id in plain_document_ids
+                ),
+            )
+
+        snapshot_calls: list[int] = []
+        original_snapshot = IntelligenceStore.semantic_document_snapshot
+
+        def recording_snapshot(store, document_id):
+            snapshot_calls.append(int(document_id))
+            return original_snapshot(store, document_id)
+
+        with mock.patch.object(
+            IntelligenceStore,
+            "semantic_document_snapshot",
+            new=recording_snapshot,
+        ):
+            prepared = prepare_job(
+                self.root,
+                profile_id=PROFILE_ID,
+                limit=1,
+            )
+
+        self.assertEqual(prepared["documents"], 1)
+        self.assertEqual(snapshot_calls[0], self.a_share_id)
+        self.assertFalse(set(plain_document_ids) & set(snapshot_calls))
+
+    def test_prepare_bounds_candidate_scan_for_large_coding_plan_batch(
+        self,
+    ) -> None:
+        with mock.patch.object(
+            semantic_exchange,
+            "_exchange_candidate_ids",
+            wraps=semantic_exchange._exchange_candidate_ids,
+        ) as candidate_ids:
+            prepare_job(
+                self.root,
+                profile_id=PROFILE_ID,
+                limit=100,
+            )
+
+        self.assertEqual(candidate_ids.call_args.kwargs["limit"], 500)
 
     def test_prepare_is_idempotent_and_excludes_b_share(self) -> None:
         first = prepare_job(
