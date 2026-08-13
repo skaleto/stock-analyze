@@ -63,7 +63,7 @@ from .provider import (
     SemanticInputBundle,
     SemanticProviderIdentity,
 )
-from .router import title_event_categories
+from .router import classify_document_kind, title_event_categories
 from .taxonomy import EventTaxonomy, FactRequirement
 from .validation import (
     CandidateValidationError,
@@ -577,15 +577,24 @@ def prepare_job(
             raise SemanticExchangeError(
                 "semantic_repair_explicit_documents_required"
             )
+        coding_plan_terminal_failures = (
+            _coding_plan_terminal_failure_items(
+                root,
+                semantic_contract_hash=semantic_contract_hash,
+            )
+            if uses_v21_contract
+            else ()
+        )
         candidate_ids = _exchange_candidate_ids(
             store,
             profile=profile,
             prompt_version=prompt_version,
             schema_version=schema_version,
             taxonomy_version=taxonomy.taxonomy_version,
-            limit=max(bounded_limit * 20, 2_000),
+            limit=max(bounded_limit * 5, 500),
             priority_codes=priority_codes,
             allow_terminal_retry=_allow_terminal_retry,
+            coding_plan_terminal_failures=coding_plan_terminal_failures,
         )
     for document_id in candidate_ids:
         if len(inputs) >= bounded_limit:
@@ -3894,6 +3903,9 @@ def _exchange_candidate_ids(
     limit: int,
     priority_codes: Sequence[str] = (),
     allow_terminal_retry: bool = True,
+    coding_plan_terminal_failures: Sequence[
+        tuple[int, str, str]
+    ] = (),
 ) -> list[int]:
     suffixes = [
         str(value).upper()
@@ -3940,7 +3952,36 @@ def _exchange_candidate_ids(
         if allow_terminal_retry
         else "s.status='failed_terminal'"
     )
+    coding_plan_terminal_sql = "1=1"
     with store.connect() as connection:
+        if coding_plan_terminal_failures:
+            connection.execute(
+                """
+                CREATE TEMP TABLE semantic_coding_plan_terminal_failures(
+                    document_id INTEGER NOT NULL,
+                    artifact_hash TEXT NOT NULL,
+                    parser_version TEXT NOT NULL,
+                    PRIMARY KEY(document_id, artifact_hash, parser_version)
+                ) WITHOUT ROWID
+                """
+            )
+            connection.executemany(
+                """
+                INSERT INTO semantic_coding_plan_terminal_failures(
+                    document_id, artifact_hash, parser_version
+                ) VALUES(?,?,?)
+                """,
+                coding_plan_terminal_failures,
+            )
+            coding_plan_terminal_sql = """
+                NOT EXISTS (
+                    SELECT 1
+                    FROM semantic_coding_plan_terminal_failures terminal
+                    WHERE terminal.document_id=d.id
+                      AND terminal.artifact_hash=a.content_hash
+                      AND terminal.parser_version=a.parser_version
+                )
+            """
         if normalized_priority:
             connection.execute(
                 """
@@ -3974,7 +4015,7 @@ def _exchange_candidate_ids(
             """
         rows = connection.execute(
             f"""
-            SELECT d.id
+            SELECT d.id, d.title, ({priority_sql}) AS priority_rank
             FROM documents d
             JOIN document_artifacts a
               ON a.artifact_id=(
@@ -4021,7 +4062,8 @@ def _exchange_candidate_ids(
                     )
                   )
               )
-            ORDER BY ({priority_sql}) DESC,
+              AND {coding_plan_terminal_sql}
+            ORDER BY priority_rank DESC,
                      d.live_observed DESC,
                      d.published_at DESC,
                      d.queue_priority DESC,
@@ -4030,7 +4072,85 @@ def _exchange_candidate_ids(
             """,
             parameters,
         ).fetchall()
-    return [int(row["id"]) for row in rows]
+    ordered_rows = []
+    priority_ranks = sorted(
+        {int(row["priority_rank"] or 0) for row in rows},
+        reverse=True,
+    )
+    for priority_rank in priority_ranks:
+        group = [
+            row
+            for row in rows
+            if int(row["priority_rank"] or 0) == priority_rank
+        ]
+        title_signals = [
+            row
+            for row in group
+            if title_event_categories(str(row["title"] or ""))
+            or classify_document_kind(str(row["title"] or ""))
+            == "meeting_resolution"
+        ]
+        title_signal_ids = {int(row["id"]) for row in title_signals}
+        ordered_rows.extend(title_signals)
+        ordered_rows.extend(
+            row for row in group if int(row["id"]) not in title_signal_ids
+        )
+    return [int(row["id"]) for row in ordered_rows]
+
+
+def _coding_plan_terminal_failure_items(
+    root: Path,
+    *,
+    semantic_contract_hash: str,
+) -> tuple[tuple[int, str, str], ...]:
+    """Return twice-rejected Coding Plan inputs for the same contract."""
+
+    jobs_root = root / "data" / "shared" / "intelligence" / "extraction_jobs"
+    failures: set[tuple[int, str, str]] = set()
+    if not jobs_root.exists():
+        return ()
+    for job_dir in sorted(jobs_root.glob("sj-*")):
+        manifest_path = job_dir / "job.json"
+        report_path = job_dir / "validation_report.json"
+        if not manifest_path.is_file() or not report_path.is_file():
+            continue
+        manifest = _read_json(manifest_path)
+        if str(manifest.get("semantic_contract_hash") or "") != str(
+            semantic_contract_hash
+        ):
+            continue
+        report = _read_json(report_path)
+        if int(report.get("validation_attempt") or 0) < (
+            CODING_PLAN_MAX_VALIDATION_ATTEMPTS
+        ):
+            continue
+        failed_ids = {
+            _positive_int(
+                _mapping(value, "semantic_job_error_invalid").get(
+                    "document_id"
+                )
+            )
+            for value in _sequence(
+                report.get("errors"),
+                "semantic_job_errors_invalid",
+            )
+        }
+        for raw_item in _sequence(
+            manifest.get("items"),
+            "semantic_job_items_invalid",
+        ):
+            item = _mapping(raw_item, "semantic_job_item_invalid")
+            document_id = _positive_int(item.get("document_id"))
+            if document_id not in failed_ids:
+                continue
+            failures.add(
+                (
+                    document_id,
+                    str(item.get("artifact_hash") or ""),
+                    str(item.get("parser_version") or ""),
+                )
+            )
+    return tuple(sorted(failures))
 
 
 def _latest_research_universe(
