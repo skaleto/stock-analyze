@@ -28,6 +28,7 @@ from .feature_registry import DEFAULT_REGISTRY, DEFAULT_REGISTRY_HASH
 from .labels import LABEL_CONTRACT_VERSION
 from .portfolio_replay import (
     SIMULATOR_VERSION,
+    replay_fixed_top_n_diagnostic_portfolio,
     replay_model_portfolio,
     replay_rule_portfolio,
 )
@@ -35,7 +36,7 @@ from .trial_ledger import DEFAULT_CLASSICAL_TRIAL_SPECS
 
 
 CLASS_ORDER = ("down", "flat", "up")
-TRAINING_PROTOCOL_VERSION = "purged_walk_forward_v4_dual_head_multiseed"
+TRAINING_PROTOCOL_VERSION = "purged_walk_forward_v5_isotonic_edge"
 
 
 @dataclass(frozen=True)
@@ -863,7 +864,7 @@ def _activation_metrics(
             evaluation,
             contract=portfolio_contract,
         )
-        diagnostic_replay = replay_rule_portfolio(
+        diagnostic_replay = replay_fixed_top_n_diagnostic_portfolio(
             evaluation,
             contract=portfolio_contract,
         )
@@ -942,7 +943,7 @@ def _activation_metrics(
             values = pd.to_numeric(baseline_frame[column], errors="coerce")
             baseline_frame["score"] = -values if baseline_name == "low_volatility_20" else values
             try:
-                baseline_replay = replay_rule_portfolio(
+                baseline_replay = replay_fixed_top_n_diagnostic_portfolio(
                     baseline_frame,
                     contract=portfolio_contract,
                 )
@@ -1281,16 +1282,24 @@ def _fit_components(
         ranking_weight * calibration_linear
         + (1.0 - ranking_weight) * calibration_boosting
     )
-    edge_calibrator = (
-        fit_edge_calibrator(
-            pd.DataFrame({
-                "trade_date": calibration["trade_date"].astype(str).to_numpy(),
-                "score": calibration_ranking,
-            }),
-            pd.to_numeric(calibration["excess_return"], errors="coerce"),
-            minimum_dates_per_bucket=8,
-        )
-        if model_spec is not None else None
+    observed_horizons = pd.to_numeric(
+        calibration["horizon"]
+        if "horizon" in calibration.columns
+        else pd.Series(dtype=float),
+        errors="coerce",
+    ).dropna()
+    calibration_horizon = (
+        max(int(observed_horizons.iloc[0]), 1)
+        if not observed_horizons.empty else 1
+    )
+    edge_calibrator = fit_edge_calibrator(
+        pd.DataFrame({
+            "trade_date": calibration["trade_date"].astype(str).to_numpy(),
+            "score": calibration_ranking,
+        }),
+        pd.to_numeric(calibration["excess_return"], errors="coerce"),
+        minimum_dates_per_bucket=8,
+        horizon=calibration_horizon,
     )
     logistic_fit_raw = logistic.predict_proba(scaler.transform(fit_x))
     boosting_fit_raw = boosting.predict_proba(fit_x)
@@ -1757,6 +1766,14 @@ def train_model_bundle(
         "label_hash": label_hash,
         "simulator_hash": simulator_hash,
         "trial_declaration_id": str(trial_declaration_id),
+        "edge_calibration_version": (
+            deployment.edge_calibrator.calibration_version
+            if deployment.edge_calibrator is not None else ""
+        ),
+        "edge_calibrator_hash": (
+            deployment.edge_calibrator.calibrator_hash
+            if deployment.edge_calibrator is not None else ""
+        ),
     }
     version = hashlib.sha256(json.dumps(version_payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
     selection_pairs = [

@@ -1374,6 +1374,46 @@ def replay_rule_portfolio(
     return result
 
 
+def replay_fixed_top_n_diagnostic_portfolio(
+    evaluation: pd.DataFrame,
+    *,
+    contract: Mapping[str, Any],
+) -> PortfolioReplayResult:
+    """Replay raw ranks as an equal-weight Top-N diagnostic portfolio.
+
+    The diagnostic deliberately ignores deployable allocation, edge, buffer,
+    partial-adjustment, and turnover policies. It retains the shared date,
+    quote, lot-size, settlement, and execution-cost mechanics.
+    """
+
+    diagnostic_contract = dict(contract)
+    diagnostic_contract.pop("execution_policy", None)
+    diagnostic_contract.pop("allocation_policy", None)
+    diagnostic_contract["accounts"] = [
+        {**dict(account), "hold_buffer_pct": 0.0}
+        for account in contract.get("accounts") or []
+    ]
+    diagnostic_contract["rule_execution_policy"] = {
+        "version": "fixed-topn-diagnostic-v1",
+        "rank_buffer_pct": 0.0,
+        "minimum_target_change": 0.0,
+        "partial_adjustment_rate": 1.0,
+        "max_daily_turnover": 1.0,
+        "max_industry_weight": 1.0,
+        "max_holding_days": 0,
+    }
+    diagnostic_frame = evaluation.drop(
+        columns=["expected_excess_return", "prediction_uncertainty_bps"],
+        errors="ignore",
+    )
+    result = replay_executable_portfolio(
+        diagnostic_frame,
+        contract=diagnostic_contract,
+    )
+    result.metrics["replay_contract"] = "diagnostic_fixed_topn"
+    return result
+
+
 def replay_model_portfolio(
     evaluation: pd.DataFrame,
     *,
@@ -1405,6 +1445,7 @@ __all__ = [
     "annualized_relative_wealth_excess",
     "cumulative_relative_wealth",
     "replay_executable_portfolio",
+    "replay_fixed_top_n_diagnostic_portfolio",
     "replay_model_portfolio",
     "replay_rule_portfolio",
 ]

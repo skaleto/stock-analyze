@@ -34,8 +34,8 @@ from .models import save_model_bundle, train_model_bundle
 from .portfolio_replay import (
     annualized_relative_wealth_excess,
     cumulative_relative_wealth,
+    replay_fixed_top_n_diagnostic_portfolio,
     replay_model_portfolio,
-    replay_rule_portfolio,
 )
 from .storage import ResearchStore
 from .trial_ledger import TrialLedger
@@ -250,7 +250,10 @@ def _baseline_trials(
         try:
             result = _trial_result(
                 spec_id,
-                replay_rule_portfolio(candidate, contract=portfolio_contract),
+                replay_fixed_top_n_diagnostic_portfolio(
+                    candidate,
+                    contract=portfolio_contract,
+                ),
             )
         except ValueError:
             continue
@@ -557,7 +560,7 @@ def run_classical_tournament(
                 evaluation,
                 contract=effective_portfolio_contract,
             )
-            diagnostic_replay = replay_rule_portfolio(
+            diagnostic_replay = replay_fixed_top_n_diagnostic_portfolio(
                 evaluation,
                 contract=effective_portfolio_contract,
             )

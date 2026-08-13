@@ -164,6 +164,71 @@ class ResearchPortfolioReplayTest(unittest.TestCase):
         model_result = model_replay(model_frame, contract=contract)
         self.assertEqual(model_result.metrics["replay_contract"], "model")
 
+    def test_fixed_topn_diagnostic_ignores_deployable_portfolio_controls(self):
+        evaluation = replay_rows().copy()
+        day_rank = {
+            day: index
+            for index, day in enumerate(sorted(evaluation["trade_date"].unique()))
+        }
+        evaluation["score"] = [
+            float((int(code) + day_rank[day]) % 4)
+            for code, day in zip(evaluation["code"], evaluation["trade_date"])
+        ]
+        contract = {
+            "accounts": [{
+                "id": "hs300",
+                "cash": 100_000.0,
+                "top_n": 2,
+                "hold_buffer_pct": 2.0,
+            }],
+            "trading": {
+                "lot_size": 100,
+                "commission_rate": 0.0,
+                "min_commission": 0.0,
+                "stamp_tax_rate": 0.0,
+                "slippage_rate": 0.0,
+                "max_single_weight": 0.50,
+            },
+            "execution_policy": {
+                "version": "cost-aware-aim-v1",
+                "minimum_target_change": 0.20,
+                "max_daily_turnover": 0.01,
+            },
+            "allocation_policy": {
+                "version": "benchmark-aware-topn-v1",
+                "max_rebalance_turnover": 0.01,
+            },
+            "rule_execution_policy": {
+                "version": "mechanical-rule-v1",
+                "rank_buffer_pct": 2.0,
+                "max_daily_turnover": 0.01,
+            },
+        }
+
+        result = portfolio_replay.replay_fixed_top_n_diagnostic_portfolio(
+            evaluation,
+            contract=contract,
+        )
+
+        self.assertEqual(
+            result.metrics["replay_contract"],
+            "diagnostic_fixed_topn",
+        )
+        self.assertEqual(
+            result.metrics["execution_policy_version"],
+            "fixed-topn-diagnostic-v1",
+        )
+        for signal_date, decisions in result.decisions.groupby("signal_date"):
+            expected = set(
+                evaluation.loc[evaluation["trade_date"].eq(signal_date)]
+                .sort_values(["score", "code"], ascending=[False, True])
+                .head(2)["code"]
+            )
+            actual = set(
+                decisions.loc[decisions["aim_weight"].gt(0.0), "code"]
+            )
+            self.assertEqual(actual, expected)
+
     def test_rule_replay_applies_mechanical_band_turnover_and_industry_caps(self):
         evaluation = replay_rows().copy()
         evaluation["industry"] = evaluation["code"].map(

@@ -151,9 +151,7 @@ def generate_predictions(
     edge_calibrator = getattr(bundle, "edge_calibrator", None)
     calibration_available = bool(
         edge_calibrator is not None
-        and edge_calibrator.available
-        and getattr(edge_calibrator, "calibration_version", "")
-        == "clustered-date-mean-se-v2"
+        and getattr(edge_calibrator, "supports_prediction", False)
     )
     logistic, boosting = bundle.component_probabilities(features)
     out_of_distribution = bundle.out_of_distribution_ratios(features)
