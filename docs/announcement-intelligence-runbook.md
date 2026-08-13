@@ -113,7 +113,9 @@ python -m stock_analyze.cli intelligence-semantic-import \
 
 任务自动按 25 篇切分，Claude 提示词见
 `docs/claude-historical-semantic-backfill-prompt.md`。`collect` 只生成校验报告、
-规范化输出和隔离清单，不写生产数据库；只有 Codex 验收后才执行 `import`。
+规范化输出和隔离清单，不写生产数据库；失败批次自动生成只含失败文档的
+`coding_plan/repair-1/`，唯一修复轮通过覆盖层复验，不改首轮分片。只有 Codex
+验收后才执行 `import`。
 
 生产主 CLI 保留以下六个统一契约命令：
 
