@@ -40,9 +40,9 @@ from .account_features import (
 )
 from .classical_specs import (
     a_share_h3_specs,
-    a_share_h20_specs,
+    mainline_horizon,
+    mainline_specs,
     qdii_h5_specs,
-    qdii_h10_specs,
 )
 from .classical_tournament import run_classical_tournament as execute_classical_tournament
 from .cross_sectional_candidate import evaluate_cross_sectional_candidate
@@ -1936,7 +1936,7 @@ class ResearchPipeline:
     ) -> dict[str, Any]:
         target_horizon = int(
             horizon if horizon is not None
-            else 3 if self.market == "a_share" else 10
+            else mainline_horizon(self.market)
         )
         snapshot_date = self.store.latest_common_snapshot_date(
             self.market,
@@ -2020,14 +2020,12 @@ class ResearchPipeline:
             and pd.to_numeric(dataset[column], errors="coerce").notna().mean()
             >= contract.minimum_coverage
         )
-        if self.market == "a_share" and target_horizon == 3:
+        if target_horizon == mainline_horizon(self.market):
+            declared_specs = mainline_specs(self.market, normalized_scope)
+        elif self.market == "a_share" and target_horizon == 3:
             declared_specs = a_share_h3_specs(normalized_scope)
-        elif self.market == "a_share" and target_horizon == 20:
-            declared_specs = a_share_h20_specs(normalized_scope)
         elif self.market == "cn_qdii_etf" and target_horizon == 5:
             declared_specs = qdii_h5_specs(normalized_scope)
-        elif self.market == "cn_qdii_etf" and target_horizon == 10:
-            declared_specs = qdii_h10_specs(normalized_scope)
         else:
             raise ValueError(
                 f"tournament_horizon_not_predeclared:{self.market}:{target_horizon}"
@@ -2056,7 +2054,7 @@ class ResearchPipeline:
         target_horizon = int(
             horizon
             if horizon is not None
-            else 20 if self.market == "a_share" else 5
+            else mainline_horizon(self.market)
         )
         snapshot_date = self.store.latest_common_snapshot_date(
             self.market,

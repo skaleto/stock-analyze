@@ -5,6 +5,8 @@ import unittest
 from stock_analyze.research.classical_specs import (
     a_share_h3_specs,
     a_share_h20_specs,
+    mainline_horizon,
+    mainline_specs,
     qdii_h5_specs,
     qdii_h10_specs,
 )
@@ -74,6 +76,23 @@ class ResearchClassicalSpecsTest(unittest.TestCase):
         self.assertTrue(all(row["objective"] == "exact_net_active_return" for row in rows))
         self.assertTrue(all(row["ranking_target"] for row in rows))
         self.assertTrue(all(row["feature_selection_mode"] for row in rows))
+
+    def test_each_market_has_one_declared_mainline(self) -> None:
+        self.assertEqual(mainline_horizon("a_share"), 20)
+        self.assertEqual(mainline_horizon("cn_qdii_etf"), 10)
+
+        a_share = mainline_specs("a_share", "hs300")
+        qdii = mainline_specs("cn_qdii_etf", "us_exposure")
+
+        self.assertEqual(len(a_share), 1)
+        self.assertEqual(len(qdii), 1)
+        self.assertEqual(a_share[0].horizon, 20)
+        self.assertEqual(qdii[0].horizon, 10)
+        self.assertEqual(qdii[0].estimator, "hgbr")
+
+    def test_mainline_rejects_undeclared_market(self) -> None:
+        with self.assertRaisesRegex(ValueError, "classical_mainline_market"):
+            mainline_horizon("us_equity")
 
 
 if __name__ == "__main__":
