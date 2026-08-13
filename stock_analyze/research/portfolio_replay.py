@@ -997,6 +997,14 @@ def _account_path(
                         )
                     },
                 })
+        beginning_market_value = sum(
+            int(position.get("shares") or 0)
+            * float(prices.get(code, position.get("last_price") or 0.0))
+            for code, position in state["positions"].items()
+        )
+        beginning_capital_utilization = (
+            beginning_market_value / nav_before if nav_before > 0.0 else 0.0
+        )
         for code, position in state["positions"].items():
             position["last_price"] = next_prices.get(code, prices.get(code, position.get("last_price", 0.0)))
         nav_next = _state_value(state, next_prices)
@@ -1013,6 +1021,22 @@ def _account_path(
         benchmark_now = float(pd.to_numeric(group["benchmark_entry_price"], errors="coerce").dropna().median())
         benchmark_next = float(pd.to_numeric(next_group["benchmark_entry_price"], errors="coerce").dropna().median())
         benchmark_return = benchmark_next / benchmark_now - 1.0 if benchmark_now > 0 else 0.0
+        cost_return = period_cost / nav_before
+        cash_position_effect = (
+            beginning_capital_utilization - 1.0
+        ) * benchmark_return
+        security_selection_return = (
+            gross_return
+            - beginning_capital_utilization * benchmark_return
+        )
+        execution_cost_effect = -cost_return
+        attribution_reconciliation_error = (
+            net_return
+            - benchmark_return
+            - cash_position_effect
+            - security_selection_return
+            - execution_cost_effect
+        )
         period_rows.append({
             "fold": fold,
             "signal_date": signal_date,
@@ -1022,10 +1046,15 @@ def _account_path(
             "account_weight": initial_cash,
             "scheduled_rebalance": rebalance_due,
             "gross_return": gross_return,
-            "cost_return": period_cost / nav_before,
+            "cost_return": cost_return,
             "net_return": net_return,
             "benchmark_return": benchmark_return,
             "active_return": net_return - benchmark_return,
+            "beginning_capital_utilization": beginning_capital_utilization,
+            "cash_position_effect": cash_position_effect,
+            "security_selection_return": security_selection_return,
+            "execution_cost_effect": execution_cost_effect,
+            "attribution_reconciliation_error": attribution_reconciliation_error,
             "turnover": traded_gross / nav_before,
             "cash_ratio": cash_ratio,
             "capital_utilization": capital_utilization,
@@ -1049,6 +1078,7 @@ def _account_path(
             "market_value": market_value,
             "cash_ratio": cash_ratio,
             "capital_utilization": capital_utilization,
+            "beginning_capital_utilization": beginning_capital_utilization,
             "target_risky_exposure": target_risky_exposure,
             "passive_cash_ratio": passive_cash_ratio,
             "nav": nav_next,
@@ -1136,6 +1166,9 @@ def replay_executable_portfolio(
                 for column in (
                     "gross_return", "net_return", "benchmark_return", "active_return",
                     "turnover", "cash_ratio", "capital_utilization",
+                    "beginning_capital_utilization", "cash_position_effect",
+                    "security_selection_return", "execution_cost_effect",
+                    "attribution_reconciliation_error",
                     "target_risky_exposure", "passive_cash_ratio",
                 )
             },
@@ -1185,6 +1218,16 @@ def replay_executable_portfolio(
             "turnover": float(group["turnover"].mean()),
             "cash_ratio": float(group["cash_ratio"].mean()),
             "capital_utilization": float(group["capital_utilization"].mean()),
+            "beginning_capital_utilization": float(
+                group["beginning_capital_utilization"].mean()
+            ),
+            "cash_position_effect_total": float(group["cash_position_effect"].sum()),
+            "security_selection_return_total": float(
+                group["security_selection_return"].sum()
+            ),
+            "execution_cost_effect_total": float(
+                group["execution_cost_effect"].sum()
+            ),
             "target_risky_exposure": float(group["target_risky_exposure"].mean()),
             "passive_cash_ratio": float(group["passive_cash_ratio"].mean()),
         }
@@ -1202,9 +1245,14 @@ def replay_executable_portfolio(
         - pd.to_numeric(periods["benchmark_return"], errors="coerce")
         - pd.to_numeric(periods["active_return"], errors="coerce")
     ).abs()
+    component_error = pd.to_numeric(
+        periods["attribution_reconciliation_error"],
+        errors="coerce",
+    ).abs()
     attribution_max_error = float(max(
         gross_net_error.max(skipna=True),
         active_error.max(skipna=True),
+        component_error.max(skipna=True),
     ))
     attribution_status = (
         "reconciled" if attribution_max_error <= 1e-10 else "mismatch"
@@ -1269,6 +1317,19 @@ def replay_executable_portfolio(
         "annual_turnover": float(aggregate["turnover"].mean() * periods_per_year),
         "cash_ratio": float(aggregate["cash_ratio"].mean()),
         "capital_utilization": float(aggregate["capital_utilization"].mean()),
+        "beginning_capital_utilization": float(
+            aggregate["beginning_capital_utilization"].mean()
+        ),
+        "cash_position_effect_total": float(
+            aggregate["cash_position_effect"].sum()
+        ),
+        "security_selection_return_total": float(
+            aggregate["security_selection_return"].sum()
+        ),
+        "execution_cost_effect_total": float(
+            aggregate["execution_cost_effect"].sum()
+        ),
+        "active_attribution_total": float(aggregate["active_return"].sum()),
         "target_risky_exposure": float(aggregate["target_risky_exposure"].mean()),
         "passive_cash_ratio": float(aggregate["passive_cash_ratio"].mean()),
         "portfolio_sharpe": (

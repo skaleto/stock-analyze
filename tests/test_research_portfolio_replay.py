@@ -125,6 +125,75 @@ class ResearchPortfolioReplayTest(unittest.TestCase):
         )
         self.assertAlmostEqual(metrics["active_max_drawdown"], expected_active_drawdown)
 
+    def test_active_return_attribution_reconciles_cash_selection_and_cost(self):
+        contract = {
+            "accounts": [{"id": "hs300", "cash": 100_000.0, "top_n": 1}],
+            "trading": {
+                "lot_size": 100,
+                "commission_rate": 0.0003,
+                "min_commission": 5.0,
+                "stamp_tax_rate": 0.0005,
+                "slippage_rate": 0.0005,
+                "max_single_weight": 0.40,
+            },
+            "performance": {"risk_free_rate": 0.02, "trading_days_per_year": 252},
+        }
+
+        result = replay_executable_portfolio(replay_rows(), contract=contract)
+        periods = result.periods
+        components = (
+            periods["cash_position_effect"]
+            + periods["security_selection_return"]
+            + periods["execution_cost_effect"]
+        )
+
+        np.testing.assert_allclose(
+            components,
+            periods["active_return"],
+            atol=1e-10,
+        )
+        self.assertLess(
+            float(periods["attribution_reconciliation_error"].abs().max()),
+            1e-10,
+        )
+        self.assertEqual(result.metrics["attribution_status"], "reconciled")
+        self.assertIn("cash_position_effect_total", result.metrics)
+        self.assertIn("security_selection_return_total", result.metrics)
+        self.assertIn("execution_cost_effect_total", result.metrics)
+
+    def test_cash_position_effect_changes_sign_with_benchmark_direction(self):
+        contract = {
+            "accounts": [{
+                "id": "hs300",
+                "cash": 100_000.0,
+                "top_n": 1,
+                "cash_reserve_pct": 0.60,
+            }],
+            "trading": {
+                "lot_size": 100,
+                "commission_rate": 0.0,
+                "min_commission": 0.0,
+                "stamp_tax_rate": 0.0,
+                "slippage_rate": 0.0,
+                "max_single_weight": 0.40,
+            },
+        }
+        rising = replay_rows().copy()
+        falling = rising.copy()
+        for frame, direction in ((rising, 1.0), (falling, -1.0)):
+            dates = sorted(frame["trade_date"].unique())
+            benchmark = {
+                day: 100.0 + direction * index
+                for index, day in enumerate(dates)
+            }
+            frame["benchmark_entry_price"] = frame["trade_date"].map(benchmark)
+
+        rising_result = replay_executable_portfolio(rising, contract=contract)
+        falling_result = replay_executable_portfolio(falling, contract=contract)
+
+        self.assertLess(rising_result.metrics["cash_position_effect_total"], 0.0)
+        self.assertGreater(falling_result.metrics["cash_position_effect_total"], 0.0)
+
     def test_rule_and_model_replay_have_distinct_economic_contracts(self):
         contract = {
             "accounts": [{"id": "hs300", "cash": 100_000.0, "top_n": 2}],

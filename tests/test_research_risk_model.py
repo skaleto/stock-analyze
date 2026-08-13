@@ -159,6 +159,74 @@ class ResearchRiskModelTest(unittest.TestCase):
         self.assertLessEqual(solution.turnover, 0.20 + 1e-8)
         self.assertGreaterEqual(solution.expected_cost, 0.0)
 
+    def test_target_gross_exposure_prevents_structural_cash_drag(self):
+        candidates = _frame([
+            {"code": "A", "alpha": 0.20, "liquidity_cap": 0.50},
+            {"code": "B", "alpha": 0.18, "liquidity_cap": 0.50},
+            {"code": "C", "alpha": 0.16, "liquidity_cap": 0.50},
+        ])
+        exposures = pd.DataFrame(
+            {"market_beta": [1.0, 1.0, 1.0]},
+            index=["A", "B", "C"],
+        )
+
+        solution = optimize_portfolio(
+            self._problem(
+                candidates,
+                np.diag([0.09, 0.08, 0.07]),
+                exposures,
+                limits=PortfolioLimits(
+                    max_positions=3,
+                    max_name_weight=0.50,
+                    target_gross_exposure=0.85,
+                    required_exposures=("market_beta",),
+                ),
+                risk_aversion=4.0,
+            )
+        )
+
+        self.assertIsNone(solution.fallback_reason)
+        self.assertGreaterEqual(float(solution.weights.sum()), 0.85 - 1e-8)
+        self.assertLessEqual(float(solution.weights.sum()), 1.0 + 1e-8)
+        self.assertAlmostEqual(
+            solution.exposures["gross_exposure_shortfall"],
+            0.0,
+            places=8,
+        )
+
+    def test_infeasible_target_gross_exposure_reports_shortfall(self):
+        candidates = _frame([
+            {"code": "A", "alpha": 0.20, "liquidity_cap": 0.20},
+            {"code": "B", "alpha": 0.18, "liquidity_cap": 0.20},
+        ])
+        exposures = pd.DataFrame(
+            {"market_beta": [1.0, 1.0]},
+            index=["A", "B"],
+        )
+
+        solution = optimize_portfolio(
+            self._problem(
+                candidates,
+                np.diag([0.02, 0.02]),
+                exposures,
+                limits=PortfolioLimits(
+                    max_positions=2,
+                    max_name_weight=0.20,
+                    target_gross_exposure=0.80,
+                    required_exposures=("market_beta",),
+                ),
+                risk_aversion=0.0,
+            )
+        )
+
+        self.assertIsNone(solution.fallback_reason)
+        self.assertAlmostEqual(float(solution.weights.sum()), 0.40, places=8)
+        self.assertAlmostEqual(
+            solution.exposures["gross_exposure_shortfall"],
+            0.40,
+            places=8,
+        )
+
     def test_overlapping_linear_exposure_cap_limits_shared_underlying_company(self):
         candidates = _frame(
             [

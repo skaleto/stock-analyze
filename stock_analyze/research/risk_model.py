@@ -23,6 +23,7 @@ class PortfolioLimits:
     max_positions: int
     max_name_weight: float = 1.0
     max_gross_exposure: float = 1.0
+    target_gross_exposure: float = 0.0
     min_cash_weight: float = 0.0
     max_turnover: float = 1.0
     group_caps: Mapping[str, float] = field(default_factory=dict)
@@ -129,15 +130,18 @@ def optimize_portfolio(problem: PortfolioProblem) -> PortfolioSolution:
                 fallback_support = _feasibility_support(prepared, relaxed_weights)
                 best_weights, _ = _solve_support(prepared, fallback_support)
 
-    zero_objective = _objective(
+    zero_objective = _economic_objective(
         prepared,
         np.zeros(len(prepared.codes), dtype=float),
     )
     if (
         best_weights is None
         or float(best_weights.sum()) <= prepared.limits.tolerance
-        or _objective(prepared, best_weights)
-        <= zero_objective + prepared.limits.tolerance
+        or (
+            prepared.limits.target_gross_exposure <= prepared.limits.tolerance
+            and _economic_objective(prepared, best_weights)
+            <= zero_objective + prepared.limits.tolerance
+        )
     ):
         return _cash_solution(prepared.codes, "non_positive_net_utility")
 
@@ -414,12 +418,19 @@ def _validate_limits(limits: PortfolioLimits) -> str | None:
     bounded = {
         "max_name_weight": limits.max_name_weight,
         "max_gross_exposure": limits.max_gross_exposure,
+        "target_gross_exposure": limits.target_gross_exposure,
         "min_cash_weight": limits.min_cash_weight,
         "max_turnover": limits.max_turnover,
     }
     for name, value in bounded.items():
         if not math.isfinite(float(value)) or not 0.0 <= float(value) <= 1.0:
             return f"invalid_{name}"
+    budget = min(
+        float(limits.max_gross_exposure),
+        1.0 - float(limits.min_cash_weight),
+    )
+    if float(limits.target_gross_exposure) > budget + limits.tolerance:
+        return "target_gross_exposure_above_budget"
     if limits.max_tracking_error is not None and (
         not math.isfinite(float(limits.max_tracking_error))
         or float(limits.max_tracking_error) < 0.0
@@ -680,11 +691,89 @@ def _project_basic(
     gross = float(weights.sum())
     if gross > budget and gross > 0.0:
         weights *= budget / gross
+    weights = _fill_target_gross(
+        problem,
+        weights,
+        support_mask,
+        target=min(float(limits.target_gross_exposure), budget),
+    )
     weights[weights < limits.tolerance * 0.1] = 0.0
     return weights
 
 
-def _objective(problem: _PreparedProblem, weights: np.ndarray) -> float:
+def _fill_target_gross(
+    problem: _PreparedProblem,
+    weights: np.ndarray,
+    support_mask: np.ndarray,
+    *,
+    target: float,
+) -> np.ndarray:
+    result = np.asarray(weights, dtype=float).copy()
+    remaining = max(float(target) - float(result.sum()), 0.0)
+    if remaining <= problem.limits.tolerance:
+        return result
+    caps = np.minimum(
+        problem.liquidity_caps,
+        float(problem.limits.max_name_weight),
+    )
+    gross = float(result.sum())
+    if gross > problem.limits.tolerance:
+        scale = float(target) / gross
+        positive = result > problem.limits.tolerance
+        if bool(positive.any()):
+            scale = min(
+                scale,
+                float(np.min(caps[positive] / result[positive])),
+            )
+        for constraint in problem.group_constraints:
+            group_weight = float(result[constraint.mask].sum())
+            if group_weight > problem.limits.tolerance:
+                scale = min(scale, float(constraint.cap) / group_weight)
+        for column, cap in problem.limits.exposure_caps.items():
+            exposure = float(
+                problem.exposures[column].to_numpy(dtype=float) @ result
+            )
+            if exposure > problem.limits.tolerance:
+                scale = min(scale, float(cap) / exposure)
+        if scale > 1.0:
+            result *= scale
+            remaining = max(float(target) - float(result.sum()), 0.0)
+    priority = sorted(
+        np.flatnonzero(support_mask),
+        key=lambda index: (-float(problem.alpha[index]), problem.codes[index]),
+    )
+    for index in priority:
+        headroom = max(float(caps[index] - result[index]), 0.0)
+        for constraint in problem.group_constraints:
+            if constraint.mask[index]:
+                headroom = min(
+                    headroom,
+                    max(
+                        float(constraint.cap - result[constraint.mask].sum()),
+                        0.0,
+                    ),
+                )
+        for column, cap in problem.limits.exposure_caps.items():
+            coefficient = float(problem.exposures.iloc[index][column])
+            if coefficient <= 0.0:
+                continue
+            exposure = float(
+                problem.exposures[column].to_numpy(dtype=float) @ result
+            )
+            headroom = min(
+                headroom,
+                max((float(cap) - exposure) / coefficient, 0.0),
+            )
+        addition = min(headroom, remaining)
+        if addition > problem.limits.tolerance:
+            result[index] += addition
+            remaining -= addition
+        if remaining <= problem.limits.tolerance:
+            break
+    return result
+
+
+def _economic_objective(problem: _PreparedProblem, weights: np.ndarray) -> float:
     expected_alpha = float(problem.alpha @ weights)
     portfolio_variance = float(weights @ problem.covariance @ weights)
     active = weights - problem.benchmark
@@ -696,6 +785,14 @@ def _objective(problem: _PreparedProblem, weights: np.ndarray) -> float:
         - 0.5 * problem.active_risk_aversion * max(active_variance, 0.0)
         - problem.cost_aversion * expected_cost
     )
+
+
+def _objective(problem: _PreparedProblem, weights: np.ndarray) -> float:
+    shortfall = max(
+        float(problem.limits.target_gross_exposure) - float(weights.sum()),
+        0.0,
+    )
+    return _economic_objective(problem, weights) - 10.0 * shortfall * shortfall
 
 
 def _turnover(weights: np.ndarray, current: np.ndarray) -> float:
@@ -751,6 +848,13 @@ def _build_solution(
         }
     )
     exposures.update(_group_exposures(problem, weights))
+    gross_exposure = float(weights.sum())
+    gross_target = float(problem.limits.target_gross_exposure)
+    exposures.update({
+        "gross_exposure": gross_exposure,
+        "gross_exposure_target": gross_target,
+        "gross_exposure_shortfall": max(gross_target - gross_exposure, 0.0),
+    })
 
     return PortfolioSolution(
         weights=weight_series,
@@ -845,6 +949,13 @@ def _binding_constraints(
     gross = float(weights.sum())
     if abs(gross - budget) <= tolerance:
         bindings.add("max_gross_exposure")
+    if (
+        limits.target_gross_exposure > 0.0
+        and gross >= limits.target_gross_exposure - tolerance
+    ):
+        bindings.add("target_gross_exposure")
+    elif limits.target_gross_exposure - gross > tolerance:
+        bindings.add("target_gross_exposure_shortfall")
     if abs((1.0 - gross) - limits.min_cash_weight) <= tolerance:
         bindings.add("min_cash_weight")
     if int((weights > limits.tolerance).sum()) >= limits.max_positions:
