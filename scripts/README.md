@@ -28,11 +28,25 @@ export RSYNC_RSH='ssh -i <key>'
 The local baseline-first runner exports only immutable feature, label, and
 frozen-window manifests from ECS and verifies their hashes before training. A
 model is sent back only when its bounded residual beats the transparent
-baseline on the declared development folds; a losing candidate produces a
-local stop report and no model bundle. ECS import preserves all existing
-Champion pointers and rejects any Active model state. Limit CPU usage with
+baseline on the declared development folds and its exact deployable replay
+passes the same cost/risk boundary; a losing candidate produces a local stop
+report and no model bundle. Each invocation uses a unique run directory, and
+same-path bundles fail if their source fingerprint changed. ECS import preserves
+every existing lifecycle record and never overwrites Champion or Active state.
+The runner trains only the exact snapshot named by the verified input manifest;
+the model output carries that input fingerprint and ECS checks it against the
+original bundle before import. Scheduled inputs keep 8 runs per market; local
+and remote on-demand runs keep 4. Limit CPU usage with
 `MODEL_TRAIN_CPU_COUNT=8`. The old
 `run-local-classical-tournament.sh` name remains a compatibility alias only.
+Every run also returns a bounded report/window bundle, including baseline losses
+and deployment blocks, so ECS Dashboard freshness does not depend on admission.
+Without a verified input bundle the command is report-only and cannot fit or
+register a model.
+
+The monthly ECS timer runs `scripts/prepare-model-training-bundles.sh`: it
+refreshes current labels and exports both market inputs only. It deliberately
+does not fit models on ECS.
 
 ## Daily And Weekly Runtime
 
@@ -44,7 +58,7 @@ Champion pointers and rejects any Active model state. Limit CPU usage with
 - A-share weekly workers: Sat 10:00.
 - QDII weekly workers: Sat 10:15.
 - One weekly status and review reminder: Sat 10:45.
-- Baseline-first label refresh and challenger evaluation: day 1 at 02:30.
+- Baseline-first label refresh and immutable input preparation: day 1 at 02:30.
 - Monthly review: day 1 at 09:00.
 - One monthly evolution reminder: day 1 at 09:30.
 

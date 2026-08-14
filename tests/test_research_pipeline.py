@@ -11,7 +11,11 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from stock_analyze.research.pipeline import ResearchPipeline, _shadow_stop_reason
+from stock_analyze.research.pipeline import (
+    ResearchPipeline,
+    _baseline_first_deployment_gate,
+    _shadow_stop_reason,
+)
 from stock_analyze.research.classical_specs import mainline_specs
 from stock_analyze.research.source_features import SourceCollection
 from stock_analyze.research.schemas import PredictionRecord
@@ -165,13 +169,30 @@ class ResearchPipelineTest(unittest.TestCase):
             })
             bundle = SimpleNamespace(
                 model_version="baseline-first-model-v1",
-                metrics={"training_protocol_version": "fixture-v1"},
+                metrics={
+                    **self._passing_gate_metrics(),
+                    "training_protocol_version": "fixture-v1",
+                    "replay_contract": "model",
+                },
             )
             result = {
                 "evaluation_contract": "baseline-first-incremental-v2",
+                "training_input": {
+                    "market": "a_share",
+                    "source_fingerprint": "a" * 64,
+                },
                 "report_path": str(root / "reports" / "research" / "report.md"),
                 "trial_declaration_id": "trial-v1",
                 "incremental_gate": {"net_excess_return_delta": 0.02},
+                "baseline": {
+                    "net_excess_return": 0.02,
+                    "max_drawdown": 0.12,
+                    "annual_turnover": 4.0,
+                    "subperiods": [
+                        {"fold": fold, "net_excess_return": 0.02}
+                        for fold in range(3)
+                    ],
+                },
             }
             spec = mainline_specs("a_share", "hs300")[0]
 
@@ -218,6 +239,139 @@ class ResearchPipelineTest(unittest.TestCase):
             bundle.model_version,
         )
 
+    def test_baseline_first_winner_is_not_admitted_when_exact_bundle_is_not_deployable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="codex",
+                as_of="2026-08-07",
+                offline=True,
+            )
+            dataset = pd.DataFrame({
+                "trade_date": ["20240102", "20241231"],
+                "horizon": [20, 20],
+                "label_end_date": ["20240201", "20250131"],
+                "label": ["up", "flat"],
+                "excess_return": [0.01, 0.0],
+                "momentum_20": [0.1, 0.0],
+                "momentum_60": [0.2, 0.0],
+            })
+            bundle = SimpleNamespace(
+                model_version="not-deployable",
+                metrics={
+                    **self._passing_gate_metrics(),
+                    "net_excess_return": -0.01,
+                    "trade_count": 0,
+                    "replay_contract": "model",
+                },
+            )
+            evaluation = {
+                "evaluation_contract": "baseline-first-incremental-v2",
+                "training_input": {
+                    "market": "a_share",
+                    "source_fingerprint": "a" * 64,
+                },
+                "trial_declaration_id": "trial-v1",
+                "incremental_gate": {"net_excess_return_delta": 0.02},
+                "baseline": {
+                    "net_excess_return": 0.01,
+                    "max_drawdown": 0.12,
+                    "annual_turnover": 4.0,
+                },
+            }
+
+            with (
+                patch(
+                    "stock_analyze.research.pipeline.train_model_bundle",
+                    return_value=bundle,
+                ),
+                patch("stock_analyze.research.pipeline.save_model_bundle") as save,
+                patch.object(
+                    __import__(
+                        "stock_analyze.research.pipeline",
+                        fromlist=["ModelRegistry"],
+                    ).ModelRegistry,
+                    "admit_development_shadow",
+                ) as admit,
+            ):
+                result = pipeline._freeze_baseline_first_candidate(
+                    dataset=dataset,
+                    feature_columns=("momentum_20", "momentum_60"),
+                    model_spec=mainline_specs("a_share", "hs300")[0],
+                    portfolio_contract={"accounts": [], "trading": {}},
+                    account_scope="hs300",
+                    development_start="20240101",
+                    development_end="20241231",
+                    evaluation=evaluation,
+                )
+
+        self.assertFalse(result["admitted"])
+        self.assertEqual(result["status"], "research")
+        self.assertIn("positive_deployable_net_return", result["deployment_gate"]["reasons"])
+        save.assert_not_called()
+        admit.assert_not_called()
+
+    def test_exact_bundle_gate_requires_three_folds_and_majority_increment(self):
+        baseline = {
+            "net_excess_return": 0.01,
+            "max_drawdown": 0.10,
+            "annual_turnover": 4.0,
+            "subperiods": [
+                {"fold": fold, "net_excess_return": 0.01}
+                for fold in range(3)
+            ],
+        }
+        metrics = {
+            **self._passing_gate_metrics(),
+            "replay_contract": "model",
+            "deployable_subperiods": [
+                {"fold": 0, "net_excess_return": 0.02},
+                {"fold": 1, "net_excess_return": 0.00},
+            ],
+        }
+
+        gate = _baseline_first_deployment_gate(metrics, baseline)
+
+        self.assertFalse(gate["passed"])
+        self.assertIn("deployable_eligible_folds", gate["reasons"])
+        self.assertIn("deployable_positive_fold_majority", gate["reasons"])
+
+    def test_baseline_first_without_verified_input_is_report_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline = ResearchPipeline(
+                Path(tmp),
+                market="a_share",
+                agent="codex",
+                as_of="2026-08-07",
+                offline=True,
+            )
+            dataset = pd.DataFrame({
+                "trade_date": ["20240102"],
+                "label_end_date": ["20240201"],
+            })
+            with patch(
+                "stock_analyze.research.pipeline.train_model_bundle"
+            ) as train:
+                result = pipeline._freeze_baseline_first_candidate(
+                    dataset=dataset,
+                    feature_columns=("momentum_20",),
+                    model_spec=mainline_specs("a_share", "hs300")[0],
+                    portfolio_contract={"accounts": [], "trading": {}},
+                    account_scope="hs300",
+                    development_start="20240101",
+                    development_end="20241231",
+                    evaluation={"baseline": {}},
+                )
+
+        self.assertFalse(result["admitted"])
+        self.assertEqual(
+            result["deployment_gate"]["reasons"],
+            ["training_input_provenance"],
+        )
+        train.assert_not_called()
+
     def test_baseline_first_window_is_frozen_without_legacy_tournament(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -259,6 +413,128 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first["source"], "deterministic_initialization")
         self.assertTrue(first["historically_consumed"])
+
+    def test_baseline_first_uses_exact_training_input_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="codex",
+                as_of="2026-08-08",
+                offline=True,
+            )
+            for snapshot in ("20260807", "20260808"):
+                pipeline.store.write_feature_snapshot(
+                    "a_share",
+                    snapshot,
+                    pd.DataFrame([{"code": "000001", "trade_date": snapshot}]),
+                )
+                pipeline.store.write_label_snapshot(
+                    "a_share",
+                    snapshot,
+                    pd.DataFrame([{"code": "000001", "trade_date": snapshot}]),
+                )
+
+            selected = pipeline._baseline_first_snapshot_date({
+                "market": "a_share",
+                "snapshot_date": "20260807",
+                "source_fingerprint": "a" * 64,
+                "files": [
+                    str(path.relative_to(root))
+                    for path in (
+                        pipeline.store.feature_snapshot_path(
+                            "a_share", "20260807"
+                        ),
+                        pipeline.store.label_snapshot_path(
+                            "a_share", "20260807"
+                        ),
+                    )
+                ],
+            })
+
+        self.assertEqual(selected, "20260807")
+
+    def test_training_bundle_ignores_unlisted_local_window_manifest(self):
+        dates = pd.date_range("2020-01-02", periods=300, freq="B")
+        dataset = pd.DataFrame({
+            "trade_date": dates.strftime("%Y%m%d"),
+            "label_end_date": (
+                dates + pd.offsets.BDay(20)
+            ).strftime("%Y%m%d"),
+            "research_scope": "hs300",
+        })
+        training_input = {
+            "market": "a_share",
+            "snapshot_date": "20260807",
+            "source_fingerprint": "a" * 64,
+            "files": [],
+        }
+        payloads = []
+        with tempfile.TemporaryDirectory() as clean_tmp, tempfile.TemporaryDirectory() as dirty_tmp:
+            dirty_root = Path(dirty_tmp)
+            stale = (
+                dirty_root
+                / "data/research/baseline_first/a_share/hs300/window_manifest.json"
+            )
+            stale.parent.mkdir(parents=True)
+            stale.write_text('{"stale":true}', encoding="utf-8")
+            for root in (Path(clean_tmp), dirty_root):
+                pipeline = ResearchPipeline(
+                    root,
+                    market="a_share",
+                    agent="codex",
+                    as_of="2026-08-07",
+                    offline=True,
+                )
+                payload = pipeline._baseline_first_window_payload(
+                    dataset=dataset,
+                    account_scope="hs300",
+                    horizon=20,
+                    training_input=training_input,
+                )
+                payloads.append({
+                    key: value
+                    for key, value in payload.items()
+                    if not key.startswith("_window_manifest_")
+                })
+
+        self.assertEqual(payloads[0], payloads[1])
+
+    def test_existing_scope_without_frozen_window_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="codex",
+                as_of="2026-08-07",
+                offline=True,
+            )
+            model_root = pipeline._model_root(20, "hs300")
+            model_root.mkdir(parents=True)
+            (model_root / "registry.json").write_text(
+                '{"models":{"legacy":{"status":"rejected"}}}',
+                encoding="utf-8",
+            )
+            dates = pd.date_range("2020-01-02", periods=300, freq="B")
+            dataset = pd.DataFrame({
+                "trade_date": dates.strftime("%Y%m%d"),
+                "label_end_date": (
+                    dates + pd.offsets.BDay(20)
+                ).strftime("%Y%m%d"),
+                "research_scope": "hs300",
+            })
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "baseline_first_window_manifest_missing_existing_scope",
+            ):
+                pipeline._baseline_first_window_payload(
+                    dataset=dataset,
+                    account_scope="hs300",
+                    horizon=20,
+                )
 
     def test_shadow_stop_reason_extends_missing_evidence_but_caps_at_week_sixteen(self):
         reports = {
@@ -361,6 +637,10 @@ class ResearchPipelineTest(unittest.TestCase):
             "forward_net_excess_return": 0.02,
             "forward_max_drawdown": 0.10,
             "forward_all_accounts_positive_active": True,
+            "deployable_subperiods": [
+                {"fold": fold, "net_excess_return": 0.03}
+                for fold in range(3)
+            ],
             "governance": {
                 "deflated_sharpe_probability": 0.99,
                 "probability_of_backtest_overfit": 0.20,
@@ -1834,10 +2114,7 @@ class ResearchPipelineTest(unittest.TestCase):
 
         self.assertIsNone(registry.get("champion_model_version"))
         self.assertEqual(registry["models"]["m5"]["status"], "shadow")
-        self.assertIn(
-            "forward_evidence_status",
-            registry["models"]["m5"]["gate_history"][-1]["reasons"],
-        )
+        self.assertEqual(registry["models"]["m5"]["gate_history"], [])
 
     def test_shadow_cycle_only_evaluates_roles_currently_in_shadow(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1876,11 +2153,18 @@ class ResearchPipelineTest(unittest.TestCase):
             with (
                 patch(
                     "stock_analyze.research.pipeline.load_forward_portfolio_evidence",
-                    return_value={},
+                    return_value={
+                        "forward_evidence_status": "available",
+                        "forward_cycles": 1,
+                    },
                 ),
                 patch(
                     "stock_analyze.research.pipeline.ShadowCycleTracker.record",
                     return_value={"is_new_cycle": True, "count": 1},
+                ),
+                patch(
+                    "stock_analyze.research.pipeline.ShadowCycleTracker.record_usable_count",
+                    return_value=1,
                 ),
             ):
                 result = pipeline._advance_shadow_cycle(
@@ -1899,6 +2183,67 @@ class ResearchPipelineTest(unittest.TestCase):
             [gate["model_role"] for gate in model["gate_history"]],
             ["ranker", "portfolio"],
         )
+
+    def test_shadow_cycle_remaining_uses_realized_forward_weeks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="codex",
+                as_of="2026-07-10",
+                offline=True,
+            )
+            model_root = pipeline._model_root(20, "hs300")
+            model_root.mkdir(parents=True)
+            (model_root / "registry.json").write_text(json.dumps({
+                "models": {
+                    "m20": {
+                        "status": "shadow",
+                        "role_status": {
+                            "ranker": "shadow",
+                            "portfolio": "shadow",
+                        },
+                        "gate_history": [],
+                    }
+                }
+            }), encoding="utf-8")
+            bundle = SimpleNamespace(
+                model_version="m20",
+                metrics=self._passing_gate_metrics(),
+            )
+
+            with (
+                patch(
+                    "stock_analyze.research.pipeline.load_forward_portfolio_evidence",
+                    return_value={
+                        "forward_evidence_status": "available",
+                        "forward_cycles": 5,
+                    },
+                ),
+                patch(
+                    "stock_analyze.research.pipeline.ShadowCycleTracker.record",
+                    return_value={
+                        "is_new_cycle": True,
+                        "count": 12,
+                        "remaining": 0,
+                        "cycles": [],
+                    },
+                ),
+                patch(
+                    "stock_analyze.research.pipeline.ShadowCycleTracker.record_usable_count",
+                    return_value=5,
+                ),
+            ):
+                result = pipeline._advance_shadow_cycle(
+                    20,
+                    bundle,
+                    10,
+                    account_scope="hs300",
+                )
+
+        self.assertEqual(result["count"], 5)
+        self.assertEqual(result["remaining"], 7)
 
     def test_pinned_iteration_candidate_runs_alongside_existing_champion(self):
         with tempfile.TemporaryDirectory() as tmp:

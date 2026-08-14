@@ -60,6 +60,28 @@ def shadow_cycles_path(
     ).with_name("shadow_cycles.json")
 
 
+def usable_shadow_cycle_count(model_state: dict[str, Any]) -> int:
+    """Return only prediction weeks backed by realized forward NAV evidence."""
+
+    cycles = list(model_state.get("cycles") or [])
+    explicit = model_state.get("usable_cycle_count")
+    if explicit is not None:
+        try:
+            return min(len(cycles), max(0, int(explicit)))
+        except (TypeError, ValueError):
+            return 0
+    forward_counts = []
+    for cycle in cycles:
+        metrics = (cycle or {}).get("metrics") or {}
+        if metrics.get("forward_evidence_status") != "available":
+            continue
+        try:
+            forward_counts.append(max(0, int(metrics.get("forward_cycles") or 0)))
+        except (TypeError, ValueError):
+            continue
+    return min(len(cycles), max(forward_counts, default=0))
+
+
 def iteration_state_path(
     root: str | Path,
     market: str,
@@ -232,8 +254,8 @@ def model_version_summary(
         ),
         {"models": {}},
     )
-    cycles = ((cycle_state.get("models") or {}).get(model_version) or {}).get("cycles") or []
-    cycle_count = len(cycles)
+    model_cycles = (cycle_state.get("models") or {}).get(model_version) or {}
+    cycle_count = usable_shadow_cycle_count(model_cycles)
     return {
         "market": str(market),
         "account_scope": str(account_scope or metadata.get("account_scope") or ""),

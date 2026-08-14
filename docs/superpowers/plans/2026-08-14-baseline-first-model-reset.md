@@ -107,8 +107,14 @@ baseline before entering a versioned shadow account.
 1. Run targeted tests, full Python tests and compile checks.
 2. Commit and push the isolated branch.
 3. Back up and deploy source to ECS without replacing paper-trading data.
-4. Run bounded remote label refresh and development evaluation.
-5. Verify service status, artifacts and Dashboard/API compatibility.
+4. Run bounded remote label refresh and immutable bundle export; execute the
+   CPU-heavy development evaluation on the trusted local machine, pinned to
+   the exact bundle snapshot and source fingerprint.
+5. Import only an admitted Shadow bundle and verify service status, artifacts
+   and Dashboard/API compatibility; the import must revalidate the original
+   training-input fingerprint.
+6. Import a registry-free report/window bundle for every outcome so rejected or
+   blocked runs also refresh the ECS Dashboard.
 
 ## Measured Gates
 
@@ -122,6 +128,10 @@ baseline before entering a versioned shadow account.
   net incremental return.
 - Trial budget: no more than three unique specs per reset protocol.
 - Shadow: no unresolved candidate remains pending beyond 16 usable weeks.
+- Provenance: the trained snapshot and source fingerprint match the ECS input
+  manifest through model export and import.
+- Report-only safety: no verified input means no fit and no Registry mutation;
+  every completed evaluation still has a bounded online result.
 - Safety: `formal_strategy_activated` remains false unless future shadow gates
   independently pass.
 
@@ -151,7 +161,7 @@ trend baseline is the only positive development result, but its 22.91 annual
 turnover and 81.11% capital utilization remain outside the declared deployment
 quality contract, so it was not promoted indirectly.
 
-Verification completed locally with 2,036 Python tests (6 skipped), 232
+Verification completed locally with 2,058 Python tests (6 skipped), 232
 frontend tests, a production frontend build, Python compile checks, shell
 syntax checks, and real-data A-share/QDII runs. ECS deployment and remote
 evidence are recorded in the release verification rather than inferred from

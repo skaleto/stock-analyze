@@ -324,12 +324,11 @@ def _incremental_gate(
     }
     incremental_checks = {
         "positive_rank_ic": float(candidate.get("rank_ic") or 0.0) > 0.0,
-        "positive_candidate_net_return": candidate_return > 0.0,
         "positive_net_increment": return_delta > 0.0,
         "positive_fold_majority": positive_fold_count >= 2,
         "drawdown_delta": drawdown_delta <= 0.02,
-        "turnover_delta": (
-            candidate_turnover <= max(baseline_turnover * 1.25, baseline_turnover + 0.25)
+        "relative_turnover": (
+            candidate_turnover <= baseline_turnover * 1.25
         ),
         "absolute_turnover": candidate_turnover <= 8.0,
     }

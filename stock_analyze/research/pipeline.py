@@ -148,6 +148,87 @@ def _shadow_stop_reason(
     return None
 
 
+def _baseline_first_deployment_gate(
+    metrics: dict[str, Any],
+    baseline: dict[str, Any],
+) -> dict[str, Any]:
+    """Require the frozen bundle's exact executable replay to remain viable."""
+
+    net_return = float(metrics.get("net_excess_return") or 0.0)
+    max_drawdown = float(metrics.get("max_drawdown") or 1.0)
+    annual_turnover = float(metrics.get("annual_turnover") or 1e9)
+    baseline_return = float(baseline.get("net_excess_return") or 0.0)
+    baseline_drawdown = float(baseline.get("max_drawdown") or 0.0)
+    baseline_turnover = float(baseline.get("annual_turnover") or 0.0)
+    baseline_folds = {
+        int(item.get("fold") or 0): float(
+            item.get("net_excess_return") or 0.0
+        )
+        for item in baseline.get("subperiods") or []
+    }
+    candidate_folds = {
+        int(item.get("fold") or 0): float(
+            item.get("net_excess_return") or 0.0
+        )
+        for item in metrics.get("deployable_subperiods") or []
+    }
+    common_folds = sorted(set(baseline_folds).intersection(candidate_folds))
+    fold_deltas = [
+        {
+            "fold": fold,
+            "baseline_net_excess_return": baseline_folds[fold],
+            "candidate_net_excess_return": candidate_folds[fold],
+            "delta": candidate_folds[fold] - baseline_folds[fold],
+        }
+        for fold in common_folds
+    ]
+    positive_fold_count = sum(item["delta"] > 0.0 for item in fold_deltas)
+    checks = {
+        "model_replay_contract": metrics.get("replay_contract") == "model",
+        "point_in_time_audit": metrics.get("point_in_time_audit") is True,
+        "deployable_eligible_folds": len(fold_deltas) >= 3,
+        "deployable_positive_fold_majority": positive_fold_count >= 2,
+        "positive_deployable_net_return": net_return > 0.0,
+        "deployable_candidate_beats_baseline": net_return > baseline_return,
+        "deployable_drawdown_delta": max_drawdown - baseline_drawdown <= 0.02,
+        "deployable_relative_turnover": (
+            annual_turnover <= baseline_turnover * 1.25
+        ),
+        "deployable_absolute_turnover": annual_turnover <= 8.0,
+        "deployable_trade_activity": int(metrics.get("trade_count") or 0) > 0,
+        "deployable_capital_utilization": (
+            float(metrics.get("capital_utilization") or 0.0) >= 0.85
+        ),
+        "edge_calibration_available": (
+            metrics.get("edge_calibration_available") is True
+        ),
+        "execution_evidence_status": (
+            metrics.get("execution_evidence_status")
+            in {"available", "not_applicable"}
+        ),
+    }
+    reasons = [name for name, passed in checks.items() if not passed]
+    return {
+        "passed": not reasons,
+        "reasons": reasons,
+        "metrics": {
+            "net_excess_return": net_return,
+            "max_drawdown": max_drawdown,
+            "annual_turnover": annual_turnover,
+            "capital_utilization": float(
+                metrics.get("capital_utilization") or 0.0
+            ),
+            "trade_count": int(metrics.get("trade_count") or 0),
+            "baseline_net_excess_return": baseline_return,
+            "baseline_max_drawdown": baseline_drawdown,
+            "baseline_annual_turnover": baseline_turnover,
+            "eligible_fold_count": len(fold_deltas),
+            "positive_fold_count": positive_fold_count,
+            "fold_deltas": fold_deltas,
+        },
+    }
+
+
 class ResearchPipeline:
     _FEATURE_BATCH_SIZE = 32
     _A_SHARE_ENRICH_BATCH_SIZE = 64
@@ -2253,6 +2334,29 @@ class ResearchPipeline:
         development_end: str,
         evaluation: dict[str, Any],
     ) -> dict[str, Any]:
+        training_input = dict(evaluation.get("training_input") or {})
+        fingerprint = str(training_input.get("source_fingerprint") or "")
+        if (
+            str(training_input.get("market") or "") != self.market
+            or len(fingerprint) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in fingerprint
+            )
+        ):
+            return {
+                "status": "research",
+                "admitted": False,
+                "model_version": "",
+                "spec_id": str(model_spec.spec_id),
+                "spec_hash": str(model_spec.spec_hash),
+                "deployment_gate": {
+                    "passed": False,
+                    "reasons": ["training_input_provenance"],
+                    "metrics": {},
+                },
+                "formal_strategy_activated": False,
+            }
         development = dataset.loc[
             dataset["trade_date"].astype(str).between(
                 str(development_start),
@@ -2278,6 +2382,20 @@ class ResearchPipeline:
                 evaluation.get("trial_declaration_id") or ""
             ),
         )
+        deployment_gate = _baseline_first_deployment_gate(
+            dict(bundle.metrics),
+            dict(evaluation.get("baseline") or {}),
+        )
+        if not deployment_gate["passed"]:
+            return {
+                "status": "research",
+                "admitted": False,
+                "model_version": str(bundle.model_version),
+                "spec_id": str(model_spec.spec_id),
+                "spec_hash": str(model_spec.spec_hash),
+                "deployment_gate": deployment_gate,
+                "formal_strategy_activated": False,
+            }
         model_root = self._model_root(int(model_spec.horizon), account_scope)
         transfer_root = (
             model_root
@@ -2336,6 +2454,7 @@ class ResearchPipeline:
             "horizon": int(model_spec.horizon),
             "as_of": str(evaluation.get("as_of") or self.run_key),
             "formal_strategy_activated": False,
+            "training_input": dict(evaluation.get("training_input") or {}),
             "source_evaluation_report": str(
                 evaluation.get("json_path") or evaluation.get("report_path") or ""
             ),
@@ -2365,6 +2484,7 @@ class ResearchPipeline:
             "spec_id": str(model_spec.spec_id),
             "spec_hash": str(model_spec.spec_hash),
             "transfer_report": str(transfer_report),
+            "deployment_gate": deployment_gate,
             "formal_strategy_activated": False,
         }
 
@@ -2374,27 +2494,62 @@ class ResearchPipeline:
         dataset: pd.DataFrame,
         account_scope: str,
         horizon: int,
+        training_input: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Freeze the consumed final boundary outside the retired tournament."""
 
-        manifest_path = (
+        canonical_path = (
             self.repo_root
             / "data" / "research" / "baseline_first" / self.market
             / str(account_scope) / "window_manifest.json"
         )
-        if manifest_path.exists():
+        canonical_relative = str(canonical_path.relative_to(self.repo_root))
+        allowed_files = (
+            {
+                str(value)
+                for value in training_input.get("files") or []
+                if value
+            }
+            if training_input is not None
+            else None
+        )
+        canonical_allowed = (
+            allowed_files is None or canonical_relative in allowed_files
+        )
+        if canonical_allowed and canonical_path.exists():
             try:
-                state = json.loads(manifest_path.read_text(encoding="utf-8"))
+                state = json.loads(canonical_path.read_text(encoding="utf-8"))
                 payload = dict(state["payload"])
             except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
                 raise ValueError("baseline_first_window_manifest_invalid") from exc
-            seal_evaluation_manifest(manifest_path, payload)
-            return payload
+            seal_evaluation_manifest(canonical_path, payload)
+            return {
+                **payload,
+                "_window_manifest_source": str(canonical_path),
+                "_window_manifest_target": canonical_relative,
+            }
+        if canonical_allowed and training_input is not None:
+            raise FileNotFoundError(
+                f"baseline_first_window_manifest_missing:{canonical_path}"
+            )
 
         source_payload: dict[str, Any] | None = None
         source_declaration_id = ""
-        legacy_root = self._model_root(int(horizon), account_scope) / "tournaments"
-        for candidate in reversed(sorted(legacy_root.glob("*/evaluation_manifest.json"))):
+        model_root = self._model_root(int(horizon), account_scope)
+        legacy_root = model_root / "tournaments"
+        if allowed_files is None:
+            legacy_candidates = sorted(
+                legacy_root.glob("*/evaluation_manifest.json")
+            )
+        else:
+            legacy_prefix = str(legacy_root.relative_to(self.repo_root)) + "/"
+            legacy_candidates = sorted(
+                self.repo_root / relative
+                for relative in allowed_files
+                if relative.startswith(legacy_prefix)
+                and relative.endswith("/evaluation_manifest.json")
+            )
+        for candidate in reversed(legacy_candidates):
             try:
                 state = json.loads(candidate.read_text(encoding="utf-8"))
                 payload = dict(state["payload"])
@@ -2417,6 +2572,19 @@ class ResearchPipeline:
                 source_payload = payload
                 source_declaration_id = str(state.get("declaration_id") or "")
                 break
+
+        if (
+            source_payload is None
+            and training_input is None
+            and model_root.exists()
+            and any(
+            model_root.iterdir()
+            )
+        ):
+            raise ValueError(
+                "baseline_first_window_manifest_missing_existing_scope:"
+                f"{self.market}:{account_scope}:{int(horizon)}"
+            )
 
         if source_payload is None:
             windows = build_account_windows(
@@ -2456,6 +2624,17 @@ class ResearchPipeline:
         fingerprint = hashlib.sha256(
             json.dumps(boundaries, sort_keys=True).encode("utf-8")
         ).hexdigest()[:16]
+        manifest_path = canonical_path
+        if training_input is not None and not canonical_allowed:
+            manifest_path = (
+                self.repo_root
+                / "data" / "research" / "baseline_first_derived"
+                / self.market / str(account_scope)
+                / (
+                    f"{str(training_input.get('snapshot_date') or self.run_key)}-"
+                    f"{str(training_input.get('source_fingerprint') or '')[:12]}.json"
+                )
+            )
         manifest = seal_evaluation_manifest(
             manifest_path,
             {
@@ -2475,13 +2654,63 @@ class ResearchPipeline:
                 "historically_consumed": True,
             },
         )
-        return dict(manifest["payload"])
+        return {
+            **dict(manifest["payload"]),
+            "_window_manifest_source": str(manifest_path),
+            "_window_manifest_target": canonical_relative,
+        }
+
+    def _baseline_first_snapshot_date(
+        self,
+        training_input: dict[str, Any],
+    ) -> str:
+        market = str(training_input.get("market") or "")
+        snapshot_date = str(training_input.get("snapshot_date") or "")
+        fingerprint = str(training_input.get("source_fingerprint") or "")
+        if market != self.market:
+            raise ValueError("baseline_first_training_input_market_mismatch")
+        if (
+            len(snapshot_date) != 8
+            or not snapshot_date.isdigit()
+            or snapshot_date > self.run_key
+        ):
+            raise ValueError("baseline_first_training_input_snapshot_invalid")
+        if (
+            len(fingerprint) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in fingerprint
+            )
+        ):
+            raise ValueError("baseline_first_training_input_fingerprint_invalid")
+        for path in (
+            self.store.feature_snapshot_path(self.market, snapshot_date),
+            self.store.label_snapshot_path(self.market, snapshot_date),
+        ):
+            if not path.is_file():
+                raise FileNotFoundError(
+                    f"baseline_first_training_input_snapshot_missing:{path}"
+                )
+        allowed_files = {
+            str(value) for value in training_input.get("files") or [] if value
+        }
+        required_files = {
+            str(path.relative_to(self.repo_root))
+            for path in (
+                self.store.feature_snapshot_path(self.market, snapshot_date),
+                self.store.label_snapshot_path(self.market, snapshot_date),
+            )
+        }
+        if not required_files.issubset(allowed_files):
+            raise ValueError("baseline_first_training_input_snapshot_unbound")
+        return snapshot_date
 
     def run_baseline_first_research(
         self,
         *,
         account_scope: str | None = None,
         horizon: int | None = None,
+        training_input: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Compare the declared baseline and residual on development folds only."""
 
@@ -2492,9 +2721,13 @@ class ResearchPipeline:
             raise ValueError(
                 f"baseline_first_not_predeclared:{self.market}:{target_horizon}"
             )
-        snapshot_date = self.store.latest_common_snapshot_date(
-            self.market,
-            as_of=self.as_of,
+        snapshot_date = (
+            self._baseline_first_snapshot_date(training_input)
+            if training_input is not None
+            else self.store.latest_common_snapshot_date(
+                self.market,
+                as_of=self.as_of,
+            )
         )
         features = self.store.read_feature_snapshot(self.market, snapshot_date)
         labels = self.store.read_label_snapshot(self.market, snapshot_date)
@@ -2518,6 +2751,7 @@ class ResearchPipeline:
                 self.run_baseline_first_research(
                     account_scope=scope,
                     horizon=target_horizon,
+                    training_input=training_input,
                 )
                 for scope in scopes
             ]
@@ -2526,6 +2760,8 @@ class ResearchPipeline:
                 "status": (
                     "development_pass"
                     if "development_pass" in statuses
+                    else "deployment_blocked"
+                    if "deployment_blocked" in statuses
                     else "insufficient_evidence"
                     if "insufficient_evidence" in statuses
                     else "baseline_wins"
@@ -2589,7 +2825,12 @@ class ResearchPipeline:
             dataset=dataset,
             account_scope=normalized_scope,
             horizon=target_horizon,
+            training_input=training_input,
         )
+        window_manifest = {
+            "source_path": str(payload.pop("_window_manifest_source")),
+            "target_path": str(payload.pop("_window_manifest_target")),
+        }
         evaluation = evaluate_cross_sectional_candidate(
             self.repo_root,
             market=self.market,
@@ -2604,7 +2845,20 @@ class ResearchPipeline:
             observed_final_start=str(payload["final_start"]),
             observed_final_end=str(payload["final_end"]),
         )
+        if training_input is not None:
+            evaluation = {
+                **evaluation,
+                "training_input": {
+                    "market": self.market,
+                    "snapshot_date": snapshot_date,
+                    "source_fingerprint": str(
+                        training_input.get("source_fingerprint") or ""
+                    ),
+                },
+            }
+        evaluation["window_manifest"] = window_manifest
         if evaluation.get("status") == "development_pass":
+            incremental_status = str(evaluation.get("status") or "")
             admission = self._freeze_baseline_first_candidate(
                 dataset=dataset,
                 feature_columns=feature_columns,
@@ -2617,14 +2871,41 @@ class ResearchPipeline:
             )
             evaluation = {
                 **evaluation,
+                "incremental_status": incremental_status,
                 "registry_mutated": bool(admission.get("admitted")),
                 "shadow_admission": admission,
+                "deployment_gate": dict(
+                    admission.get("deployment_gate") or {}
+                ),
             }
-            write_text_atomic(
-                Path(str(evaluation["json_path"])),
-                json.dumps(evaluation, ensure_ascii=False, indent=2, sort_keys=True),
-                encoding="utf-8",
-            )
+            if not admission.get("admitted"):
+                evaluation["status"] = "deployment_blocked"
+                evaluation["decision"] = "deployment_gate_failed"
+            if not admission.get("admitted"):
+                report_path = Path(str(evaluation["report_path"]))
+                report_text = report_path.read_text(encoding="utf-8")
+                reasons = list(
+                    (admission.get("deployment_gate") or {}).get("reasons")
+                    or []
+                )
+                report_text += (
+                    "\n## 可部署一致性\n\n"
+                    "增量排名通过，但冻结模型的实际可执行回放未通过，"
+                    "因此保持 Research，未写入 Shadow。\n\n"
+                    "未通过项："
+                    + (", ".join(str(reason) for reason in reasons) or "未知")
+                    + "\n"
+                )
+                write_text_atomic(
+                    report_path,
+                    report_text,
+                    encoding="utf-8",
+                )
+        write_text_atomic(
+            Path(str(evaluation["json_path"])),
+            json.dumps(evaluation, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
         return evaluation
 
     def run_cross_sectional_alpha_repair(
@@ -3873,7 +4154,8 @@ class ResearchPipeline:
             ),
             require_lookthrough=self.market == "cn_qdii_etf",
         )
-        cycle = ShadowCycleTracker(model_root / "shadow_cycles.json").record(
+        tracker = ShadowCycleTracker(model_root / "shadow_cycles.json")
+        cycle = tracker.record(
             bundle.model_version,
             self.as_of,
             {
@@ -3881,12 +4163,27 @@ class ResearchPipeline:
                 "calibration_quality": bundle.metrics.get("calibration_quality"),
                 **forward_evidence,
             },
+            eligible=int(prediction_count) > 0,
+        )
+        observed_cycle_count = int(cycle["count"])
+        usable_cycle_count = (
+            min(
+                observed_cycle_count,
+                int(forward_evidence.get("forward_cycles") or 0),
+            )
+            if forward_evidence.get("forward_evidence_status") == "available"
+            else 0
+        )
+        usable_cycle_count = tracker.record_usable_count(
+            bundle.model_version,
+            usable_cycle_count,
+            as_of=self.as_of,
         )
         registry = ModelRegistry(model_root / "registry.json")
         state = registry._read()
         model = ((state.get("models") or {}).get(bundle.model_version) or {})
         status = str(model.get("status", "shadow"))
-        if cycle["is_new_cycle"] and status == "shadow":
+        if cycle["is_new_cycle"] and usable_cycle_count > 0 and status == "shadow":
             role_status = model.setdefault("role_status", {})
             if not role_status:
                 role_status.update({
@@ -3902,7 +4199,7 @@ class ResearchPipeline:
             reports = evaluate_role_activation(
                 activation_evidence_from_metrics(
                     {**bundle.metrics, **forward_evidence},
-                    shadow_cycles=cycle["count"],
+                    shadow_cycles=usable_cycle_count,
                 ),
                 current_status="shadow",
                 target_status="active",
@@ -3911,17 +4208,23 @@ class ResearchPipeline:
                 report = reports[role]
                 state = registry.record_role_gate(bundle.model_version, role, report)
             status = str(state["models"][bundle.model_version]["status"])
-            stop_reason = _shadow_stop_reason(cycle["count"], reports)
+            stop_reason = _shadow_stop_reason(usable_cycle_count, reports)
             if status == "shadow" and stop_reason:
                 state = registry.reject_shadow(
                     bundle.model_version,
                     reason=stop_reason,
                     event_id=(
-                        f"shadow-stop:{bundle.model_version}:{cycle['count']}"
+                        f"shadow-stop:{bundle.model_version}:{usable_cycle_count}"
                     ),
                 )
                 status = str(state["models"][bundle.model_version]["status"])
-        return {**cycle, "status": status}
+        return {
+            **cycle,
+            "count": usable_cycle_count,
+            "remaining": max(0, tracker.required_cycles - usable_cycle_count),
+            "observed_prediction_cycles": observed_cycle_count,
+            "status": status,
+        }
 
     def _write_iteration_candidate_predictions(
         self,

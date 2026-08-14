@@ -45,7 +45,7 @@ def _seed_shadow_repo(root: Path) -> None:
     }), encoding="utf-8")
     (model_root / "shadow_cycles.json").write_text(json.dumps({
         "version": 1,
-        "models": {"model-v3": {"cycles": [
+        "models": {"model-v3": {"usable_cycle_count": 2, "cycles": [
             {"week": "2026-W28", "as_of": "2026-07-10", "metrics": {}},
             {"week": "2026-W29", "as_of": "2026-07-17", "metrics": {}},
         ]}},

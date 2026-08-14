@@ -626,6 +626,10 @@ class ResearchModelsTest(unittest.TestCase):
         self.assertGreater(bundle.metrics["decision_count"], 0)
         self.assertEqual(bundle.metrics["replay_contract"], "model")
         self.assertEqual(
+            [item["fold"] for item in bundle.metrics["deployable_subperiods"]],
+            [0, 1, 2],
+        )
+        self.assertEqual(
             bundle.metrics["diagnostic_replay_contract"],
             "diagnostic_fixed_topn",
         )

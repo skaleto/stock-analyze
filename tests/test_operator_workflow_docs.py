@@ -68,7 +68,11 @@ class OperatorWorkflowDocsTests(unittest.TestCase):
         runbook = Path("docs/competition-runbook.md").read_text(encoding="utf-8")
 
         self.assertIn("训练完成后自动执行 `research -> shadow` 门禁", runbook)
-        self.assertIn("第四个有效影子周后自动执行 `shadow -> active` 门禁", runbook)
+        self.assertIn(
+            "第 12 个有真实前瞻净值证据的有效影子周后自动执行",
+            runbook,
+        )
+        self.assertIn("可延长到第 16 周", runbook)
         self.assertIn("未通过时保持原状态", runbook)
         self.assertIn("Champion", runbook)
         self.assertIn("Challenger", runbook)

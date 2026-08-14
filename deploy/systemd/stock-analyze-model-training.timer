@@ -1,5 +1,5 @@
 [Unit]
-Description=Train prediction challenger models on the first day of each month
+Description=Prepare local model-training inputs on the first day of each month
 
 [Timer]
 OnCalendar=*-*-01 02:30:00 Asia/Shanghai

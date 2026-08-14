@@ -43,6 +43,36 @@ class ModelIterationLifecycleTest(unittest.TestCase):
         self.assertEqual(candidate["shadow_cycles"], 0)
         self.assertEqual(candidate["shadow_cycles_remaining"], 12)
 
+    def test_summary_uses_persisted_realized_forward_cycles(self):
+        from stock_analyze.model_iteration import model_version_summary
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_registry(root, "a_share", 20, {
+                "models": {"candidate": {"status": "shadow"}},
+            })
+            cycles_path = (
+                root / "data/research/models/a_share/20/shadow_cycles.json"
+            )
+            cycles_path.write_text(json.dumps({
+                "models": {
+                    "candidate": {
+                        "cycles": [
+                            {"week": f"2026-W{week:02d}"}
+                            for week in range(20, 32)
+                        ],
+                        "usable_cycle_count": 5,
+                    }
+                }
+            }), encoding="utf-8")
+
+            summary = model_version_summary(
+                root, "a_share", 20, "candidate"
+            )
+
+        self.assertEqual(summary["shadow_cycles"], 5)
+        self.assertEqual(summary["shadow_cycles_remaining"], 7)
+
     def test_research_candidate_rotates_when_newer_research_model_arrives(self):
         from stock_analyze.model_iteration import ensure_iteration_candidate, read_iteration_state
 

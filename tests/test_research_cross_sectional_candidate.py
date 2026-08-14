@@ -163,6 +163,69 @@ class CrossSectionalCandidateTest(unittest.TestCase):
         self.assertEqual(gate["status"], "baseline_wins")
         self.assertIn("positive_fold_majority", gate["reasons"])
 
+    def test_incremental_gate_allows_negative_candidate_that_strictly_improves(self):
+        baseline = {
+            "point_in_time_audit": True,
+            "rank_ic": 0.01,
+            "net_excess_return": -0.05,
+            "max_drawdown": 0.12,
+            "annual_turnover": 4.0,
+            "capital_utilization": 0.90,
+            "trade_count": 30,
+            "simulator_version": "paper-parity-daily-v1",
+            "subperiods": [
+                {"fold": 0, "net_excess_return": -0.03},
+                {"fold": 1, "net_excess_return": -0.02},
+                {"fold": 2, "net_excess_return": -0.01},
+            ],
+        }
+        candidate = {
+            **baseline,
+            "rank_ic": 0.02,
+            "net_excess_return": -0.02,
+            "subperiods": [
+                {"fold": 0, "net_excess_return": -0.01},
+                {"fold": 1, "net_excess_return": -0.01},
+                {"fold": 2, "net_excess_return": -0.02},
+            ],
+        }
+
+        gate = _incremental_gate(baseline, candidate)
+
+        self.assertTrue(gate["passed"])
+        self.assertNotIn("positive_candidate_net_return", gate["reasons"])
+
+    def test_incremental_gate_enforces_exact_twenty_five_percent_turnover_cap(self):
+        baseline = {
+            "point_in_time_audit": True,
+            "rank_ic": 0.01,
+            "net_excess_return": 0.01,
+            "max_drawdown": 0.10,
+            "annual_turnover": 0.10,
+            "capital_utilization": 0.90,
+            "trade_count": 10,
+            "simulator_version": "paper-parity-daily-v1",
+            "subperiods": [
+                {"fold": fold, "net_excess_return": 0.0}
+                for fold in range(3)
+            ],
+        }
+        candidate = {
+            **baseline,
+            "rank_ic": 0.02,
+            "net_excess_return": 0.02,
+            "annual_turnover": 0.20,
+            "subperiods": [
+                {"fold": fold, "net_excess_return": 0.01}
+                for fold in range(3)
+            ],
+        }
+
+        gate = _incremental_gate(baseline, candidate)
+
+        self.assertFalse(gate["passed"])
+        self.assertIn("relative_turnover", gate["reasons"])
+
     def test_clear_incremental_loss_is_baseline_wins_even_with_evidence_warning(self):
         baseline = {
             "point_in_time_audit": True,

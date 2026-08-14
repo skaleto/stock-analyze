@@ -946,6 +946,10 @@ def _latest_baseline_first_health(root: Path, market: str) -> dict[str, Any]:
         candidate = _mapping(payload.get("candidate"))
         baseline = _mapping(payload.get("baseline"))
         gate = _mapping(payload.get("incremental_gate"))
+        admission = _mapping(payload.get("shadow_admission"))
+        deployment_gate = _mapping(
+            admission.get("deployment_gate") or payload.get("deployment_gate")
+        )
         as_of = _text(payload.get("as_of"), limit=32)
         trained_at = (
             f"{as_of[:4]}-{as_of[4:6]}-{as_of[6:8]}"
@@ -953,17 +957,61 @@ def _latest_baseline_first_health(root: Path, market: str) -> dict[str, Any]:
             else as_of
         )
         status = str(payload.get("status") or "insufficient_evidence")
+        horizon = int(payload.get("horizon") or mainline_horizon(market))
+        admitted_version = _text(admission.get("model_version"), limit=256)
+        confirmed_record: dict[str, Any] = {}
+        if (
+            status == "development_pass"
+            and payload.get("registry_mutated") is True
+            and admission.get("admitted") is True
+            and admitted_version
+        ):
+            registry_path = (
+                root / "data" / "research" / "models" / market
+                / scope / str(horizon) / "registry.json"
+            )
+            try:
+                registry = json.loads(registry_path.read_text(encoding="utf-8"))
+                record = _mapping(
+                    _mapping(registry.get("models")).get(admitted_version)
+                )
+                artifact = Path(str(record.get("artifact") or ""))
+                if artifact and not artifact.is_absolute():
+                    artifact = root / artifact
+                if (
+                    str(record.get("status") or "") in {"shadow", "active"}
+                    and artifact.is_file()
+                ):
+                    confirmed_record = record
+            except (OSError, json.JSONDecodeError, TypeError):
+                confirmed_record = {}
+        confirmed_admission = bool(confirmed_record)
+        displayed_gate = (
+            deployment_gate
+            if status == "deployment_blocked"
+            else gate
+        )
+        gate_passed = bool(
+            confirmed_admission
+            and gate.get("passed") is True
+            and (
+                not deployment_gate
+                or deployment_gate.get("passed") is True
+            )
+        )
         latest_by_scope[scope] = {
             "model_version": (
-                f"baseline-first-{as_of}-"
-                f"{str(payload.get('model_spec_hash') or '')[:8]}"
+                admitted_version
+                if confirmed_admission
+                else (
+                    f"baseline-first-{as_of}-"
+                    f"{str(payload.get('model_spec_hash') or '')[:8]}"
+                )
             ),
             "spec_id": str(payload.get("model_spec_id") or ""),
             "spec_hash": str(payload.get("model_spec_hash") or ""),
             "account_scope": scope,
-            "horizon": int(
-                payload.get("horizon") or mainline_horizon(market)
-            ),
+            "horizon": horizon,
             "algorithm_family": "transparent_baseline_plus_ridge_residual",
             "trained_at": trained_at,
             "sample_support": int(candidate.get("oos_predictions") or 0),
@@ -973,12 +1021,12 @@ def _latest_baseline_first_health(root: Path, market: str) -> dict[str, Any]:
             "status": (
                 "rejected"
                 if status == "baseline_wins"
-                else "shadow"
-                if status == "development_pass"
+                else str(confirmed_record.get("status") or "shadow")
+                if confirmed_admission
                 else "research"
             ),
-            "gate_passed": gate.get("passed") is True,
-            "gate_reasons": list(gate.get("reasons") or []),
+            "gate_passed": gate_passed,
+            "gate_reasons": list(displayed_gate.get("reasons") or []),
             "metrics": {
                 **candidate,
                 "training_protocol_version": str(
@@ -1009,6 +1057,7 @@ def _latest_baseline_first_health(root: Path, market: str) -> dict[str, Any]:
                 "decision": str(payload.get("decision") or status),
                 "improvement": _mapping(payload.get("improvement")),
                 "incremental_gate": gate,
+                "deployment_gate": deployment_gate,
                 "observed_final_status": str(
                     payload.get("observed_final_status") or ""
                 ),

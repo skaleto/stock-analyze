@@ -1,3 +1,5 @@
+import hashlib
+import json
 import tempfile
 import unittest
 from datetime import date
@@ -5,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from stock_analyze.cli import build_parser, main
+from stock_analyze.research.local_training import manifest_source_fingerprint
 
 
 class CLIResearchTest(unittest.TestCase):
@@ -209,6 +212,59 @@ class CLIResearchTest(unittest.TestCase):
             horizon=None,
         )
 
+    def test_cli_binds_baseline_research_to_verified_training_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "stock_analyze.research.pipeline.ResearchPipeline.run_baseline_first_research",
+            return_value={"status": "baseline_wins", "results": []},
+        ) as evaluate:
+            bundle = Path(tmp) / "input"
+            relative = Path("data/research/training-input.txt")
+            payload = bundle / "payload" / relative
+            installed = Path(tmp) / relative
+            payload.parent.mkdir(parents=True)
+            installed.parent.mkdir(parents=True)
+            payload.write_bytes(b"input")
+            installed.write_bytes(b"input")
+            manifest = {
+                "schema_version": 1,
+                "kind": "research_training_input",
+                "market": "a_share",
+                "as_of": "2026-08-08",
+                "snapshot_date": "20260807",
+                "read_only_input": True,
+                "files": [{
+                    "path": str(relative),
+                    "sha256": hashlib.sha256(b"input").hexdigest(),
+                    "size": 5,
+                }],
+            }
+            manifest["source_fingerprint"] = manifest_source_fingerprint(
+                manifest
+            )
+            (bundle / "manifest.json").write_text(
+                json.dumps(manifest),
+                encoding="utf-8",
+            )
+
+            code = main([
+                "--market", "a_share", "--agent", "codex",
+                "--as-of", "2026-08-08", "run-baseline-first-research",
+                "--offline", "--repo-root", tmp,
+                "--training-input-bundle", str(bundle),
+            ])
+
+        self.assertEqual(code, 0)
+        evaluate.assert_called_once_with(
+            account_scope=None,
+            horizon=None,
+            training_input={
+                "market": "a_share",
+                "snapshot_date": "20260807",
+                "source_fingerprint": manifest["source_fingerprint"],
+                "files": [str(relative)],
+            },
+        )
+
     def test_cli_dispatches_latest_snapshot_label_refresh(self):
         with tempfile.TemporaryDirectory() as tmp, patch(
             "stock_analyze.research.pipeline.ResearchPipeline.refresh_labels",
@@ -318,6 +374,7 @@ class CLIResearchTest(unittest.TestCase):
         ])
         import_args = parser.parse_args([
             "research-model-bundle-import", "--bundle", "/tmp/output",
+            "--training-input-bundle", "/tmp/input",
         ])
 
         self.assertEqual(export_args.command, "research-training-bundle-export")

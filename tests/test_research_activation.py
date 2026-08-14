@@ -1,3 +1,4 @@
+import json
 import unittest
 import tempfile
 import math
@@ -218,6 +219,50 @@ class ResearchActivationTest(unittest.TestCase):
         self.assertEqual(repeated["count"], 1)
         self.assertEqual(next_week["count"], 2)
         self.assertEqual(next_week["remaining"], 10)
+
+    def test_shadow_cycles_do_not_count_unusable_prediction_weeks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tracker = ShadowCycleTracker(Path(tmp) / "shadow_cycles.json")
+            skipped = tracker.record(
+                "model-v2",
+                "2026-07-13",
+                {"predictions": 0},
+                eligible=False,
+            )
+            usable = tracker.record(
+                "model-v2",
+                "2026-07-20",
+                {"predictions": 10},
+                eligible=True,
+            )
+
+        self.assertEqual(skipped["count"], 0)
+        self.assertFalse(skipped["is_new_cycle"])
+        self.assertEqual(usable["count"], 1)
+
+    def test_shadow_tracker_persists_realized_forward_cycle_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "shadow_cycles.json"
+            tracker = ShadowCycleTracker(path)
+            for week in range(12):
+                tracker.record(
+                    "model-v2",
+                    f"2026-{7 + week // 4:02d}-{6 + (week % 4) * 7:02d}",
+                    {"predictions": 10},
+                )
+
+            usable = tracker.record_usable_count(
+                "model-v2",
+                5,
+                as_of="2026-09-30",
+            )
+            state = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(usable, 5)
+        self.assertEqual(
+            state["models"]["model-v2"]["usable_cycle_count"],
+            5,
+        )
 
     def test_role_gates_do_not_conflate_classifier_ranker_and_portfolio(self):
         evidence = passing_evidence(
