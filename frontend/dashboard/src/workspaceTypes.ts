@@ -297,6 +297,36 @@ export type ModelResearchHistoricalComparison = {
   }[];
 };
 
+export type ModelResearchStrategyCampaign = {
+  status: string;
+  campaignId: string | null;
+  manifestHash: string | null;
+  completedAt: string | null;
+  formalStrategyActivated: boolean;
+  scopes: {
+    accountScope: string;
+    status: string;
+    selectedRuleSpecId: string | null;
+    selectedIncrementalSpecId: string | null;
+    reasons: string[];
+    transparentTrialCount: number;
+    incrementalTrialCount: number;
+    netReturn: number | null;
+    benchmarkReturn: number | null;
+    netExcessReturn: number | null;
+    sharpe: number | null;
+    maxDrawdown: number | null;
+    targetFillRatio: number | null;
+    costStressNetExcessReturn: number | null;
+    deflatedSharpeProbability: number | null;
+    probabilityOfBacktestOverfit: number | null;
+    pairedBootstrapProbability: number | null;
+    attribution: Record<string, unknown>;
+    folds: Record<string, unknown>[];
+    regimes: Record<string, unknown>;
+  }[];
+};
+
 export type ModelResearchData = {
   generated_at: string;
   errors?: WorkspacePartialError[];
@@ -337,6 +367,7 @@ export type ModelResearchData = {
   };
   tabularResearch?: ModelResearchTabularEvidence;
   historicalComparison?: ModelResearchHistoricalComparison;
+  strategyCampaign?: ModelResearchStrategyCampaign;
   simulation: {
     status: string;
     candidate: ModelResearchCandidate | null;

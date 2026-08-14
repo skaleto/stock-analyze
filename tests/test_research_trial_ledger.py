@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from stock_analyze.research.trial_ledger import (
+    CampaignLedger,
     DEFAULT_CLASSICAL_TRIAL_SPECS,
     TrialLedger,
 )
@@ -75,6 +76,75 @@ class ResearchTrialLedgerTest(unittest.TestCase):
         self.assertEqual(len(finalized["runs"]), 1)
         self.assertEqual(finalized["runs"][0]["run_id"], "20260808:model-v1")
         self.assertEqual(len(finalized["specs"]), 5)
+
+    def test_campaign_manifest_is_immutable_and_hash_bound(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = CampaignLedger(Path(tmp))
+            payload = {
+                "campaign_id": "strategy-recovery-20260814-v1",
+                "source_commit": "abc123",
+                "simulator_version": "paper-parity-daily-v1",
+                "input_fingerprints": ["a", "b"],
+                "thresholds": {"maximum_drawdown": 0.25},
+                "transparent_specs": [
+                    {"spec_id": f"rule-{index}", "spec_hash": f"h{index}"}
+                    for index in range(24)
+                ],
+                "incremental_specs": [],
+            }
+
+            first = ledger.declare(payload)
+            second = ledger.declare(payload)
+
+            self.assertEqual(first["manifest_hash"], second["manifest_hash"])
+            self.assertEqual(first["declaration_count"], 1)
+            with self.assertRaisesRegex(ValueError, "campaign_manifest_mismatch"):
+                ledger.declare({**payload, "source_commit": "changed"})
+
+    def test_campaign_enforces_stage_and_total_trial_budgets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = CampaignLedger(Path(tmp))
+            payload = {
+                "campaign_id": "strategy-recovery-20260814-v1",
+                "source_commit": "abc123",
+                "simulator_version": "paper-parity-daily-v1",
+                "input_fingerprints": ["a", "b"],
+                "thresholds": {},
+                "transparent_specs": [
+                    {"spec_id": f"rule-{index}", "spec_hash": f"r{index}"}
+                    for index in range(24)
+                ],
+                "incremental_specs": [
+                    {"spec_id": f"ml-{index}", "spec_hash": f"m{index}"}
+                    for index in range(8)
+                ],
+            }
+            manifest = ledger.declare(payload)
+            for index in range(24):
+                ledger.record_trial(
+                    manifest_hash=manifest["manifest_hash"],
+                    stage="transparent",
+                    trial={"trial_id": f"rule-{index}", "spec_hash": f"r{index}"},
+                )
+            for index in range(8):
+                ledger.record_trial(
+                    manifest_hash=manifest["manifest_hash"],
+                    stage="incremental_ml",
+                    trial={"trial_id": f"ml-{index}", "spec_hash": f"m{index}"},
+                )
+
+            repeated = ledger.record_trial(
+                manifest_hash=manifest["manifest_hash"],
+                stage="transparent",
+                trial={"trial_id": "rule-0", "spec_hash": "r0"},
+            )
+            self.assertTrue(repeated["idempotent"])
+            with self.assertRaisesRegex(ValueError, "campaign_budget_exhausted"):
+                ledger.record_trial(
+                    manifest_hash=manifest["manifest_hash"],
+                    stage="incremental_ml",
+                    trial={"trial_id": "ml-extra", "spec_hash": "extra"},
+                )
 
 
 if __name__ == "__main__":

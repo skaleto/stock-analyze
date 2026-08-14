@@ -11,6 +11,10 @@ from typing import Any, Iterable, Mapping
 from ..utils import now_iso, write_text_atomic
 
 
+CAMPAIGN_TRANSPARENT_BUDGET = 24
+CAMPAIGN_INCREMENTAL_BUDGET = 8
+
+
 DEFAULT_CLASSICAL_TRIAL_SPECS: tuple[dict[str, str], ...] = (
     {"spec_id": "ridge_ranker", "score_source": "linear_ranking_score", "family": "linear"},
     {"spec_id": "hgbr_ranker", "score_source": "boosting_ranking_score", "family": "tree"},
@@ -113,4 +117,174 @@ class TrialLedger:
         return self._write(state)
 
 
-__all__ = ["DEFAULT_CLASSICAL_TRIAL_SPECS", "TrialLedger"]
+@dataclass(frozen=True)
+class CampaignLedger:
+    """Immutable campaign declaration plus append-only bounded trial records."""
+
+    root: Path
+
+    @property
+    def manifest_path(self) -> Path:
+        return self.root / "manifest.json"
+
+    @property
+    def trials_path(self) -> Path:
+        return self.root / "trials.jsonl"
+
+    @staticmethod
+    def _canonical(value: Any) -> Any:
+        return json.loads(
+            json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        )
+
+    @staticmethod
+    def _manifest_hash(payload: Mapping[str, Any]) -> str:
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _read_manifest(self) -> dict[str, Any]:
+        try:
+            value = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _read_trials(self) -> list[dict[str, Any]]:
+        try:
+            lines = self.trials_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        rows: list[dict[str, Any]] = []
+        for line in lines:
+            if not line.strip():
+                continue
+            value = json.loads(line)
+            if not isinstance(value, dict):
+                raise ValueError("campaign_trial_corrupt")
+            rows.append(value)
+        return rows
+
+    def read_trials(self) -> list[dict[str, Any]]:
+        return self._read_trials()
+
+    @staticmethod
+    def _validate_declared_specs(payload: Mapping[str, Any]) -> None:
+        transparent = list(payload.get("transparent_specs") or [])
+        incremental = list(payload.get("incremental_specs") or [])
+        if len(transparent) > CAMPAIGN_TRANSPARENT_BUDGET:
+            raise ValueError("campaign_transparent_budget_exceeded")
+        if len(incremental) > CAMPAIGN_INCREMENTAL_BUDGET:
+            raise ValueError("campaign_incremental_budget_exceeded")
+        all_specs = [*transparent, *incremental]
+        hashes = [str(item.get("spec_hash") or "") for item in all_specs]
+        identities = [
+            (
+                str(item.get("market") or ""),
+                str(item.get("account_scope") or ""),
+                str(item.get("spec_id") or ""),
+            )
+            for item in all_specs
+        ]
+        if not all(hashes) or len(hashes) != len(set(hashes)):
+            raise ValueError("campaign_duplicate_or_missing_spec_hash")
+        if not all(identity[2] for identity in identities) or len(identities) != len(set(identities)):
+            raise ValueError("campaign_duplicate_or_missing_spec_id")
+
+    def declare(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        normalized = self._canonical(dict(payload))
+        self._validate_declared_specs(normalized)
+        manifest_hash = self._manifest_hash(normalized)
+        current = self._read_manifest()
+        if current:
+            existing_payload = dict(current)
+            for key in ("schema_version", "manifest_hash", "declared_at", "declaration_count"):
+                existing_payload.pop(key, None)
+            if (
+                self._canonical(existing_payload) != normalized
+                or str(current.get("manifest_hash") or "") != manifest_hash
+            ):
+                raise ValueError("campaign_manifest_mismatch")
+            return current
+        manifest = {
+            **normalized,
+            "schema_version": 1,
+            "manifest_hash": manifest_hash,
+            "declared_at": now_iso(),
+            "declaration_count": 1,
+        }
+        write_text_atomic(
+            self.manifest_path,
+            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
+        )
+        return manifest
+
+    def record_trial(
+        self,
+        *,
+        manifest_hash: str,
+        stage: str,
+        trial: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        manifest = self._read_manifest()
+        if not manifest or str(manifest.get("manifest_hash") or "") != str(manifest_hash):
+            raise ValueError("campaign_manifest_missing")
+        normalized_stage = str(stage).strip().replace("-", "_")
+        if normalized_stage not in {"transparent", "incremental_ml"}:
+            raise ValueError(f"campaign_stage_invalid:{normalized_stage}")
+        normalized_trial = self._canonical(dict(trial))
+        trial_id = str(normalized_trial.get("trial_id") or "")
+        if not trial_id:
+            raise ValueError("campaign_trial_id_missing")
+        rows = self._read_trials()
+        for row in rows:
+            if str(row.get("trial_id") or "") == trial_id:
+                existing = dict(row)
+                existing.pop("recorded_at", None)
+                existing.pop("manifest_hash", None)
+                existing.pop("stage", None)
+                if existing != normalized_trial:
+                    raise ValueError("campaign_trial_mismatch")
+                return {**row, "idempotent": True}
+
+        stage_rows = [row for row in rows if str(row.get("stage") or "") == normalized_stage]
+        stage_budget = (
+            CAMPAIGN_TRANSPARENT_BUDGET
+            if normalized_stage == "transparent"
+            else CAMPAIGN_INCREMENTAL_BUDGET
+        )
+        if len(rows) >= CAMPAIGN_TRANSPARENT_BUDGET + CAMPAIGN_INCREMENTAL_BUDGET or len(stage_rows) >= stage_budget:
+            raise ValueError("campaign_budget_exhausted")
+
+        manifest_key = "transparent_specs" if normalized_stage == "transparent" else "incremental_specs"
+        allowed_hashes = {
+            str(item.get("spec_hash") or "")
+            for item in manifest.get(manifest_key) or []
+        }
+        if str(normalized_trial.get("spec_hash") or "") not in allowed_hashes:
+            raise ValueError("campaign_unknown_spec")
+        row = {
+            **normalized_trial,
+            "manifest_hash": str(manifest_hash),
+            "stage": normalized_stage,
+            "recorded_at": now_iso(),
+        }
+        serialized = "\n".join(
+            json.dumps(item, ensure_ascii=False, sort_keys=True)
+            for item in [*rows, row]
+        )
+        write_text_atomic(self.trials_path, f"{serialized}\n")
+        return {**row, "idempotent": False}
+
+
+__all__ = [
+    "CAMPAIGN_INCREMENTAL_BUDGET",
+    "CAMPAIGN_TRANSPARENT_BUDGET",
+    "CampaignLedger",
+    "DEFAULT_CLASSICAL_TRIAL_SPECS",
+    "TrialLedger",
+]

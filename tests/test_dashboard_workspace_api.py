@@ -191,6 +191,62 @@ def _intelligence(**overrides: object) -> dict:
 
 
 class DashboardWorkspaceApiTests(unittest.TestCase):
+    def test_model_resource_exposes_latest_strategy_campaign_decisions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = root / "reports/research/strategy-recovery-20260814-v1-final.json"
+            report.parent.mkdir(parents=True)
+            report.write_text(json.dumps({
+                "status": "complete",
+                "campaign_id": "strategy-recovery-20260814-v1",
+                "manifest_hash": "manifest-hash",
+                "completed_at": "2026-08-14T18:00:00",
+                "formal_strategy_activated": False,
+                "scopes": [
+                    {
+                        "market": "a_share",
+                        "account_scope": "hs300",
+                        "status": "baseline_only",
+                        "selected_spec_id": "A_MOM_01",
+                        "selected_incremental_spec_id": None,
+                        "reasons": ["ml_no_proven_increment"],
+                        "trials": [{
+                            "spec_id": "A_MOM_01",
+                            "metrics": {
+                                "net_return": 0.08,
+                                "benchmark_return": 0.03,
+                                "net_excess_return": 0.04,
+                                "portfolio_sharpe": 0.9,
+                                "max_drawdown": 0.1,
+                            },
+                            "gate_two": {
+                                "governance": {
+                                    "deflated_sharpe_probability": 0.97,
+                                    "probability_of_backtest_overfit": 0.25,
+                                },
+                            },
+                            "attribution": {"status": "reconciled"},
+                        }],
+                    },
+                    {
+                        "market": "a_share",
+                        "account_scope": "zz500",
+                        "status": "falsified",
+                        "selected_spec_id": None,
+                        "reasons": ["no_transparent_candidate_passed_gates_1_2"],
+                        "trials": [],
+                    },
+                ],
+            }), encoding="utf-8")
+
+            payload = self._build(root, models={"status": "available", "models": []})
+
+        campaign = payload["strategyCampaign"]
+        self.assertEqual(campaign["status"], "complete")
+        self.assertFalse(campaign["formalStrategyActivated"])
+        self.assertEqual(len(campaign["scopes"]), 2)
+        self.assertEqual(campaign["scopes"][0]["netExcessReturn"], 0.04)
+
     def test_latest_unified_arena_projects_bounded_comparison(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

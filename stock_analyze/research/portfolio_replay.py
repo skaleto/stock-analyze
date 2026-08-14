@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -554,6 +555,7 @@ def _account_path(
     rule_execution_policy: Mapping[str, Any] | None,
     allocation_policy: Mapping[str, Any] | None,
     rebalance_frequency: str,
+    execution_cost_multiplier: float,
     fold: str,
 ) -> tuple[
     list[dict[str, Any]],
@@ -566,6 +568,7 @@ def _account_path(
     top_n = max(int(account.get("top_n") or 1), 1)
     max_single_weight = min(max(float(trading.get("max_single_weight") or 1.0), 0.0), 1.0)
     reserve = min(max(float(account.get("cash_reserve_pct") or 0.0), 0.0), 0.95)
+    target_risky_exposure_state = 1.0 - reserve
     hold_buffer = max(float(account.get("hold_buffer_pct") or 0.20), 0.0)
     lot = _lot_size(trading)
     settlement_days = max(int(trading.get("settlement_days") or 0), 0)
@@ -605,6 +608,24 @@ def _account_path(
             date_index,
             rebalance_frequency,
         )
+        if rebalance_due and "_target_risky_exposure" in group.columns:
+            requested = pd.to_numeric(
+                group["_target_risky_exposure"], errors="coerce"
+            ).dropna()
+            if not requested.empty:
+                if float(requested.max() - requested.min()) > 1e-10:
+                    raise ValueError(
+                        f"portfolio_replay_target_exposure_inconsistent:{signal_date}"
+                    )
+                target_risky_exposure_state = min(
+                    max(float(requested.median()), 0.0),
+                    1.0,
+                )
+        reserve = 1.0 - target_risky_exposure_state
+        dynamic_account = {
+            **dict(account),
+            "cash_reserve_pct": reserve,
+        }
         group_by_code = group.assign(
             _code=group["code"].astype(str).str.zfill(6)
         ).set_index("_code")
@@ -709,9 +730,9 @@ def _account_path(
                         avg_daily_amount=pd.to_numeric(row.get("avg_amount_20"), errors="coerce"),
                         volatility=pd.to_numeric(row.get("realized_volatility_20"), errors="coerce"),
                         baseline_bps=baseline_bps,
-                    ).total_bps
-                    + 2.0 * commission_bps
-                    + stamp_bps
+                    ).total_bps * execution_cost_multiplier
+                    + 2.0 * commission_bps * execution_cost_multiplier
+                    + stamp_bps * execution_cost_multiplier
                     for _, row in policy_candidates.iterrows()
                 ]
             transition = apply_cost_aware_transition(
@@ -769,7 +790,7 @@ def _account_path(
                 state=state,
                 prices=prices,
                 nav_before=nav_before,
-                account=account,
+                account=dynamic_account,
                 trading=trading,
                 policy=rule_execution_policy,
                 signal_date=signal_date,
@@ -874,6 +895,19 @@ def _account_path(
         for code in state["positions"]:
             targets.setdefault(code, 0)
 
+        effective_trading = dict(trading)
+        for cost_key in (
+            "commission_rate",
+            "min_commission",
+            "stamp_tax_rate",
+            "slippage_rate",
+            "slippage_bps",
+        ):
+            if effective_trading.get(cost_key) is not None:
+                effective_trading[cost_key] = (
+                    float(effective_trading.get(cost_key) or 0.0)
+                    * execution_cost_multiplier
+                )
         traded_gross = commission = stamp_tax = slippage = 0.0
         for side in ("sell", "buy"):
             for code, target_shares in sorted(targets.items()):
@@ -906,8 +940,8 @@ def _account_path(
                     reference_price=reference_price,
                     shares=shares,
                     side=side,
-                    trading=trading,
-                    impact_bps=cost_estimate.total_bps,
+                    trading=effective_trading,
+                    impact_bps=cost_estimate.total_bps * execution_cost_multiplier,
                 )
                 if side == "buy":
                     while shares > 0 and float(state["cash"]) + fill.cash_delta < -1e-8:
@@ -918,8 +952,8 @@ def _account_path(
                             reference_price=reference_price,
                             shares=shares,
                             side=side,
-                            trading=trading,
-                            impact_bps=cost_estimate.total_bps,
+                            trading=effective_trading,
+                            impact_bps=cost_estimate.total_bps * execution_cost_multiplier,
                         )
                     if shares <= 0:
                         continue
@@ -941,8 +975,8 @@ def _account_path(
                             reference_price=reference_price,
                             shares=shares,
                             side=side,
-                            trading=trading,
-                            impact_bps=cost_estimate.total_bps,
+                            trading=effective_trading,
+                            impact_bps=cost_estimate.total_bps * execution_cost_multiplier,
                         )
                     if settlement_days:
                         state["settlement_queue"].append({
@@ -1007,6 +1041,25 @@ def _account_path(
         beginning_capital_utilization = (
             beginning_market_value / nav_before if nav_before > 0.0 else 0.0
         )
+        beginning_position_weights = {
+            str(code): (
+                int(position.get("shares") or 0)
+                * float(prices.get(code, position.get("last_price") or 0.0))
+                / nav_before
+            )
+            for code, position in state["positions"].items()
+        }
+        security_gross_contributions = {
+            str(code): (
+                int(position.get("shares") or 0)
+                * (
+                    float(next_prices.get(code, prices.get(code, position.get("last_price") or 0.0)))
+                    - float(prices.get(code, position.get("last_price") or 0.0))
+                )
+                / nav_before
+            )
+            for code, position in state["positions"].items()
+        }
         for code, position in state["positions"].items():
             position["last_price"] = next_prices.get(code, prices.get(code, position.get("last_price", 0.0)))
         nav_next = _state_value(state, next_prices)
@@ -1015,14 +1068,26 @@ def _account_path(
         market_value = max(nav_next - cash - unsettled_cash, 0.0)
         cash_ratio = (cash + unsettled_cash) / nav_next if nav_next > 0.0 else 1.0
         capital_utilization = market_value / nav_next if nav_next > 0.0 else 0.0
-        target_risky_exposure = 1.0 - reserve
+        target_risky_exposure = target_risky_exposure_state
+        target_fill_ratio = (
+            min(beginning_capital_utilization / target_risky_exposure, 1.0)
+            if target_risky_exposure > 1e-12 else 1.0
+        )
         passive_cash_ratio = max(cash_ratio - reserve, 0.0)
+        cash_drag = max(
+            target_risky_exposure - beginning_capital_utilization,
+            0.0,
+        )
         net_return = nav_next / nav_before - 1.0
         period_cost = commission + stamp_tax + slippage
         gross_return = (nav_next + period_cost) / nav_before - 1.0
         benchmark_now = float(pd.to_numeric(group["benchmark_entry_price"], errors="coerce").dropna().median())
         benchmark_next = float(pd.to_numeric(next_group["benchmark_entry_price"], errors="coerce").dropna().median())
         benchmark_return = benchmark_next / benchmark_now - 1.0 if benchmark_now > 0 else 0.0
+        security_selection_contributions = {
+            code: float(contribution - beginning_position_weights.get(code, 0.0) * benchmark_return)
+            for code, contribution in security_gross_contributions.items()
+        }
         cost_return = period_cost / nav_before
         cash_position_effect = (
             beginning_capital_utilization - 1.0
@@ -1055,13 +1120,22 @@ def _account_path(
             "beginning_capital_utilization": beginning_capital_utilization,
             "cash_position_effect": cash_position_effect,
             "security_selection_return": security_selection_return,
+            "security_selection_contributions": json.dumps(
+                security_selection_contributions,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
             "execution_cost_effect": execution_cost_effect,
             "attribution_reconciliation_error": attribution_reconciliation_error,
             "turnover": traded_gross / nav_before,
             "cash_ratio": cash_ratio,
             "capital_utilization": capital_utilization,
             "target_risky_exposure": target_risky_exposure,
+            "strategic_risky_exposure": target_risky_exposure,
+            "target_fill_ratio": target_fill_ratio,
             "passive_cash_ratio": passive_cash_ratio,
+            "cash_drag": cash_drag,
             "commission": commission,
             "stamp_tax": stamp_tax,
             "slippage": slippage,
@@ -1082,7 +1156,10 @@ def _account_path(
             "capital_utilization": capital_utilization,
             "beginning_capital_utilization": beginning_capital_utilization,
             "target_risky_exposure": target_risky_exposure,
+            "strategic_risky_exposure": target_risky_exposure,
+            "target_fill_ratio": target_fill_ratio,
             "passive_cash_ratio": passive_cash_ratio,
+            "cash_drag": cash_drag,
             "nav": nav_next,
         })
     return period_rows, trade_rows, nav_rows, decision_rows
@@ -1110,6 +1187,9 @@ def replay_executable_portfolio(
     if not accounts:
         raise ValueError("portfolio_replay_accounts_missing")
     trading = dict(contract.get("trading") or {})
+    execution_cost_multiplier = float(contract.get("execution_cost_multiplier") or 1.0)
+    if not np.isfinite(execution_cost_multiplier) or execution_cost_multiplier <= 0.0:
+        raise ValueError("portfolio_replay_execution_cost_multiplier")
     execution_policy = contract.get("execution_policy")
     if execution_policy is not None and not isinstance(execution_policy, Mapping):
         raise ValueError("portfolio_replay_execution_policy")
@@ -1144,6 +1224,7 @@ def replay_executable_portfolio(
             rule_execution_policy=rule_execution_policy,
             allocation_policy=allocation_policy,
             rebalance_frequency=rebalance_frequency,
+            execution_cost_multiplier=execution_cost_multiplier,
             fold=str(fold),
         )
         period_rows.extend(periods)
@@ -1171,7 +1252,8 @@ def replay_executable_portfolio(
                     "beginning_capital_utilization", "cash_position_effect",
                     "security_selection_return", "execution_cost_effect",
                     "attribution_reconciliation_error",
-                    "target_risky_exposure", "passive_cash_ratio",
+                    "target_risky_exposure", "strategic_risky_exposure",
+                    "target_fill_ratio", "passive_cash_ratio", "cash_drag",
                 )
             },
         })
@@ -1231,7 +1313,12 @@ def replay_executable_portfolio(
                 group["execution_cost_effect"].sum()
             ),
             "target_risky_exposure": float(group["target_risky_exposure"].mean()),
+            "strategic_risky_exposure": float(
+                group["strategic_risky_exposure"].mean()
+            ),
+            "target_fill_ratio": float(group["target_fill_ratio"].mean()),
             "passive_cash_ratio": float(group["passive_cash_ratio"].mean()),
+            "cash_drag": float(group["cash_drag"].mean()),
         }
     total_traded = float(periods["traded_gross"].sum())
     total_commission = float(periods["commission"].sum())
@@ -1333,7 +1420,12 @@ def replay_executable_portfolio(
         ),
         "active_attribution_total": float(aggregate["active_return"].sum()),
         "target_risky_exposure": float(aggregate["target_risky_exposure"].mean()),
+        "strategic_risky_exposure": float(
+            aggregate["strategic_risky_exposure"].mean()
+        ),
+        "target_fill_ratio": float(aggregate["target_fill_ratio"].mean()),
         "passive_cash_ratio": float(aggregate["passive_cash_ratio"].mean()),
+        "cash_drag": float(aggregate["cash_drag"].mean()),
         "portfolio_sharpe": (
             float(
                 (aggregate["net_return"].mean() - daily_risk_free)
@@ -1358,6 +1450,7 @@ def replay_executable_portfolio(
         "total_stamp_tax": total_stamp,
         "total_slippage": total_slippage,
         "total_execution_cost": total_commission + total_stamp + total_slippage,
+        "execution_cost_multiplier": execution_cost_multiplier,
         "attribution_status": attribution_status,
         "attribution_max_error": attribution_max_error,
         "execution_cost_bps": (

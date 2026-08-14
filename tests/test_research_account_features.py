@@ -1,5 +1,6 @@
 import unittest
 
+import numpy as np
 import pandas as pd
 
 from stock_analyze.research.account_features import (
@@ -119,6 +120,35 @@ class ResearchAccountFeaturesTest(unittest.TestCase):
                 self._rows().loc[lambda frame: frame["account_id"].eq("hs300")],
                 account_scope="zz500",
             )
+
+    def test_sma200_is_point_in_time_and_never_backfilled_from_the_future(self):
+        dates = pd.date_range("2025-01-02", periods=202, freq="B")
+        frame = pd.DataFrame({
+            "account_id": "hk_exposure",
+            "code": "159920",
+            "trade_date": dates.strftime("%Y%m%d"),
+            "close": np.arange(1.0, 203.0),
+            "momentum_20": 0.01,
+            "momentum_60": 0.02,
+            "realized_volatility_20": 0.20,
+            "avg_amount_20": 100_000_000.0,
+        })
+
+        result = build_account_feature_view(frame, account_scope="hk_exposure")
+
+        self.assertTrue(result.loc[:198, "sma_200"].isna().all())
+        self.assertAlmostEqual(result.loc[199, "sma_200"], 100.5)
+        self.assertAlmostEqual(
+            result.loc[199, "sma_distance_200"],
+            200.0 / 100.5 - 1.0,
+        )
+        changed = frame.copy()
+        changed.loc[201, "close"] = 1_000_000.0
+        changed_result = build_account_feature_view(
+            changed,
+            account_scope="hk_exposure",
+        )
+        self.assertEqual(changed_result.loc[199, "sma_200"], result.loc[199, "sma_200"])
 
 
 if __name__ == "__main__":

@@ -345,6 +345,48 @@ describe("ModelResearchPage", () => {
     );
   });
 
+  it("shows the sealed campaign decision without implying formal activation", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({
+      ...payload,
+      strategyCampaign: {
+        status: "complete",
+        campaignId: "strategy-recovery-20260814-v1",
+        manifestHash: "manifest-hash",
+        completedAt: "2026-08-14T18:00:00",
+        formalStrategyActivated: false,
+        scopes: [{
+          accountScope: "hs300",
+          status: "baseline_only",
+          selectedRuleSpecId: "A_MOM_01",
+          selectedIncrementalSpecId: null,
+          reasons: ["ml_no_proven_increment"],
+          transparentTrialCount: 6,
+          incrementalTrialCount: 2,
+          netReturn: 0.08,
+          benchmarkReturn: 0.03,
+          netExcessReturn: 0.04,
+          sharpe: 0.9,
+          maxDrawdown: 0.1,
+          targetFillRatio: 0.99,
+          costStressNetExcessReturn: 0.02,
+          deflatedSharpeProbability: 0.97,
+          probabilityOfBacktestOverfit: 0.25,
+          pairedBootstrapProbability: 0.82,
+          attribution: { status: "reconciled" },
+          folds: [],
+          regimes: {},
+        }],
+      },
+    })));
+
+    render(<ModelResearchPage market="a_share" refreshToken={0} />);
+
+    expect(await screen.findByText("封闭策略验证")).toBeInTheDocument();
+    expect(screen.getByText("仅规则基线")).toBeInTheDocument();
+    expect(screen.getByText("A_MOM_01")).toBeInTheDocument();
+    expect(screen.getByText("未接入正式策略")).toBeInTheDocument();
+  });
+
   it("shows formal rules and candidate models in one historical window", async () => {
     vi.stubGlobal(
       "fetch",

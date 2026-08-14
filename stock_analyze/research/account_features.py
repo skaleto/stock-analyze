@@ -50,6 +50,8 @@ _A_SHARE_FEATURES = (
 _A_SHARE_H20_FEATURES = (
     "momentum_20",
     "momentum_60",
+    "momentum_120",
+    "sma_distance_200",
     "account_low_volatility_percentile",
     "account_liquidity_percentile",
     "account_quality_percentile",
@@ -79,6 +81,9 @@ _QDII_FEATURES = (
     "global_volatility",
     "rmb_depreciation",
     "sma_distance_20",
+    "momentum_60",
+    "momentum_120",
+    "sma_distance_200",
     "natr_14",
 )
 
@@ -203,6 +208,15 @@ def build_account_feature_view(
     if scoped.empty:
         raise ValueError("account_feature_scope_mismatch")
     scoped["trade_date"] = scoped["trade_date"].astype(str)
+    scoped["code"] = scoped["code"].astype(str).str.zfill(6)
+    scoped = scoped.sort_values(["code", "trade_date"], kind="stable").reset_index(
+        drop=True
+    )
+    close = _numeric(scoped, "close")
+    scoped["sma_200"] = close.groupby(scoped["code"], sort=False).transform(
+        lambda values: values.rolling(200, min_periods=200).mean()
+    )
+    scoped["sma_distance_200"] = close / scoped["sma_200"] - 1.0
     daily = scoped.groupby("trade_date", sort=False)
     momentum_20 = _numeric(scoped, "momentum_20")
     momentum_60 = _numeric(scoped, "momentum_60")

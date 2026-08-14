@@ -47,11 +47,17 @@ def passing_evidence(**overrides) -> ActivationEvidence:
         "missing_liquidity_notional_ratio": 0.0,
         "impact_capped_notional_ratio": 0.0,
         "capital_utilization": 0.90,
+        "strategic_risky_exposure": 0.90,
+        "target_fill_ratio": 0.99,
+        "cash_drag": 0.01,
+        "cost_stress_net_excess_return": 0.01,
         "diagnostic_net_excess_return": 0.03,
         "diagnostic_max_drawdown": 0.12,
         "diagnostic_annual_turnover": 4.0,
         "diagnostic_trade_count": 20,
         "diagnostic_capital_utilization": 0.90,
+        "diagnostic_target_fill_ratio": 0.99,
+        "diagnostic_cost_stress_net_excess_return": 0.01,
         "diagnostic_all_accounts_positive_active": True,
         "diagnostic_simulator_version": "paper-parity-daily-v1",
         "diagnostic_execution_evidence_status": "available",
@@ -288,10 +294,10 @@ class ResearchActivationTest(unittest.TestCase):
         reports = evaluate_role_activation(
             passing_evidence(
                 execution_evidence_status="unavailable",
-                missing_liquidity_notional_ratio=0.06,
+                missing_liquidity_notional_ratio=0.11,
                 impact_capped_notional_ratio=0.11,
                 diagnostic_execution_evidence_status="unavailable",
-                diagnostic_missing_liquidity_notional_ratio=0.06,
+                diagnostic_missing_liquidity_notional_ratio=0.11,
                 diagnostic_impact_capped_notional_ratio=0.11,
             ),
             current_status="research",
@@ -336,16 +342,36 @@ class ResearchActivationTest(unittest.TestCase):
         self.assertIn("diagnostic_net_excess_return", reports["ranker"].reasons)
         self.assertTrue(reports["portfolio"].passed)
 
-    def test_portfolio_gate_rejects_cash_relative_pseudo_alpha(self):
+    def test_portfolio_gate_accepts_intentional_cash_when_target_is_filled(self):
         reports = evaluate_role_activation(
-            passing_evidence(capital_utilization=0.84),
+            passing_evidence(
+                capital_utilization=0.49,
+                strategic_risky_exposure=0.50,
+                target_fill_ratio=0.98,
+                annual_turnover=20.0,
+            ),
             current_status="research",
             target_status="shadow",
         )
 
         self.assertTrue(reports["ranker"].passed)
+        self.assertTrue(reports["portfolio"].passed)
+        self.assertNotIn("capital_utilization", reports["portfolio"].reasons)
+        self.assertNotIn("annual_turnover", reports["portfolio"].reasons)
+
+    def test_portfolio_gate_rejects_failed_target_fill_and_double_cost_stress(self):
+        reports = evaluate_role_activation(
+            passing_evidence(
+                target_fill_ratio=0.94,
+                cost_stress_net_excess_return=-0.001,
+            ),
+            current_status="research",
+            target_status="shadow",
+        )
+
         self.assertFalse(reports["portfolio"].passed)
-        self.assertIn("capital_utilization", reports["portfolio"].reasons)
+        self.assertIn("target_fill_ratio", reports["portfolio"].reasons)
+        self.assertIn("cost_stress_net_excess_return", reports["portfolio"].reasons)
 
     def test_active_role_promotion_supersedes_previous_role_champion(self):
         report = evaluate_role_activation(

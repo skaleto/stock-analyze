@@ -2395,6 +2395,123 @@ def _read_tabular_research_evidence(root: Path, market: str) -> dict[str, Any]:
     }
 
 
+def _read_strategy_campaign(root: Path, market: str) -> dict[str, Any]:
+    reports = root / "reports" / "research"
+    candidates = sorted(
+        reports.glob("*-final.json"),
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+        reverse=True,
+    )
+    if not candidates:
+        candidates = sorted(
+            reports.glob("*-transparent.json"),
+            key=lambda path: (path.stat().st_mtime_ns, path.name),
+            reverse=True,
+        )
+    unavailable = {
+        "status": "unavailable",
+        "campaignId": None,
+        "manifestHash": None,
+        "completedAt": None,
+        "formalStrategyActivated": False,
+        "scopes": [],
+    }
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        scopes: list[dict[str, Any]] = []
+        for raw_scope in _rows(payload.get("scopes")):
+            if str(raw_scope.get("market") or "") != market:
+                continue
+            selected_id = str(
+                raw_scope.get("selected_incremental_spec_id")
+                or raw_scope.get("selected_spec_id")
+                or ""
+            )
+            trials = [
+                *_rows(raw_scope.get("incremental_trials")),
+                *_rows(raw_scope.get("trials")),
+            ]
+            selected = next(
+                (
+                    item for item in trials
+                    if str(item.get("spec_id") or "") == selected_id
+                ),
+                {},
+            )
+            metrics = _mapping(selected.get("metrics"))
+            gate_two = _mapping(selected.get("gate_two"))
+            governance = _mapping(gate_two.get("governance"))
+            gate_three = _mapping(selected.get("gate_three"))
+            reasons = [
+                _text(item, limit=256)
+                for item in raw_scope.get("reasons") or []
+                if _text(item, limit=256)
+            ][:MAX_DIAGNOSTIC_ITEMS]
+            scopes.append({
+                "accountScope": _text(raw_scope.get("account_scope"), limit=64),
+                "status": _text(raw_scope.get("status"), limit=64) or "unavailable",
+                "selectedRuleSpecId": (
+                    _text(raw_scope.get("selected_spec_id"), limit=128) or None
+                ),
+                "selectedIncrementalSpecId": (
+                    _text(
+                        raw_scope.get("selected_incremental_spec_id"),
+                        limit=128,
+                    ) or None
+                ),
+                "reasons": reasons,
+                "transparentTrialCount": len(_rows(raw_scope.get("trials"))),
+                "incrementalTrialCount": len(
+                    _rows(raw_scope.get("incremental_trials"))
+                ),
+                "netReturn": _finite_number(metrics.get("net_return")),
+                "benchmarkReturn": _finite_number(metrics.get("benchmark_return")),
+                "netExcessReturn": _finite_number(metrics.get("net_excess_return")),
+                "sharpe": _finite_number(metrics.get("portfolio_sharpe")),
+                "maxDrawdown": _finite_number(metrics.get("max_drawdown")),
+                "targetFillRatio": _finite_number(metrics.get("target_fill_ratio")),
+                "costStressNetExcessReturn": _finite_number(
+                    _mapping(selected.get("cost_stress")).get("net_excess_return")
+                ),
+                "deflatedSharpeProbability": _finite_number(
+                    governance.get("deflated_sharpe_probability")
+                ),
+                "probabilityOfBacktestOverfit": _finite_number(
+                    governance.get("probability_of_backtest_overfit")
+                ),
+                "pairedBootstrapProbability": _finite_number(
+                    gate_three.get("paired_bootstrap_probability")
+                ),
+                "attribution": _bounded_diagnostics(
+                    _mapping(selected.get("attribution"))
+                ),
+                "folds": _bounded_diagnostics(selected.get("folds") or [])[:3],
+                "regimes": _bounded_diagnostics(
+                    _mapping(selected.get("regimes"))
+                ),
+            })
+        if not scopes:
+            continue
+        return {
+            "status": _text(payload.get("status"), limit=64) or "unavailable",
+            "campaignId": _text(payload.get("campaign_id"), limit=256) or None,
+            "manifestHash": _text(payload.get("manifest_hash"), limit=256) or None,
+            "completedAt": _iso_timestamp(
+                payload.get("completed_at") or payload.get("generated_at")
+            ),
+            "formalStrategyActivated": bool(
+                payload.get("formal_strategy_activated", False)
+            ),
+            "scopes": scopes[:MAX_TABLE_ROWS],
+        }
+    return unavailable
+
+
 def build_dashboard_model_research_data(
     *,
     repo_root: str | Path | None = None,
@@ -2642,6 +2759,23 @@ def build_dashboard_model_research_data(
             market,
         )
     )
+    strategy_campaign = _mapping(
+        _safe_workspace_read(
+            errors,
+            "strategy_campaign",
+            {
+                "status": "unavailable",
+                "campaignId": None,
+                "manifestHash": None,
+                "completedAt": None,
+                "formalStrategyActivated": False,
+                "scopes": [],
+            },
+            _read_strategy_campaign,
+            root,
+            market,
+        )
+    )
     tabular_run = _mapping(
         tabular_research.get("best") or tabular_research.get("latest")
     )
@@ -2867,6 +3001,7 @@ def build_dashboard_model_research_data(
         },
         "tabularResearch": tabular_research,
         "historicalComparison": historical_comparison,
+        "strategyCampaign": strategy_campaign,
         "simulation": {
             "status": _text(iteration.get("status"), limit=128) or "unavailable",
             "candidate": candidate or None,
