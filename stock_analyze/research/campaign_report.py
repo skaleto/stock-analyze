@@ -21,6 +21,17 @@ TERMINAL_STATES = {
     "falsified",
     "insufficient_data",
 }
+DISPLAY_METRIC_KEYS = {
+    "annual_turnover",
+    "attribution_status",
+    "benchmark_return",
+    "max_drawdown",
+    "net_excess_return",
+    "net_return",
+    "portfolio_sharpe",
+    "strategic_risky_exposure",
+    "target_fill_ratio",
+}
 
 
 def _scope_identity(value: Mapping[str, Any]) -> tuple[str, str]:
@@ -42,6 +53,7 @@ def _selected_trial(scope: Mapping[str, Any]) -> Mapping[str, Any]:
         or ""
     )
     for trial in [
+        scope.get("display_trial") or {},
         *(scope.get("incremental_trials") or []),
         *(scope.get("trials") or []),
     ]:
@@ -51,6 +63,9 @@ def _selected_trial(scope: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _best_diagnostic_trial(scope: Mapping[str, Any]) -> Mapping[str, Any]:
+    display_trial = scope.get("display_trial") or {}
+    if display_trial and bool(scope.get("diagnostic_only")):
+        return display_trial
     trials = [
         *list(scope.get("incremental_trials") or []),
         *list(scope.get("trials") or []),
@@ -70,6 +85,9 @@ def _best_diagnostic_trial(scope: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _display_trial(scope: Mapping[str, Any]) -> tuple[Mapping[str, Any], bool]:
+    compact = scope.get("display_trial") or {}
+    if compact:
+        return compact, bool(scope.get("diagnostic_only"))
     selected = _selected_trial(scope)
     if selected:
         return selected, False
@@ -94,6 +112,90 @@ def _normalize_scope(scope: Mapping[str, Any]) -> dict[str, Any]:
     )
     normalized["diagnostic_only"] = bool(diagnostic)
     return normalized
+
+
+def _compact_trial(trial: Mapping[str, Any]) -> dict[str, Any]:
+    if not trial:
+        return {}
+    metrics = trial.get("metrics") or {}
+    gate_two = trial.get("gate_two") or {}
+    governance = gate_two.get("governance") or {}
+    compact: dict[str, Any] = {
+        key: trial.get(key)
+        for key in (
+            "trial_id",
+            "spec_id",
+            "spec_hash",
+            "stage",
+            "market",
+            "account_scope",
+            "horizon",
+            "oos_start",
+            "oos_end",
+            "point_in_time_audit",
+            "passed_transparent_gates",
+        )
+        if key in trial
+    }
+    compact.update({
+        "metrics": {
+            key: value
+            for key, value in metrics.items()
+            if key in DISPLAY_METRIC_KEYS
+        },
+        "cost_stress": {
+            "net_excess_return": (
+                trial.get("cost_stress") or {}
+            ).get("net_excess_return")
+        },
+        "attribution": trial.get("attribution") or {},
+        "folds": list(trial.get("folds") or [])[:3],
+        "regimes": trial.get("regimes") or {},
+        "bootstrap_probability": trial.get("bootstrap_probability"),
+        "gate_zero": trial.get("gate_zero") or {},
+        "gate_one_pre_family": trial.get("gate_one_pre_family") or {},
+        "gate_two": {
+            "passed": bool(gate_two.get("passed")),
+            "checks": gate_two.get("checks") or {},
+            "reasons": list(gate_two.get("reasons") or []),
+            "governance": {
+                key: governance.get(key)
+                for key in (
+                    "deflated_sharpe_probability",
+                    "probability_of_backtest_overfit",
+                    "valid_trial_count",
+                    "legacy_trial_count",
+                    "observations",
+                )
+                if key in governance
+            },
+        },
+        "gate_three": trial.get("gate_three") or {},
+        "year_concentration": trial.get("year_concentration") or {},
+        "security_concentration": trial.get("security_concentration") or {},
+    })
+    return compact
+
+
+def _compact_scope(scope: Mapping[str, Any]) -> dict[str, Any]:
+    displayed, _diagnostic_only = _display_trial(scope)
+    compact = {
+        key: value
+        for key, value in scope.items()
+        if key not in {"trials", "incremental_trials", "display_trial"}
+    }
+    compact["transparent_trial_count"] = int(
+        scope.get("transparent_trial_count")
+        if scope.get("transparent_trial_count") is not None
+        else len(scope.get("trials") or [])
+    )
+    compact["incremental_trial_count"] = int(
+        scope.get("incremental_trial_count")
+        if scope.get("incremental_trial_count") is not None
+        else len(scope.get("incremental_trials") or [])
+    )
+    compact["display_trial"] = _compact_trial(displayed)
+    return compact
 
 
 def _percent(value: Any) -> str:
@@ -242,7 +344,10 @@ def write_final_campaign_report(
         "completed_at": now_iso(),
         "formal_strategy_activated": False,
         "champion_model_version": None,
-        "scopes": sorted(normalized, key=_scope_identity),
+        "scopes": sorted(
+            [_compact_scope(item) for item in normalized],
+            key=_scope_identity,
+        ),
     }
     reports = Path(repo_root) / "reports" / "research"
     json_path = reports / f"{campaign_id}-final.json"
@@ -275,7 +380,10 @@ def write_transparent_campaign_report(
         "manifest_hash": str(manifest_hash),
         "completed_at": now_iso(),
         "formal_strategy_activated": False,
-        "scopes": sorted([_normalize_scope(item) for item in scopes], key=_scope_identity),
+        "scopes": sorted(
+            [_compact_scope(_normalize_scope(item)) for item in scopes],
+            key=_scope_identity,
+        ),
     }
     reports = Path(repo_root) / "reports" / "research"
     json_path = reports / f"{campaign_id}-transparent.json"

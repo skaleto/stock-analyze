@@ -2440,13 +2440,15 @@ def _read_strategy_campaign(root: Path, market: str) -> dict[str, Any]:
                 *_rows(raw_scope.get("incremental_trials")),
                 *_rows(raw_scope.get("trials")),
             ]
-            selected = next(
-                (
-                    item for item in trials
-                    if str(item.get("spec_id") or "") == displayed_id
-                ),
-                {},
-            )
+            selected = _mapping(raw_scope.get("display_trial"))
+            if str(selected.get("spec_id") or "") != displayed_id:
+                selected = next(
+                    (
+                        item for item in trials
+                        if str(item.get("spec_id") or "") == displayed_id
+                    ),
+                    {},
+                )
             metrics = _mapping(selected.get("metrics"))
             gate_two = _mapping(selected.get("gate_two"))
             governance = _mapping(gate_two.get("governance"))
@@ -2476,9 +2478,15 @@ def _read_strategy_campaign(root: Path, market: str) -> dict[str, Any]:
                     raw_scope.get("diagnostic_only") and not selected_id
                 ),
                 "reasons": reasons,
-                "transparentTrialCount": len(_rows(raw_scope.get("trials"))),
-                "incrementalTrialCount": len(
-                    _rows(raw_scope.get("incremental_trials"))
+                "transparentTrialCount": int(
+                    raw_scope.get("transparent_trial_count")
+                    if raw_scope.get("transparent_trial_count") is not None
+                    else len(_rows(raw_scope.get("trials")))
+                ),
+                "incrementalTrialCount": int(
+                    raw_scope.get("incremental_trial_count")
+                    if raw_scope.get("incremental_trial_count") is not None
+                    else len(_rows(raw_scope.get("incremental_trials")))
                 ),
                 "netReturn": _finite_number(metrics.get("net_return")),
                 "benchmarkReturn": _finite_number(metrics.get("benchmark_return")),
