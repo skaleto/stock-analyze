@@ -146,6 +146,8 @@ async function currentModelResearchBuilderPayload(): Promise<unknown> {
 function validResearchModel(index: number) {
   return {
     modelVersion: `A20-V${String(index).padStart(3, "0")}`,
+    accountScope: "hs300",
+    specId: `classic-mainline-${index}`,
     horizon: index,
     algorithmFamily: "boosting_ensemble",
     trainedAt: null,
@@ -311,6 +313,69 @@ describe("fetchModelResearch", () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(payload))));
 
     await expect(fetchModelResearch("a_share")).resolves.toEqual(payload);
+  });
+
+  it("accepts the same model version and horizon in different account scopes", async () => {
+    const payload = await currentModelResearchBuilderPayload() as any;
+    const hs300 = {
+      ...validResearchModel(20),
+      modelVersion: "CLASSIC-V001",
+      accountScope: "hs300",
+    };
+    const zz500 = {
+      ...hs300,
+      accountScope: "zz500",
+    };
+    payload.training = {
+      ...payload.training,
+      models: [hs300, zz500],
+      archive: {
+        total: 7,
+        byStatus: { rejected: 5, research: 2 },
+        recent: [{ ...hs300, modelVersion: "CLASSIC-V000" }],
+      },
+    };
+
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(payload))));
+
+    await expect(fetchModelResearch("a_share")).resolves.toEqual(payload);
+  });
+
+  it("rejects a duplicate model identity within one account scope", async () => {
+    const payload = await currentModelResearchBuilderPayload() as any;
+    const model = {
+      ...validResearchModel(20),
+      modelVersion: "CLASSIC-V001",
+      accountScope: "hs300",
+    };
+    payload.training = {
+      ...payload.training,
+      models: [model, { ...model }],
+    };
+
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(payload))));
+
+    await expect(fetchModelResearch("a_share")).rejects.toThrow(
+      "Invalid model research response: training.models[1] duplicate accountScope,horizon,modelVersion",
+    );
+  });
+
+  it("rejects malformed archive status counts", async () => {
+    const payload = await currentModelResearchBuilderPayload() as any;
+    payload.training = {
+      ...payload.training,
+      archive: {
+        total: 1,
+        byStatus: { rejected: "one" },
+        recent: [],
+      },
+    };
+
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(payload))));
+
+    await expect(fetchModelResearch("a_share")).rejects.toThrow(
+      "Invalid model research response: training.archive.byStatus.rejected",
+    );
   });
 
   it("rejects a payload larger than 250KB by its UTF-8 byte length", async () => {

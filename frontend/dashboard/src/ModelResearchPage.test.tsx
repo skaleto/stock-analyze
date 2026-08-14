@@ -78,6 +78,8 @@ const payload = {
     models: [
       {
         modelVersion: "A20-V005",
+        accountScope: "hs300",
+        specId: "h20_momentum_anchor_quality_residual_ridge_v2",
         horizon: 20,
         algorithmFamily: "boosting_ensemble",
         trainedAt: "2026-07-29T23:00:00",
@@ -93,6 +95,10 @@ const payload = {
         isChampion: false,
         pointInTimeAudit: true,
         candidateFeatureCount: 72,
+        diagnosticNetExcessReturn: 0.041,
+        netExcessReturn: 0.018,
+        calibrationStatus: "available",
+        capitalUtilization: 0.92,
         metrics: { rank_ic: 0.021 },
       },
     ],
@@ -103,6 +109,8 @@ const payload = {
     models: [
       {
         modelVersion: "A20-V005",
+        accountScope: "hs300",
+        specId: "h20_momentum_anchor_quality_residual_ridge_v2",
         horizon: 20,
         algorithmFamily: "boosting_ensemble",
         trainedAt: "2026-07-29T23:00:00",
@@ -118,6 +126,10 @@ const payload = {
         isChampion: false,
         pointInTimeAudit: true,
         candidateFeatureCount: 72,
+        diagnosticNetExcessReturn: 0.041,
+        netExcessReturn: 0.018,
+        calibrationStatus: "available",
+        capitalUtilization: 0.92,
         metrics: { rank_ic: 0.021 },
       },
     ],
@@ -326,6 +338,9 @@ describe("ModelResearchPage", () => {
                   netReturn: 0.04,
                   benchmarkReturn: 0.02,
                   netExcessReturn: 0.02,
+                  cashPositionEffectTotal: -0.006,
+                  securitySelectionReturnTotal: 0.027,
+                  executionCostEffectTotal: -0.001,
                   maxDrawdown: 0.03,
                   informationRatio: 0.4,
                   annualTurnover: 2,
@@ -340,6 +355,9 @@ describe("ModelResearchPage", () => {
                   netReturn: 0.05,
                   benchmarkReturn: 0.02,
                   netExcessReturn: 0.03,
+                  cashPositionEffectTotal: -0.004,
+                  securitySelectionReturnTotal: 0.035,
+                  executionCostEffectTotal: -0.001,
                   maxDrawdown: 0.02,
                   informationRatio: 0.6,
                   annualTurnover: 1,
@@ -363,6 +381,14 @@ describe("ModelResearchPage", () => {
     expect(within(comparison).getByText("A20 · 当前最佳")).toBeInTheDocument();
     expect(within(comparison).getByText("正式规则")).toBeInTheDocument();
     expect(within(comparison).getByText("候选模型")).toBeInTheDocument();
+    expect(within(comparison).getByRole("columnheader", { name: "现金仓位贡献" }))
+      .toBeInTheDocument();
+    expect(within(comparison).getByRole("columnheader", { name: "选股贡献" }))
+      .toBeInTheDocument();
+    expect(within(comparison).getByRole("columnheader", { name: "交易成本贡献" }))
+      .toBeInTheDocument();
+    expect(within(comparison).getByText("-0.60%")).toBeInTheDocument();
+    expect(within(comparison).getByText("3.50%")).toBeInTheDocument();
     expect(within(comparison).getAllByText("2.00%")).toHaveLength(4);
   });
 
@@ -658,6 +684,73 @@ describe("ModelResearchPage", () => {
         "data/research/models/a_share/20/run-A20-V005.joblib",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("separates ranking diagnostics from the deployable mainline portfolio", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(payload)));
+    const user = userEvent.setup();
+    render(<ModelResearchPage market="a_share" refreshToken={0} />);
+
+    await screen.findByText("A20-V005");
+    await user.click(screen.getByRole("button", { name: /模型训练/ }));
+    const mainline = within(
+      screen.getByRole("region", { name: "模型训练详情" }),
+    ).getByRole("region", { name: "当前经典主线" });
+
+    expect(within(mainline).getByRole("columnheader", {
+      name: "排名诊断组合 · 净超额",
+    })).toBeInTheDocument();
+    expect(within(mainline).getByRole("columnheader", {
+      name: "可部署组合 · 净超额",
+    })).toBeInTheDocument();
+    expect(within(mainline).getByRole("columnheader", { name: "校准状态" }))
+      .toBeInTheDocument();
+    expect(within(mainline).getByText("4.10%")).toBeInTheDocument();
+    expect(within(mainline).getByText("1.80%")).toBeInTheDocument();
+    expect(within(mainline).getByText("校准可用")).toBeInTheDocument();
+    expect(within(mainline).getByText("92.00%")).toBeInTheDocument();
+  });
+
+  it("keeps old model runs in a collapsed history archive", async () => {
+    const archivedModel = {
+      ...payload.training.models[0],
+      modelVersion: "A3-V001",
+      specId: "legacy-h3",
+      horizon: 3,
+      lifecycleStatus: "rejected",
+      trainedAt: "2026-06-01T20:00:00",
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({
+      ...payload,
+      training: {
+        ...payload.training,
+        archive: {
+          total: 17,
+          byStatus: { rejected: 14, research: 3 },
+          recent: [archivedModel],
+        },
+      },
+    })));
+    const user = userEvent.setup();
+    render(<ModelResearchPage market="a_share" refreshToken={0} />);
+
+    await screen.findByText("A20-V005");
+    await user.click(screen.getByRole("button", { name: /模型训练/ }));
+    const detail = screen.getByRole("region", { name: "模型训练详情" });
+    const archiveToggle = within(detail).getByText("历史归档");
+    const archiveDetails = archiveToggle.closest("details");
+
+    expect(archiveToggle).toBeInTheDocument();
+    expect(within(detail).getByText("17 个版本")).toBeInTheDocument();
+    expect(archiveDetails).not.toHaveAttribute("open");
+
+    await user.click(archiveToggle);
+
+    expect(archiveDetails).toHaveAttribute("open");
+    const archive = within(detail).getByRole("region", { name: "历史归档明细" });
+    expect(within(archive).getByText("A3-V001")).toBeInTheDocument();
+    expect(within(archive).getByText("未通过验收 14")).toBeInTheDocument();
+    expect(within(archive).getByText("研究中 3")).toBeInTheDocument();
   });
 
   it("shows independent simulation account and execution evidence", async () => {
@@ -1057,7 +1150,7 @@ describe("ModelResearchPage", () => {
     render(<ModelResearchPage market="a_share" refreshToken={0} />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Invalid model research response: training.models[1] duplicate horizon,modelVersion",
+      "Invalid model research response: training.models[1] duplicate accountScope,horizon,modelVersion",
     );
   });
 

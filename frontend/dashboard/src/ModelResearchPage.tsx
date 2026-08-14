@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, ChevronRight, FlaskConical } from "lucide-react";
+import {
+  Archive,
+  ArrowLeft,
+  ChevronDown,
+  ChevronRight,
+  FlaskConical,
+} from "lucide-react";
 import { fetchModelResearch } from "./api";
 import { StageFlow } from "./StageFlow";
 import { TermDisplay } from "./TermDisplay";
@@ -14,10 +20,12 @@ import type { DashboardMarket } from "./workspaceRoute";
 import type {
   ModelResearchData,
   ModelResearchAccountSummary,
+  ModelResearchArchive,
   ModelResearchHistoricalComparison,
   ModelResearchModel,
   ModelResearchTabularEvidence,
   ModelResearchTabularRun,
+  BoundedColumn,
   WorkspaceStatus,
 } from "./workspaceTypes";
 
@@ -99,6 +107,7 @@ function rebalanceFrequencyLabel(input: string | null | undefined): string {
 
 function calibrationVersionLabel(input: string | null | undefined): string {
   if (input === "clustered-date-mean-se-v2") return "均值误差校准 v2";
+  if (input === "isotonic-date-bucket-v3") return "单调收益校准 v3";
   return input || "-";
 }
 
@@ -236,6 +245,63 @@ function reasonLabel(reason: string): string {
   return `${prefix ? `${prefix}：` : ""}${translated}（${reason}）`;
 }
 
+function diagnosticNetExcessReturn(model: ModelResearchModel): unknown {
+  return model.diagnosticNetExcessReturn
+    ?? model.metrics.diagnostic_net_excess_return
+    ?? model.metrics.diagnosticNetExcessReturn;
+}
+
+function deployableNetExcessReturn(model: ModelResearchModel): unknown {
+  return model.netExcessReturn
+    ?? model.metrics.net_excess_return
+    ?? model.metrics.netExcessReturn;
+}
+
+function modelCapitalUtilization(model: ModelResearchModel): unknown {
+  return model.capitalUtilization
+    ?? model.metrics.capital_utilization
+    ?? model.metrics.capitalUtilization;
+}
+
+function calibrationState(model: ModelResearchModel): {
+  label: string;
+  version: string | null;
+} {
+  const rawStatus = model.calibrationStatus
+    ?? model.metrics.calibration_status
+    ?? model.metrics.calibrationStatus;
+  const normalized = String(rawStatus ?? "").trim().toLowerCase();
+  const available = model.metrics.edge_calibration_available;
+  const version = typeof model.metrics.edge_calibration_version === "string"
+    ? calibrationVersionLabel(model.metrics.edge_calibration_version)
+    : null;
+
+  if (
+    available === true
+    || ["active", "available", "calibrated", "complete", "enabled", "passed"]
+      .includes(normalized)
+  ) {
+    return { label: "校准可用", version };
+  }
+  if (
+    available === false
+    || ["disabled", "failed", "missing", "rejected", "unavailable"]
+      .includes(normalized)
+  ) {
+    return { label: "校准不可用", version };
+  }
+  return { label: normalized ? statusLabel(normalized) : "未记录", version };
+}
+
+function modelIdentity(model: ModelResearchModel): string {
+  return [
+    model.accountScope || "legacy",
+    model.horizon,
+    model.modelVersion,
+    model.specId ?? "",
+  ].join(":");
+}
+
 function ModelTable({
   models,
   validation,
@@ -244,18 +310,42 @@ function ModelTable({
   validation: boolean;
 }) {
   return (
-    <BoundedTable
-      className={`model-metrics-table${validation ? " model-metrics-validation" : ""}`}
-      rows={models}
-      rowKey={(row) => `${row.accountScope}:${row.horizon}:${row.modelVersion}`}
-      emptyLabel="尚无研究模型产物"
-      columns={[
+    <section className="current-mainline-panel" aria-label="当前经典主线">
+      <header className="current-mainline-heading">
+        <div>
+          <span>当前经典主线</span>
+          <strong>{models.length} 个账户</strong>
+        </div>
+        <div>
+          <span>{validation ? "验收通过" : "已生成产物"}</span>
+          <strong>
+            {validation
+              ? `${models.filter((model) => model.gatePassed).length} / ${models.length}`
+              : String(models.filter((model) => model.artifactStatus === "available").length)}
+          </strong>
+        </div>
+      </header>
+      <BoundedTable
+        className={`model-metrics-table${validation ? " model-metrics-validation" : ""}`}
+        rows={models}
+        rowKey={modelIdentity}
+        emptyLabel="尚无当前经典主线产物"
+        columns={[
         {
           key: "account",
           label: "研究账户",
-          render: (row) => row.accountScope || "旧版市场级",
+          render: (row) => accountScopeLabel(row.accountScope),
         },
-        { key: "version", label: "版本", render: (row) => row.modelVersion || "-" },
+        {
+          key: "version",
+          label: "版本",
+          render: (row) => (
+            <span className="model-cell-stack">
+              <strong>{row.modelVersion || "-"}</strong>
+              {row.specId ? <small>{row.specId}</small> : null}
+            </span>
+          ),
+        },
         { key: "horizon", label: "周期", render: (row) => `${row.horizon} 日` },
         { key: "samples", label: "样本", render: (row) => String(row.sampleSupport) },
         {
@@ -265,41 +355,34 @@ function ModelTable({
         },
         {
           key: "rank_ic",
-          label: "排序相关性 Rank IC",
+          label: "Rank IC",
           render: (row) => value(
             row.metrics.rank_ic ?? row.metrics.mean_rank_ic,
           ),
         },
         { key: "icir", label: "稳定性 ICIR", render: (row) => value(row.metrics.icir) },
         {
-          key: "brier",
-          label: "概率误差 Brier",
-          render: (row) => value(row.metrics.brier_score),
+          key: "diagnostic-active",
+          label: "排名诊断组合 · 净超额",
+          render: (row) => percent(diagnosticNetExcessReturn(row)),
         },
         {
-          key: "gross",
-          label: "毛收益",
-          render: (row) => percent(row.metrics.gross_return),
+          key: "deployable-active",
+          label: "可部署组合 · 净超额",
+          render: (row) => percent(deployableNetExcessReturn(row)),
         },
         {
-          key: "net",
-          label: "净收益",
-          render: (row) => percent(row.metrics.net_return),
-        },
-        {
-          key: "benchmark",
-          label: "基准收益",
-          render: (row) => percent(row.metrics.benchmark_return),
-        },
-        {
-          key: "active",
-          label: "扣费超额收益",
-          render: (row) => (
-            typeof row.metrics.trade_count === "number"
-            && row.metrics.trade_count <= 0
-              ? "未形成成交"
-              : percent(row.metrics.net_excess_return)
-          ),
+          key: "calibration",
+          label: "校准状态",
+          render: (row) => {
+            const calibration = calibrationState(row);
+            return (
+              <span className="model-cell-stack">
+                <strong>{calibration.label}</strong>
+                {calibration.version ? <small>{calibration.version}</small> : null}
+              </span>
+            );
+          },
         },
         {
           key: "trades",
@@ -316,7 +399,7 @@ function ModelTable({
         {
           key: "capital_utilization",
           label: "资金利用率",
-          render: (row) => percent(row.metrics.capital_utilization),
+          render: (row) => percent(modelCapitalUtilization(row)),
         },
         {
           key: "cost",
@@ -362,8 +445,66 @@ function ModelTable({
                 : row.gateReasons.map(reasonLabel).join("；") || "未通过",
             }]
           : []),
-      ]}
-    />
+        ]}
+      />
+    </section>
+  );
+}
+
+function ModelArchivePanel({ archive }: { archive: ModelResearchArchive | undefined }) {
+  if (!archive) return null;
+  const statusRows = Object.entries(archive.byStatus);
+  return (
+    <details className="model-archive-panel">
+      <summary>
+        <span className="model-archive-title">
+          <Archive size={15} aria-hidden="true" />
+          <strong>历史归档</strong>
+        </span>
+        <span>{archive.total} 个版本</span>
+        <ChevronDown size={15} aria-hidden="true" />
+      </summary>
+      <div className="model-archive-body" role="region" aria-label="历史归档明细">
+        {statusRows.length ? (
+          <div className="model-archive-statuses" aria-label="历史归档状态统计">
+            {statusRows.map(([status, count]) => (
+              <span key={status}>{statusLabel(status)} {count}</span>
+            ))}
+          </div>
+        ) : null}
+        <BoundedTable
+          className="model-archive-table"
+          rows={archive.recent}
+          rowKey={modelIdentity}
+          emptyLabel="暂无最近归档版本"
+          columns={[
+            {
+              key: "account",
+              label: "研究账户",
+              render: (row) => accountScopeLabel(row.accountScope),
+            },
+            { key: "version", label: "版本", render: (row) => row.modelVersion || "-" },
+            { key: "horizon", label: "周期", render: (row) => `${row.horizon} 日` },
+            {
+              key: "status",
+              label: "归档状态",
+              render: (row) => statusLabel(row.lifecycleStatus),
+            },
+            {
+              key: "diagnostic",
+              label: "排名诊断净超额",
+              render: (row) => percent(diagnosticNetExcessReturn(row)),
+            },
+            {
+              key: "deployable",
+              label: "可部署净超额",
+              render: (row) => percent(deployableNetExcessReturn(row)),
+            },
+            { key: "trained", label: "训练时间", render: (row) => row.trainedAt ?? "-" },
+          ]}
+        />
+      </div>
+    </details>
   );
 }
 
@@ -893,7 +1034,11 @@ function HistoricalComparisonPanel({
   comparison: ModelResearchHistoricalComparison | undefined;
 }) {
   if (!comparison || !comparison.scopes.length) return null;
-  const rows = comparison.scopes.flatMap((scope) =>
+  type HistoricalRow = ModelResearchHistoricalComparison["scopes"][number]["participants"][number] & {
+    accountScope: string;
+    winner: boolean;
+  };
+  const rows: HistoricalRow[] = comparison.scopes.flatMap((scope) =>
     scope.participants.map((participant) => ({
       ...participant,
       accountScope: scope.accountScope,
@@ -905,6 +1050,71 @@ function HistoricalComparisonPanel({
     candidate_model: "候选模型",
     baseline: "基线",
   };
+  const hasAttribution = rows.some((row) => [
+    row.metrics.cashPositionEffectTotal,
+    row.metrics.securitySelectionReturnTotal,
+    row.metrics.executionCostEffectTotal,
+  ].some((metric) => typeof metric === "number" && Number.isFinite(metric)));
+  const columns: BoundedColumn<HistoricalRow>[] = [
+    {
+      key: "account",
+      label: "账户",
+      render: (row) => accountScopeLabel(row.accountScope),
+    },
+    {
+      key: "name",
+      label: "策略 / 模型",
+      render: (row) => row.winner ? `${row.name} · 当前最佳` : row.name,
+    },
+    {
+      key: "type",
+      label: "身份",
+      render: (row) => participantTypeLabels[row.participantType] ?? row.participantType,
+    },
+    { key: "net", label: "净收益", render: (row) => percent(row.metrics.netReturn) },
+    {
+      key: "benchmark",
+      label: "基准收益",
+      render: (row) => percent(row.metrics.benchmarkReturn),
+    },
+    {
+      key: "excess",
+      label: "净超额",
+      render: (row) => percent(row.metrics.netExcessReturn),
+    },
+    ...(hasAttribution ? [
+      {
+        key: "cash-position-effect",
+        label: "现金仓位贡献",
+        render: (row: HistoricalRow) => percent(row.metrics.cashPositionEffectTotal),
+      },
+      {
+        key: "security-selection",
+        label: "选股贡献",
+        render: (row: HistoricalRow) => percent(row.metrics.securitySelectionReturnTotal),
+      },
+      {
+        key: "execution-cost-effect",
+        label: "交易成本贡献",
+        render: (row: HistoricalRow) => percent(row.metrics.executionCostEffectTotal),
+      },
+    ] : []),
+    {
+      key: "drawdown",
+      label: "最大回撤",
+      render: (row) => percent(row.metrics.maxDrawdown),
+    },
+    {
+      key: "ir",
+      label: "信息比率",
+      render: (row) => value(row.metrics.informationRatio),
+    },
+    {
+      key: "turnover",
+      label: "年化换手",
+      render: (row) => value(row.metrics.annualTurnover),
+    },
+  ];
   return (
     <section
       className="tabular-research-panel"
@@ -924,55 +1134,7 @@ function HistoricalComparisonPanel({
         rows={rows}
         rowKey={(row) => `${row.accountScope}:${row.participantId}`}
         emptyLabel="尚无同窗比较结果"
-        columns={[
-          {
-            key: "account",
-            label: "账户",
-            render: (row) => accountScopeLabel(row.accountScope),
-          },
-          {
-            key: "name",
-            label: "策略 / 模型",
-            render: (row) => row.winner ? `${row.name} · 当前最佳` : row.name,
-          },
-          {
-            key: "type",
-            label: "身份",
-            render: (row) => (
-              participantTypeLabels[row.participantType] ?? row.participantType
-            ),
-          },
-          {
-            key: "net",
-            label: "净收益",
-            render: (row) => percent(row.metrics.netReturn),
-          },
-          {
-            key: "benchmark",
-            label: "基准收益",
-            render: (row) => percent(row.metrics.benchmarkReturn),
-          },
-          {
-            key: "excess",
-            label: "净超额",
-            render: (row) => percent(row.metrics.netExcessReturn),
-          },
-          {
-            key: "drawdown",
-            label: "最大回撤",
-            render: (row) => percent(row.metrics.maxDrawdown),
-          },
-          {
-            key: "ir",
-            label: "信息比率",
-            render: (row) => value(row.metrics.informationRatio),
-          },
-          {
-            key: "turnover",
-            label: "年化换手",
-            render: (row) => value(row.metrics.annualTurnover),
-          },
-        ]}
+        columns={columns}
       />
     </section>
   );
@@ -1169,6 +1331,7 @@ function ModelResearchDetail({
           <div className="detail-stack">
             <AccountSummaryTable accounts={data.training.accounts} />
             <ModelTable models={data.training.models} validation={false} />
+            <ModelArchivePanel archive={data.training.archive} />
           </div>
         ) : null}
         {stage.key === "validation" ? (
