@@ -663,14 +663,14 @@ function TabularResearchPanel({
     ? latest.calibration
     : null;
   const comparisonRuns = [
-    ...(evidence?.best ? [{ role: "当前最佳", run: evidence.best }] : []),
+    ...(evidence?.best ? [{ role: "历史最佳", run: evidence.best }] : []),
     ...(latest && latest.configHash !== evidence?.best?.configHash
       ? [{ role: "最近试验", run: latest }]
       : []),
   ];
 
   return (
-    <section className="tabular-research-panel" aria-label="经典表格模型研究结果">
+    <section className="tabular-research-panel" aria-label="历史经典表格模型归档">
       {evidence?.forwardObservation ? (
         <ForwardObservationPanel observation={evidence.forwardObservation} />
       ) : null}
@@ -777,7 +777,7 @@ function TabularResearchPanel({
       ) : null}
       <header className="tabular-research-heading">
         <div>
-          <span>当前最佳研究候选</span>
+          <span>历史最佳试验</span>
           <h3>经典表格模型</h3>
           <p>
             {accountScopeLabel(run.accountScope)} · {estimatorLabel(run.estimator)} ·
