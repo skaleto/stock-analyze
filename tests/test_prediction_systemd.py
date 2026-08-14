@@ -1,3 +1,6 @@
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -106,19 +109,88 @@ class PredictionSystemdTest(unittest.TestCase):
             model_iteration,
         )
 
-    def test_monthly_training_only_registers_challengers(self):
+    def test_monthly_training_only_prepares_checked_local_training_bundles(self):
         service = (UNIT_DIR / "stock-analyze-model-training.service").read_text(encoding="utf-8")
         timer = (UNIT_DIR / "stock-analyze-model-training.timer").read_text(encoding="utf-8")
+        script = Path("scripts/prepare-model-training-bundles.sh").read_text(
+            encoding="utf-8"
+        )
 
-        self.assertIn("refresh-research-labels --offline", service)
+        self.assertIn("prepare-model-training-bundles.sh", service)
+        self.assertIn("refresh-research-labels --offline", script)
+        self.assertIn("research-training-bundle-export", script)
+        self.assertIn("for market in a_share cn_qdii_etf", script)
+        self.assertIn("continue", script)
+        self.assertIn("MODEL_TRAIN_KEEP_RUNS", script)
+        self.assertIn("prune_runs", script)
         self.assertNotIn("run-prediction-research --offline", service)
-        self.assertIn("run-baseline-first-research --offline", service)
+        self.assertNotIn("run-baseline-first-research --offline", service)
         self.assertNotIn("run-classical-tournament --offline", service)
         self.assertNotIn("train-prediction-models --offline", service)
         self.assertNotIn("active", service.lower())
         self.assertIn("flock", service)
         self.assertIn("OnCalendar=*-*-01 02:30:00 Asia/Shanghai", timer)
         self.assertIn("Persistent=true", timer)
+
+    def test_monthly_bundle_preparation_retains_only_bounded_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exchange = root / "exchange"
+            for market in ("a_share", "cn_qdii_etf"):
+                for index in range(10):
+                    manifest = (
+                        exchange / f"{market}-202607{index:02d}"
+                        / "input/manifest.json"
+                    )
+                    manifest.parent.mkdir(parents=True)
+                    manifest.write_text("{}", encoding="utf-8")
+                    (manifest.parents[1] / ".complete").touch()
+            environment = {
+                **os.environ,
+                "MODEL_TRAIN_REPO_ROOT": str(root / "repo"),
+                "MODEL_TRAIN_PYTHON": "/usr/bin/true",
+                "MODEL_TRAIN_EXCHANGE_ROOT": str(exchange),
+                "MODEL_TRAIN_RUN_ID": "20260814-test",
+                "MODEL_TRAIN_KEEP_RUNS": "8",
+            }
+
+            subprocess.run(
+                ["scripts/prepare-model-training-bundles.sh", "2026-08-14"],
+                check=True,
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+
+            counts = {
+                market: len([
+                    path
+                    for path in exchange.glob(f"{market}-*/input/manifest.json")
+                    if (path.parents[1] / ".complete").is_file()
+                ])
+                for market in ("a_share", "cn_qdii_etf")
+            }
+
+        self.assertEqual(counts, {"a_share": 8, "cn_qdii_etf": 8})
+
+    def test_local_research_marks_complete_only_after_all_required_imports(self):
+        script = Path("scripts/run-local-baseline-first-research.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("mark_complete()", script)
+        self.assertIn(
+            'if [[ ${#REPORTS[@]} -eq 0 ]]; then\n  mark_complete\n',
+            script,
+        )
+        self.assertIn(
+            'done\n\nmark_complete\n\nprintf \'Local baseline-first research complete:',
+            script,
+        )
+        self.assertLess(
+            script.index("research-model-bundle-import"),
+            script.rindex("mark_complete"),
+        )
 
     def test_tabular_forward_observer_is_daily_and_research_only(self):
         service = (

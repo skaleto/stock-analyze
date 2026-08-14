@@ -1004,6 +1004,38 @@ def _activation_metrics(
             contract=portfolio_contract,
         )
         portfolio_metrics = dict(replay.metrics)
+        deployable_subperiods: list[dict[str, Any]] = []
+        for fold, fold_frame in evaluation.groupby("fold", sort=True):
+            fold_number = int(fold)
+            if fold_number < 0:
+                continue
+            try:
+                fold_replay = replay_model_portfolio(
+                    fold_frame,
+                    contract=portfolio_contract,
+                )
+            except ValueError:
+                continue
+            fold_metrics = fold_replay.metrics
+            deployable_subperiods.append({
+                "fold": fold_number,
+                "start": str(fold_frame["trade_date"].min()),
+                "end": str(fold_frame["trade_date"].max()),
+                "net_excess_return": float(
+                    fold_metrics.get("net_excess_return") or 0.0
+                ),
+                "max_drawdown": float(
+                    fold_metrics.get("max_drawdown") or 0.0
+                ),
+                "annual_turnover": float(
+                    fold_metrics.get("annual_turnover") or 0.0
+                ),
+                "trade_count": int(fold_metrics.get("trade_count") or 0),
+                "capital_utilization": float(
+                    fold_metrics.get("capital_utilization") or 0.0
+                ),
+            })
+        portfolio_metrics["deployable_subperiods"] = deployable_subperiods
         diagnostic_metric_keys = (
             "replay_contract",
             "net_return",

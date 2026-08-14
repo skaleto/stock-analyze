@@ -11,6 +11,7 @@ import uuid
 from datetime import date, datetime, timezone
 from functools import partial
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs
 
 from . import competition
@@ -552,6 +553,12 @@ def build_parser() -> argparse.ArgumentParser:
     baseline_first.add_argument("--max-full-history-instruments", type=int, default=500)
     baseline_first.add_argument("--account-scope", default=None)
     baseline_first.add_argument("--horizon", type=int, default=None)
+    baseline_first.add_argument(
+        "--training-input-bundle",
+        type=Path,
+        default=None,
+        help="Verified immutable ECS input bundle that fixes snapshot provenance.",
+    )
 
     regime_tabular = sub.add_parser(
         "run-regime-tabular-alpha",
@@ -647,6 +654,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     model_bundle_import.add_argument("--repo-root", type=Path, default=Path("."))
     model_bundle_import.add_argument("--bundle", type=Path, required=True)
+    model_bundle_import.add_argument(
+        "--training-input-bundle",
+        type=Path,
+        required=True,
+    )
+    result_bundle_export = sub.add_parser(
+        "research-result-bundle-export",
+        help="Export bounded baseline reports and frozen-window evidence.",
+    )
+    result_bundle_export.add_argument("--repo-root", type=Path, default=Path("."))
+    result_bundle_export.add_argument("--result", type=Path, required=True)
+    result_bundle_export.add_argument(
+        "--training-input-bundle", type=Path, required=True
+    )
+    result_bundle_export.add_argument("--output", type=Path, required=True)
+    result_bundle_import = sub.add_parser(
+        "research-result-bundle-import",
+        help="Install bounded baseline reports without changing model state.",
+    )
+    result_bundle_import.add_argument("--repo-root", type=Path, default=Path("."))
+    result_bundle_import.add_argument("--bundle", type=Path, required=True)
+    result_bundle_import.add_argument(
+        "--training-input-bundle", type=Path, required=True
+    )
 
     for command, help_text in (
         (
@@ -1275,6 +1306,8 @@ def main(argv: list[str] | None = None) -> int:
         "research-training-bundle-import",
         "research-model-bundle-export",
         "research-model-bundle-import",
+        "research-result-bundle-export",
+        "research-result-bundle-import",
     }:
         ensure_dirs(args.logs_dir)
         return _command_local_training_transfer(args)
@@ -1553,9 +1586,36 @@ def _command_research_workflow(args: argparse.Namespace) -> int:
                 horizon=args.horizon,
             )
         elif args.command == "run-baseline-first-research":
+            baseline_kwargs: dict[str, Any] = {
+                "account_scope": args.account_scope,
+                "horizon": args.horizon,
+            }
+            if args.training_input_bundle is not None:
+                from .research.local_training import (
+                    verify_installed_training_bundle,
+                )
+
+                training_manifest = verify_installed_training_bundle(
+                    args.repo_root,
+                    args.training_input_bundle,
+                )
+                if str(training_manifest.get("market") or "") != args.market:
+                    raise ValueError("training_bundle_market_mismatch")
+                baseline_kwargs["training_input"] = {
+                    "market": args.market,
+                    "snapshot_date": str(
+                        training_manifest.get("snapshot_date") or ""
+                    ),
+                    "source_fingerprint": str(
+                        training_manifest.get("source_fingerprint") or ""
+                    ),
+                    "files": [
+                        str(item.get("path") or "")
+                        for item in training_manifest.get("files") or []
+                    ],
+                }
             result = pipeline.run_baseline_first_research(
-                account_scope=args.account_scope,
-                horizon=args.horizon,
+                **baseline_kwargs,
             )
         elif args.command == "run-regime-tabular-alpha":
             result = pipeline.run_regime_tabular_alpha(config_path=args.config)
@@ -1641,8 +1701,10 @@ def _command_backfill_a_share_moneyflow(args: argparse.Namespace) -> int:
 def _command_local_training_transfer(args: argparse.Namespace) -> int:
     from .research.local_training import (
         export_model_bundle,
+        export_research_result_bundle,
         export_training_bundle,
         import_model_bundle,
+        import_research_result_bundle,
         install_training_bundle,
     )
 
@@ -1658,8 +1720,25 @@ def _command_local_training_transfer(args: argparse.Namespace) -> int:
             result = install_training_bundle(args.repo_root, args.bundle)
         elif args.command == "research-model-bundle-export":
             result = export_model_bundle(args.repo_root, args.report, args.output)
+        elif args.command == "research-model-bundle-import":
+            result = import_model_bundle(
+                args.repo_root,
+                args.bundle,
+                training_input_bundle=args.training_input_bundle,
+            )
+        elif args.command == "research-result-bundle-export":
+            result = export_research_result_bundle(
+                args.repo_root,
+                args.result,
+                args.training_input_bundle,
+                args.output,
+            )
         else:
-            result = import_model_bundle(args.repo_root, args.bundle)
+            result = import_research_result_bundle(
+                args.repo_root,
+                args.bundle,
+                training_input_bundle=args.training_input_bundle,
+            )
     except Exception as exc:  # noqa: BLE001 - transfer contracts fail closed
         print(f"error: {args.command} failed: {exc}", file=sys.stderr)
         return 2

@@ -247,7 +247,20 @@ function reasonLabel(reason: string): string {
     positive_fold_majority: "多数开发折没有获得正增量",
     absolute_turnover: "绝对换手率超过上限",
     relative_turnover: "相对基线的换手增幅超过上限",
+    turnover_delta: "相对基线的换手增幅超过上限",
     drawdown_delta: "相对基线的回撤恶化超过上限",
+    model_replay_contract: "冻结模型未按正式组合规则回放",
+    deployable_eligible_folds: "冻结模型缺少完整的三折回放证据",
+    deployable_positive_fold_majority: "冻结模型多数开发折未跑赢透明基线",
+    positive_deployable_net_return: "冻结模型扣费后收益未转为正值",
+    deployable_candidate_beats_baseline: "冻结模型未跑赢透明基线",
+    deployable_drawdown_delta: "冻结模型相对回撤恶化超过上限",
+    deployable_relative_turnover: "冻结模型相对换手增幅超过上限",
+    deployable_absolute_turnover: "冻结模型绝对换手超过上限",
+    deployable_trade_activity: "冻结模型没有形成可执行模拟成交",
+    deployable_capital_utilization: "冻结模型资金利用率不足",
+    execution_evidence_status: "冻结模型执行成本证据不完整",
+    training_input_provenance: "缺少可验证的 ECS 训练输入包，只生成研究报告",
   };
   const [maybeRole, code] = reason.includes(":")
     ? reason.split(":", 2)

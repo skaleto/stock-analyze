@@ -171,12 +171,18 @@ python3 -m stock_analyze --market <market> --agent <agent> predict --offline
 单标的权重、手数与下一交易日执行规则约束。
 
 模型按 `research -> shadow -> active` 单向晋级，对应页面上的“研究候选 -> 模拟验证 ->
-正式使用”。每个市场和预测周期只固定一个 Challenger；月度训练出的新版本不会在
-验证途中替换它。月度训练只注册 challenger；
-覆盖率、IC/ICIR、概率校准、命中率提升、净超额、回撤、换手、消融稳定性和连续
-四个自然周模拟验证证据全部通过后才允许替换 Champion。同一周重复运行只计一个周期。
+正式使用”。每个市场和预测周期只固定一个 Challenger；本机月度研究产生的新版本不会在
+验证途中替换它。ECS 月度任务只刷新标签并导出不可变训练包，不在小规格主机上拟合；
+本机训练锁定训练包声明的精确快照和源指纹，也只注册 challenger；回传时 ECS
+必须用原输入包复核同一指纹；
+没有校验输入包时只允许生成研究报告，禁止拟合或写 Registry；失败和未晋级结果
+也通过不含模型状态的轻量结果包回传，避免 Dashboard 停留在旧轮次；
+覆盖率、IC/ICIR、概率校准、命中率提升、净超额、回撤、换手、消融稳定性和至少
+12 个同时具备预测和真实前瞻净值证据的有效周全部通过后才允许替换 Champion。
+同一周重复运行只计一个周期，尚未结算的预测周不进入页面倒计时。
 训练完成后自动执行 `research -> shadow` 门禁；进入 shadow 后由每日预测保存独立
-候选产物并按自然周累计，第四个有效影子周后自动执行 `shadow -> active` 门禁。
+候选产物并按自然周累计，第 12 个有真实前瞻净值证据的有效影子周后自动执行
+`shadow -> active` 门禁；仅证据不足时可延长到第 16 周，仍不足则淘汰。
 任一证据未通过时保持原状态和原 Champion，并把原因写入 registry 与 Dashboard。
 Challenger 晋级为 Champion 后，系统关闭该验证组合并自动选择下一候选版本；两套正式
 策略始终只读取 Champion 的规范预测文件，不会使用正在迭代的新版本。
@@ -188,7 +194,7 @@ Challenger 晋级为 Champion 后，系统关闭该验证组合并自动选择�
 也不计入双策略排行榜；每个版本的状态、订单、成交和净值独立写入
 `data/model_iterations/<market>/<horizon>/<version>/`。旧命令 `run-model-shadow`
 只作为兼容别名保留。A 股使用 20 日预测、最多 10 只；跨境 ETF 使用
-5 日预测、最多 5 只并保留 2% 现金。候选必须未失效、可信度至少 55%、上涨概率
+10 日预测、最多 5 只并保留 2% 现金。候选必须未失效、可信度至少 55%、上涨概率
 高于下跌概率且预期超额收益为正，否则账户可以保持全现金。重复运行同一预测版本
 不会重复下单或重复写入当日净值。
 
@@ -214,7 +220,7 @@ A 股继续使用共享行情缓存和触发器。工作日 daily worker 负责�
 - `stock-analyze-{claude,codex}-{daily,weekly}.service`
 - `stock-analyze-research.service`：共享行情成功后离线生成特征、事件、状态和预测，再启动 A 股与跨境 ETF 的四个 daily worker。
 - `stock-analyze-model-iteration.service`：仅在四个正式 daily 账本全部成功后启动，避免候选模型与正式账户争抢内存；自身失败独立告警。
-- `stock-analyze-model-training.timer`：每月 1 日 02:30 先按最新特征快照重建 `next-open-v2` 标签，再让透明基线与最多 10% 的机器学习残差在冻结开发窗口中同窗比较。只有净增量门禁通过才冻结为 Shadow，不会直接成为正式策略。
+- `stock-analyze-model-training.timer`：每月 1 日 02:30 按最新特征快照重建 `next-open-v2` 标签，并为两个市场分别导出带 SHA-256 和源指纹的不可变本机训练包；不在 ECS 执行模型拟合，每市场只保留最近 8 份。随后由本机 runner 锁定包内快照做透明基线与最多 10% 机器学习残差的同窗比较，只有净增量和可部署一致性门禁都通过才回传 Shadow。
 
 QDII 两套策略都有独立定时器：
 

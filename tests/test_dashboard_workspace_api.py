@@ -783,6 +783,56 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             ["positive_net_increment"],
         )
 
+    def test_deployment_blocked_report_stays_research_and_exposes_failure(self) -> None:
+        expected_spec = mainline_specs("a_share", "hs300")[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_path = (
+                root / "reports/research/baseline_first_20260807_hs300.json"
+            )
+            report_path.parent.mkdir(parents=True)
+            report_path.write_text(json.dumps({
+                "market": "a_share",
+                "account_scope": "hs300",
+                "horizon": 20,
+                "as_of": "20260807",
+                "status": "deployment_blocked",
+                "decision": "deployment_gate_failed",
+                "registry_mutated": False,
+                "model_spec_id": expected_spec.spec_id,
+                "model_spec_hash": expected_spec.spec_hash,
+                "baseline": {"net_excess_return": 0.01},
+                "candidate": {"net_excess_return": 0.02},
+                "incremental_gate": {"passed": True, "reasons": []},
+                "shadow_admission": {
+                    "admitted": False,
+                    "deployment_gate": {
+                        "passed": False,
+                        "reasons": ["positive_deployable_net_return"],
+                    },
+                },
+            }), encoding="utf-8")
+
+            health = _latest_baseline_first_health(root, "a_share")
+            payload = self._build(
+                root,
+                models={"status": "available", "models": []},
+            )
+
+        self.assertEqual(health["models"][0]["status"], "research")
+        self.assertFalse(health["models"][0]["gate_passed"])
+        self.assertEqual(
+            health["models"][0]["gate_reasons"],
+            ["positive_deployable_net_return"],
+        )
+        self.assertEqual(
+            payload["validation"]["models"][0]["gateReasons"],
+            ["positive_deployable_net_return"],
+        )
+        self.assertTrue(
+            health["models"][0]["model_version"].startswith("baseline-first-")
+        )
+
     def test_model_resource_shows_only_current_mainline_and_archives_legacy(self) -> None:
         expected_spec = mainline_specs("a_share", "hs300")[0]
         mainline = _model("A20-mainline")

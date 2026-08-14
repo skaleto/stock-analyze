@@ -764,13 +764,28 @@ class ShadowCycleTracker:
         except (OSError, json.JSONDecodeError):
             return {"version": 1, "models": {}}
 
-    def record(self, model_version: str, as_of: str, metrics: dict) -> dict:
+    def record(
+        self,
+        model_version: str,
+        as_of: str,
+        metrics: dict,
+        *,
+        eligible: bool = True,
+    ) -> dict:
         state = self._read()
         model = state.setdefault("models", {}).setdefault(model_version, {"cycles": []})
         day = date.fromisoformat(str(as_of)[:10])
         iso_year, iso_week, _ = day.isocalendar()
         week = f"{iso_year}-W{iso_week:02d}"
         cycles = model.setdefault("cycles", [])
+        if not eligible:
+            count = len(cycles)
+            return {
+                "count": count,
+                "remaining": max(0, self.required_cycles - count),
+                "cycles": cycles,
+                "is_new_cycle": False,
+            }
         existing = next((cycle for cycle in cycles if cycle.get("week") == week), None)
         row = {"week": week, "as_of": day.isoformat(), "metrics": metrics}
         is_new_cycle = existing is None
@@ -787,3 +802,28 @@ class ShadowCycleTracker:
             "cycles": cycles,
             "is_new_cycle": is_new_cycle,
         }
+
+    def record_usable_count(
+        self,
+        model_version: str,
+        count: int,
+        *,
+        as_of: str,
+    ) -> int:
+        state = self._read()
+        model = state.setdefault("models", {}).setdefault(
+            model_version,
+            {"cycles": []},
+        )
+        bounded = min(
+            len(model.setdefault("cycles", [])),
+            max(0, int(count)),
+        )
+        model["usable_cycle_count"] = bounded
+        model["usable_cycle_updated_at"] = str(as_of)[:10]
+        write_text_atomic(
+            self.path,
+            json.dumps(state, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return bounded

@@ -62,6 +62,7 @@ from .model_iteration import (
     model_version_summary,
     read_iteration_state,
     read_model_registry,
+    usable_shadow_cycle_count,
 )
 from .research.activation import select_registry_model
 from .strategy_comparison import build_strategy_comparison
@@ -1619,10 +1620,10 @@ def _read_model_health(root: Path, market: str) -> dict[str, Any]:
                 or latest_role_gates.get("ranker")
                 or latest_gate
             )
-            model_cycles = (
-                ((cycles.get("models") or {}).get(candidate) or {}).get("cycles")
-                or []
+            model_cycle_state = (
+                (cycles.get("models") or {}).get(candidate) or {}
             )
+            usable_cycles = usable_shadow_cycle_count(model_cycle_state)
             payload["status"] = model_state.get("status", "research")
             payload["is_champion"] = champion == candidate
             payload["gate_passed"] = latest_gate.get("passed")
@@ -1644,9 +1645,9 @@ def _read_model_health(root: Path, market: str) -> dict[str, Any]:
             payload["research_evaluation"] = (
                 model_state.get("research_evaluation") or {}
             )
-            payload["shadow_cycles"] = len(model_cycles)
+            payload["shadow_cycles"] = usable_cycles
             payload["shadow_cycles_remaining"] = max(
-                0, REQUIRED_SHADOW_CYCLES - len(model_cycles)
+                0, REQUIRED_SHADOW_CYCLES - usable_cycles
             )
             return payload
 

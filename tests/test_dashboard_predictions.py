@@ -147,7 +147,13 @@ class DashboardPredictionsTest(unittest.TestCase):
             model_root.mkdir(parents=True)
             (model_root / "model.metadata.json").write_text(json.dumps({"model_version": "m1", "horizon": 5, "metrics": {"brier_score": 0.2}}), encoding="utf-8")
             (model_root / "registry.json").write_text(json.dumps({"champion_model_version": "old", "models": {"m1": {"status": "shadow"}}}), encoding="utf-8")
-            (model_root / "shadow_cycles.json").write_text(json.dumps({"models": {"m1": {"cycles": [{"week": "2026-W28"}, {"week": "2026-W29"}]}}}), encoding="utf-8")
+            (model_root / "shadow_cycles.json").write_text(json.dumps({"models": {"m1": {
+                "cycles": [
+                    {"week": f"2026-W{week:02d}"}
+                    for week in range(18, 30)
+                ],
+                "usable_cycle_count": 2,
+            }}}), encoding="utf-8")
 
             payload = build_dashboard_detail_data(repo_root=root, market="cn_qdii_etf", agent="codex")
 
