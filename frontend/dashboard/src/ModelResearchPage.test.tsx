@@ -644,6 +644,11 @@ describe("ModelResearchPage", () => {
     const detail = screen.getByRole("region", { name: "测试验收详情" });
 
     expect(within(detail).getByText("经典表格模型")).toBeInTheDocument();
+    expect(
+      within(detail).getByRole("region", { name: "历史经典表格模型归档" }),
+    ).toBeInTheDocument();
+    expect(within(detail).getByText("历史最佳试验")).toBeInTheDocument();
+    expect(within(detail).queryByText("当前最佳研究候选")).not.toBeInTheDocument();
     expect(within(detail).getByText("前瞻研究观察")).toBeInTheDocument();
     expect(within(detail).getByText("1 / 60")).toBeInTheDocument();
     expect(within(detail).getByText("0 / 12")).toBeInTheDocument();
@@ -672,7 +677,7 @@ describe("ModelResearchPage", () => {
     const comparison = within(detail).getByRole("region", {
       name: "最佳与最近试验对比",
     });
-    expect(within(comparison).getByText("当前最佳")).toBeInTheDocument();
+    expect(within(comparison).getByText("历史最佳")).toBeInTheDocument();
     expect(within(comparison).getByText("最近试验")).toBeInTheDocument();
     expect(within(comparison).getByText("20.04%")).toBeInTheDocument();
   });
