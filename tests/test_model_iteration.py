@@ -98,6 +98,36 @@ class ModelIterationLifecycleTest(unittest.TestCase):
         self.assertEqual(first["model_version"], "shadow-v1")
         self.assertEqual(second["model_version"], "shadow-v1")
 
+    def test_mainline_spec_replaces_shadow_from_retired_spec(self):
+        from stock_analyze.model_iteration import ensure_iteration_candidate
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_registry(root, "a_share", 20, {
+                "champion_model_version": None,
+                "models": {
+                    "retired-shadow": {
+                        "status": "shadow",
+                        "registered_at": "2026-08-13T12:00:00+08:00",
+                        "spec_id": "h20_elasticnet_rank_v1",
+                    },
+                    "mainline-research": {
+                        "status": "research",
+                        "registered_at": "2026-08-12T12:00:00+08:00",
+                        "spec_id": "h20_momentum_anchor_quality_residual_ridge_v2",
+                    },
+                },
+            })
+
+            candidate = ensure_iteration_candidate(
+                root,
+                "a_share",
+                20,
+                as_of="2026-08-14",
+            )
+
+        self.assertEqual(candidate["model_version"], "mainline-research")
+
     def test_terminal_models_are_never_selected_as_iteration_candidates(self):
         from stock_analyze.model_iteration import ensure_iteration_candidate
 

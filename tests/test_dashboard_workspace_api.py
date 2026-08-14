@@ -223,6 +223,9 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
                             "max_drawdown": 0.03,
                             "annual_turnover": 2.0,
                             "trade_count": 4,
+                            "cash_position_effect_total": -0.01,
+                            "security_selection_return_total": 0.031,
+                            "execution_cost_effect_total": -0.001,
                         },
                     }],
                 }],
@@ -236,6 +239,11 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         participant = result["scopes"][0]["participants"][0]
         self.assertEqual(participant["participantType"], "formal_rule")
         self.assertEqual(participant["metrics"]["netExcessReturn"], 0.02)
+        self.assertEqual(participant["metrics"]["cashPositionEffectTotal"], -0.01)
+        self.assertEqual(
+            participant["metrics"]["securitySelectionReturnTotal"],
+            0.031,
+        )
         self.assertNotIn("candidate_root", result["scopes"][0])
 
     def _build(
@@ -703,12 +711,51 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
 
             health = _latest_tournament_health(root, "a_share")
 
+        self.assertEqual(health["models"][0]["account_scope"], "hs300")
+        self.assertEqual(health["models"][0]["horizon"], 20)
         metrics = health["models"][0]["metrics"]
         self.assertEqual(metrics["capital_utilization"], 0.91)
         self.assertEqual(metrics["rebalance_frequency"], "monthly")
         self.assertEqual(
             metrics["edge_calibration_version"],
             "clustered-date-mean-se-v2",
+        )
+
+    def test_model_resource_shows_only_current_mainline_and_archives_legacy(self) -> None:
+        mainline = _model("A20-mainline")
+        mainline.update({
+            "account_scope": "hs300",
+            "spec_id": "h20_momentum_anchor_quality_residual_ridge_v2",
+        })
+        legacy_h20 = _model("A20-legacy")
+        legacy_h20.update({
+            "account_scope": "hs300",
+            "spec_id": "h20_elasticnet_rank_v1",
+        })
+        legacy_h5 = _model("A5-legacy")
+        legacy_h5.update({
+            "account_scope": "hs300",
+            "horizon": 5,
+            "spec_id": "h5-ridge",
+        })
+
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._build(
+                Path(tmp),
+                models={
+                    "status": "available",
+                    "models": [legacy_h5, legacy_h20, mainline],
+                },
+            )
+
+        self.assertEqual(
+            [row["modelVersion"] for row in payload["training"]["models"]],
+            ["A20-mainline"],
+        )
+        self.assertEqual(payload["training"]["archive"]["total"], 2)
+        self.assertEqual(
+            {row["modelVersion"] for row in payload["training"]["archive"]["recent"]},
+            {"A20-legacy", "A5-legacy"},
         )
 
     def test_explicit_unavailable_iteration_marks_simulation_unavailable(
@@ -2098,14 +2145,15 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             allow_nan=False,
         ).encode("utf-8")
         self.assertLess(len(encoded), 250_000)
-        self.assertTrue(payload["truncated"])
-        self.assertEqual(payload["truncationReason"], "serialized_size_limit")
+        self.assertFalse(payload["truncated"])
+        self.assertIsNone(payload["truncationReason"])
         self.assertEqual(
             [stage["key"] for stage in payload["stages"]],
             ["data", "training", "validation", "simulation", "adoption"],
         )
-        self.assertEqual(payload["validation"]["total"], 20)
-        self.assertEqual(payload["dataPreparation"]["selectedFeatureCount"], 400)
+        self.assertEqual(payload["validation"]["total"], 1)
+        self.assertEqual(payload["dataPreparation"]["selectedFeatureCount"], 20)
+        self.assertEqual(payload["training"]["archive"]["total"], 19)
         first_model = payload["training"]["models"][0]
         self.assertEqual(first_model["candidateFeatureCount"], 20)
         self.assertIsNone(first_model["pointInTimeAudit"])

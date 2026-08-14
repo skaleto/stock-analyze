@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import shutil
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,7 +42,7 @@ from .storage import ResearchStore
 from .trial_ledger import TrialLedger
 
 
-TOURNAMENT_PROTOCOL_VERSION = "scoped-classical-tournament-v2"
+TOURNAMENT_PROTOCOL_VERSION = "scoped-classical-tournament-v3-calibrated-dual-track"
 SUMMARY_METRIC_KEYS = (
     "rank_ic",
     "icir",
@@ -370,9 +371,27 @@ def run_classical_tournament(
             existing = json.loads(report_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             existing = None
-        if isinstance(existing, dict):
+        if (
+            isinstance(existing, dict)
+            and existing.get("protocol") == TOURNAMENT_PROTOCOL_VERSION
+        ):
             _write_tournament_summary(tournament_root, existing)
             return existing
+        if isinstance(existing, dict):
+            retired_protocol = str(existing.get("protocol") or "unknown")
+            safe_protocol = "".join(
+                character if character.isalnum() or character in {"-", "_"}
+                else "-"
+                for character in retired_protocol
+            )[:80]
+            archive_root = tournament_root.parent / "_archive"
+            archive_root.mkdir(parents=True, exist_ok=True)
+            destination = archive_root / f"{run_key}-{safe_protocol}"
+            suffix = 1
+            while destination.exists():
+                destination = archive_root / f"{run_key}-{safe_protocol}-{suffix}"
+                suffix += 1
+            shutil.move(str(tournament_root), str(destination))
 
     declared_specs = tuple(specs)
     if not declared_specs:

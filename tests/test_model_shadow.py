@@ -127,7 +127,7 @@ class ModelCandidatePolicyTests(unittest.TestCase):
         qdii = load_shadow_profile(root, "cn_qdii_etf")
 
         self.assertEqual(a_share["horizon"], 20)
-        self.assertEqual(qdii["horizon"], 5)
+        self.assertEqual(qdii["horizon"], 10)
         self.assertEqual(a_share["initial_cash"], 1_000_000)
         self.assertEqual(qdii["initial_cash"], 1_000_000)
         self.assertEqual([row["id"] for row in a_share["accounts"]], ["hs300", "zz500"])
@@ -251,7 +251,7 @@ class ModelShadowCycleTests(unittest.TestCase):
         champion: str | None = None,
         status: str = "research",
     ) -> None:
-        model_root = root / "data" / "research" / "models" / "cn_qdii_etf" / "5"
+        model_root = root / "data" / "research" / "models" / "cn_qdii_etf" / "10"
         model_root.mkdir(parents=True, exist_ok=True)
         models = {
             version: {
@@ -276,11 +276,13 @@ class ModelShadowCycleTests(unittest.TestCase):
             / "research"
             / "iteration_predictions"
             / "cn_qdii_etf"
-            / "5"
+            / "10"
             / version
         )
         prediction_dir.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame([_prediction("513100") | {"model_version": version}]).to_parquet(
+        pd.DataFrame([
+            _prediction("513100", horizon=10) | {"model_version": version}
+        ]).to_parquet(
             prediction_dir / "20260717.parquet",
             index=False,
         )
@@ -321,8 +323,8 @@ class ModelShadowCycleTests(unittest.TestCase):
         profile = load_shadow_profile(root, "cn_qdii_etf")
         predictions = pd.DataFrame(
             [
-                _prediction("513100", expected=0.05),
-                _prediction("513500", expected=0.04),
+                _prediction("513100", horizon=10, expected=0.05),
+                _prediction("513500", horizon=10, expected=0.04),
             ]
         )
         with tempfile.TemporaryDirectory() as tmp:
@@ -384,7 +386,9 @@ class ModelShadowCycleTests(unittest.TestCase):
     def test_etf_cycle_keeps_weak_edge_in_cash_with_cost_reason(self) -> None:
         root = Path(__file__).resolve().parents[1]
         profile = load_shadow_profile(root, "cn_qdii_etf")
-        predictions = pd.DataFrame([_prediction("513100", expected=0.01)])
+        predictions = pd.DataFrame([
+            _prediction("513100", horizon=10, expected=0.01)
+        ])
         with tempfile.TemporaryDirectory() as tmp:
             store = PortfolioStore(tmp)
             result = run_shadow_cycle(
@@ -407,10 +411,10 @@ class ModelShadowCycleTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         profile = load_shadow_profile(root, "cn_qdii_etf")
         predictions = pd.DataFrame([
-            _prediction("513100", expected=0.05) | {
+            _prediction("513100", horizon=10, expected=0.05) | {
                 "account_id": "us_exposure", "research_scope": "us_exposure",
             },
-            _prediction("159920", expected=0.05) | {
+            _prediction("159920", horizon=10, expected=0.05) | {
                 "account_id": "hk_exposure", "research_scope": "hk_exposure",
             },
         ])
@@ -445,16 +449,16 @@ class ModelShadowCycleTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         profile = load_shadow_profile(root, "cn_qdii_etf")
         predictions = pd.DataFrame([
-            _prediction("513100", expected=0.05) | {
+            _prediction("513100", horizon=10, expected=0.05) | {
                 "account_id": "us_exposure", "research_scope": "us_exposure",
             },
-            _prediction("159920", expected=0.05) | {
+            _prediction("159920", horizon=10, expected=0.05) | {
                 "account_id": "hk_exposure", "research_scope": "hk_exposure",
             },
-            _prediction("520830", expected=0.08) | {
+            _prediction("520830", horizon=10, expected=0.08) | {
                 "account_id": "saudi_exposure", "research_scope": "saudi_exposure",
             },
-            _prediction("161116", expected=0.09) | {
+            _prediction("161116", horizon=10, expected=0.09) | {
                 "account_id": "commodity_precious_metals",
                 "research_scope": "commodity_precious_metals",
             },
@@ -510,9 +514,9 @@ class ModelShadowCycleTests(unittest.TestCase):
         )
         predictions = pd.DataFrame(
             [
-                _prediction("513100", expected=0.05)
+                _prediction("513100", horizon=10, expected=0.05)
                 | {"account_id": "us_exposure", "research_scope": "us_exposure"},
-                _prediction("513500", expected=0.04)
+                _prediction("513500", horizon=10, expected=0.04)
                 | {"account_id": "us_exposure", "research_scope": "us_exposure"},
             ]
         )
@@ -592,10 +596,10 @@ class ModelShadowCycleTests(unittest.TestCase):
                 )
 
             first_state = json.loads((
-                root / "data" / "model_iterations" / "cn_qdii_etf" / "5" / "candidate-v1" / "state.json"
+                root / "data" / "model_iterations" / "cn_qdii_etf" / "10" / "candidate-v1" / "state.json"
             ).read_text())
             second_state = json.loads((
-                root / "data" / "model_iterations" / "cn_qdii_etf" / "5" / "candidate-v2" / "state.json"
+                root / "data" / "model_iterations" / "cn_qdii_etf" / "10" / "candidate-v2" / "state.json"
             ).read_text())
 
         self.assertEqual(first["model_version"], "candidate-v1")
@@ -614,12 +618,15 @@ class ModelShadowCycleTests(unittest.TestCase):
             )
             self._write_candidate(root, version="candidate-v2", champion="champion-v1")
             candidate_prediction = (
-                root / "data" / "research" / "iteration_predictions" / "cn_qdii_etf" / "5" / "candidate-v2" / "20260717.parquet"
+                root / "data" / "research" / "iteration_predictions" / "cn_qdii_etf" / "10" / "candidate-v2" / "20260717.parquet"
             )
             candidate_prediction.unlink()
             canonical_dir = root / "data" / "cn_qdii_etf" / "codex" / "predictions"
             canonical_dir.mkdir(parents=True)
-            pd.DataFrame([_prediction("513100") | {"model_version": "champion-v1"}]).to_parquet(
+            pd.DataFrame([
+                _prediction("513100", horizon=10)
+                | {"model_version": "champion-v1"}
+            ]).to_parquet(
                 canonical_dir / "20260717.parquet",
                 index=False,
             )

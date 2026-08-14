@@ -25,7 +25,7 @@ def _seed_shadow_repo(root: Path) -> None:
         source_config.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
-    model_root = root / "data" / "research" / "models" / "cn_qdii_etf" / "5"
+    model_root = root / "data" / "research" / "models" / "cn_qdii_etf" / "10"
     model_root.mkdir(parents=True)
     (model_root / "registry.json").write_text(json.dumps({
         "champion_model_version": "model-v2",
@@ -47,21 +47,21 @@ def _seed_shadow_repo(root: Path) -> None:
             {"week": "2026-W29", "as_of": "2026-07-17", "metrics": {}},
         ]}},
     }), encoding="utf-8")
-    lifecycle_root = root / "data" / "model_iterations" / "cn_qdii_etf" / "5"
+    lifecycle_root = root / "data" / "model_iterations" / "cn_qdii_etf" / "10"
     lifecycle_root.mkdir(parents=True)
     (lifecycle_root / "iteration_state.json").write_text(json.dumps({
         "schema_version": 1,
         "market": "cn_qdii_etf",
-        "horizon": 5,
+        "horizon": 10,
         "current_candidate": {
             "model_version": "model-v3",
-            "display_version": "Q5-V002",
+            "display_version": "Q10-V002",
             "status": "shadow",
             "selected_at": "2026-07-17",
         },
         "history": [{
             "model_version": "model-v1",
-            "display_version": "Q5-V000",
+            "display_version": "Q10-V000",
             "outcome": "retired",
             "ended_at": "2026-07-10",
         }],
@@ -78,9 +78,9 @@ def _seed_shadow_repo(root: Path) -> None:
         "source_agent": "codex",
         "as_of": "2026-07-17",
         "prediction_as_of": "2026-07-17",
-        "horizon": 5,
+        "horizon": 10,
         "model_version": "model-v3",
-        "display_version": "Q5-V002",
+        "display_version": "Q10-V002",
         "lifecycle_status": "shadow",
         "model_versions": ["model-v3"],
         "eligible_rows": 21,
@@ -213,7 +213,7 @@ def _seed_shadow_repo(root: Path) -> None:
         / "research"
         / "iteration_predictions"
         / "cn_qdii_etf"
-        / "5"
+        / "10"
         / "model-v3"
     )
     prediction_dir.mkdir(parents=True)
@@ -222,7 +222,7 @@ def _seed_shadow_repo(root: Path) -> None:
             {
                 "as_of": "2026-07-17",
                 "code": "513100",
-                "horizon": 5,
+                "horizon": 10,
                 "p_up": 0.60,
                 "p_flat": 0.20,
                 "p_down": 0.20,
@@ -249,9 +249,9 @@ class DashboardModelShadowTests(unittest.TestCase):
 
         self.assertEqual(payload["agent"], MODEL_SHADOW_AGENT)
         self.assertEqual(payload["strategy"]["agent_label"], "模型迭代")
-        self.assertEqual(payload["model_iteration"]["horizon"], 5)
+        self.assertEqual(payload["model_iteration"]["horizon"], 10)
         self.assertEqual(payload["model_iteration"]["prediction_as_of"], "2026-07-17")
-        self.assertEqual(payload["model_iteration"]["candidate"]["display_version"], "Q5-V002")
+        self.assertEqual(payload["model_iteration"]["candidate"]["display_version"], "Q10-V002")
         self.assertEqual(payload["model_iteration"]["candidate"]["shadow_cycles"], 2)
         self.assertEqual(payload["model_iteration"]["champion"]["model_version"], "model-v2")
         self.assertEqual(payload["model_iteration"]["version_history"][0]["model_version"], "model-v1")
