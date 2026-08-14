@@ -32,11 +32,11 @@ from .contracts import (
 )
 from .document_ir import (
     DOCUMENT_IR_VERSION,
+    DocumentIRProjector,
     DocumentIRPreflightError,
     ir_nodes_by_id,
     preflight_document_ir,
     preflight_evidence_packet,
-    project_document_ir,
 )
 from .execution_contract import (
     EXECUTION_CONTRACT_VERSION,
@@ -4561,8 +4561,9 @@ def _bound_v21_payload(
         "semantic_document_ir_invalid",
     )
     try:
-        ir_nodes = ir_nodes_by_id(raw_ir)
-        empty_ir = project_document_ir(raw_ir, [])
+        projector = DocumentIRProjector(raw_ir)
+        ir_nodes = projector.nodes
+        empty_ir = projector.project([])
     except DocumentIRPreflightError as exc:
         raise SemanticExchangeError(exc.code, detail=exc.detail) from exc
     raw_chunks = _sequence(
@@ -4667,7 +4668,7 @@ def _bound_v21_payload(
         if chunk_id in ir_nodes:
             trial_ids.add(chunk_id)
         try:
-            projected = project_document_ir(raw_ir, sorted(trial_ids))
+            projected = projector.project(sorted(trial_ids))
         except DocumentIRPreflightError as exc:
             raise SemanticExchangeError(exc.code, detail=exc.detail) from exc
         trial = {
