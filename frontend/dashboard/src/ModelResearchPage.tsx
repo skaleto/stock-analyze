@@ -1255,8 +1255,11 @@ function StrategyCampaignPanel({
             },
             {
               key: "rule",
-              label: "规则版本",
-              render: (row) => row.selectedRuleSpecId ?? "无",
+              label: "规则 / 诊断版本",
+              render: (row) => row.selectedRuleSpecId
+                ?? (row.diagnosticOnly && row.bestDiagnosticSpecId
+                  ? `${row.bestDiagnosticSpecId}（仅诊断）`
+                  : "无"),
             },
             {
               key: "ml",

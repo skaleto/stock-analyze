@@ -233,8 +233,25 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
                         "account_scope": "zz500",
                         "status": "falsified",
                         "selected_spec_id": None,
+                        "best_diagnostic_spec_id": "A_MOM_02",
+                        "diagnostic_only": True,
                         "reasons": ["no_transparent_candidate_passed_gates_1_2"],
-                        "trials": [],
+                        "trials": [{
+                            "spec_id": "A_MOM_02",
+                            "metrics": {
+                                "net_return": 0.31,
+                                "benchmark_return": 0.32,
+                                "net_excess_return": -0.0035,
+                                "portfolio_sharpe": 0.99,
+                                "max_drawdown": 0.19,
+                            },
+                            "gate_two": {
+                                "governance": {
+                                    "deflated_sharpe_probability": 0.04,
+                                    "probability_of_backtest_overfit": 0.0,
+                                },
+                            },
+                        }],
                     },
                 ],
             }), encoding="utf-8")
@@ -246,6 +263,10 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertFalse(campaign["formalStrategyActivated"])
         self.assertEqual(len(campaign["scopes"]), 2)
         self.assertEqual(campaign["scopes"][0]["netExcessReturn"], 0.04)
+        self.assertIsNone(campaign["scopes"][1]["selectedRuleSpecId"])
+        self.assertEqual(campaign["scopes"][1]["bestDiagnosticSpecId"], "A_MOM_02")
+        self.assertTrue(campaign["scopes"][1]["diagnosticOnly"])
+        self.assertEqual(campaign["scopes"][1]["netExcessReturn"], -0.0035)
 
     def test_latest_unified_arena_projects_bounded_comparison(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

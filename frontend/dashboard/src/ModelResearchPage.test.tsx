@@ -359,6 +359,8 @@ describe("ModelResearchPage", () => {
           status: "baseline_only",
           selectedRuleSpecId: "A_MOM_01",
           selectedIncrementalSpecId: null,
+          bestDiagnosticSpecId: null,
+          diagnosticOnly: false,
           reasons: ["ml_no_proven_increment"],
           transparentTrialCount: 6,
           incrementalTrialCount: 2,
@@ -375,6 +377,29 @@ describe("ModelResearchPage", () => {
           attribution: { status: "reconciled" },
           folds: [],
           regimes: {},
+        }, {
+          accountScope: "zz500",
+          status: "falsified",
+          selectedRuleSpecId: null,
+          selectedIncrementalSpecId: null,
+          bestDiagnosticSpecId: "A_MOM_02",
+          diagnosticOnly: true,
+          reasons: ["no_transparent_candidate_passed_gates_1_2"],
+          transparentTrialCount: 6,
+          incrementalTrialCount: 0,
+          netReturn: 0.31,
+          benchmarkReturn: 0.32,
+          netExcessReturn: -0.0035,
+          sharpe: 0.99,
+          maxDrawdown: 0.19,
+          targetFillRatio: 0.99,
+          costStressNetExcessReturn: -0.02,
+          deflatedSharpeProbability: 0.04,
+          probabilityOfBacktestOverfit: 0,
+          pairedBootstrapProbability: null,
+          attribution: { status: "reconciled" },
+          folds: [],
+          regimes: {},
         }],
       },
     })));
@@ -384,6 +409,7 @@ describe("ModelResearchPage", () => {
     expect(await screen.findByText("封闭策略验证")).toBeInTheDocument();
     expect(screen.getByText("仅规则基线")).toBeInTheDocument();
     expect(screen.getByText("A_MOM_01")).toBeInTheDocument();
+    expect(screen.getByText("A_MOM_02（仅诊断）")).toBeInTheDocument();
     expect(screen.getByText("未接入正式策略")).toBeInTheDocument();
   });
 

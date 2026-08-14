@@ -2432,6 +2432,10 @@ def _read_strategy_campaign(root: Path, market: str) -> dict[str, Any]:
                 or raw_scope.get("selected_spec_id")
                 or ""
             )
+            diagnostic_id = str(
+                raw_scope.get("best_diagnostic_spec_id") or ""
+            )
+            displayed_id = selected_id or diagnostic_id
             trials = [
                 *_rows(raw_scope.get("incremental_trials")),
                 *_rows(raw_scope.get("trials")),
@@ -2439,7 +2443,7 @@ def _read_strategy_campaign(root: Path, market: str) -> dict[str, Any]:
             selected = next(
                 (
                     item for item in trials
-                    if str(item.get("spec_id") or "") == selected_id
+                    if str(item.get("spec_id") or "") == displayed_id
                 ),
                 {},
             )
@@ -2463,6 +2467,13 @@ def _read_strategy_campaign(root: Path, market: str) -> dict[str, Any]:
                         raw_scope.get("selected_incremental_spec_id"),
                         limit=128,
                     ) or None
+                ),
+                "bestDiagnosticSpecId": (
+                    _text(raw_scope.get("best_diagnostic_spec_id"), limit=128)
+                    or None
+                ),
+                "diagnosticOnly": bool(
+                    raw_scope.get("diagnostic_only") and not selected_id
                 ),
                 "reasons": reasons,
                 "transparentTrialCount": len(_rows(raw_scope.get("trials"))),
