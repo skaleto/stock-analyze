@@ -36,7 +36,10 @@ from stock_analyze.intelligence.semantic.exchange import (
     run_daily,
     run_job,
 )
-from stock_analyze.intelligence.semantic.document_ir import build_document_ir
+from stock_analyze.intelligence.semantic.document_ir import (
+    DocumentIRProjector,
+    build_document_ir,
+)
 from stock_analyze.intelligence.semantic.contracts import SemanticContractError
 from stock_analyze.intelligence.semantic.provider import (
     SemanticInputBundle,
@@ -697,9 +700,15 @@ class SemanticExchangeTest(unittest.TestCase):
             "retriever_version": "deterministic-evidence-v1",
         }
 
-        bounded = _bound_v21_payload(payload, max_input_characters=8_000)
+        with mock.patch.object(
+            semantic_exchange,
+            "DocumentIRProjector",
+            wraps=DocumentIRProjector,
+        ) as projector:
+            bounded = _bound_v21_payload(payload, max_input_characters=8_000)
 
         retained = {row["chunk_id"] for row in bounded["chunks"]}
+        self.assertEqual(projector.call_count, 1)
         self.assertIn("holder-context", retained)
         self.assertIn("event-fact", retained)
         self.assertIn("event-status", retained)

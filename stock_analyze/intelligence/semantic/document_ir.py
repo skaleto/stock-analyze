@@ -304,14 +304,37 @@ def ir_nodes_by_id(value: Mapping[str, object]) -> dict[str, Mapping[str, object
     }
 
 
+class DocumentIRProjector:
+    """Reuse one validated source IR across multiple evidence projections."""
+
+    def __init__(self, value: Mapping[str, object]) -> None:
+        preflight_document_ir(value)
+        self._value = value
+        self.nodes = ir_nodes_by_id(value)
+
+    def project(self, node_ids: Sequence[str]) -> dict[str, object]:
+        return _project_document_ir(
+            self._value,
+            node_ids,
+            nodes=self.nodes,
+        )
+
+
 def project_document_ir(
     value: Mapping[str, object],
     node_ids: Sequence[str],
 ) -> dict[str, object]:
     """Return a hash-stable evidence projection with every relation closed."""
 
-    preflight_document_ir(value)
-    nodes = ir_nodes_by_id(value)
+    return DocumentIRProjector(value).project(node_ids)
+
+
+def _project_document_ir(
+    value: Mapping[str, object],
+    node_ids: Sequence[str],
+    *,
+    nodes: Mapping[str, Mapping[str, object]],
+) -> dict[str, object]:
     selected = {str(node_id) for node_id in node_ids}
     if any(node_id not in nodes for node_id in selected):
         raise DocumentIRPreflightError("document_ir_projection_node_missing")
@@ -653,9 +676,11 @@ def _canonical_hash(value: object) -> str:
 
 __all__ = (
     "DOCUMENT_IR_VERSION",
+    "DocumentIRProjector",
     "DocumentIRPreflightError",
     "build_document_ir",
     "ir_nodes_by_id",
     "preflight_document_ir",
     "preflight_evidence_packet",
+    "project_document_ir",
 )
