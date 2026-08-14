@@ -920,6 +920,95 @@ class ModelShadowCycleTests(unittest.TestCase):
         self.assertEqual(result["accounts"][0]["rebalance_frequency"], "monthly")
         self.assertTrue(result["accounts"][0]["rebalance_due"])
 
+    def test_qdii_rule_cycle_honors_zero_risky_exposure(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        profile = json.loads(json.dumps(load_shadow_profile(root, "cn_qdii_etf")))
+        profile.update({
+            "accounts": [{
+                "id": "hk_exposure",
+                "name": "香港市场规则组合",
+                "scope": "hk_exposure",
+                "benchmark": "159920",
+                "cash": 500_000,
+                "top_n": 2,
+            }],
+            "account_id": "hk_exposure",
+            "initial_cash": 500_000,
+            "top_n": 2,
+            "max_single_weight": 0.50,
+        })
+        signals = pd.DataFrame([
+            {
+                "code": "159920",
+                "horizon": 10,
+                "score": 0.90,
+                "rule_eligible": True,
+                "target_risky_exposure": 0.0,
+                "signal_kind": "transparent_rule",
+                "model_version": "rule-q-trend",
+                "account_id": "hk_exposure",
+                "research_scope": "hk_exposure",
+                "rebalance_frequency": "weekly",
+            },
+            {
+                "code": "513550",
+                "horizon": 10,
+                "score": 0.80,
+                "rule_eligible": True,
+                "target_risky_exposure": 0.0,
+                "signal_kind": "transparent_rule",
+                "model_version": "rule-q-trend",
+                "account_id": "hk_exposure",
+                "research_scope": "hk_exposure",
+                "rebalance_frequency": "weekly",
+            },
+        ])
+        account_contracts = {
+            "hk_exposure": {
+                "account": {
+                    "id": "hk_exposure",
+                    "scope": "hk_exposure",
+                    "benchmark": "159920",
+                    "cash": 500_000,
+                    "top_n": 2,
+                },
+                "trading": {
+                    "lot_size": 100,
+                    "max_single_weight": 0.50,
+                },
+                "rebalance_frequency": "weekly",
+                "rule_execution_policy": {
+                    "version": "campaign-transparent-v1",
+                    "rank_buffer_pct": 0.20,
+                    "minimum_target_change": 0.0,
+                    "partial_adjustment_rate": 1.0,
+                    "max_daily_turnover": 1.0,
+                    "max_industry_weight": 1.0,
+                    "max_holding_days": 0,
+                },
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            result = run_shadow_cycle(
+                market="cn_qdii_etf",
+                profile=profile,
+                store=store,
+                provider=FakeETFProvider(),
+                predictions=signals,
+                as_of="2026-08-14",
+                prediction_as_of="2026-08-14",
+                run_id="rule-shadow-q-risk-off",
+                account_contracts=account_contracts,
+            )
+            pending = store.load_pending()
+
+        self.assertTrue(result["cash_only"])
+        self.assertEqual(result["selected_count"], 0)
+        self.assertEqual(result["pending_orders"], 0)
+        self.assertEqual(pending, [])
+        self.assertEqual(result["accounts"][0]["target_risky_exposure"], 0.0)
+
     def test_missing_candidate_prediction_never_falls_back_to_champion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
