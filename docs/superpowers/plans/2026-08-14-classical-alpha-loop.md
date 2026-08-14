@@ -56,7 +56,8 @@ Dashboard explain the difference between ranking skill and deployable return.
 
 1. Add failing tests for deterministic point-in-time anchor construction,
    residual target training, prediction reconstruction, and bundle round-trip.
-2. Add momentum fields to the A-share H20 feature contract.
+2. Add momentum fields to the A-share H20 feature contract and use a fixed
+   momentum/low-volatility anchor with a bounded learned residual.
 3. Serialize the ranking-target version and compute bounds from that target.
 4. Declare the new target only for the A-share H20 mainline.
 

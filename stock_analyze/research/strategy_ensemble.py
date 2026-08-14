@@ -776,60 +776,6 @@ def risk_adjusted_target_weights(
         else candidates
     )
     ranked = ranked.copy()
-    volatility_evidence = pd.to_numeric(
-        ranked.get(
-            "expected_volatility",
-            ranked.get(
-                "low_volatility_60",
-                pd.Series(np.nan, index=ranked.index),
-            ),
-        ),
-        errors="coerce",
-    )
-    prediction_evidence = (
-        ranked.get(
-            "prediction_applied",
-            pd.Series(False, index=ranked.index),
-        )
-        .fillna(False)
-        .astype(bool)
-    )
-    if (
-        return_history is None
-        and not bool(volatility_evidence.notna().any())
-        and not bool(prediction_evidence.any())
-        and not exposure_constraints
-    ):
-        selected = ranked.head(max(int(top_n), 1)).copy()
-        if selected.empty:
-            return {}
-        weights = _project_weight_budget(
-            pd.Series(1.0, index=selected.index),
-            cap=max_single_weight,
-            budget=min(max(float(gross_exposure), 0.0), 1.0),
-            candidates=selected,
-            group_constraints=group_constraints,
-        )
-        result = {
-            _normalize_code(code): float(weight)
-            for code, weight in zip(selected["code"], weights)
-            if float(weight) > 1e-10
-        }
-        if diagnostics is not None:
-            diagnostics.update({
-                "allocation_contract": "equal-weight-core-fallback-v1",
-                "fallback_reason": "risk_inputs_missing",
-                "gross_exposure": float(sum(result.values())),
-                "gross_exposure_target": min(
-                    max(float(gross_exposure), 0.0), 1.0
-                ),
-                "gross_exposure_shortfall": max(
-                    min(max(float(gross_exposure), 0.0), 1.0)
-                    - float(sum(result.values())),
-                    0.0,
-                ),
-            })
-        return result
     market_beta, market_beta_source = _market_beta_estimates(
         ranked,
         return_history=return_history,

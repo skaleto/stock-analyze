@@ -88,7 +88,11 @@ class ResearchClassicalTournamentTest(unittest.TestCase):
             )
             tournament_root.mkdir(parents=True)
             (tournament_root / "report.json").write_text(
-                json.dumps({"protocol": "retired-v1", "status": "no_pass"}),
+                json.dumps({
+                    "protocol": TOURNAMENT_PROTOCOL_VERSION,
+                    "status": "no_pass",
+                    "candidates": [{"spec_hash": "retired-spec"}],
+                }),
                 encoding="utf-8",
             )
             specs = (a_share_h3_specs("hs300")[0],)
@@ -144,7 +148,7 @@ class ResearchClassicalTournamentTest(unittest.TestCase):
 
             archived = list(
                 (tournament_root.parent / "_archive").glob(
-                    "20260807-retired-v1*/report.json"
+                    f"20260807-{TOURNAMENT_PROTOCOL_VERSION}*/report.json"
                 )
             )
 
@@ -182,6 +186,26 @@ class ResearchClassicalTournamentTest(unittest.TestCase):
             root = Path(tmp)
             trained = []
             specs = (a_share_h3_specs("hs300")[0],)
+            portfolio_contract = {
+                "accounts": [
+                    {"id": "hs300", "cash": 200_000.0, "top_n": 3}
+                ],
+                "trading": {
+                    "lot_size": 100,
+                    "commission_rate": 0.0003,
+                    "min_commission": 5.0,
+                    "stamp_tax_rate": 0.0005,
+                    "slippage_rate": 0.0005,
+                    "max_single_weight": 0.20,
+                },
+                "execution_policy": {
+                    "rank_buffer_pct": 0.50,
+                    "minimum_target_change": 0.01,
+                    "partial_adjustment_rate": 0.35,
+                    "max_daily_turnover": 0.10,
+                    "cost_safety_multiple": 1.50,
+                },
+            }
 
             def trainer(*_args, model_spec, **_kwargs):
                 trained.append(model_spec.spec_id)
@@ -205,24 +229,7 @@ class ResearchClassicalTournamentTest(unittest.TestCase):
                     as_of="2026-08-07",
                     dataset=_dataset(),
                     feature_columns=("signal",),
-                    portfolio_contract={
-                        "accounts": [{"id": "hs300", "cash": 200_000.0, "top_n": 3}],
-                        "trading": {
-                            "lot_size": 100,
-                            "commission_rate": 0.0003,
-                            "min_commission": 5.0,
-                            "stamp_tax_rate": 0.0005,
-                            "slippage_rate": 0.0005,
-                            "max_single_weight": 0.20,
-                        },
-                        "execution_policy": {
-                            "rank_buffer_pct": 0.50,
-                            "minimum_target_change": 0.01,
-                            "partial_adjustment_rate": 0.35,
-                            "max_daily_turnover": 0.10,
-                            "cost_safety_multiple": 1.50,
-                        },
-                    },
+                    portfolio_contract=portfolio_contract,
                     specs=specs,
                 )
                 second = run_classical_tournament(
@@ -233,15 +240,28 @@ class ResearchClassicalTournamentTest(unittest.TestCase):
                     as_of="2026-08-07",
                     dataset=_dataset(),
                     feature_columns=("signal",),
-                    portfolio_contract={},
+                    portfolio_contract=portfolio_contract,
                     specs=specs,
+                )
+                forced = run_classical_tournament(
+                    root,
+                    market="a_share",
+                    account_scope="hs300",
+                    horizon=3,
+                    as_of="2026-08-07",
+                    dataset=_dataset(),
+                    feature_columns=("signal",),
+                    portfolio_contract=portfolio_contract,
+                    specs=specs,
+                    force=True,
                 )
 
             manifest = json.loads(Path(first["manifest_path"]).read_text(encoding="utf-8"))
 
-        self.assertEqual(len(trained), 1)
+        self.assertEqual(len(trained), 2)
         self.assertEqual(manifest["final_gate_open_count"], 1)
         self.assertEqual(first["report_path"], second["report_path"])
+        self.assertEqual(first["report_path"], forced["report_path"])
         self.assertEqual(
             {item["status"] for item in first["candidates"]}.difference({"shadow", "rejected"}),
             set(),

@@ -107,7 +107,10 @@ function rebalanceFrequencyLabel(input: string | null | undefined): string {
 
 function calibrationVersionLabel(input: string | null | undefined): string {
   if (input === "clustered-date-mean-se-v2") return "均值误差校准 v2";
-  if (input === "isotonic-date-bucket-v3") return "单调收益校准 v3";
+  if (
+    input === "clustered-date-isotonic-mean-se-v3"
+    || input === "isotonic-date-bucket-v3"
+  ) return "单调收益校准 v3";
   return input || "-";
 }
 

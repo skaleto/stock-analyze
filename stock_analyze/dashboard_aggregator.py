@@ -676,6 +676,37 @@ def _read_model_iteration_status(root: Path, market: str) -> dict[str, Any]:
     payload.setdefault("source_agent", profile.get("source_agent", "codex"))
     payload["horizon"] = horizon
 
+    if "account_candidates" in payload:
+        model_version = str(payload.get("model_version") or "")
+        candidate = (
+            {
+                "market": market,
+                "horizon": horizon,
+                "model_version": model_version,
+                "display_version": str(
+                    payload.get("display_version") or "账户级主线组合"
+                ),
+                "status": str(payload.get("lifecycle_status") or "shadow"),
+                "status_label": str(
+                    payload.get("lifecycle_status_label") or "模拟验证"
+                ),
+                "shadow_cycles": int(payload.get("shadow_cycles") or 0),
+                "shadow_cycles_remaining": int(
+                    payload.get("shadow_cycles_remaining") or 0
+                ),
+                "account_candidates": payload.get("account_candidates") or [],
+                "selected_at": payload.get("updated_at"),
+            }
+            if model_version
+            else None
+        )
+        return {
+            **payload,
+            "candidate": candidate,
+            "champion": None,
+            "version_history": [],
+        }
+
     registry = read_model_registry(root, market, horizon)
     state = read_iteration_state(root, market, horizon)
     current = state.get("current_candidate") or {}

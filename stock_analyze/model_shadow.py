@@ -24,6 +24,7 @@ from .model_iteration import (
     ensure_iteration_candidate,
     iteration_portfolio_dir,
     iteration_prediction_dir,
+    model_registry_path,
     read_model_registry,
 )
 from .research.strategy_ensemble import (
@@ -31,6 +32,7 @@ from .research.strategy_ensemble import (
     load_provider_return_history,
     risk_adjusted_target_weights,
 )
+from .research.storage import ResearchStore
 from .run_ledger import RunLedger
 from .store import PortfolioStore
 from .utils import next_business_day, now_iso, read_json, safe_float, write_json
@@ -157,6 +159,8 @@ def latest_iteration_prediction_path(
     horizon: int,
     model_version: str,
     as_of: str,
+    *,
+    account_scope: str | None = None,
 ) -> Path:
     cutoff = str(as_of).replace("-", "")[:8]
     directory = iteration_prediction_dir(
@@ -164,6 +168,7 @@ def latest_iteration_prediction_path(
         market,
         horizon,
         model_version,
+        account_scope=account_scope,
     )
     paths = sorted(
         path
@@ -172,9 +177,171 @@ def latest_iteration_prediction_path(
     )
     if not paths:
         raise FileNotFoundError(
-            f"model_iteration_prediction_missing:{market}:{horizon}:{model_version}:as_of={cutoff}"
+            "model_iteration_prediction_missing:"
+            f"{market}:{account_scope or 'legacy'}:{horizon}:"
+            f"{model_version}:as_of={cutoff}"
         )
     return paths[-1]
+
+
+def _scoped_iteration_inputs(
+    root: Path,
+    *,
+    market: str,
+    horizon: int,
+    accounts: list[dict[str, Any]],
+    as_of: str,
+) -> dict[str, Any] | None:
+    """Resolve one current, exact-date mainline prediction per account.
+
+    ``None`` means the repository still uses the legacy unscoped registry. If
+    any scoped registry exists, the scoped contract becomes authoritative and
+    the caller must never fall back to an unrelated legacy candidate.
+    """
+
+    scoped = [
+        (
+            account,
+            str(account.get("scope") or account["id"]),
+        )
+        for account in accounts
+    ]
+    if not any(
+        model_registry_path(
+            root,
+            market,
+            horizon,
+            account_scope=scope,
+        ).exists()
+        for _, scope in scoped
+    ):
+        return None
+
+    expected_key = str(as_of).replace("-", "")[:8]
+    account_candidates: list[dict[str, Any]] = []
+    frames: list[pd.DataFrame] = []
+    model_versions: dict[str, str] = {}
+    prediction_paths: dict[str, str] = {}
+    issue_status = ""
+    issue_reason = ""
+
+    for account, scope in scoped:
+        account_id = str(account["id"])
+        registry_path = model_registry_path(
+            root,
+            market,
+            horizon,
+            account_scope=scope,
+        )
+        if not registry_path.exists():
+            account_candidates.append({
+                "account_id": account_id,
+                "account_scope": scope,
+                "status": "registry_missing",
+                "status_label": "主线尚未训练",
+            })
+            issue_status = issue_status or "no_candidate"
+            issue_reason = issue_reason or "部分账户尚未生成主线模型"
+            continue
+
+        candidate = ensure_iteration_candidate(
+            root,
+            market,
+            horizon,
+            account_scope=scope,
+            as_of=as_of,
+        )
+        if candidate is None:
+            account_candidates.append({
+                "account_id": account_id,
+                "account_scope": scope,
+                "status": "no_candidate",
+                "status_label": "没有通过验收的候选",
+            })
+            issue_status = issue_status or "no_candidate"
+            issue_reason = issue_reason or "部分账户当前没有待验证候选模型"
+            continue
+
+        model_version = str(candidate["model_version"])
+        account_row = {
+            "account_id": account_id,
+            "account_scope": scope,
+            **candidate,
+        }
+        model_versions[account_id] = model_version
+        try:
+            prediction_path = latest_iteration_prediction_path(
+                root,
+                market,
+                horizon,
+                model_version,
+                as_of,
+                account_scope=scope,
+            )
+        except FileNotFoundError:
+            account_candidates.append({
+                **account_row,
+                "prediction_status": "missing",
+            })
+            issue_status = issue_status or "prediction_missing"
+            issue_reason = issue_reason or "部分账户候选模型预测尚未生成"
+            continue
+
+        if prediction_path.stem != expected_key:
+            observed = (
+                f"{prediction_path.stem[:4]}-{prediction_path.stem[4:6]}-"
+                f"{prediction_path.stem[6:]}"
+            )
+            account_candidates.append({
+                **account_row,
+                "prediction_status": "stale",
+                "prediction_as_of": observed,
+            })
+            issue_status = issue_status or "prediction_stale"
+            issue_reason = issue_reason or "部分账户缺少当日模型预测"
+            continue
+
+        frame = pd.read_parquet(prediction_path).copy()
+        frame["account_id"] = account_id
+        frame["research_scope"] = scope
+        frames.append(frame)
+        prediction_paths[account_id] = str(prediction_path)
+        account_candidates.append({
+            **account_row,
+            "prediction_status": "current",
+            "prediction_path": str(prediction_path),
+        })
+
+    if issue_status:
+        return {
+            "ready": False,
+            "status": issue_status,
+            "cash_reason": issue_reason,
+            "account_candidates": account_candidates,
+            "model_versions": model_versions,
+        }
+
+    version_payload = json.dumps(
+        model_versions,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    composite_version = (
+        "scoped-"
+        + hashlib.sha256(version_payload.encode("utf-8")).hexdigest()[:16]
+    )
+    return {
+        "ready": True,
+        "model_version": composite_version,
+        "display_version": f"{len(model_versions)} 个账户主线",
+        "lifecycle_status": "shadow",
+        "lifecycle_status_label": "模拟验证",
+        "predictions": pd.concat(frames, ignore_index=True, sort=False),
+        "prediction_paths": prediction_paths,
+        "account_candidates": account_candidates,
+        "model_versions": model_versions,
+    }
 
 
 def _truthy(value: Any) -> bool:
@@ -1065,86 +1232,153 @@ def run_model_iteration(
     root = Path(repo_root)
     profile = load_shadow_profile(root, market)
     horizon = int(profile["horizon"])
-    candidate = ensure_iteration_candidate(
+    scoped_inputs = _scoped_iteration_inputs(
         root,
-        market,
-        horizon,
+        market=market,
+        horizon=horizon,
+        accounts=[dict(account) for account in profile["accounts"]],
         as_of=as_of,
     )
-    if candidate is None:
-        registry = read_model_registry(root, market, horizon)
-        return _write_current_status(root, market, horizon, {
-            "schema_version": 2,
-            "status": "no_candidate",
-            "market": market,
-            "horizon": horizon,
-            "label": MODEL_ITERATION_LABEL,
-            "portfolio_label": MODEL_ITERATION_PORTFOLIO_LABEL,
-            "champion_model_version": registry.get("champion_model_version"),
-            "cash_only": True,
-            "cash_reason": "当前没有待验证的候选模型",
-            "updated_at": now_iso(),
-        })
-    model_version = str(candidate["model_version"])
-    try:
-        prediction_path = latest_iteration_prediction_path(
+    prediction_status_fields: dict[str, Any]
+    runtime_fields: dict[str, Any]
+    if scoped_inputs is not None:
+        if not scoped_inputs["ready"]:
+            return _write_current_status(root, market, horizon, {
+                "schema_version": 3,
+                "status": scoped_inputs["status"],
+                "market": market,
+                "horizon": horizon,
+                "label": MODEL_ITERATION_LABEL,
+                "portfolio_label": MODEL_ITERATION_PORTFOLIO_LABEL,
+                "account_candidates": scoped_inputs["account_candidates"],
+                "model_versions": scoped_inputs["model_versions"],
+                "execution_suspended": True,
+                "cash_only": True,
+                "cash_reason": scoped_inputs["cash_reason"],
+                "updated_at": now_iso(),
+            })
+        model_version = str(scoped_inputs["model_version"])
+        predictions = scoped_inputs["predictions"]
+        prediction_as_of = str(as_of)
+        candidate = {
+            "model_version": model_version,
+            "display_version": scoped_inputs["display_version"],
+            "status": scoped_inputs["lifecycle_status"],
+            "status_label": scoped_inputs["lifecycle_status_label"],
+            "champion_model_version": None,
+            "shadow_cycles": min(
+                int(row.get("shadow_cycles") or 0)
+                for row in scoped_inputs["account_candidates"]
+            ),
+            "shadow_cycles_remaining": max(
+                int(row.get("shadow_cycles_remaining") or 0)
+                for row in scoped_inputs["account_candidates"]
+            ),
+        }
+        composite_prediction_path = (
+            iteration_prediction_dir(
+                root,
+                market,
+                horizon,
+                model_version,
+            )
+            / f"{str(as_of).replace('-', '')[:8]}.parquet"
+        )
+        ResearchStore(root / "data" / "research").write_parquet_atomic(
+            composite_prediction_path,
+            predictions,
+        )
+        prediction_status_fields = {
+            "prediction_path": str(composite_prediction_path),
+            "prediction_paths": scoped_inputs["prediction_paths"],
+        }
+        runtime_fields = {
+            "account_candidates": scoped_inputs["account_candidates"],
+            "model_versions": scoped_inputs["model_versions"],
+        }
+    else:
+        candidate = ensure_iteration_candidate(
             root,
             market,
             horizon,
-            model_version,
-            as_of,
+            as_of=as_of,
         )
-    except FileNotFoundError:
-        return _write_current_status(root, market, horizon, {
-            "schema_version": 2,
-            "status": "prediction_missing",
-            "market": market,
-            "horizon": horizon,
-            "label": MODEL_ITERATION_LABEL,
-            "portfolio_label": MODEL_ITERATION_PORTFOLIO_LABEL,
-            "model_version": model_version,
-            "display_version": candidate["display_version"],
-            "lifecycle_status": candidate["status"],
-            "lifecycle_status_label": candidate["status_label"],
-            "champion_model_version": candidate.get("champion_model_version"),
-            "cash_only": True,
-            "cash_reason": "候选模型预测尚未生成，未使用正式模型替代",
-            "updated_at": now_iso(),
-        })
-    expected_prediction_key = str(as_of).replace("-", "")[:8]
-    if prediction_path.stem != expected_prediction_key:
-        observed = (
-            f"{prediction_path.stem[:4]}-{prediction_path.stem[4:6]}-"
-            f"{prediction_path.stem[6:]}"
-        )
-        return _write_current_status(root, market, horizon, {
-            "schema_version": 2,
-            "status": "prediction_stale",
-            "market": market,
-            "horizon": horizon,
-            "label": MODEL_ITERATION_LABEL,
-            "portfolio_label": MODEL_ITERATION_PORTFOLIO_LABEL,
-            "model_version": model_version,
-            "display_version": candidate["display_version"],
-            "lifecycle_status": candidate["status"],
-            "lifecycle_status_label": candidate["status_label"],
-            "champion_model_version": candidate.get(
-                "champion_model_version"
+        if candidate is None:
+            registry = read_model_registry(root, market, horizon)
+            return _write_current_status(root, market, horizon, {
+                "schema_version": 2,
+                "status": "no_candidate",
+                "market": market,
+                "horizon": horizon,
+                "label": MODEL_ITERATION_LABEL,
+                "portfolio_label": MODEL_ITERATION_PORTFOLIO_LABEL,
+                "champion_model_version": registry.get("champion_model_version"),
+                "cash_only": True,
+                "cash_reason": "当前没有待验证的候选模型",
+                "updated_at": now_iso(),
+            })
+        model_version = str(candidate["model_version"])
+        try:
+            prediction_path = latest_iteration_prediction_path(
+                root,
+                market,
+                horizon,
+                model_version,
+                as_of,
+            )
+        except FileNotFoundError:
+            return _write_current_status(root, market, horizon, {
+                "schema_version": 2,
+                "status": "prediction_missing",
+                "market": market,
+                "horizon": horizon,
+                "label": MODEL_ITERATION_LABEL,
+                "portfolio_label": MODEL_ITERATION_PORTFOLIO_LABEL,
+                "model_version": model_version,
+                "display_version": candidate["display_version"],
+                "lifecycle_status": candidate["status"],
+                "lifecycle_status_label": candidate["status_label"],
+                "champion_model_version": candidate.get("champion_model_version"),
+                "cash_only": True,
+                "cash_reason": "候选模型预测尚未生成，未使用正式模型替代",
+                "updated_at": now_iso(),
+            })
+        expected_prediction_key = str(as_of).replace("-", "")[:8]
+        if prediction_path.stem != expected_prediction_key:
+            observed = (
+                f"{prediction_path.stem[:4]}-{prediction_path.stem[4:6]}-"
+                f"{prediction_path.stem[6:]}"
+            )
+            return _write_current_status(root, market, horizon, {
+                "schema_version": 2,
+                "status": "prediction_stale",
+                "market": market,
+                "horizon": horizon,
+                "label": MODEL_ITERATION_LABEL,
+                "portfolio_label": MODEL_ITERATION_PORTFOLIO_LABEL,
+                "model_version": model_version,
+                "display_version": candidate["display_version"],
+                "lifecycle_status": candidate["status"],
+                "lifecycle_status_label": candidate["status_label"],
+                "champion_model_version": candidate.get(
+                    "champion_model_version"
+                ),
+                "prediction_as_of": observed,
+                "cash_only": True,
+                "cash_reason": "候选模型当日预测缺失，未复用历史预测",
+                "updated_at": now_iso(),
+            })
+        predictions = pd.read_parquet(prediction_path)
+        prediction_as_of = next(
+            (
+                str(value)
+                for value in reversed(predictions.get("as_of", pd.Series(dtype=str)).tolist())
+                if str(value).strip()
             ),
-            "prediction_as_of": observed,
-            "cash_only": True,
-            "cash_reason": "候选模型当日预测缺失，未复用历史预测",
-            "updated_at": now_iso(),
-        })
-    predictions = pd.read_parquet(prediction_path)
-    prediction_as_of = next(
-        (
-            str(value)
-            for value in reversed(predictions.get("as_of", pd.Series(dtype=str)).tolist())
-            if str(value).strip()
-        ),
-        f"{prediction_path.stem[:4]}-{prediction_path.stem[4:6]}-{prediction_path.stem[6:]}",
-    )
+            f"{prediction_path.stem[:4]}-{prediction_path.stem[4:6]}-{prediction_path.stem[6:]}",
+        )
+        prediction_status_fields = {"prediction_path": str(prediction_path)}
+        runtime_fields = {}
     data_dir = iteration_portfolio_dir(root, market, horizon, model_version)
     store = PortfolioStore(data_dir)
     cache_dir = (
@@ -1177,7 +1411,8 @@ def run_model_iteration(
             )
             status = {
                 **result,
-                "schema_version": 2,
+                **runtime_fields,
+                "schema_version": 3 if scoped_inputs is not None else 2,
                 "status": "complete",
                 "label": MODEL_ITERATION_LABEL,
                 "portfolio_label": MODEL_ITERATION_PORTFOLIO_LABEL,
@@ -1190,7 +1425,7 @@ def run_model_iteration(
                 "shadow_cycles_remaining": candidate.get(
                     "shadow_cycles_remaining", REQUIRED_SHADOW_CYCLES
                 ),
-                "prediction_path": str(prediction_path),
+                **prediction_status_fields,
                 "portfolio_path": str(data_dir),
                 "updated_at": now_iso(),
             }

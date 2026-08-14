@@ -53,7 +53,7 @@ class ResearchClassicalSpecsTest(unittest.TestCase):
         self.assertEqual({item.horizon for item in specs}, {20})
         self.assertEqual(
             {item.hypothesis_id for item in specs},
-            {"momentum_anchor_quality_residual"},
+            {"balanced_momentum_lowvol_anchor_residual"},
         )
         self.assertEqual({item.rebalance_frequency for item in specs}, {"monthly"})
         self.assertTrue(all(item.feature_allowlist for item in specs))
@@ -64,7 +64,7 @@ class ResearchClassicalSpecsTest(unittest.TestCase):
         self.assertEqual({item.estimator for item in specs}, {"ridge"})
         self.assertEqual(
             {item.ranking_target for item in specs},
-            {"momentum_anchor_residual_v1"},
+            {"momentum_lowvol_anchor_residual_v1"},
         )
         self.assertEqual(
             {item.feature_selection_mode for item in specs},
@@ -72,8 +72,9 @@ class ResearchClassicalSpecsTest(unittest.TestCase):
         )
         self.assertEqual(
             specs[0].spec_id,
-            "h20_momentum_anchor_quality_residual_ridge_v2",
+            "h20_balanced_anchor_residual_ridge_v4",
         )
+        self.assertEqual(specs[0].parameter_map["residual_tilt_weight"], 0.15)
 
     def test_specs_are_serializable_for_the_trial_ledger(self) -> None:
         rows = [item.as_ledger_spec() for item in a_share_h3_specs("zz500")]

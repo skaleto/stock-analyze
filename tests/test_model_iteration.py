@@ -100,6 +100,9 @@ class ModelIterationLifecycleTest(unittest.TestCase):
 
     def test_mainline_spec_replaces_shadow_from_retired_spec(self):
         from stock_analyze.model_iteration import ensure_iteration_candidate
+        from stock_analyze.research.classical_specs import mainline_specs
+
+        mainline_spec_id = mainline_specs("a_share", "")[0].spec_id
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -114,7 +117,7 @@ class ModelIterationLifecycleTest(unittest.TestCase):
                     "mainline-research": {
                         "status": "research",
                         "registered_at": "2026-08-12T12:00:00+08:00",
-                        "spec_id": "h20_momentum_anchor_quality_residual_ridge_v2",
+                        "spec_id": mainline_spec_id,
                     },
                 },
             })
@@ -127,6 +130,42 @@ class ModelIterationLifecycleTest(unittest.TestCase):
             )
 
         self.assertEqual(candidate["model_version"], "mainline-research")
+
+    def test_account_scoped_mainline_rejects_stale_protocol(self):
+        from stock_analyze.model_iteration import ensure_iteration_candidate
+        from stock_analyze.research.classical_specs import mainline_specs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec = mainline_specs("a_share", "hs300")[0]
+            registry_path = (
+                root / "data" / "research" / "models" / "a_share"
+                / "hs300" / "20" / "registry.json"
+            )
+            registry_path.parent.mkdir(parents=True)
+            registry_path.write_text(json.dumps({
+                "champion_model_version": None,
+                "models": {
+                    "stale-v1": {
+                        "status": "shadow",
+                        "spec_id": spec.spec_id,
+                        "spec_hash": spec.spec_hash,
+                        "metrics": {
+                            "training_protocol_version": "retired-protocol"
+                        },
+                    }
+                },
+            }), encoding="utf-8")
+
+            candidate = ensure_iteration_candidate(
+                root,
+                "a_share",
+                20,
+                account_scope="hs300",
+                as_of="2026-08-14",
+            )
+
+        self.assertIsNone(candidate)
 
     def test_terminal_models_are_never_selected_as_iteration_candidates(self):
         from stock_analyze.model_iteration import ensure_iteration_candidate

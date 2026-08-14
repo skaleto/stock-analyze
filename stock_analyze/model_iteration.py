@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .research.classical_specs import mainline_horizon, mainline_specs
+from .research.models import TRAINING_PROTOCOL_VERSION
 from .utils import now_iso, read_json, write_json
 
 
@@ -284,9 +285,20 @@ def ensure_iteration_candidate(
         horizon,
         account_scope=account_scope,
     )
+    expected_spec_hash = (
+        _expected_mainline_spec_hash(
+            market,
+            horizon,
+            account_scope=account_scope,
+        )
+        if account_scope
+        else ""
+    )
     eligible_versions = _eligible_candidate_versions(
         models,
         expected_spec_id=expected_spec_id,
+        expected_spec_hash=expected_spec_hash,
+        require_current_protocol=bool(account_scope),
     )
     current_is_pinned = bool(
         current_version
@@ -301,6 +313,8 @@ def ensure_iteration_candidate(
             models,
             champion,
             expected_spec_id=expected_spec_id,
+            expected_spec_hash=expected_spec_hash,
+            require_current_protocol=bool(account_scope),
         )
     )
 
@@ -381,10 +395,27 @@ def _expected_mainline_spec_id(
     return str(specs[0].spec_id) if len(specs) == 1 else ""
 
 
+def _expected_mainline_spec_hash(
+    market: str,
+    horizon: int,
+    *,
+    account_scope: str | None,
+) -> str:
+    try:
+        if int(horizon) != mainline_horizon(market):
+            return ""
+        specs = mainline_specs(market, str(account_scope or ""))
+    except ValueError:
+        return ""
+    return str(specs[0].spec_hash) if len(specs) == 1 else ""
+
+
 def _eligible_candidate_versions(
     models: dict[str, Any],
     *,
     expected_spec_id: str,
+    expected_spec_hash: str = "",
+    require_current_protocol: bool = False,
 ) -> set[str]:
     if not expected_spec_id:
         return set(models)
@@ -392,9 +423,22 @@ def _eligible_candidate_versions(
         version
         for version, metadata in models.items()
         if str((metadata or {}).get("spec_id") or "") == expected_spec_id
+        and (
+            not expected_spec_hash
+            or str((metadata or {}).get("spec_hash") or "")
+            == expected_spec_hash
+        )
+        and (
+            not require_current_protocol
+            or str(((metadata or {}).get("metrics") or {}).get(
+                "training_protocol_version"
+            ) or "") == TRAINING_PROTOCOL_VERSION
+        )
     }
     if exact:
         return exact
+    if require_current_protocol:
+        return set()
     return {
         version
         for version, metadata in models.items()
@@ -407,11 +451,15 @@ def _select_candidate_version(
     champion: str,
     *,
     expected_spec_id: str = "",
+    expected_spec_hash: str = "",
+    require_current_protocol: bool = False,
 ) -> str:
     insertion_order = {version: index for index, version in enumerate(models)}
     eligible_versions = _eligible_candidate_versions(
         models,
         expected_spec_id=expected_spec_id,
+        expected_spec_hash=expected_spec_hash,
+        require_current_protocol=require_current_protocol,
     )
     for status in ("shadow", "research"):
         candidates = [

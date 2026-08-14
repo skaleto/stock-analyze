@@ -34,7 +34,9 @@ from stock_analyze.overlay_guard import (
     SENTIMENT_FACTORS,
 )
 from stock_analyze.research.feature_registry import DEFAULT_REGISTRY
+from stock_analyze.research.classical_specs import mainline_specs
 from stock_analyze.research.lineage import ResearchLineageStore
+from stock_analyze.research.models import TRAINING_PROTOCOL_VERSION
 
 
 def _model(
@@ -722,11 +724,16 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         )
 
     def test_model_resource_shows_only_current_mainline_and_archives_legacy(self) -> None:
+        expected_spec = mainline_specs("a_share", "hs300")[0]
         mainline = _model("A20-mainline")
         mainline.update({
             "account_scope": "hs300",
-            "spec_id": "h20_momentum_anchor_quality_residual_ridge_v2",
+            "spec_id": expected_spec.spec_id,
+            "spec_hash": expected_spec.spec_hash,
         })
+        mainline["metrics"]["training_protocol_version"] = (
+            TRAINING_PROTOCOL_VERSION
+        )
         legacy_h20 = _model("A20-legacy")
         legacy_h20.update({
             "account_scope": "hs300",

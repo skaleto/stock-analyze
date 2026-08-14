@@ -244,6 +244,51 @@ class ModelCandidatePolicyTests(unittest.TestCase):
 
 class ModelShadowCycleTests(unittest.TestCase):
     @staticmethod
+    def _write_scoped_candidate(
+        root: Path,
+        *,
+        scope: str,
+        version: str,
+        code: str,
+    ) -> None:
+        from stock_analyze.research.classical_specs import mainline_specs
+        from stock_analyze.research.models import TRAINING_PROTOCOL_VERSION
+
+        spec = mainline_specs("cn_qdii_etf", scope)[0]
+        model_root = (
+            root / "data" / "research" / "models" / "cn_qdii_etf"
+            / scope / "10"
+        )
+        model_root.mkdir(parents=True, exist_ok=True)
+        (model_root / "registry.json").write_text(json.dumps({
+            "champion_model_version": None,
+            "models": {
+                version: {
+                    "status": "shadow",
+                    "registered_at": "2026-08-14T12:00:00+08:00",
+                    "spec_id": spec.spec_id,
+                    "spec_hash": spec.spec_hash,
+                    "metrics": {
+                        "training_protocol_version": TRAINING_PROTOCOL_VERSION
+                    },
+                }
+            },
+        }), encoding="utf-8")
+        prediction_dir = (
+            root / "data" / "research" / "iteration_predictions"
+            / "cn_qdii_etf" / scope / "10" / version
+        )
+        prediction_dir.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame([
+            _prediction(code, horizon=10)
+            | {
+                "model_version": version,
+                "account_id": scope,
+                "research_scope": scope,
+            }
+        ]).to_parquet(prediction_dir / "20260814.parquet", index=False)
+
+    @staticmethod
     def _write_candidate(
         root: Path,
         *,
@@ -606,6 +651,70 @@ class ModelShadowCycleTests(unittest.TestCase):
         self.assertEqual(second["model_version"], "candidate-v2")
         self.assertEqual(first_state["version"], "candidate-v1")
         self.assertEqual(second_state["version"], "candidate-v2")
+
+    def test_iteration_combines_account_scoped_mainline_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_config = (
+                Path(__file__).resolve().parents[1]
+                / "configs" / "model_shadow.json"
+            )
+            (root / "configs").mkdir()
+            (root / "configs" / "model_shadow.json").write_text(
+                source_config.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            self._write_scoped_candidate(
+                root,
+                scope="us_exposure",
+                version="us-v1",
+                code="513100",
+            )
+            self._write_scoped_candidate(
+                root,
+                scope="hk_exposure",
+                version="hk-v1",
+                code="159920",
+            )
+            observed: dict[str, object] = {}
+
+            def fake_cycle(**kwargs):
+                observed["predictions"] = kwargs["predictions"].copy()
+                return {"cash_only": True, "pending_orders": 0, "accounts": []}
+
+            market_module = SimpleNamespace(
+                make_provider=lambda **_kwargs: SimpleNamespace(
+                    persist_health=lambda: None
+                )
+            )
+            with (
+                patch(
+                    "stock_analyze.model_shadow.competition.get_market_module",
+                    return_value=market_module,
+                ),
+                patch(
+                    "stock_analyze.model_shadow.run_shadow_cycle",
+                    side_effect=fake_cycle,
+                ),
+            ):
+                result = run_model_iteration(
+                    repo_root=root,
+                    market="cn_qdii_etf",
+                    as_of="2026-08-14",
+                )
+
+        predictions = observed["predictions"]
+        self.assertEqual(len(predictions), 2)
+        self.assertEqual(
+            set(predictions["account_id"]),
+            {"us_exposure", "hk_exposure"},
+        )
+        self.assertEqual(
+            result["model_versions"],
+            {"hk_exposure": "hk-v1", "us_exposure": "us-v1"},
+        )
+        self.assertEqual(len(result["account_candidates"]), 2)
+        self.assertTrue(result["model_version"].startswith("scoped-"))
 
     def test_missing_candidate_prediction_never_falls_back_to_champion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

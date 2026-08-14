@@ -8,7 +8,10 @@ from pathlib import Path
 import pandas as pd
 
 from stock_analyze.competition import UnknownAgent
-from stock_analyze.dashboard_aggregator import build_dashboard_instrument_data
+from stock_analyze.dashboard_aggregator import (
+    _read_model_iteration_status,
+    build_dashboard_instrument_data,
+)
 from stock_analyze.dashboard_api import (
     build_dashboard_operations_data,
     build_dashboard_overview_data,
@@ -236,6 +239,54 @@ def _seed_shadow_repo(root: Path) -> None:
 
 
 class DashboardModelShadowTests(unittest.TestCase):
+    def test_scoped_runtime_status_is_the_dashboard_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "configs").mkdir(parents=True)
+            source_config = (
+                Path(__file__).resolve().parents[1]
+                / "configs"
+                / "model_shadow.json"
+            )
+            (root / "configs" / "model_shadow.json").write_text(
+                source_config.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            lifecycle_root = (
+                root / "data" / "model_iterations" / "cn_qdii_etf" / "10"
+            )
+            lifecycle_root.mkdir(parents=True)
+            (lifecycle_root / "current_status.json").write_text(
+                json.dumps({
+                    "schema_version": 3,
+                    "status": "complete",
+                    "model_version": "scoped-abc123",
+                    "display_version": "2 个账户主线",
+                    "lifecycle_status": "shadow",
+                    "lifecycle_status_label": "模拟验证",
+                    "account_candidates": [
+                        {
+                            "account_id": "us_exposure",
+                            "model_version": "us-v1",
+                        },
+                        {
+                            "account_id": "hk_exposure",
+                            "model_version": "hk-v1",
+                        },
+                    ],
+                    "updated_at": "2026-08-14T12:00:00+08:00",
+                }),
+                encoding="utf-8",
+            )
+
+            status = _read_model_iteration_status(root, "cn_qdii_etf")
+
+        self.assertEqual(status["candidate"]["model_version"], "scoped-abc123")
+        self.assertEqual(
+            len(status["candidate"]["account_candidates"]),
+            2,
+        )
+
     def test_overview_exposes_virtual_identity_and_model_decision_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

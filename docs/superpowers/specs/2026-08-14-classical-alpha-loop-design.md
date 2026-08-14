@@ -35,7 +35,8 @@ open-ended model race.
 
 ### One declared mainline per market
 
-- A-share: 20-session horizon, one momentum-anchored residual classical model.
+- A-share: 20-session horizon, one fixed momentum/low-volatility anchored
+  residual classical model.
 - QDII: 10-session horizon, one declared HGBR mainline.
 - Historical candidates stay in the registry for audit and comparison, but
   default training, arena, APIs, and scheduled jobs use only the mainline.
@@ -63,11 +64,15 @@ open-ended model race.
   adjacent raw sample means cross.
 - Keep existing v2 artifacts readable while writing v3 artifacts.
 
-### Momentum-anchored residual model
+### Balanced anchored residual model
 
-- Build an anchor from point-in-time 20- and 60-session momentum ranks.
+- Build a fixed 50/50 anchor from point-in-time 20/60-session momentum ranks
+  and the 20-session low-volatility rank. The fixed blend was more stable
+  across both A-share scopes than a fitted or hard regime switch.
 - Train the classical estimator on cross-sectional future-return rank minus
   the anchor. At prediction time add the same contemporaneous anchor back.
+- Bound the learned residual contribution to 15% so noisy fitted estimates
+  cannot overturn the public-signal anchor.
 - Keep the anchor formula deterministic and serialize its target version in
   the model bundle.
 - Compute clipping bounds from the actual fitted target rather than raw excess
@@ -116,4 +121,3 @@ open-ended model race.
    and the full Python suite pass.
 8. Real-data arenas complete and report before/after metrics. Promotion remains
    blocked unless every declared deployable gate passes.
-
