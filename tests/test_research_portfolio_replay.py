@@ -546,6 +546,33 @@ class ResearchPortfolioReplayTest(unittest.TestCase):
             "strategic_risky_exposure", "target_fill_ratio", "cash_drag",
         }.issubset(result.periods.columns))
 
+    def test_zero_target_exposure_stays_fully_in_cash(self):
+        evaluation = replay_rows().assign(_target_risky_exposure=0.0)
+        contract = {
+            "accounts": [{"id": "hs300", "cash": 100_000.0, "top_n": 1}],
+            "trading": {
+                "lot_size": 100,
+                "commission_rate": 0.0,
+                "min_commission": 0.0,
+                "stamp_tax_rate": 0.0,
+                "slippage_rate": 0.0,
+                "max_single_weight": 1.0,
+            },
+            "rule_execution_policy": {
+                "version": "mechanical-rule-v1",
+                "minimum_target_change": 0.0,
+                "max_daily_turnover": 1.0,
+                "max_industry_weight": 1.0,
+            },
+        }
+
+        result = portfolio_replay.replay_rule_portfolio(evaluation, contract=contract)
+
+        self.assertAlmostEqual(result.metrics["strategic_risky_exposure"], 0.0)
+        self.assertAlmostEqual(result.metrics["capital_utilization"], 0.0)
+        self.assertTrue(result.trades.empty)
+        self.assertTrue(result.periods["capital_utilization"].eq(0.0).all())
+
     def test_double_cost_replay_scales_all_execution_costs_without_changing_signals(self):
         evaluation = replay_rows()
         base_contract = {

@@ -275,7 +275,7 @@ def _mechanical_rule_transition(
     """Build rule targets from ranks without using a forecast-edge gate."""
 
     top_n = max(int(account.get("top_n") or 1), 1)
-    reserve = min(max(float(account.get("cash_reserve_pct") or 0.0), 0.0), 0.95)
+    reserve = min(max(float(account.get("cash_reserve_pct") or 0.0), 0.0), 1.0)
     max_single_weight = min(max(float(trading.get("max_single_weight") or 1.0), 0.0), 1.0)
     lot = _lot_size(trading)
     hold_buffer = max(
@@ -608,7 +608,7 @@ def _account_path(
     initial_cash = float(account.get("cash") or 0.0)
     top_n = max(int(account.get("top_n") or 1), 1)
     max_single_weight = min(max(float(trading.get("max_single_weight") or 1.0), 0.0), 1.0)
-    reserve = min(max(float(account.get("cash_reserve_pct") or 0.0), 0.0), 0.95)
+    reserve = min(max(float(account.get("cash_reserve_pct") or 0.0), 0.0), 1.0)
     target_risky_exposure_state = 1.0 - reserve
     hold_buffer = max(float(account.get("hold_buffer_pct") or 0.20), 0.0)
     lot = _lot_size(trading)
