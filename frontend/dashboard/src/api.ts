@@ -1621,6 +1621,67 @@ function validateModelResearch(value: unknown): ModelResearchData {
     );
   }
 
+  if (data.historicalComparison !== undefined) {
+    const comparison = objectAt(
+      data.historicalComparison,
+      "historicalComparison",
+    );
+    stringAt(comparison.status, "historicalComparison.status");
+    stringAt(
+      comparison.evidenceType,
+      "historicalComparison.evidenceType",
+    );
+    optionalString(comparison.asOf, "historicalComparison.asOf");
+    numberAt(comparison.horizon, "historicalComparison.horizon");
+    arrayAt(comparison.scopes, "historicalComparison.scopes", 20).forEach(
+      (item, scopeIndex) => {
+        const scopePath = `historicalComparison.scopes[${scopeIndex}]`;
+        const scope = objectAt(item, scopePath);
+        stringAt(scope.accountScope, `${scopePath}.accountScope`);
+        stringArray(scope.finalWindow, `${scopePath}.finalWindow`);
+        numberAt(
+          scope.evaluationDateCount,
+          `${scopePath}.evaluationDateCount`,
+        );
+        if (scope.winner !== null) {
+          const winner = objectAt(scope.winner, `${scopePath}.winner`);
+          stringAt(winner.participantId, `${scopePath}.winner.participantId`);
+          stringAt(winner.name, `${scopePath}.winner.name`);
+          numberAt(
+            winner.netExcessReturn,
+            `${scopePath}.winner.netExcessReturn`,
+          );
+        }
+        const participantIds = new Set<string>();
+        arrayAt(
+          scope.participants,
+          `${scopePath}.participants`,
+          20,
+        ).forEach((participantValue, participantIndex) => {
+          const path = `${scopePath}.participants[${participantIndex}]`;
+          const participant = objectAt(participantValue, path);
+          const participantId = stringAt(
+            participant.participantId,
+            `${path}.participantId`,
+          );
+          rejectDuplicateIdentity(
+            participantIds,
+            [participantId],
+            `${path}.participantId`,
+            "participantId",
+          );
+          stringAt(participant.participantType, `${path}.participantType`);
+          stringAt(participant.name, `${path}.name`);
+          stringAt(participant.status, `${path}.status`);
+          const metrics = objectAt(participant.metrics, `${path}.metrics`);
+          Object.entries(metrics).forEach(([key, metric]) => {
+            numberAt(metric, `${path}.metrics.${key}`);
+          });
+        });
+      },
+    );
+  }
+
   const simulation = objectAt(data.simulation, "simulation");
   stringAt(simulation.status, "simulation.status");
   if (simulation.candidate !== null) {

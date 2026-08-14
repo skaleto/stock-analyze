@@ -634,6 +634,31 @@ class ModelShadowCycleTests(unittest.TestCase):
         self.assertEqual(result["model_version"], "candidate-v2")
         self.assertNotIn("prediction_path", result)
 
+    def test_stale_candidate_prediction_is_not_reused_for_a_new_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_config = (
+                Path(__file__).resolve().parents[1]
+                / "configs" / "model_shadow.json"
+            )
+            (root / "configs").mkdir()
+            (root / "configs" / "model_shadow.json").write_text(
+                source_config.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            self._write_candidate(root, version="candidate-v2")
+
+            result = run_model_iteration(
+                repo_root=root,
+                market="cn_qdii_etf",
+                as_of="2026-07-20",
+            )
+
+        self.assertEqual(result["status"], "prediction_stale")
+        self.assertEqual(result["prediction_as_of"], "2026-07-17")
+        self.assertTrue(result["cash_only"])
+        self.assertNotIn("pending_orders", result)
+
     def test_cli_exposes_agent_free_model_iteration_command_and_shadow_alias(self) -> None:
         iteration_args = build_parser().parse_args(
             [

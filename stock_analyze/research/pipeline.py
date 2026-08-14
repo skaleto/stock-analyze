@@ -38,7 +38,12 @@ from .account_features import (
     build_account_feature_view,
     build_alpha158_lite_feature_view,
 )
-from .classical_specs import a_share_h3_specs, a_share_h20_specs, qdii_h10_specs
+from .classical_specs import (
+    a_share_h3_specs,
+    a_share_h20_specs,
+    qdii_h5_specs,
+    qdii_h10_specs,
+)
 from .classical_tournament import run_classical_tournament as execute_classical_tournament
 from .cross_sectional_candidate import evaluate_cross_sectional_candidate
 from .event_study import build_event_study_from_parquet
@@ -86,6 +91,7 @@ from .source_features import (
 )
 from .storage import ResearchStore
 from .technical_features import compute_technical_features
+from .unified_arena import build_unified_arena_report
 from .tabular_ranker import (
     evaluate_regime_tabular_candidate,
     load_tabular_ranker_config,
@@ -2018,6 +2024,8 @@ class ResearchPipeline:
             declared_specs = a_share_h3_specs(normalized_scope)
         elif self.market == "a_share" and target_horizon == 20:
             declared_specs = a_share_h20_specs(normalized_scope)
+        elif self.market == "cn_qdii_etf" and target_horizon == 5:
+            declared_specs = qdii_h5_specs(normalized_scope)
         elif self.market == "cn_qdii_etf" and target_horizon == 10:
             declared_specs = qdii_h10_specs(normalized_scope)
         else:
@@ -2038,6 +2046,103 @@ class ResearchPipeline:
             feature_columns=feature_columns,
             portfolio_contract=self._research_portfolio_contract(normalized_scope),
             specs=declared_specs,
+        )
+
+    def run_unified_model_arena(
+        self,
+        *,
+        horizon: int | None = None,
+    ) -> dict[str, Any]:
+        target_horizon = int(
+            horizon
+            if horizon is not None
+            else 20 if self.market == "a_share" else 5
+        )
+        snapshot_date = self.store.latest_common_snapshot_date(
+            self.market,
+            as_of=self.as_of,
+        )
+        if self.market == "a_share":
+            manifest = self._a_share_materialization_manifest(snapshot_date)
+            if manifest is None:
+                raise ValueError(
+                    "unified_arena_a_share_materialization_required:"
+                    f"{snapshot_date}"
+                )
+            features = self.store.read_feature_snapshot(
+                self.market,
+                snapshot_date,
+            )
+            dates = pd.to_datetime(
+                features["trade_date"]
+                .astype("string")
+                .str.replace("-", "", regex=False),
+                format="%Y%m%d",
+                errors="coerce",
+            ).dropna()
+            history_days = (
+                int((dates.max() - dates.min()).days)
+                if len(dates) > 1 else 0
+            )
+            unbiased_coverage = float(
+                features.get(
+                    "unbiased_universe",
+                    pd.Series(False, index=features.index),
+                )
+                .fillna(False)
+                .astype(bool)
+                .mean()
+            )
+            if history_days < int(365.25 * 8):
+                raise ValueError(
+                    "unified_arena_a_share_history_incomplete:"
+                    f"days={history_days}"
+                )
+            if unbiased_coverage < 0.95:
+                raise ValueError(
+                    "unified_arena_a_share_universe_incomplete:"
+                    f"coverage={unbiased_coverage:.4f}"
+                )
+
+        tournament = self.run_classical_tournament(
+            account_scope=None,
+            horizon=target_horizon,
+        )
+        reports = list(tournament.get("results") or [tournament])
+        config_suffix = (
+            "a_share" if self.market == "a_share" else "cn_qdii_etf"
+        )
+        overlays = {
+            "defensive": json.loads(
+                (
+                    self.repo_root
+                    / "configs" / "agents"
+                    / f"claude_{config_suffix}.yaml"
+                ).read_text(encoding="utf-8")
+            ),
+            "trend": json.loads(
+                (
+                    self.repo_root
+                    / "configs" / "agents"
+                    / f"codex_{config_suffix}.yaml"
+                ).read_text(encoding="utf-8")
+            ),
+        }
+        baseline = json.loads(
+            (
+                self.repo_root
+                / "configs"
+                / f"competition_{config_suffix}.yaml"
+            ).read_text(encoding="utf-8")
+        )
+        return build_unified_arena_report(
+            self.repo_root,
+            market=self.market,
+            horizon=target_horizon,
+            as_of=snapshot_date,
+            tournament_reports=reports,
+            overlays=overlays,
+            baseline=baseline,
         )
 
     def run_cross_sectional_alpha_repair(
@@ -2757,23 +2862,91 @@ class ResearchPipeline:
         horizon: int,
         account_scope: str | None = None,
     ) -> tuple[Path, dict[str, str]]:
-        model_root = self._model_root(horizon, account_scope)
-        registry_path = model_root / "registry.json"
-        if registry_path.exists():
+        artifact, statuses, _ = self._resolve_model_roles_with_provenance(
+            horizon,
+            account_scope,
+        )
+        return artifact, statuses
+
+    def _resolve_model_roles_with_provenance(
+        self,
+        horizon: int,
+        account_scope: str | None = None,
+    ) -> tuple[Path, dict[str, str], dict[str, str]]:
+        def selected(
+            scope: str | None,
+        ) -> tuple[Path, dict[str, str]] | None:
+            model_root = self._model_root(horizon, scope)
+            registry_path = model_root / "registry.json"
+            if not registry_path.exists():
+                return None
             state = json.loads(registry_path.read_text(encoding="utf-8"))
-            selected = select_registry_model(state, role="ranker")
-            if selected is not None:
-                _, metadata = selected
-                fallback = str(metadata.get("status", "research"))
-                statuses = {
-                    role: str((metadata.get("role_status") or {}).get(role, fallback))
-                    for role in ("classifier", "ranker", "portfolio")
+            resolved = select_registry_model(state, role="ranker")
+            if resolved is None:
+                return None
+            _, metadata = resolved
+            fallback = str(metadata.get("status", "research"))
+            statuses = {
+                role: str(
+                    (metadata.get("role_status") or {}).get(role, fallback)
+                )
+                for role in ("classifier", "ranker", "portfolio")
+            }
+            return Path(metadata["artifact"]), statuses
+
+        scoped = selected(account_scope)
+        if scoped is not None:
+            artifact, statuses = scoped
+            artifact_exists = (
+                artifact.exists()
+                or (not artifact.is_absolute() and (self.repo_root / artifact).exists())
+            )
+            if account_scope and not artifact_exists:
+                market = selected(None)
+                if market is not None:
+                    market_artifact, market_statuses = market
+                    market_exists = (
+                        market_artifact.exists()
+                        or (
+                            not market_artifact.is_absolute()
+                            and (self.repo_root / market_artifact).exists()
+                        )
+                    )
+                    if market_exists:
+                        return market_artifact, market_statuses, {
+                            "requested_scope": str(account_scope),
+                            "selected_scope": "",
+                            "resolution": "market_fallback",
+                            "fallback_reason": "scoped_artifact_missing",
+                        }
+            return artifact, statuses, {
+                "requested_scope": str(account_scope or ""),
+                "selected_scope": str(account_scope or ""),
+                "resolution": "scoped" if account_scope else "market",
+                "fallback_reason": "",
+            }
+
+        if account_scope:
+            market = selected(None)
+            if market is not None:
+                artifact, statuses = market
+                return artifact, statuses, {
+                    "requested_scope": str(account_scope),
+                    "selected_scope": "",
+                    "resolution": "market_fallback",
+                    "fallback_reason": "scoped_model_unavailable",
                 }
-                return Path(metadata["artifact"]), statuses
+
+        model_root = self._model_root(horizon, account_scope)
         return model_root / "missing.joblib", {
             "classifier": "research",
             "ranker": "research",
             "portfolio": "research",
+        }, {
+            "requested_scope": str(account_scope or ""),
+            "selected_scope": str(account_scope or ""),
+            "resolution": "missing",
+            "fallback_reason": "registered_model_unavailable",
         }
 
     def backfill_prediction_accuracy(self) -> dict[str, Any]:
@@ -2917,6 +3090,10 @@ class ResearchPipeline:
             cycle_counts: dict[str, int] = {}
             iteration_candidates: dict[str, dict[str, Any]] = {}
             drift_assessments: dict[str, dict[str, Any]] = {}
+            model_resolution: dict[str, dict[str, str]] = {}
+            market_prediction_cache: dict[
+                tuple[int, str], tuple[Any, list, dict[str, Any]]
+            ] = {}
             regime, regime_stability = self._current_regime_context()
             target_horizons = (horizon,) if horizon is not None else (3, 5, 10, 20)
             account_scopes = (
@@ -2946,36 +3123,100 @@ class ResearchPipeline:
                         if account_scope else str(target_horizon)
                     )
                     try:
-                        artifact, role_status = self._resolve_model_roles(
-                            target_horizon,
-                            account_scope,
+                        artifact, role_status, provenance = (
+                            self._resolve_model_roles_with_provenance(
+                                target_horizon,
+                                account_scope,
+                            )
                         )
                         status = str(role_status.get("ranker", "research"))
                         bundle = load_model_bundle(artifact)
-                        records = generate_predictions(
-                            bundle,
-                            scoped_latest,
-                            as_of=self.as_of,
-                            horizon=target_horizon,
-                            regime=regime,
-                            data_quality=1.0,
-                            regime_stability=regime_stability,
-                            feature_snapshot_id=f"{self.market}-{self.run_key}",
-                            active_status=status if status == "active" else "inactive",
-                            role_status=role_status,
-                        )
-                        records, drift = self._assess_model_drift(
-                            target_horizon,
-                            bundle,
-                            records,
-                            role_status=role_status,
-                            account_scope=account_scope,
-                        )
+                        if provenance["resolution"] == "market_fallback":
+                            cache_key = (target_horizon, str(artifact))
+                            cached = market_prediction_cache.get(cache_key)
+                            if cached is None:
+                                market_records = generate_predictions(
+                                    bundle,
+                                    latest,
+                                    as_of=self.as_of,
+                                    horizon=target_horizon,
+                                    regime=regime,
+                                    data_quality=1.0,
+                                    regime_stability=regime_stability,
+                                    feature_snapshot_id=(
+                                        f"{self.market}-{self.run_key}"
+                                    ),
+                                    active_status=(
+                                        status
+                                        if status == "active"
+                                        else "inactive"
+                                    ),
+                                    role_status=role_status,
+                                )
+                                market_records, drift = (
+                                    self._assess_model_drift(
+                                        target_horizon,
+                                        bundle,
+                                        market_records,
+                                        role_status=role_status,
+                                        account_scope=None,
+                                    )
+                                )
+                                cached = (bundle, market_records, drift)
+                                market_prediction_cache[cache_key] = cached
+                            bundle, market_records, drift = cached
+                            records = [
+                                replace(
+                                    record,
+                                    account_scope=str(account_scope),
+                                )
+                                for record in market_records
+                                if str(
+                                    record.metadata.get("research_scope")
+                                    or record.metadata.get("account_id")
+                                    or record.account_scope
+                                    or ""
+                                ) == str(account_scope)
+                            ]
+                            if not records:
+                                raise RuntimeError(
+                                    "market_model_scope_predictions_missing:"
+                                    f"{account_scope}:{target_horizon}"
+                                )
+                        else:
+                            records = generate_predictions(
+                                bundle,
+                                scoped_latest,
+                                as_of=self.as_of,
+                                horizon=target_horizon,
+                                regime=regime,
+                                data_quality=1.0,
+                                regime_stability=regime_stability,
+                                feature_snapshot_id=(
+                                    f"{self.market}-{self.run_key}"
+                                ),
+                                active_status=(
+                                    status
+                                    if status == "active"
+                                    else "inactive"
+                                ),
+                                role_status=role_status,
+                            )
+                            records, drift = self._assess_model_drift(
+                                target_horizon,
+                                bundle,
+                                records,
+                                role_status=role_status,
+                                account_scope=(
+                                    provenance["selected_scope"] or None
+                                ),
+                            )
                         drift_assessments[key] = drift
+                        model_resolution[key] = provenance
                         artifacts[key] = str(artifact)
                         statuses[key] = status
                         rows.extend(self._prediction_rows(records))
-                        if self.agent == "codex":
+                        if self.agent == "codex" and account_scope is not None:
                             candidate = self._write_iteration_candidate_predictions(
                                 target_horizon,
                                 scoped_latest,
@@ -2995,6 +3236,46 @@ class ResearchPipeline:
                         failures.append({
                             "horizon": target_horizon,
                             "account_scope": str(account_scope or ""),
+                            "error": str(exc)[:240],
+                        })
+                if self.agent == "codex":
+                    try:
+                        cached_market = next(
+                            (
+                                cached
+                                for (cached_horizon, _), cached
+                                in market_prediction_cache.items()
+                                if cached_horizon == target_horizon
+                            ),
+                            None,
+                        )
+                        candidate = self._write_iteration_candidate_predictions(
+                            target_horizon,
+                            latest,
+                            canonical_bundle=(
+                                cached_market[0]
+                                if cached_market is not None else None
+                            ),
+                            canonical_records=(
+                                cached_market[1]
+                                if cached_market is not None else None
+                            ),
+                            regime=regime,
+                            regime_stability=regime_stability,
+                            account_scope=None,
+                        )
+                        if candidate is not None:
+                            candidate_key = f"market:{target_horizon}"
+                            iteration_candidates[candidate_key] = candidate
+                            if candidate.get("shadow_cycles") is not None:
+                                cycle_counts[candidate_key] = int(
+                                    candidate["shadow_cycles"]
+                                )
+                    except Exception as exc:  # noqa: BLE001 - formal prediction remains usable
+                        failures.append({
+                            "horizon": target_horizon,
+                            "account_scope": "",
+                            "stage": "market_iteration_candidate",
                             "error": str(exc)[:240],
                         })
             if not rows:
@@ -3020,6 +3301,7 @@ class ResearchPipeline:
                 "failures": failures,
                 "shadow_cycles": cycle_counts,
                 "iteration_candidates": iteration_candidates,
+                "model_resolution": model_resolution,
                 "drift": drift_assessments,
                 "regime": regime,
                 "regime_stability": regime_stability,
@@ -3260,8 +3542,8 @@ class ResearchPipeline:
         horizon: int,
         features: pd.DataFrame,
         *,
-        canonical_bundle: Any,
-        canonical_records: list,
+        canonical_bundle: Any | None,
+        canonical_records: list | None,
         regime: str,
         regime_stability: float,
         account_scope: str | None = None,
@@ -3276,9 +3558,12 @@ class ResearchPipeline:
         if candidate is None:
             return None
         version = str(candidate["model_version"])
-        if version == str(canonical_bundle.model_version):
+        if (
+            canonical_bundle is not None
+            and version == str(canonical_bundle.model_version)
+        ):
             bundle = canonical_bundle
-            records = canonical_records
+            records = canonical_records or []
         else:
             artifact = candidate.get("artifact")
             if not artifact:
