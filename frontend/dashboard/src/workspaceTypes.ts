@@ -41,6 +41,7 @@ export type BoundedColumn<T> = {
 export type ModelResearchModel = {
   modelVersion: string;
   accountScope: string;
+  specId?: string;
   horizon: number;
   algorithmFamily: string;
   trainedAt?: string | null;
@@ -60,7 +61,17 @@ export type ModelResearchModel = {
   baselineComparison?: Record<string, Record<string, number | string | boolean | null>>;
   accountMetrics?: Record<string, Record<string, number | string | boolean | null>>;
   noTradeReasonCounts?: Record<string, number>;
+  diagnosticNetExcessReturn?: number | null;
+  netExcessReturn?: number | null;
+  calibrationStatus?: string | null;
+  capitalUtilization?: number | null;
   metrics: Record<string, number | string | boolean | null>;
+};
+
+export type ModelResearchArchive = {
+  total: number;
+  byStatus: Record<string, number>;
+  recent: ModelResearchModel[];
 };
 
 export type ModelResearchAccountSummary = {
@@ -278,6 +289,9 @@ export type ModelResearchHistoricalComparison = {
         annualTurnover?: number;
         tradeCount?: number;
         capitalUtilization?: number;
+        cashPositionEffectTotal?: number;
+        securitySelectionReturnTotal?: number;
+        executionCostEffectTotal?: number;
       };
     }[];
   }[];
@@ -313,6 +327,7 @@ export type ModelResearchData = {
   training: {
     models: ModelResearchModel[];
     accounts?: ModelResearchAccountSummary[];
+    archive?: ModelResearchArchive;
   };
   validation: {
     passed: number;

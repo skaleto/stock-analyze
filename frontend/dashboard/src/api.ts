@@ -1249,6 +1249,8 @@ function rejectDuplicateIdentity(
 function validateModel(value: unknown, path: string): void {
   const model = objectAt(value, path);
   stringAt(model.modelVersion, `${path}.modelVersion`);
+  optionalString(model.accountScope, `${path}.accountScope`);
+  optionalString(model.specId, `${path}.specId`);
   numberAt(model.horizon, `${path}.horizon`);
   stringAt(model.algorithmFamily, `${path}.algorithmFamily`);
   optionalString(model.trainedAt, `${path}.trainedAt`);
@@ -1263,6 +1265,14 @@ function validateModel(value: unknown, path: string): void {
   numberAt(model.shadowCyclesRemaining, `${path}.shadowCyclesRemaining`);
   booleanAt(model.isChampion, `${path}.isChampion`);
   numberAt(model.candidateFeatureCount, `${path}.candidateFeatureCount`);
+  [
+    "diagnosticNetExcessReturn",
+    "netExcessReturn",
+    "capitalUtilization",
+  ].forEach((key) => {
+    if (model[key] != null) numberAt(model[key], `${path}.${key}`);
+  });
+  optionalString(model.calibrationStatus, `${path}.calibrationStatus`);
   objectAt(model.metrics, `${path}.metrics`);
 }
 
@@ -1558,11 +1568,36 @@ function validateModelResearch(value: unknown): ModelResearchData {
     const row = model as Record<string, unknown>;
     rejectDuplicateIdentity(
       trainingIdentities,
-      [row.horizon, row.modelVersion],
+      [row.accountScope ?? "", row.horizon, row.modelVersion],
       path,
-      "horizon,modelVersion",
+      "accountScope,horizon,modelVersion",
     );
   });
+  if (training.archive !== undefined) {
+    const archive = objectAt(training.archive, "training.archive");
+    numberAt(archive.total, "training.archive.total");
+    const byStatus = objectAt(
+      archive.byStatus,
+      "training.archive.byStatus",
+    );
+    Object.entries(byStatus).forEach(([status, count]) => {
+      numberAt(count, `training.archive.byStatus.${status}`);
+    });
+    const archiveIdentities = new Set<string>();
+    arrayAt(archive.recent, "training.archive.recent").forEach(
+      (model, index) => {
+        const path = `training.archive.recent[${index}]`;
+        validateModel(model, path);
+        const row = model as Record<string, unknown>;
+        rejectDuplicateIdentity(
+          archiveIdentities,
+          [row.accountScope ?? "", row.horizon, row.modelVersion],
+          path,
+          "accountScope,horizon,modelVersion",
+        );
+      },
+    );
+  }
   const validation = objectAt(data.validation, "validation");
   numberAt(validation.passed, "validation.passed");
   numberAt(validation.total, "validation.total");
@@ -1573,9 +1608,9 @@ function validateModelResearch(value: unknown): ModelResearchData {
     const row = model as Record<string, unknown>;
     rejectDuplicateIdentity(
       validationIdentities,
-      [row.horizon, row.modelVersion],
+      [row.accountScope ?? "", row.horizon, row.modelVersion],
       path,
-      "horizon,modelVersion",
+      "accountScope,horizon,modelVersion",
     );
   });
 
