@@ -137,6 +137,52 @@ class ETFSimulatorTests(unittest.TestCase):
         self.assertEqual(trades[0]["shares"], 100)
         self.assertAlmostEqual(trades[0]["commission"], 2.0 * 100 * 0.0003)
 
+    def test_sell_proceeds_fund_same_day_buy_without_next_day_double_credit(self):
+        with TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            initialize(_config(), store)
+            state = store.load_state()
+            account = state["accounts"]["us_exposure"]
+            account["cash"] = 1.0
+            account["positions"] = {
+                "513100.SH": {
+                    "shares": 100,
+                    "avg_cost": 2.0,
+                    "name": "旧ETF",
+                }
+            }
+            store.save_state(state)
+            store.write_pending([
+                {
+                    "code": "513100.SH", "side": "sell", "shares": 100,
+                    "trade_date": "2026-07-13", "account_id": "us_exposure",
+                },
+                {
+                    "code": "159941.SZ", "side": "buy", "shares": 100,
+                    "trade_date": "2026-07-13", "account_id": "us_exposure",
+                },
+            ])
+
+            trades = execute_due_orders(
+                store,
+                FakeProvider(price=2.0),
+                as_of=date(2026, 7, 13),
+            )
+            same_day = store.load_state()["accounts"]["us_exposure"]
+            cash_after = float(same_day["cash"])
+            execute_due_orders(
+                store,
+                FakeProvider(price=2.0),
+                as_of=date(2026, 7, 14),
+            )
+            next_day = store.load_state()["accounts"]["us_exposure"]
+
+        self.assertEqual([trade["side"] for trade in trades], ["sell", "buy"])
+        self.assertEqual(trades[0]["settle_date"], "2026-07-14")
+        self.assertEqual(same_day["settlement_queue"], [])
+        self.assertIn("159941.SZ", same_day["positions"])
+        self.assertAlmostEqual(float(next_day["cash"]), cash_after)
+
     def test_late_due_order_executes_on_retry_day(self):
         with TemporaryDirectory() as tmp:
             store = PortfolioStore(tmp)

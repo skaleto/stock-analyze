@@ -4,6 +4,9 @@ from __future__ import annotations
 
 
 SETTLEMENT_DAYS: int = 1
+# Exchange-traded fund sale proceeds are available for securities trading on
+# T+0; T+1 is retained as the settlement/withdrawal date on the trade record.
+SELL_PROCEEDS_REUSABLE_SAME_DAY: bool = True
 DAILY_LIMIT_PCT: float | None = None
 DEFAULT_LOT_SIZE: int = 100
 ALLOW_SHORTING: bool = False

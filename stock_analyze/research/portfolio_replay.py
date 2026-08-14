@@ -595,6 +595,7 @@ def _account_path(
     execution_policy: Mapping[str, Any] | None,
     rule_execution_policy: Mapping[str, Any] | None,
     allocation_policy: Mapping[str, Any] | None,
+    sell_proceeds_reusable_same_day: bool,
     rebalance_frequency: str,
     execution_cost_multiplier: float,
     fold: str,
@@ -1019,7 +1020,9 @@ def _account_path(
                             trading=effective_trading,
                             impact_bps=cost_estimate.total_bps * execution_cost_multiplier,
                         )
-                    if settlement_days:
+                    if sell_proceeds_reusable_same_day:
+                        state["cash"] = float(state["cash"]) + fill.cash_delta
+                    elif settlement_days:
                         state["settlement_queue"].append({
                             "settle_date": _next_settlement_date(entry_dates, date_index, settlement_days),
                             "amount": fill.cash_delta,
@@ -1240,6 +1243,14 @@ def replay_executable_portfolio(
     allocation_policy = contract.get("allocation_policy")
     if allocation_policy is not None and not isinstance(allocation_policy, Mapping):
         raise ValueError("portfolio_replay_allocation_policy")
+    settlement = contract.get("settlement")
+    if settlement is not None and not isinstance(settlement, Mapping):
+        raise ValueError("portfolio_replay_settlement")
+    settlement = settlement if isinstance(settlement, Mapping) else {}
+    sell_proceeds_reusable_same_day = _flag(
+        settlement.get("sell_proceeds_reusable_same_day"),
+        default=False,
+    )
     rebalance_frequency = str(contract.get("rebalance_frequency") or "daily").strip().lower()
     if rebalance_frequency not in {"daily", "weekly", "monthly"}:
         raise ValueError(f"portfolio_replay_rebalance_frequency:{rebalance_frequency}")
@@ -1264,6 +1275,7 @@ def replay_executable_portfolio(
             execution_policy=execution_policy,
             rule_execution_policy=rule_execution_policy,
             allocation_policy=allocation_policy,
+            sell_proceeds_reusable_same_day=sell_proceeds_reusable_same_day,
             rebalance_frequency=rebalance_frequency,
             execution_cost_multiplier=execution_cost_multiplier,
             fold=str(fold),

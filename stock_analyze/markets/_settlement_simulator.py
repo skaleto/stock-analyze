@@ -299,10 +299,18 @@ class SettlementSimulatorBase:
             stamp = gross * stamp_rate
             commission = gross * commission_rate
             net = gross - stamp - commission
-            # Settlement: net cash credited to queue, not cash (T+N)
-            account_state.setdefault("settlement_queue", []).append(
-                {"settle_date": settle_date, "amount": net}
-            )
+            if bool(
+                getattr(
+                    self.mechanics,
+                    "SELL_PROCEEDS_REUSABLE_SAME_DAY",
+                    False,
+                )
+            ):
+                account_state["cash"] = cash + net
+            else:
+                account_state.setdefault("settlement_queue", []).append(
+                    {"settle_date": settle_date, "amount": net}
+                )
             new_shares = int(existing["shares"]) - order.shares
             if new_shares == 0:
                 del positions[order.code]

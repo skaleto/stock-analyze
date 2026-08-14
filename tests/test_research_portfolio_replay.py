@@ -51,6 +51,62 @@ def replay_rows(*, account_id: str = "hs300", winners: bool = True) -> pd.DataFr
 
 
 class ResearchPortfolioReplayTest(unittest.TestCase):
+    def test_qdii_weekly_rotation_reuses_sell_proceeds_on_trade_day(self):
+        rows = []
+        signal_dates = ["20260102", "20260109", "20260116", "20260123"]
+        entry_dates = ["20260105", "20260112", "20260119", "20260126"]
+        for index, (signal_date, entry_date) in enumerate(
+            zip(signal_dates, entry_dates)
+        ):
+            leader = "513100" if index == 0 else "159941"
+            for code in ("513100", "159941"):
+                rows.append({
+                    "account_id": "us_exposure",
+                    "trade_date": signal_date,
+                    "entry_date": entry_date,
+                    "code": code,
+                    "score": 1.0 if code == leader else 0.0,
+                    "entry_price": 10.0,
+                    "benchmark_entry_price": 100.0,
+                    "avg_amount_20": 50_000_000.0,
+                    "realized_volatility_20": 0.20,
+                    "fold": 0,
+                })
+        contract = {
+            "accounts": [{"id": "us_exposure", "cash": 100_000.0, "top_n": 1}],
+            "trading": {
+                "lot_size_default": 100,
+                "settlement_days": 1,
+                "commission_rate": 0.0,
+                "min_commission": 0.0,
+                "stamp_tax_rate": 0.0,
+                "slippage_rate": 0.0,
+                "max_single_weight": 1.0,
+            },
+            "settlement": {"sell_proceeds_reusable_same_day": True},
+            "rebalance_frequency": "weekly",
+            "rule_execution_policy": {
+                "version": "campaign-transparent-v1",
+                "rank_buffer_pct": 0.0,
+                "minimum_target_change": 0.0,
+                "max_daily_turnover": 1.0,
+                "max_industry_weight": 1.0,
+            },
+        }
+
+        result = portfolio_replay.replay_rule_portfolio(
+            pd.DataFrame(rows),
+            contract=contract,
+        )
+
+        rotation_buys = result.trades.loc[
+            result.trades["signal_date"].eq("20260109")
+            & result.trades["side"].eq("buy")
+        ]
+        self.assertEqual(rotation_buys["code"].tolist(), ["159941"])
+        self.assertGreaterEqual(result.metrics["target_fill_ratio"], 0.95)
+        self.assertTrue(result.nav["unsettled_cash"].eq(0.0).all())
+
     def test_trailing_return_history_is_point_in_time_and_bounded(self):
         rows = []
         for day_index, day in enumerate(pd.date_range("2026-01-02", periods=6, freq="B")):
