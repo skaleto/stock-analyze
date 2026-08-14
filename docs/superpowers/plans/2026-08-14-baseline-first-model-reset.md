@@ -144,25 +144,25 @@ baseline before entering a versioned shadow account.
 
 ## Execution Result (2026-08-14)
 
-The declared hypotheses were run once on the existing point-in-time snapshot
-dated 2026-08-07. No parameters or gates were changed after reading the result.
+The declared hypotheses were run on the immutable point-in-time bundle dated
+2026-08-13. No parameters or gates were changed after reading the result.
 
 | Scope | Transparent baseline net excess | Residual candidate net excess | Increment | Improving folds | Decision |
 | --- | ---: | ---: | ---: | ---: | --- |
-| A-share HS300 | -8.35% | -8.62% | -0.27% | 1/3 | Baseline wins |
-| A-share ZZ500 | -6.98% | -7.73% | -0.75% | 0/3 | Baseline wins |
-| QDII HK exposure | +15.57% | +14.82% | -0.74% | 1/3 | Baseline wins |
-| QDII US exposure | -20.66% | -22.66% | -2.00% | 1/3 | Baseline wins |
+| A-share HS300 | -5.72% | -5.98% | -0.26% | 2/3 | Baseline wins |
+| A-share ZZ500 | -12.23% | -12.87% | -0.65% | 1/3 | Baseline wins |
+| QDII HK exposure | +15.69% | +15.63% | -0.06% | 1/3 | Baseline wins |
+| QDII US exposure | -20.32% | -23.90% | -3.58% | 0/3 | Baseline wins |
 
 The reset therefore admitted no new Shadow and changed no formal strategy. The
 result is economically negative but operationally correct: all four learned
 residuals were stopped because they reduced net return. The HK transparent
-trend baseline is the only positive development result, but its 22.91 annual
-turnover and 81.11% capital utilization remain outside the declared deployment
+trend baseline is the only positive development result, but its 22.30 annual
+turnover and 81.25% capital utilization remain outside the declared deployment
 quality contract, so it was not promoted indirectly.
 
 Verification completed locally with 2,060 Python tests (6 skipped), 232
 frontend tests, a production frontend build, Python compile checks, shell
-syntax checks, and real-data A-share/QDII runs. ECS deployment and remote
-evidence are recorded in the release verification rather than inferred from
-these local results.
+syntax checks, and real-data A-share/QDII runs. The final ECS Dashboard release
+also passed 168 scoped Python tests and five live HTTP canaries. Desktop and
+390-pixel mobile visual checks showed no page-level horizontal overflow.
