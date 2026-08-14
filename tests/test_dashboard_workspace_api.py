@@ -745,13 +745,23 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             "horizon": 5,
             "spec_id": "h5-ridge",
         })
+        legacy_unscoped = _model("A20-unscoped")
+        legacy_unscoped.update({
+            "account_scope": "",
+            "spec_id": "",
+        })
 
         with tempfile.TemporaryDirectory() as tmp:
             payload = self._build(
                 Path(tmp),
                 models={
                     "status": "available",
-                    "models": [legacy_h5, legacy_h20, mainline],
+                    "models": [
+                        legacy_unscoped,
+                        legacy_h5,
+                        legacy_h20,
+                        mainline,
+                    ],
                 },
             )
 
@@ -759,10 +769,10 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
             [row["modelVersion"] for row in payload["training"]["models"]],
             ["A20-mainline"],
         )
-        self.assertEqual(payload["training"]["archive"]["total"], 2)
+        self.assertEqual(payload["training"]["archive"]["total"], 3)
         self.assertEqual(
             {row["modelVersion"] for row in payload["training"]["archive"]["recent"]},
-            {"A20-legacy", "A5-legacy"},
+            {"A20-unscoped", "A20-legacy", "A5-legacy"},
         )
 
     def test_explicit_unavailable_iteration_marks_simulation_unavailable(

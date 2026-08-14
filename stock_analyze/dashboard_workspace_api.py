@@ -809,7 +809,13 @@ def _mainline_model_projection(
         "research": 2,
         "rejected": 1,
     }
-    for scope in sorted({str(row.get("accountScope") or "") for row in rows}):
+    declared_scopes = sorted({
+        str(row.get("accountScope") or "") for row in rows
+    })
+    has_account_scoped_models = any(declared_scopes)
+    for scope in declared_scopes:
+        if not scope and has_account_scoped_models:
+            continue
         expected_specs = mainline_specs(market, scope)
         expected_spec_id = expected_specs[0].spec_id if len(expected_specs) == 1 else ""
         expected_spec_hash = expected_specs[0].spec_hash if len(expected_specs) == 1 else ""
