@@ -236,7 +236,9 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
                         "best_diagnostic_spec_id": "A_MOM_02",
                         "diagnostic_only": True,
                         "reasons": ["no_transparent_candidate_passed_gates_1_2"],
-                        "trials": [{
+                        "transparent_trial_count": 6,
+                        "incremental_trial_count": 0,
+                        "display_trial": {
                             "spec_id": "A_MOM_02",
                             "metrics": {
                                 "net_return": 0.31,
@@ -251,7 +253,7 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
                                     "probability_of_backtest_overfit": 0.0,
                                 },
                             },
-                        }],
+                        },
                     },
                 ],
             }), encoding="utf-8")
@@ -266,6 +268,7 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertIsNone(campaign["scopes"][1]["selectedRuleSpecId"])
         self.assertEqual(campaign["scopes"][1]["bestDiagnosticSpecId"], "A_MOM_02")
         self.assertTrue(campaign["scopes"][1]["diagnosticOnly"])
+        self.assertEqual(campaign["scopes"][1]["transparentTrialCount"], 6)
         self.assertEqual(campaign["scopes"][1]["netExcessReturn"], -0.0035)
 
     def test_latest_unified_arena_projects_bounded_comparison(self) -> None:

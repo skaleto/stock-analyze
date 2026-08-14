@@ -48,6 +48,8 @@ class ResearchCampaignReportTest(unittest.TestCase):
     def test_falsified_scope_reports_best_diagnostic_trial_instead_of_zeroes(self) -> None:
         diagnostic_trial = {
             "spec_id": "RULE_B",
+            "oos_predictions": [{"date": "20260801", "value": 0.01}] * 100,
+            "oos_returns": [{"date": "20260801", "return": 0.01}] * 100,
             "metrics": {
                 "benchmark_return": 0.08,
                 "net_return": 0.10,
@@ -128,6 +130,12 @@ class ResearchCampaignReportTest(unittest.TestCase):
         hs300 = next(item for item in payload["scopes"] if item["account_scope"] == "hs300")
         self.assertEqual(hs300["best_diagnostic_spec_id"], "RULE_B")
         self.assertTrue(hs300["diagnostic_only"])
+        self.assertEqual(hs300["transparent_trial_count"], 2)
+        self.assertEqual(hs300["incremental_trial_count"], 0)
+        self.assertEqual(hs300["display_trial"]["spec_id"], "RULE_B")
+        self.assertNotIn("trials", hs300)
+        self.assertNotIn("oos_predictions", hs300["display_trial"])
+        self.assertNotIn("oos_returns", hs300["display_trial"])
         self.assertIn("最佳诊断候选：`RULE_B`（仅用于解释失败，不代表选中）", markdown)
         self.assertIn("基准收益：8.00%", markdown)
         self.assertIn("净收益：10.00%", markdown)
