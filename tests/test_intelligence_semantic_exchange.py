@@ -1417,6 +1417,186 @@ class SemanticExchangeTest(unittest.TestCase):
         )
         self.assertEqual(manifest["items"][0]["route"], "audit_extraction")
 
+    def test_deterministic_route_finalizer_closes_no_signal_document(self) -> None:
+        self._set_document_route_content(
+            self.a_share_id,
+            title="关于日常经营情况的说明",
+            text="公司目前生产经营情况正常。",
+        )
+
+        result = semantic_exchange.finalize_deterministic_routes(
+            self.root,
+            profile_id="a-share-announcement-mentions-v24",
+            limit=10,
+        )
+
+        self.assertEqual(result["finalized"], 1)
+        self.assertEqual(result["by_decision"], {"no_event": 1})
+        with self.store.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT provider, model, status, input_tokens, output_tokens,
+                       error
+                FROM semantic_runs
+                WHERE document_id=?
+                """,
+                (self.a_share_id,),
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["provider"], "deterministic-router")
+        self.assertTrue(str(rows[0]["model"]).startswith("semantic-router-v1:"))
+        self.assertEqual(rows[0]["status"], "no_event")
+        self.assertEqual(rows[0]["input_tokens"], 0)
+        self.assertEqual(rows[0]["output_tokens"], 0)
+        self.assertIn("deterministic_route:no_event", rows[0]["error"])
+
+        repeated = semantic_exchange.finalize_deterministic_routes(
+            self.root,
+            profile_id="a-share-announcement-mentions-v24",
+            limit=10,
+        )
+        self.assertEqual(repeated["finalized"], 0)
+        with self.store.connect() as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM semantic_runs WHERE document_id=?",
+                (self.a_share_id,),
+            ).fetchone()[0]
+        self.assertEqual(count, 1)
+
+    def test_prepare_auto_finalizes_deterministic_routes(self) -> None:
+        self._set_document_route_content(
+            self.a_share_id,
+            title="关于日常经营情况的说明",
+            text="公司目前生产经营情况正常。",
+        )
+
+        prepared = prepare_job(
+            self.root,
+            profile_id="a-share-announcement-mentions-v24",
+            limit=1,
+            max_input_characters=24_000,
+            executor_mode="coding_plan",
+            executor_provider="trae",
+            executor_model="gpt-5.6-sol",
+            executor_client_version="traecli-test",
+        )
+
+        self.assertEqual(prepared["documents"], 0)
+        self.assertEqual(prepared["route_finalization"]["finalized"], 1)
+        with self.store.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT provider, status FROM semantic_runs
+                WHERE document_id=?
+                """,
+                (self.a_share_id,),
+            ).fetchone()
+        self.assertEqual((row["provider"], row["status"]), (
+            "deterministic-router",
+            "no_event",
+        ))
+
+    def test_deterministic_route_finalizer_closes_context_only_document(self) -> None:
+        self._set_document_route_content(
+            self.a_share_id,
+            title="关于修订公司章程的公告",
+            text="公司根据法律法规修订公司章程。",
+        )
+
+        result = semantic_exchange.finalize_deterministic_routes(
+            self.root,
+            profile_id="a-share-announcement-mentions-v24",
+            limit=10,
+        )
+
+        self.assertEqual(result["finalized"], 1)
+        self.assertEqual(result["by_decision"], {"context_only": 1})
+
+    def test_deterministic_route_finalizer_leaves_deep_extraction_open(self) -> None:
+        result = semantic_exchange.finalize_deterministic_routes(
+            self.root,
+            profile_id="a-share-announcement-mentions-v24",
+            limit=10,
+        )
+
+        self.assertEqual(result["finalized"], 0)
+        self.assertEqual(result["deep_extraction"], 1)
+        with self.store.connect() as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM semantic_runs WHERE document_id=?",
+                (self.a_share_id,),
+            ).fetchone()[0]
+        self.assertEqual(count, 0)
+
+    def test_deterministic_route_finalizer_leaves_blocked_artifact_open(self) -> None:
+        with self.store.connect() as connection:
+            connection.execute(
+                """
+                UPDATE document_artifacts
+                SET status='ocr_failed'
+                WHERE document_id=? AND artifact_type='parsed'
+                """,
+                (self.a_share_id,),
+            )
+
+        result = semantic_exchange.finalize_deterministic_routes(
+            self.root,
+            profile_id="a-share-announcement-mentions-v24",
+            limit=10,
+        )
+
+        self.assertEqual(result["finalized"], 0)
+        self.assertEqual(result["blocked"], 1)
+        with self.store.connect() as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM semantic_runs WHERE document_id=?",
+                (self.a_share_id,),
+            ).fetchone()[0]
+        self.assertEqual(count, 0)
+
+    def test_changed_profile_hash_reevaluates_deterministic_terminal(self) -> None:
+        self._set_document_route_content(
+            self.a_share_id,
+            title="关于日常经营情况的说明",
+            text="公司目前生产经营情况正常。",
+        )
+        first = semantic_exchange.finalize_deterministic_routes(
+            self.root,
+            profile_id="a-share-announcement-mentions-v24",
+            limit=10,
+        )
+        profile_path = (
+            self.root
+            / "configs"
+            / "intelligence_extraction_profiles"
+            / "a_share_announcement_mentions_v24.json"
+        )
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        profile["profile_version"] = 2401
+        profile_path.write_text(
+            json.dumps(profile, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        second = semantic_exchange.finalize_deterministic_routes(
+            self.root,
+            profile_id="a-share-announcement-mentions-v24",
+            limit=10,
+        )
+
+        self.assertEqual(first["finalized"], 1)
+        self.assertEqual(second["finalized"], 1)
+        with self.store.connect() as connection:
+            models = connection.execute(
+                """
+                SELECT model FROM semantic_runs
+                WHERE document_id=? ORDER BY started_at, run_id
+                """,
+                (self.a_share_id,),
+            ).fetchall()
+        self.assertEqual(len(models), 2)
+        self.assertNotEqual(models[0]["model"], models[1]["model"])
+
     def test_v21_freezes_ir_evidence_and_executor_lineage(self) -> None:
         first = prepare_job(
             self.root,
@@ -2837,6 +3017,31 @@ class SemanticExchangeTest(unittest.TestCase):
         self.assertEqual(stale_report["quarantined"], 1)
         self.assertEqual(stale_report["errors"][0]["error"], "semantic_repair_superseded")
         self.assertEqual(job_status(self.root, stale_dir)["status"], "quarantined")
+
+    def _set_document_route_content(
+        self,
+        document_id: int,
+        *,
+        title: str,
+        text: str,
+    ) -> None:
+        with self.store.connect() as connection:
+            connection.execute(
+                "UPDATE documents SET title=? WHERE id=?",
+                (title, int(document_id)),
+            )
+            connection.execute(
+                """
+                UPDATE document_chunks
+                SET text=?, text_hash=?
+                WHERE document_id=? AND section='body'
+                """,
+                (
+                    text,
+                    hashlib.sha256(text.encode()).hexdigest(),
+                    int(document_id),
+                ),
+            )
 
     def _seed_document(self, ts_code: str, source_id: str) -> int:
         document_id, _ = self.store.insert_document(

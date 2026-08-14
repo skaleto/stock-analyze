@@ -721,6 +721,18 @@ def build_parser() -> argparse.ArgumentParser:
     semantic_prepare.add_argument("--model", default=None)
     semantic_prepare.add_argument("--client-version", default=None)
 
+    semantic_route_finalize = sub.add_parser(
+        "intelligence-semantic-route-finalize",
+        help="Finalize bounded deterministic routes without provider calls.",
+    )
+    semantic_route_finalize.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    semantic_route_finalize.add_argument(
+        "--profile", default="a-share-announcement-mentions-v1"
+    )
+    semantic_route_finalize.add_argument("--limit", type=int, default=5_000)
+
     semantic_repair_prepare = sub.add_parser(
         "intelligence-semantic-repair-prepare",
         help="Prepare an explicit versioned semantic remediation job.",
@@ -1360,6 +1372,7 @@ def main(argv: list[str] | None = None) -> int:
         return _command_intelligence_model_effect(args)
     if args.command in {
         "intelligence-semantic-prepare",
+        "intelligence-semantic-route-finalize",
         "intelligence-semantic-repair-prepare",
         "intelligence-semantic-repair-rollback",
         "intelligence-semantic-run",
@@ -1865,6 +1878,7 @@ def _command_intelligence_exchange(args: argparse.Namespace) -> int:
     from .intelligence.semantic.exchange import (
         SemanticExchangeError,
         collect_coding_plan_outputs,
+        finalize_deterministic_routes,
         import_job,
         job_status,
         prepare_job,
@@ -1899,6 +1913,12 @@ def _command_intelligence_exchange(args: argparse.Namespace) -> int:
                     }
                 )
             result = prepare_job(args.repo_root, **prepare_kwargs)
+        elif args.command == "intelligence-semantic-route-finalize":
+            result = finalize_deterministic_routes(
+                args.repo_root,
+                profile_id=args.profile,
+                limit=args.limit,
+            )
         elif args.command == "intelligence-semantic-repair-prepare":
             result = prepare_repair_job(
                 args.repo_root,
