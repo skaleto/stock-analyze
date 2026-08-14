@@ -13,6 +13,7 @@ readonly DASHBOARD_FILES=(
   "stock_analyze/dashboard_http.py"
   "stock_analyze/dashboard_workspace_api.py"
   "stock_analyze/dashboard_runtime.py"
+  "stock_analyze/model_iteration.py"
   "tests/test_cli_dashboard_routes.py"
   "tests/test_dashboard_finance.py"
   "tests/test_dashboard_http.py"
