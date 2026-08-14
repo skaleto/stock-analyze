@@ -39,6 +39,7 @@ const statusLabels: Record<string, string> = {
   fallback: "规则策略兜底",
   fresh: "数据新鲜",
   missing: "缺失",
+  no_candidate: "本轮无合格候选",
   not_recorded: "未记录",
   not_used: "未使用",
   observe: "继续观察",
@@ -202,6 +203,9 @@ function workspaceStatus(status: string | null | undefined): WorkspaceStatus {
   }
   if (status === "running" || status === "research" || status === "failed") {
     return status;
+  }
+  if (status === "no_candidate") {
+    return "research";
   }
   if (status === "waiting_schedule" || status === "waiting_upstream") {
     return status;
@@ -1702,8 +1706,18 @@ function ModelResearchOverview({
               <dl className="global-market-metrics">
                 <div>
                   <dt>当前候选</dt>
-                  <dd>{candidate?.display_version ?? "等待候选"}</dd>
-                  <small>{candidate?.status_label ?? "未开始"}</small>
+                  <dd>
+                    {candidate?.display_version
+                      ?? (item.iteration?.status === "no_candidate"
+                        ? "本轮无合格候选"
+                        : "等待候选")}
+                  </dd>
+                  <small>
+                    {candidate?.status_label
+                      ?? (item.iteration?.status === "no_candidate"
+                        ? "最新主线未通过验收"
+                        : "未开始")}
+                  </small>
                 </div>
                 <div>
                   <dt>观察周期</dt>

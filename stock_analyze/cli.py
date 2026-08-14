@@ -1527,6 +1527,7 @@ def _command_research_workflow(args: argparse.Namespace) -> int:
         elif args.command == "run-unified-model-arena":
             result = pipeline.run_unified_model_arena(
                 horizon=args.horizon,
+                force=bool(args.force),
             )
         elif args.command == "run-cross-sectional-alpha-repair":
             result = pipeline.run_cross_sectional_alpha_repair(
