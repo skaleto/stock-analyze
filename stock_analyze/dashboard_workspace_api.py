@@ -2647,6 +2647,7 @@ def build_dashboard_model_research_data(
     )
     tabular_gate = _mapping(tabular_run.get("gate"))
     tabular_gate_reasons = list(tabular_gate.get("reasons") or [])
+    use_tabular_stage = bool(tabular_run) and not displayed_model_rows
     tabular_estimator = _text(tabular_run.get("estimator"), limit=128)
     tabular_estimator_label = {
         "lightgbm_regression": "LightGBM 回归排序",
@@ -2738,20 +2739,24 @@ def build_dashboard_model_research_data(
             "label": "模型训练",
             "status": (
                 "unavailable"
-                if not model_health_available and not tabular_run
+                if (
+                    not model_health_available
+                    and not displayed_model_rows
+                    and not tabular_run
+                )
                 else "success"
                 if displayed_model_rows or tabular_run
                 else "empty"
             ),
             "primary": (
                 "经典模型 1 个候选"
-                if tabular_run
+                if use_tabular_stage
                 else f"{len(displayed_model_rows)} 个最新研究版本"
             ),
             "secondary": (
                 f"{_integer(tabular_run.get('selectedFeatureCount'))} 个特征 · "
                 f"{tabular_estimator_label}"
-                if tabular_run
+                if use_tabular_stage
                 else (
                     f"{sum(row['sampleSupport'] for row in displayed_model_rows)} "
                     "条样本支持"
@@ -2763,21 +2768,28 @@ def build_dashboard_model_research_data(
             "label": "测试验收",
             "status": (
                 "unavailable"
-                if not model_health_available and not tabular_run
+                if (
+                    not model_health_available
+                    and not displayed_model_rows
+                    and not tabular_run
+                )
                 else "success"
-                if tabular_gate.get("passed") is True or (not tabular_run and passed)
+                if (
+                    (use_tabular_stage and tabular_gate.get("passed") is True)
+                    or (not use_tabular_stage and passed)
+                )
                 else "research"
             ),
             "primary": (
                 "经典模型已通过"
-                if tabular_gate.get("passed") is True
+                if use_tabular_stage and tabular_gate.get("passed") is True
                 else f"经典模型 {len(tabular_gate_reasons)} 项未通过"
-                if tabular_run
+                if use_tabular_stage
                 else f"{passed} / {len(displayed_model_rows)} 通过"
             ),
             "secondary": (
                 f"注册模型 {passed} / {len(displayed_model_rows)} 通过"
-                if tabular_run
+                if use_tabular_stage
                 else (
                     f"{sum(len(row['gateReasons']) for row in displayed_model_rows)} "
                     "个阻塞项"

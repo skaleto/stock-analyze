@@ -304,6 +304,7 @@ describe("ModelResearchPage", () => {
           market_label: "A股",
           iteration: {
             status: "no_candidate",
+            as_of: "2026-08-13",
             candidate: null,
             champion: null,
           },
@@ -319,6 +320,7 @@ describe("ModelResearchPage", () => {
     expect(
       await screen.findByText("本轮无合格候选"),
     ).toBeInTheDocument();
+    expect(screen.getByText("2026-08-13")).toBeInTheDocument();
     expect(screen.getByText("最新主线未通过验收")).toBeInTheDocument();
     expect(screen.queryByText("状态不可用")).not.toBeInTheDocument();
   });
