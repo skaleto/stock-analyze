@@ -90,6 +90,39 @@ class ResearchStrategyCampaignTest(unittest.TestCase):
         self.assertEqual(CAMPAIGN_THRESHOLDS["bootstrap_samples"], 10_000)
         self.assertEqual(CAMPAIGN_THRESHOLDS["bootstrap_seed"], 20260814)
 
+    def test_qdii_campaign_contract_freezes_same_day_sell_cash_reuse(self) -> None:
+        from stock_analyze.research import strategy_campaign
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "configs/competition_cn_qdii_etf.yaml"
+            config.parent.mkdir(parents=True)
+            config.write_text(json.dumps({
+                "accounts": [{
+                    "id": "us_exposure",
+                    "scope": "us_exposure",
+                    "cash": 500_000.0,
+                    "top_n": 5,
+                }],
+                "trading": {"settlement_days": 1},
+            }), encoding="utf-8")
+            manifest = {
+                "_payload_root": str(root),
+                "files": [{"path": "configs/competition_cn_qdii_etf.yaml"}],
+            }
+
+            contract = strategy_campaign._load_portfolio_contract(
+                manifest,
+                market="cn_qdii_etf",
+                account_scope="us_exposure",
+            )
+
+        self.assertEqual(contract["trading"]["settlement_days"], 1)
+        self.assertEqual(
+            contract["settlement"],
+            {"sell_proceeds_reusable_same_day": True},
+        )
+
     def test_transparent_trial_uses_three_purged_folds_and_double_cost_replay(self) -> None:
         dates = pd.date_range("2024-01-02", periods=130, freq="B")
         rows = []

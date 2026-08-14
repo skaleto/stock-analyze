@@ -15,6 +15,7 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 
+from ..markets.cn_qdii_etf import mechanics as qdii_mechanics
 from .attribution import summarize_replay_attribution
 from .campaign_report import (
     write_final_campaign_report,
@@ -920,6 +921,12 @@ def _load_portfolio_contract(
     return {
         "accounts": accounts,
         "trading": dict(config.get("trading") or {}),
+        "settlement": {
+            "sell_proceeds_reusable_same_day": bool(
+                market == "cn_qdii_etf"
+                and qdii_mechanics.SELL_PROCEEDS_REUSABLE_SAME_DAY
+            ),
+        },
         "performance": dict(config.get("performance") or {
             "risk_free_rate": 0.02,
             "trading_days_per_year": 252,

@@ -10,6 +10,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..markets.cn_qdii_etf import mechanics as qdii_mechanics
 from ..model_iteration import (
     SHADOW_ADMISSION_CONTRACT,
     TRANSPARENT_RULE_RUNTIME_CONTRACT,
@@ -23,6 +24,12 @@ from .classical_specs import transparent_strategy_specs
 RULE_RUNTIME_CONTRACT = TRANSPARENT_RULE_RUNTIME_CONTRACT
 RULE_PROMOTION_POLICY = "strict-forward-review-v1"
 _MARKET_ORDER = ("a_share", "cn_qdii_etf")
+_ACCOUNT_ORDER = (
+    ("a_share", "hs300"),
+    ("a_share", "zz500"),
+    ("cn_qdii_etf", "hk_exposure"),
+    ("cn_qdii_etf", "us_exposure"),
+)
 
 
 def _number(value: object, default: float) -> float:
@@ -116,9 +123,7 @@ def _selection_key(row: Mapping[str, Any]) -> tuple[object, ...]:
     )
 
 
-def select_market_shadow_trials(report: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Select at most one safe, deterministic Shadow candidate per market."""
-
+def _validate_campaign_header(report: Mapping[str, Any]) -> tuple[str, str]:
     if str(report.get("status") or "") not in {"transparent_complete", "complete"}:
         raise ValueError("shadow_admission_campaign_incomplete")
     if _flag(report.get("formal_strategy_activated")):
@@ -127,45 +132,121 @@ def select_market_shadow_trials(report: Mapping[str, Any]) -> list[dict[str, Any
     manifest_hash = str(report.get("manifest_hash") or "").strip()
     if not campaign_id or not manifest_hash:
         raise ValueError("shadow_admission_campaign_provenance_missing")
+    return campaign_id, manifest_hash
 
-    eligible_by_market: dict[str, list[dict[str, Any]]] = {
-        market: [] for market in _MARKET_ORDER
-    }
+
+def _scope_trials(raw_scope: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_trials = raw_scope.get("trials")
+    if isinstance(raw_trials, list):
+        trials = [dict(row) for row in raw_trials if isinstance(row, Mapping)]
+        if trials:
+            return trials
+    display_trial = raw_scope.get("display_trial")
+    return [dict(display_trial)] if isinstance(display_trial, Mapping) else []
+
+
+def decide_account_shadow_trials(report: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Return one explicit admitted/blocked decision for every report scope."""
+
+    campaign_id, manifest_hash = _validate_campaign_header(report)
+    decisions_by_scope: dict[tuple[str, str], dict[str, Any]] = {}
     for raw_scope in report.get("scopes") or []:
         if not isinstance(raw_scope, Mapping):
             continue
-        trial = raw_scope.get("display_trial")
-        if not isinstance(trial, Mapping):
+        market = str(raw_scope.get("market") or "")
+        scope = str(raw_scope.get("account_scope") or "")
+        identity = (market, scope)
+        if identity not in _ACCOUNT_ORDER:
             continue
-        market = str(raw_scope.get("market") or trial.get("market") or "")
-        scope = str(
-            raw_scope.get("account_scope") or trial.get("account_scope") or ""
-        )
-        if market not in eligible_by_market or not scope:
-            continue
-        decision = evaluate_transparent_shadow_trial(trial)
-        if not decision["passed"]:
-            continue
-        eligible_by_market[market].append({
-            **decision,
-            "market": market,
-            "account_scope": scope,
-            "trial_id": str(trial.get("trial_id") or ""),
-            "spec_id": str(trial.get("spec_id") or ""),
-            "spec_hash": str(trial.get("spec_hash") or ""),
-            "horizon": int(_number(trial.get("horizon"), 0.0)),
-            "campaign_id": campaign_id,
-            "manifest_hash": manifest_hash,
-            "trial": dict(trial),
-        })
+        if identity in decisions_by_scope:
+            raise ValueError(f"shadow_admission_duplicate_scope:{market}:{scope}")
 
-    missing = [market for market, rows in eligible_by_market.items() if not rows]
-    if missing:
-        raise ValueError("shadow_admission_market_missing:" + ",".join(missing))
+        evaluated: list[dict[str, Any]] = []
+        eligible: list[dict[str, Any]] = []
+        seen_trial_ids: set[str] = set()
+        for trial in _scope_trials(raw_scope):
+            trial_market = str(trial.get("market") or market)
+            trial_scope = str(trial.get("account_scope") or scope)
+            if (trial_market, trial_scope) != identity:
+                raise ValueError(
+                    f"shadow_admission_trial_scope_mismatch:{market}:{scope}"
+                )
+            trial_id = str(trial.get("trial_id") or "").strip()
+            if not trial_id or trial_id in seen_trial_ids:
+                raise ValueError(f"shadow_admission_trial_identity:{trial_id}")
+            seen_trial_ids.add(trial_id)
+            decision = evaluate_transparent_shadow_trial(trial)
+            row = {
+                **decision,
+                "market": market,
+                "account_scope": scope,
+                "trial_id": trial_id,
+                "spec_id": str(trial.get("spec_id") or ""),
+                "spec_hash": str(trial.get("spec_hash") or ""),
+                "horizon": int(_number(trial.get("horizon"), 0.0)),
+                "campaign_id": campaign_id,
+                "manifest_hash": manifest_hash,
+                "trial": trial,
+            }
+            evaluated.append(row)
+            if decision["passed"]:
+                eligible.append(row)
+
+        if eligible:
+            selected = max(eligible, key=_selection_key)
+            decisions_by_scope[identity] = {**selected, "status": "admitted"}
+        else:
+            decisions_by_scope[identity] = {
+                "status": "blocked",
+                "passed": False,
+                "grade": "rejected",
+                "reasons": ["no_safe_trial"],
+                "market": market,
+                "account_scope": scope,
+                "campaign_id": campaign_id,
+                "manifest_hash": manifest_hash,
+                "trial_decisions": [
+                    {
+                        key: row[key]
+                        for key in (
+                            "trial_id",
+                            "spec_id",
+                            "grade",
+                            "passed",
+                            "reasons",
+                            "checks",
+                            "net_return",
+                            "net_excess_return",
+                            "cost_stress_net_excess_return",
+                            "max_drawdown",
+                            "target_fill_ratio",
+                        )
+                    }
+                    for row in evaluated
+                ],
+            }
+
     return [
-        max(eligible_by_market[market], key=_selection_key)
-        for market in _MARKET_ORDER
+        decisions_by_scope[identity]
+        for identity in _ACCOUNT_ORDER
+        if identity in decisions_by_scope
     ]
+
+
+def select_account_shadow_trials(report: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Select at most one safe, deterministic Shadow candidate per account."""
+
+    return [
+        row
+        for row in decide_account_shadow_trials(report)
+        if row.get("status") == "admitted"
+    ]
+
+
+def select_market_shadow_trials(report: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Compatibility alias for the account-scoped selector."""
+
+    return select_account_shadow_trials(report)
 
 
 def _campaign_evidence_report(
@@ -213,41 +294,81 @@ def _campaign_evidence_report(
             continue
         scope_row = dict(raw_scope)
         display_trial = raw_scope.get("display_trial")
-        if not isinstance(display_trial, Mapping):
-            hydrated_scopes.append(scope_row)
-            continue
-        trial_id = str(display_trial.get("trial_id") or "").strip()
-        evidence = trials_by_id.get(trial_id)
-        if evidence is None:
-            raise ValueError(f"shadow_admission_trial_evidence_missing:{trial_id}")
-        expected_identity = {
-            "market": str(raw_scope.get("market") or display_trial.get("market") or ""),
-            "account_scope": str(
-                raw_scope.get("account_scope")
-                or display_trial.get("account_scope")
-                or ""
-            ),
-            "spec_id": str(display_trial.get("spec_id") or ""),
-            "spec_hash": str(display_trial.get("spec_hash") or ""),
-            "horizon": int(_number(display_trial.get("horizon"), 0.0)),
-            "manifest_hash": manifest_hash,
-        }
-        actual_identity = {
-            "market": str(evidence.get("market") or ""),
-            "account_scope": str(evidence.get("account_scope") or ""),
-            "spec_id": str(evidence.get("spec_id") or ""),
-            "spec_hash": str(evidence.get("spec_hash") or ""),
-            "horizon": int(_number(evidence.get("horizon"), 0.0)),
-            "manifest_hash": str(evidence.get("manifest_hash") or ""),
-        }
-        if actual_identity != expected_identity:
-            raise ValueError(f"shadow_admission_trial_evidence_mismatch:{trial_id}")
-        hydrated_trial = dict(evidence)
-        if "passed_transparent_gates" in display_trial:
-            hydrated_trial["passed_transparent_gates"] = display_trial[
-                "passed_transparent_gates"
-            ]
-        scope_row["display_trial"] = hydrated_trial
+        market = str(
+            raw_scope.get("market")
+            or (display_trial.get("market") if isinstance(display_trial, Mapping) else "")
+            or ""
+        )
+        scope = str(
+            raw_scope.get("account_scope")
+            or (
+                display_trial.get("account_scope")
+                if isinstance(display_trial, Mapping)
+                else ""
+            )
+            or ""
+        )
+        scope_trials = [
+            dict(trial)
+            for trial in trials_by_id.values()
+            if str(trial.get("market") or "") == market
+            and str(trial.get("account_scope") or "") == scope
+        ]
+        if not scope_trials:
+            raise ValueError(
+                f"shadow_admission_scope_evidence_missing:{market}:{scope}"
+            )
+        expected_count = int(_number(raw_scope.get("transparent_trial_count"), 0.0))
+        if expected_count and len(scope_trials) != expected_count:
+            raise ValueError(
+                f"shadow_admission_scope_trial_count:{market}:{scope}"
+            )
+        for trial in scope_trials:
+            trial_id = str(trial.get("trial_id") or "")
+            if (
+                str(trial.get("manifest_hash") or "") != manifest_hash
+                or not str(trial.get("spec_id") or "")
+                or not str(trial.get("spec_hash") or "")
+                or int(_number(trial.get("horizon"), 0.0)) <= 0
+            ):
+                raise ValueError(
+                    f"shadow_admission_trial_evidence_mismatch:{trial_id}"
+                )
+
+        if isinstance(display_trial, Mapping):
+            display_id = str(display_trial.get("trial_id") or "").strip()
+            evidence = trials_by_id.get(display_id)
+            if evidence is None:
+                raise ValueError(
+                    f"shadow_admission_trial_evidence_missing:{display_id}"
+                )
+            expected_display_identity = {
+                "market": market,
+                "account_scope": scope,
+                "spec_id": str(display_trial.get("spec_id") or ""),
+                "spec_hash": str(display_trial.get("spec_hash") or ""),
+                "horizon": int(_number(display_trial.get("horizon"), 0.0)),
+                "manifest_hash": manifest_hash,
+            }
+            actual_display_identity = {
+                "market": str(evidence.get("market") or ""),
+                "account_scope": str(evidence.get("account_scope") or ""),
+                "spec_id": str(evidence.get("spec_id") or ""),
+                "spec_hash": str(evidence.get("spec_hash") or ""),
+                "horizon": int(_number(evidence.get("horizon"), 0.0)),
+                "manifest_hash": str(evidence.get("manifest_hash") or ""),
+            }
+            if actual_display_identity != expected_display_identity:
+                raise ValueError(
+                    f"shadow_admission_trial_evidence_mismatch:{display_id}"
+                )
+            hydrated_display = dict(evidence)
+            if "passed_transparent_gates" in display_trial:
+                hydrated_display["passed_transparent_gates"] = display_trial[
+                    "passed_transparent_gates"
+                ]
+            scope_row["display_trial"] = hydrated_display
+        scope_row["trials"] = scope_trials
         hydrated_scopes.append(scope_row)
     hydrated["scopes"] = hydrated_scopes
     hydrated["trial_evidence_path"] = _relative_to_root(trials_path, root)
@@ -291,6 +412,12 @@ def _frozen_portfolio_contract(
     return {
         "account": accounts[0],
         "trading": dict(config.get("trading") or {}),
+        "settlement": {
+            "sell_proceeds_reusable_same_day": bool(
+                market == "cn_qdii_etf"
+                and qdii_mechanics.SELL_PROCEEDS_REUSABLE_SAME_DAY
+            ),
+        },
         "rebalance_frequency": str(rebalance_frequency),
         "rule_execution_policy": {
             "version": "campaign-transparent-v1",
@@ -330,7 +457,7 @@ def admit_campaign_shadows(
     repo_root: str | Path,
     campaign_report: str | Path,
 ) -> dict[str, Any]:
-    """Freeze and register one transparent Shadow strategy per market."""
+    """Freeze and register one transparent Shadow strategy per account."""
 
     root = Path(repo_root).resolve()
     report_path = Path(campaign_report)
@@ -343,7 +470,10 @@ def admit_campaign_shadows(
     if not isinstance(report, dict):
         raise ValueError("shadow_admission_campaign_report")
     report = _campaign_evidence_report(root, report)
-    selected_rows = select_market_shadow_trials(report)
+    decisions = decide_account_shadow_trials(report)
+    selected_rows = [
+        row for row in decisions if row.get("status") == "admitted"
+    ]
     admitted: list[dict[str, Any]] = []
     for selected in selected_rows:
         market = str(selected["market"])
@@ -473,6 +603,14 @@ def admit_campaign_shadows(
         "manifest_hash": str(report.get("manifest_hash") or ""),
         "formal_strategy_activated": False,
         "admitted": admitted,
+        "decisions": [
+            {
+                key: value
+                for key, value in decision.items()
+                if key != "trial"
+            }
+            for decision in decisions
+        ],
     }
 
 
@@ -481,6 +619,8 @@ __all__ = [
     "RULE_RUNTIME_CONTRACT",
     "SHADOW_ADMISSION_CONTRACT",
     "admit_campaign_shadows",
+    "decide_account_shadow_trials",
     "evaluate_transparent_shadow_trial",
+    "select_account_shadow_trials",
     "select_market_shadow_trials",
 ]

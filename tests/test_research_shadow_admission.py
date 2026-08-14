@@ -143,8 +143,8 @@ class PersonalQuantShadowAdmissionTest(unittest.TestCase):
         self.assertIn("point_in_time_audit", decision["reasons"])
         self.assertIn("target_fill_ratio", decision["reasons"])
 
-    def test_selects_one_best_safe_scope_per_market(self):
-        from stock_analyze.research.shadow_admission import select_market_shadow_trials
+    def test_selects_one_best_safe_trial_for_each_account_scope(self):
+        from stock_analyze.research.shadow_admission import select_account_shadow_trials
 
         a_hs300 = _trial(
             market="a_share", scope="hs300", spec_id="A_MOM_02", spec_hash="hs",
@@ -164,7 +164,12 @@ class PersonalQuantShadowAdmissionTest(unittest.TestCase):
         q_us = _trial(
             market="cn_qdii_etf", scope="us_exposure", spec_id="Q_TREND_01", spec_hash="us",
             net_return=0.08, net_excess=-0.12, cost_stress_excess=-0.14,
-            drawdown=0.19, fill=0.93, positive_folds=0, bootstrap=0.14,
+            drawdown=0.19, fill=0.96, positive_folds=0, bootstrap=0.14,
+        )
+        q_us_display = _trial(
+            market="cn_qdii_etf", scope="us_exposure", spec_id="Q_TRACK_01", spec_hash="us-bad",
+            net_return=-0.02, net_excess=-0.20, cost_stress_excess=-0.22,
+            drawdown=0.21, fill=0.92, positive_folds=0, bootstrap=0.05,
         )
         report = {
             "status": "transparent_complete",
@@ -172,20 +177,66 @@ class PersonalQuantShadowAdmissionTest(unittest.TestCase):
             "manifest_hash": "manifest-v1",
             "formal_strategy_activated": False,
             "scopes": [
-                {"market": row["market"], "account_scope": row["account_scope"], "display_trial": row}
-                for row in (a_hs300, a_zz500, q_hk, q_us)
-            ],
+                {"market": row["market"], "account_scope": row["account_scope"], "display_trial": row, "trials": [row]}
+                for row in (a_hs300, a_zz500, q_hk)
+            ] + [{
+                "market": "cn_qdii_etf",
+                "account_scope": "us_exposure",
+                "display_trial": q_us_display,
+                "trials": [q_us_display, q_us],
+            }],
         }
 
-        selected = select_market_shadow_trials(report)
+        selected = select_account_shadow_trials(report)
 
         self.assertEqual(
             [(row["market"], row["account_scope"], row["grade"]) for row in selected],
             [
+                ("a_share", "hs300", "exploratory"),
                 ("a_share", "zz500", "exploratory"),
                 ("cn_qdii_etf", "hk_exposure", "promising"),
+                ("cn_qdii_etf", "us_exposure", "exploratory"),
             ],
         )
+        self.assertEqual(selected[-1]["spec_id"], "Q_TREND_01")
+
+    def test_blocked_scope_keeps_each_trial_failure_reason(self):
+        from stock_analyze.research.shadow_admission import decide_account_shadow_trials
+
+        low_fill = _trial(
+            market="cn_qdii_etf", scope="us_exposure", spec_id="Q_TREND_01", spec_hash="trend",
+            net_return=0.08, net_excess=-0.12, cost_stress_excess=-0.14,
+            drawdown=0.19, fill=0.93, positive_folds=0, bootstrap=0.14,
+        )
+        negative = _trial(
+            market="cn_qdii_etf", scope="us_exposure", spec_id="Q_TRACK_01", spec_hash="track",
+            net_return=-0.02, net_excess=-0.20, cost_stress_excess=-0.22,
+            drawdown=0.21, fill=0.98, positive_folds=0, bootstrap=0.05,
+        )
+        report = {
+            "status": "transparent_complete",
+            "campaign_id": "campaign-v1",
+            "manifest_hash": "manifest-v1",
+            "formal_strategy_activated": False,
+            "scopes": [{
+                "market": "cn_qdii_etf",
+                "account_scope": "us_exposure",
+                "display_trial": negative,
+                "trials": [negative, low_fill],
+            }],
+        }
+
+        decisions = decide_account_shadow_trials(report)
+
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0]["status"], "blocked")
+        self.assertEqual(decisions[0]["reasons"], ["no_safe_trial"])
+        failures = {
+            row["spec_id"]: row["reasons"]
+            for row in decisions[0]["trial_decisions"]
+        }
+        self.assertIn("positive_net_return", failures["Q_TRACK_01"])
+        self.assertIn("target_fill_ratio", failures["Q_TREND_01"])
 
     def test_admission_freezes_artifact_and_is_idempotent(self):
         from stock_analyze.research.classical_specs import transparent_strategy_specs
