@@ -25,6 +25,7 @@ from .dashboard_api import (
 )
 from .dashboard_runtime import read_dashboard_runtime
 from .overlay_guard import AVAILABLE_FACTORS_BY_MARKET, SENTIMENT_FACTORS
+from .research.classical_specs import mainline_horizon, mainline_specs
 from .research.feature_registry import DEFAULT_REGISTRY, INTELLIGENCE_FEATURES
 
 
@@ -64,6 +65,7 @@ MODEL_METRIC_KEYS = (
     "turnover",
     "annual_turnover",
     "capital_utilization",
+    "beginning_capital_utilization",
     "cash_ratio",
     "rebalance_frequency",
     "scheduled_rebalance_periods",
@@ -107,6 +109,19 @@ MODEL_METRIC_KEYS = (
     "alpha_half_life_days",
     "attribution_status",
     "attribution_max_error",
+    "cash_position_effect_total",
+    "security_selection_return_total",
+    "execution_cost_effect_total",
+    "active_attribution_total",
+    "diagnostic_net_return",
+    "diagnostic_benchmark_return",
+    "diagnostic_net_excess_return",
+    "diagnostic_information_ratio",
+    "diagnostic_annual_turnover",
+    "diagnostic_trade_count",
+    "diagnostic_capital_utilization",
+    "gross_exposure_target",
+    "gross_exposure_shortfall",
     "model_spec_id",
     "model_spec_hash",
 )
@@ -675,6 +690,12 @@ def _model_rows(
         rows.append(
             {
                 "modelVersion": model_version,
+                "specId": _text(
+                    raw.get("spec_id")
+                    or registry_record.get("spec_id")
+                    or metrics.get("model_spec_id"),
+                    limit=256,
+                ),
                 "accountScope": account_scope,
                 "horizon": horizon,
                 "algorithmFamily": _algorithm_family(raw),
@@ -751,6 +772,78 @@ def _model_rows(
     return [deduplicated[key] for key in sorted(deduplicated)]
 
 
+def _deduplicate_model_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduplicated: dict[tuple[str, int, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (row["accountScope"], row["horizon"], row["modelVersion"])
+        current = deduplicated.get(key)
+        if current is None or _model_evidence_rank(row) > _model_evidence_rank(
+            current
+        ):
+            deduplicated[key] = row
+    return [deduplicated[key] for key in sorted(deduplicated)]
+
+
+def _mainline_model_projection(
+    market: str,
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    expected_horizon = mainline_horizon(market)
+    current: list[dict[str, Any]] = []
+    selected_keys: set[tuple[str, int, str]] = set()
+    lifecycle_rank = {
+        "active": 4,
+        "shadow": 3,
+        "research": 2,
+        "rejected": 1,
+    }
+    for scope in sorted({str(row.get("accountScope") or "") for row in rows}):
+        expected_specs = mainline_specs(market, scope)
+        expected_spec_id = expected_specs[0].spec_id if len(expected_specs) == 1 else ""
+        horizon_rows = [
+            row
+            for row in rows
+            if str(row.get("accountScope") or "") == scope
+            and _integer(row.get("horizon")) == expected_horizon
+        ]
+        exact = [
+            row for row in horizon_rows
+            if str(row.get("specId") or "") == expected_spec_id
+        ]
+        candidates = exact or [
+            row for row in horizon_rows if not str(row.get("specId") or "")
+        ]
+        if not candidates:
+            continue
+        selected = max(
+            candidates,
+            key=lambda row: (
+                lifecycle_rank.get(str(row.get("lifecycleStatus") or ""), 0),
+                _model_evidence_rank(row),
+            ),
+        )
+        current.append(selected)
+        selected_keys.add(
+            (
+                selected["accountScope"],
+                selected["horizon"],
+                selected["modelVersion"],
+            )
+        )
+    archive = [
+        row for row in rows
+        if (row["accountScope"], row["horizon"], row["modelVersion"])
+        not in selected_keys
+    ]
+    archive.sort(key=_model_evidence_rank, reverse=True)
+    current.sort(key=lambda row: (row["accountScope"], row["modelVersion"]))
+    return current, archive
+
+
+def _public_model_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if not key.startswith("_")}
+
+
 def _latest_tournament_health(root: Path, market: str) -> dict[str, Any]:
     model_root = root / "data" / "research" / "models" / market
     models: list[dict[str, Any]] = []
@@ -780,6 +873,12 @@ def _latest_tournament_health(root: Path, market: str) -> dict[str, Any]:
                     models.append(
                         {
                             **candidate,
+                            "account_scope": str(
+                                candidate.get("account_scope") or account_dir.name
+                            ),
+                            "horizon": int(
+                                candidate.get("horizon") or horizon_dir.name
+                            ),
                             "metrics": {
                                 **_mapping(candidate.get("metrics")),
                                 **activation_metrics,
@@ -823,6 +922,11 @@ def _latest_unified_arena(root: Path, market: str) -> dict[str, Any]:
         "annual_turnover": "annualTurnover",
         "trade_count": "tradeCount",
         "capital_utilization": "capitalUtilization",
+        "beginning_capital_utilization": "beginningCapitalUtilization",
+        "cash_position_effect_total": "cashPositionEffectTotal",
+        "security_selection_return_total": "securitySelectionReturnTotal",
+        "execution_cost_effect_total": "executionCostEffectTotal",
+        "active_attribution_total": "activeAttributionTotal",
     }
     scopes: list[dict[str, Any]] = []
     for raw_scope in _rows(payload.get("scopes"))[:MAX_TABLE_ROWS]:
@@ -2154,11 +2258,19 @@ def build_dashboard_model_research_data(
         market,
         {"models": health.get("latest_models") or health.get("models") or []},
     )
+    evidence_rows = _deduplicate_model_rows(
+        all_models + latest_model_rows + tournament_model_rows
+    )
+    displayed_model_rows, archived_model_rows = _mainline_model_projection(
+        market,
+        evidence_rows,
+    )
     latest_models = [
         {
             key: row.get(key)
             for key in (
                 "modelVersion",
+                "specId",
                 "accountScope",
                 "horizon",
                 "trainedAt",
@@ -2168,15 +2280,25 @@ def build_dashboard_model_research_data(
                 "gateReasons",
             )
         }
-        for row in latest_model_rows
+        for row in displayed_model_rows
     ]
-    displayed_model_rows = tournament_model_rows or latest_model_rows or all_models
-    models = displayed_model_rows[:MAX_TABLE_ROWS]
+    models = [
+        _public_model_row(row)
+        for row in displayed_model_rows[:MAX_TABLE_ROWS]
+    ]
+    archive_status_counts: dict[str, int] = {}
+    for row in archived_model_rows:
+        status = str(row.get("lifecycleStatus") or "research")
+        archive_status_counts[status] = archive_status_counts.get(status, 0) + 1
+    archived_models = [
+        _public_model_row(row)
+        for row in archived_model_rows[:5]
+    ]
     selected_features = sorted(
         {
             feature
             for model in displayed_model_rows
-            for feature in model.pop("_allFeatureColumns")
+            for feature in model.get("_allFeatureColumns", [])
         }
     )
     registry_names = {item.name for item in DEFAULT_REGISTRY}
@@ -2526,6 +2648,11 @@ def build_dashboard_model_research_data(
             "models": models,
             "latestModels": latest_models[:MAX_TABLE_ROWS],
             "accounts": account_summaries,
+            "archive": {
+                "total": len(archived_model_rows),
+                "byStatus": archive_status_counts,
+                "recent": archived_models,
+            },
         },
         "validation": {
             "passed": passed,

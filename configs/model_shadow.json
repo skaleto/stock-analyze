@@ -29,7 +29,7 @@
       }
     },
     "cn_qdii_etf": {
-      "horizon": 5,
+      "horizon": 10,
       "rank_buffer_pct": 0.80,
       "minimum_target_change": 0.02,
       "partial_adjustment_rate": 0.25,

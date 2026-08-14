@@ -75,6 +75,82 @@ def _dataset() -> pd.DataFrame:
 
 
 class ResearchClassicalTournamentTest(unittest.TestCase):
+    def test_stale_protocol_report_is_archived_before_retraining(self) -> None:
+        from stock_analyze.research.classical_tournament import (
+            TOURNAMENT_PROTOCOL_VERSION,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tournament_root = (
+                root / "data" / "research" / "models" / "a_share"
+                / "hs300" / "3" / "tournaments" / "20260807"
+            )
+            tournament_root.mkdir(parents=True)
+            (tournament_root / "report.json").write_text(
+                json.dumps({"protocol": "retired-v1", "status": "no_pass"}),
+                encoding="utf-8",
+            )
+            specs = (a_share_h3_specs("hs300")[0],)
+
+            def writer(_bundle, path):
+                destination = Path(path)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text("fixture", encoding="utf-8")
+                return destination
+
+            with (
+                patch(
+                    "stock_analyze.research.classical_tournament.train_model_bundle",
+                    side_effect=lambda *_args, model_spec, **_kwargs: _FakeBundle(
+                        model_spec
+                    ),
+                ),
+                patch(
+                    "stock_analyze.research.classical_tournament.save_model_bundle",
+                    side_effect=writer,
+                ),
+            ):
+                report = run_classical_tournament(
+                    root,
+                    market="a_share",
+                    account_scope="hs300",
+                    horizon=3,
+                    as_of="2026-08-07",
+                    dataset=_dataset(),
+                    feature_columns=("signal",),
+                    portfolio_contract={
+                        "accounts": [
+                            {"id": "hs300", "cash": 200_000.0, "top_n": 3}
+                        ],
+                        "trading": {
+                            "lot_size": 100,
+                            "commission_rate": 0.0003,
+                            "min_commission": 5.0,
+                            "stamp_tax_rate": 0.0005,
+                            "slippage_rate": 0.0005,
+                            "max_single_weight": 0.20,
+                        },
+                        "execution_policy": {
+                            "rank_buffer_pct": 0.50,
+                            "minimum_target_change": 0.01,
+                            "partial_adjustment_rate": 0.35,
+                            "max_daily_turnover": 0.10,
+                            "cost_safety_multiple": 1.50,
+                        },
+                    },
+                    specs=specs,
+                )
+
+            archived = list(
+                (tournament_root.parent / "_archive").glob(
+                    "20260807-retired-v1*/report.json"
+                )
+            )
+
+        self.assertEqual(report["protocol"], TOURNAMENT_PROTOCOL_VERSION)
+        self.assertEqual(len(archived), 1)
+
     def test_cash_baseline_earns_declared_rate_and_is_measured_against_benchmark(self) -> None:
         dates = ("20260102", "20260105")
         final_frame = pd.DataFrame({

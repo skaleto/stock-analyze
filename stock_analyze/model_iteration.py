@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from .research.classical_specs import mainline_horizon, mainline_specs
 from .utils import now_iso, read_json, write_json
 
 
@@ -237,6 +238,7 @@ def model_version_summary(
         "account_scope": str(account_scope or metadata.get("account_scope") or ""),
         "horizon": int(horizon),
         "model_version": str(model_version),
+        "spec_id": str(metadata.get("spec_id") or ""),
         "display_version": version_display_name(market, horizon, model_version, registry),
         "status": str(metadata.get("status") or "research"),
         "status_label": lifecycle_label(metadata.get("status") or "research"),
@@ -277,16 +279,29 @@ def ensure_iteration_candidate(
     stamp = str(as_of or now_iso())
     current_metadata = models.get(current_version) or {}
     current_status = str(current_metadata.get("status") or "")
+    expected_spec_id = _expected_mainline_spec_id(
+        market,
+        horizon,
+        account_scope=account_scope,
+    )
+    eligible_versions = _eligible_candidate_versions(
+        models,
+        expected_spec_id=expected_spec_id,
+    )
     current_is_pinned = bool(
         current_version
-        and current_version in models
+        and current_version in eligible_versions
         and current_version != champion
         and current_status == "shadow"
     )
     selected_version = (
         current_version
         if current_is_pinned
-        else _select_candidate_version(models, champion)
+        else _select_candidate_version(
+            models,
+            champion,
+            expected_spec_id=expected_spec_id,
+        )
     )
 
     if current_version and current_version != selected_version:
@@ -351,13 +366,60 @@ def ensure_iteration_candidate(
     return summary
 
 
-def _select_candidate_version(models: dict[str, Any], champion: str) -> str:
+def _expected_mainline_spec_id(
+    market: str,
+    horizon: int,
+    *,
+    account_scope: str | None,
+) -> str:
+    try:
+        if int(horizon) != mainline_horizon(market):
+            return ""
+        specs = mainline_specs(market, str(account_scope or ""))
+    except ValueError:
+        return ""
+    return str(specs[0].spec_id) if len(specs) == 1 else ""
+
+
+def _eligible_candidate_versions(
+    models: dict[str, Any],
+    *,
+    expected_spec_id: str,
+) -> set[str]:
+    if not expected_spec_id:
+        return set(models)
+    exact = {
+        version
+        for version, metadata in models.items()
+        if str((metadata or {}).get("spec_id") or "") == expected_spec_id
+    }
+    if exact:
+        return exact
+    return {
+        version
+        for version, metadata in models.items()
+        if not str((metadata or {}).get("spec_id") or "")
+    }
+
+
+def _select_candidate_version(
+    models: dict[str, Any],
+    champion: str,
+    *,
+    expected_spec_id: str = "",
+) -> str:
     insertion_order = {version: index for index, version in enumerate(models)}
+    eligible_versions = _eligible_candidate_versions(
+        models,
+        expected_spec_id=expected_spec_id,
+    )
     for status in ("shadow", "research"):
         candidates = [
             version
             for version, metadata in models.items()
-            if version != champion and str((metadata or {}).get("status") or "research") == status
+            if version in eligible_versions
+            and version != champion
+            and str((metadata or {}).get("status") or "research") == status
         ]
         if candidates:
             return max(

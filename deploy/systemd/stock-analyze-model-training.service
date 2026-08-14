@@ -8,6 +8,6 @@ OnFailure=stock-analyze-pipeline-failure@%n.service
 Type=oneshot
 WorkingDirectory=/opt/stock-analyze/app
 Environment=TZ=Asia/Shanghai
-ExecStart=/usr/bin/flock --nonblock /run/stock-analyze-model-training.lock /bin/bash -lc 'set -euo pipefail; for market in a_share cn_qdii_etf; do /opt/stock-analyze/venv/bin/python -m stock_analyze.cli --market "$market" --agent codex train-prediction-models --offline; done'
+ExecStart=/usr/bin/flock --nonblock /run/stock-analyze-model-training.lock /bin/bash -lc 'set -euo pipefail; for market in a_share cn_qdii_etf; do /opt/stock-analyze/venv/bin/python -m stock_analyze.cli --market "$market" --agent codex run-classical-tournament --offline; done'
 StandardOutput=append:/opt/stock-analyze/logs/model-training.log
 StandardError=append:/opt/stock-analyze/logs/model-training.err
