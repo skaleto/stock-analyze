@@ -214,8 +214,15 @@ describe("fetchSystemOverview", () => {
       artifact: null,
     };
     payload.models[0].iteration.candidate.artifact = "models/a20-v001.json";
+    payload.models[0].iteration.candidate.candidate_kind = "transparent_rule";
+    payload.models[0].iteration.candidate.admission_grade = "exploratory";
+    payload.models[0].iteration.candidate.source_campaign = "campaign-v1";
+    payload.models[0].iteration.candidate.source_trial_id = "a-zz500-mom";
+    payload.models[0].iteration.candidate.promotion_policy = "strict-forward-review-v1";
     const invalidArtifact = structuredClone(payload);
     invalidArtifact.models[0].iteration.candidate.artifact = 42;
+    const invalidAdmissionGrade = structuredClone(payload);
+    invalidAdmissionGrade.models[0].iteration.candidate.admission_grade = 42;
     const unknownCandidateField = structuredClone(payload);
     unknownCandidateField.models[0].iteration.candidate.debug = "leak";
     const oversizedSelection = structuredClone(payload);
@@ -237,6 +244,7 @@ describe("fetchSystemOverview", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse(payload))
       .mockResolvedValueOnce(jsonResponse(invalidArtifact))
+      .mockResolvedValueOnce(jsonResponse(invalidAdmissionGrade))
       .mockResolvedValueOnce(jsonResponse(unknownCandidateField))
       .mockResolvedValueOnce(jsonResponse(oversizedSelection));
     vi.stubGlobal("fetch", fetchMock);
@@ -244,6 +252,9 @@ describe("fetchSystemOverview", () => {
     await expect(fetchSystemOverview()).resolves.toEqual(payload);
     await expect(fetchSystemOverview()).rejects.toThrow(
       "models[0].iteration.candidate.artifact",
+    );
+    await expect(fetchSystemOverview()).rejects.toThrow(
+      "models[0].iteration.candidate.admission_grade",
     );
     await expect(fetchSystemOverview()).rejects.toThrow(
       "models[0].iteration.candidate.debug",
@@ -386,6 +397,35 @@ describe("fetchModelResearch", () => {
 
     await expect(fetchModelResearch("a_share")).rejects.toThrow(
       "Invalid model research response: training.archive.byStatus.rejected",
+    );
+  });
+
+  it("validates account-scoped transparent Shadow evidence", async () => {
+    const valid = await currentModelResearchBuilderPayload() as any;
+    valid.simulation.accounts = [{
+      accountId: "zz500",
+      scope: "zz500",
+      benchmark: "000905",
+      selectedCount: 50,
+      candidateVersion: "rule-a-mom-v1",
+      candidateLabel: "A_MOM_02",
+      candidateKind: "transparent_rule",
+      admissionGrade: "exploratory",
+      participationStatus: "shadow_running",
+      rebalanceFrequency: "monthly",
+      rebalanceDue: true,
+      targetRiskyExposure: 1,
+    }];
+    const invalid = structuredClone(valid);
+    invalid.simulation.accounts[0].admissionGrade = 42;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(valid))
+      .mockResolvedValueOnce(jsonResponse(invalid));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchModelResearch("a_share")).resolves.toEqual(valid);
+    await expect(fetchModelResearch("a_share")).rejects.toThrow(
+      "Invalid model research response: simulation.accounts[0].admissionGrade",
     );
   });
 

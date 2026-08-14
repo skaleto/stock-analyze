@@ -2245,6 +2245,154 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(result["count"], 5)
         self.assertEqual(result["remaining"], 7)
 
+    def test_admitted_transparent_rule_writes_version_pinned_signal_rows(self):
+        from dataclasses import asdict
+
+        from stock_analyze.research.classical_specs import transparent_strategy_specs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="codex",
+                as_of="2026-08-14",
+                offline=True,
+            )
+            spec = next(
+                item
+                for item in transparent_strategy_specs("a_share", "zz500")
+                if item.spec_id == "A_MOM_02"
+            )
+            model_root = pipeline._model_root(20, "zz500")
+            artifact_path = model_root / "shadow_candidates/rule-a-mom.json"
+            artifact_path.parent.mkdir(parents=True)
+            artifact_path.write_text(json.dumps({
+                "schema_version": 1,
+                "candidate_kind": "transparent_rule",
+                "runtime_contract": "transparent-rule-shadow-v1",
+                "admission_contract": "personal-quant-shadow-v1",
+                "model_version": "rule-a-mom",
+                "market": "a_share",
+                "account_scope": "zz500",
+                "horizon": 20,
+                "spec": asdict(spec),
+                "portfolio_contract": {
+                    "rebalance_frequency": "monthly",
+                },
+            }), encoding="utf-8")
+            (model_root / "registry.json").write_text(json.dumps({
+                "champion_model_version": None,
+                "models": {
+                    "rule-a-mom": {
+                        "status": "shadow",
+                        "candidate_kind": "transparent_rule",
+                        "runtime_contract": "transparent-rule-shadow-v1",
+                        "spec_id": spec.spec_id,
+                        "spec_hash": spec.spec_hash,
+                        "artifact": str(artifact_path),
+                        "development_admission": {
+                            "contract": "personal-quant-shadow-v1",
+                        },
+                    }
+                },
+            }), encoding="utf-8")
+            features = pd.DataFrame([
+                {
+                    "code": "000001",
+                    "trade_date": "20260813",
+                    "account_id": "zz500",
+                    "research_scope": "zz500",
+                    "momentum_20": 0.03,
+                    "momentum_60": 0.08,
+                    "momentum_120": 0.12,
+                },
+                {
+                    "code": "000002",
+                    "trade_date": "20260813",
+                    "account_id": "zz500",
+                    "research_scope": "zz500",
+                    "momentum_20": -0.01,
+                    "momentum_60": 0.01,
+                    "momentum_120": 0.02,
+                },
+            ])
+
+            with patch.object(
+                pipeline,
+                "_advance_shadow_cycle",
+                return_value={"status": "shadow", "count": 0, "remaining": 12},
+            ) as advance:
+                result = pipeline._write_iteration_candidate_predictions(
+                    20,
+                    features,
+                    canonical_bundle=None,
+                    canonical_records=None,
+                    regime="range",
+                    regime_stability=1.0,
+                    account_scope="zz500",
+                )
+
+            signals = pd.read_parquet(result["prediction_path"])
+
+        self.assertEqual(result["model_version"], "rule-a-mom")
+        self.assertEqual(result["predictions"], 2)
+        self.assertEqual(set(signals["signal_kind"]), {"transparent_rule"})
+        self.assertEqual(set(signals["spec_id"]), {"A_MOM_02"})
+        self.assertEqual(set(signals["spec_hash"]), {spec.spec_hash})
+        self.assertEqual(set(signals["account_id"]), {"zz500"})
+        self.assertIn("rule_eligible", signals.columns)
+        self.assertIn("target_risky_exposure", signals.columns)
+        self.assertNotIn("p_up", signals.columns)
+        self.assertFalse(advance.call_args.kwargs["promotion_enabled"])
+
+    def test_rule_iteration_signal_survives_missing_formal_model_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="codex",
+                as_of="2026-07-10",
+                offline=True,
+            )
+            pipeline.store.write_feature_snapshot(
+                "a_share",
+                "2026-07-10",
+                pd.DataFrame([self._scoped_feature()]),
+            )
+
+            def write_rule(*_args, account_scope=None, **_kwargs):
+                if account_scope == "hs300":
+                    return {
+                        "model_version": "rule-a-mom",
+                        "status": "shadow",
+                        "shadow_cycles": 0,
+                        "prediction_path": "rule.parquet",
+                        "predictions": 1,
+                    }
+                return None
+
+            with (
+                patch.object(
+                    pipeline,
+                    "_resolve_model_roles_with_provenance",
+                    side_effect=FileNotFoundError("formal-model-missing"),
+                ),
+                patch.object(
+                    pipeline,
+                    "_write_iteration_candidate_predictions",
+                    side_effect=write_rule,
+                ) as write_candidate,
+            ):
+                result = pipeline.predict(horizon=20)
+
+        self.assertEqual(result["status"], "partial")
+        self.assertIn("hs300:20", result["iteration_candidates"])
+        self.assertTrue(
+            any(call.kwargs.get("account_scope") == "hs300" for call in write_candidate.call_args_list)
+        )
+
     def test_pinned_iteration_candidate_runs_alongside_existing_champion(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

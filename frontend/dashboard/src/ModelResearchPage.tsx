@@ -113,6 +113,38 @@ function rebalanceFrequencyLabel(input: string | null | undefined): string {
   return labels[String(input ?? "").toLowerCase()] ?? "-";
 }
 
+function admissionGradeLabel(input: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    promising: "前景型",
+    exploratory: "探索型",
+  };
+  return labels[String(input ?? "").toLowerCase()] ?? "-";
+}
+
+function candidateKindLabel(input: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    transparent_rule: "透明规则",
+    trained_model: "训练模型",
+  };
+  return labels[String(input ?? "").toLowerCase()] ?? input ?? "-";
+}
+
+function shadowParticipationLabel(input: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    shadow_running: "Shadow 运行中",
+    cash_unavailable: "无候选，保持现金",
+  };
+  return labels[String(input ?? "").toLowerCase()] ?? statusLabel(input);
+}
+
+function rebalanceStateLabel(
+  frequency: string | null | undefined,
+  due: boolean | null | undefined,
+): string {
+  if (!frequency) return "-";
+  return `${rebalanceFrequencyLabel(frequency)} · ${due ? "本期调仓" : "本期持有"}`;
+}
+
 function calibrationVersionLabel(input: string | null | undefined): string {
   if (input === "clustered-date-mean-se-v2") return "均值误差校准 v2";
   if (
@@ -1509,6 +1541,18 @@ function ModelResearchDetail({
                   )}
                 </dd>
               </div>
+              {data.simulation.candidate?.candidate_kind ? (
+                <div>
+                  <dt>候选类型</dt>
+                  <dd>{candidateKindLabel(data.simulation.candidate.candidate_kind)}</dd>
+                </div>
+              ) : null}
+              {data.simulation.candidate?.admission_grade ? (
+                <div>
+                  <dt>准入级别</dt>
+                  <dd>{admissionGradeLabel(data.simulation.candidate.admission_grade)}</dd>
+                </div>
+              ) : null}
               <div>
                 <dt>预测产物</dt>
                 <dd>
@@ -1579,8 +1623,29 @@ function ModelResearchDetail({
                 emptyLabel="尚无独立账户状态"
                 columns={[
                   { key: "account", label: "账户", render: (row) => row.accountId },
-                  { key: "scope", label: "范围", render: (row) => row.scope || "-" },
-                  { key: "benchmark", label: "基准", render: (row) => row.benchmark || "-" },
+                  {
+                    key: "candidate",
+                    label: "当前候选",
+                    render: (row) => row.candidateLabel || row.candidateVersion || "-",
+                  },
+                  {
+                    key: "grade",
+                    label: "准入级别",
+                    render: (row) => admissionGradeLabel(row.admissionGrade),
+                  },
+                  {
+                    key: "status",
+                    label: "运行状态",
+                    render: (row) => shadowParticipationLabel(row.participationStatus),
+                  },
+                  {
+                    key: "rebalance",
+                    label: "调仓状态",
+                    render: (row) => rebalanceStateLabel(
+                      row.rebalanceFrequency,
+                      row.rebalanceDue,
+                    ),
+                  },
                   { key: "selected", label: "入选", render: (row) => String(row.selectedCount) },
                   { key: "nav", label: "最新净值", render: (row) => value(row.totalValue) },
                 ]}

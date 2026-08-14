@@ -10,6 +10,7 @@ import tempfile
 from dataclasses import asdict, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Iterable
 
 import numpy as np
@@ -43,6 +44,7 @@ from .classical_specs import (
     mainline_horizon,
     mainline_specs,
     qdii_h5_specs,
+    transparent_strategy_specs,
 )
 from .classical_tournament import run_classical_tournament as execute_classical_tournament
 from .cross_sectional_candidate import evaluate_cross_sectional_candidate
@@ -69,6 +71,7 @@ from .models import (
     TRAINING_PROTOCOL_VERSION,
     load_model_bundle,
     save_model_bundle,
+    score_transparent_strategy,
     train_model_bundle,
 )
 from .moneyflow import (
@@ -3884,8 +3887,33 @@ class ResearchPipeline:
                         failures.append({
                             "horizon": target_horizon,
                             "account_scope": str(account_scope or ""),
+                            "stage": "formal_model_prediction",
                             "error": str(exc)[:240],
                         })
+                        if self.agent == "codex" and account_scope is not None:
+                            try:
+                                candidate = self._write_iteration_candidate_predictions(
+                                    target_horizon,
+                                    scoped_latest,
+                                    canonical_bundle=None,
+                                    canonical_records=None,
+                                    regime=regime,
+                                    regime_stability=regime_stability,
+                                    account_scope=account_scope,
+                                )
+                                if candidate is not None:
+                                    iteration_candidates[key] = candidate
+                                    if candidate.get("shadow_cycles") is not None:
+                                        cycle_counts[key] = int(
+                                            candidate["shadow_cycles"]
+                                        )
+                            except Exception as candidate_exc:  # noqa: BLE001
+                                failures.append({
+                                    "horizon": target_horizon,
+                                    "account_scope": str(account_scope),
+                                    "stage": "account_iteration_candidate",
+                                    "error": str(candidate_exc)[:240],
+                                })
                 if self.agent == "codex":
                     try:
                         cached_market = next(
@@ -3926,10 +3954,11 @@ class ResearchPipeline:
                             "stage": "market_iteration_candidate",
                             "error": str(exc)[:240],
                         })
-            if not rows:
+            if not rows and not iteration_candidates:
                 raise RuntimeError(f"prediction_models_unavailable:{failures}")
-            destination = self.repo_root / "data" / self.market / self.agent / "predictions" / f"{self.run_key}.parquet"
-            self.store.write_parquet_atomic(destination, pd.DataFrame(rows))
+            if rows:
+                destination = self.repo_root / "data" / self.market / self.agent / "predictions" / f"{self.run_key}.parquet"
+                self.store.write_parquet_atomic(destination, pd.DataFrame(rows))
             try:
                 accuracy_backfill = self.backfill_prediction_accuracy()
             except Exception as exc:  # noqa: BLE001 - diagnostics cannot invalidate fresh predictions
@@ -4135,6 +4164,7 @@ class ResearchPipeline:
         prediction_count: int,
         *,
         account_scope: str | None = None,
+        promotion_enabled: bool = True,
     ) -> dict[str, Any]:
         model_root = self._model_root(horizon, account_scope)
         forward_evidence = load_forward_portfolio_evidence(
@@ -4183,7 +4213,12 @@ class ResearchPipeline:
         state = registry._read()
         model = ((state.get("models") or {}).get(bundle.model_version) or {})
         status = str(model.get("status", "shadow"))
-        if cycle["is_new_cycle"] and usable_cycle_count > 0 and status == "shadow":
+        if (
+            promotion_enabled
+            and cycle["is_new_cycle"]
+            and usable_cycle_count > 0
+            and status == "shadow"
+        ):
             role_status = model.setdefault("role_status", {})
             if not role_status:
                 role_status.update({
@@ -4247,6 +4282,129 @@ class ResearchPipeline:
         if candidate is None:
             return None
         version = str(candidate["model_version"])
+        if candidate.get("candidate_kind") == "transparent_rule":
+            artifact_path = Path(str(candidate.get("artifact") or ""))
+            if not artifact_path.is_absolute():
+                artifact_path = self.repo_root / artifact_path
+            try:
+                artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    f"transparent_rule_artifact_invalid:{version}"
+                ) from exc
+            expected = {
+                "candidate_kind": "transparent_rule",
+                "runtime_contract": "transparent-rule-shadow-v1",
+                "admission_contract": "personal-quant-shadow-v1",
+                "model_version": version,
+                "market": self.market,
+                "account_scope": str(account_scope or ""),
+                "horizon": int(horizon),
+            }
+            mismatches = [
+                key
+                for key, value in expected.items()
+                if artifact.get(key) != value
+            ]
+            if mismatches:
+                raise ValueError(
+                    "transparent_rule_artifact_mismatch:"
+                    + ",".join(mismatches)
+                )
+            matches = [
+                spec
+                for spec in transparent_strategy_specs(
+                    self.market,
+                    str(account_scope or ""),
+                )
+                if spec.spec_id == str(candidate.get("spec_id") or "")
+                and spec.spec_hash == str(candidate.get("spec_hash") or "")
+            ]
+            if len(matches) != 1:
+                raise ValueError(f"transparent_rule_spec_mismatch:{version}")
+            spec = matches[0]
+            artifact_spec = artifact.get("spec")
+            if not isinstance(artifact_spec, dict) or artifact_spec != json.loads(
+                json.dumps(asdict(spec), ensure_ascii=True, sort_keys=True)
+            ):
+                raise ValueError(f"transparent_rule_spec_artifact_mismatch:{version}")
+            scored = score_transparent_strategy(features, spec)
+            metadata_columns = [
+                column
+                for column in (
+                    "code",
+                    "trade_date",
+                    "name",
+                    "industry",
+                    "account_id",
+                    "research_scope",
+                    "benchmark_code",
+                    "index_key",
+                    "country",
+                    "theme",
+                    "sector",
+                    "asset_class",
+                    "exposure_group",
+                )
+                if column in scored.columns
+            ]
+            signals = scored.loc[:, metadata_columns].copy()
+            signals["as_of"] = self.as_of
+            signals["horizon"] = int(horizon)
+            signals["model_version"] = version
+            signals["signal_kind"] = "transparent_rule"
+            signals["spec_id"] = spec.spec_id
+            signals["spec_hash"] = spec.spec_hash
+            signals["score"] = pd.to_numeric(scored["score"], errors="coerce")
+            signals["rule_eligible"] = scored.get(
+                "_eligible_for_selection",
+                scored["score"].notna(),
+            ).fillna(False).astype(bool)
+            signals["target_risky_exposure"] = pd.to_numeric(
+                scored.get("_target_risky_exposure"), errors="coerce"
+            )
+            signals["rebalance_frequency"] = spec.rebalance_frequency
+            signals["reason"] = signals["score"].map(
+                lambda value: (
+                    f"{spec.spec_id} 规则得分 {float(value):.4f}"
+                    if pd.notna(value) else f"{spec.spec_id} 规则数据不足"
+                )
+            )
+            destination = iteration_prediction_path(
+                self.repo_root,
+                self.market,
+                horizon,
+                version,
+                self.as_of,
+                account_scope=account_scope,
+            )
+            self.store.write_parquet_atomic(destination, signals)
+            registry = ModelRegistry(
+                self._model_root(horizon, account_scope) / "registry.json"
+            )._read()
+            metadata = ((registry.get("models") or {}).get(version) or {})
+            if candidate["status"] == "shadow":
+                cycle = self._advance_shadow_cycle(
+                    horizon,
+                    SimpleNamespace(
+                        model_version=version,
+                        metrics=dict(metadata.get("metrics") or {}),
+                    ),
+                    len(signals),
+                    account_scope=account_scope,
+                    promotion_enabled=False,
+                )
+                candidate = {
+                    **candidate,
+                    "status": cycle["status"],
+                    "shadow_cycles": cycle["count"],
+                    "shadow_cycles_remaining": cycle["remaining"],
+                }
+            return {
+                **candidate,
+                "prediction_path": str(destination),
+                "predictions": len(signals),
+            }
         if (
             canonical_bundle is not None
             and version == str(canonical_bundle.model_version)

@@ -13,6 +13,7 @@ from stock_analyze.cli import build_parser, main
 from stock_analyze.model_shadow import (
     _decision_fingerprint,
     build_model_candidates,
+    build_rule_candidates,
     latest_prediction_path,
     load_shadow_profile,
     run_model_iteration,
@@ -241,6 +242,34 @@ class ModelCandidatePolicyTests(unittest.TestCase):
 
         self.assertEqual(path.name, "20260717.parquet")
 
+    def test_transparent_rules_use_rank_and_eligibility_without_fake_probabilities(self) -> None:
+        profile = {"horizon": 20, "top_n": 2, "max_single_weight": 0.50}
+        frame = pd.DataFrame([
+            {
+                "code": "000001",
+                "horizon": 20,
+                "score": 0.90,
+                "rule_eligible": True,
+                "target_risky_exposure": 1.0,
+                "signal_kind": "transparent_rule",
+            },
+            {
+                "code": "000002",
+                "horizon": 20,
+                "score": 0.80,
+                "rule_eligible": False,
+                "target_risky_exposure": 1.0,
+                "signal_kind": "transparent_rule",
+            },
+        ])
+
+        selected, diagnostics = build_rule_candidates(frame, profile)
+
+        self.assertEqual(selected["code"].tolist(), ["000001"])
+        self.assertEqual(diagnostics["decision_mode"], "transparent_rule")
+        self.assertEqual(diagnostics["eligible_rows"], 1)
+        self.assertNotIn("p_up", selected.columns)
+
 
 class ModelShadowCycleTests(unittest.TestCase):
     @staticmethod
@@ -368,8 +397,10 @@ class ModelShadowCycleTests(unittest.TestCase):
         profile = load_shadow_profile(root, "cn_qdii_etf")
         predictions = pd.DataFrame(
             [
-                _prediction("513100", horizon=10, expected=0.05),
-                _prediction("513500", horizon=10, expected=0.04),
+                _prediction("513100", horizon=10, expected=0.05)
+                | {"signal_kind": "model_prediction"},
+                _prediction("513500", horizon=10, expected=0.04)
+                | {"signal_kind": "model_prediction"},
             ]
         )
         with tempfile.TemporaryDirectory() as tmp:
@@ -715,6 +746,179 @@ class ModelShadowCycleTests(unittest.TestCase):
         )
         self.assertEqual(len(result["account_candidates"]), 2)
         self.assertTrue(result["model_version"].startswith("scoped-"))
+
+    def test_iteration_runs_ready_scope_while_missing_sibling_stays_cash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_config = (
+                Path(__file__).resolve().parents[1]
+                / "configs"
+                / "model_shadow.json"
+            )
+            (root / "configs").mkdir()
+            (root / "configs" / "model_shadow.json").write_text(
+                source_config.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            self._write_scoped_candidate(
+                root,
+                scope="hk_exposure",
+                version="hk-v1",
+                code="159920",
+            )
+            self._write_scoped_candidate(
+                root,
+                scope="us_exposure",
+                version="us-v1",
+                code="513100",
+            )
+            (
+                root
+                / "data"
+                / "research"
+                / "iteration_predictions"
+                / "cn_qdii_etf"
+                / "us_exposure"
+                / "10"
+                / "us-v1"
+                / "20260814.parquet"
+            ).unlink()
+            observed: dict[str, object] = {}
+
+            def fake_cycle(**kwargs):
+                observed["predictions"] = kwargs["predictions"].copy()
+                observed["profile"] = dict(kwargs["profile"])
+                return {"cash_only": False, "pending_orders": 1, "accounts": []}
+
+            market_module = SimpleNamespace(
+                make_provider=lambda **_kwargs: SimpleNamespace(
+                    persist_health=lambda: None
+                )
+            )
+            with (
+                patch(
+                    "stock_analyze.model_shadow.competition.get_market_module",
+                    return_value=market_module,
+                ),
+                patch(
+                    "stock_analyze.model_shadow.run_shadow_cycle",
+                    side_effect=fake_cycle,
+                ),
+            ):
+                result = run_model_iteration(
+                    repo_root=root,
+                    market="cn_qdii_etf",
+                    as_of="2026-08-14",
+                )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(set(observed["predictions"]["account_id"]), {"hk_exposure"})
+        active_profile = observed["profile"]
+        self.assertEqual(
+            [account["id"] for account in active_profile["accounts"]],
+            ["hk_exposure"],
+        )
+        self.assertEqual(active_profile["initial_cash"], 500_000)
+        self.assertEqual(result["model_versions"], {"hk_exposure": "hk-v1"})
+        by_account = {
+            row["account_id"]: row for row in result["account_candidates"]
+        }
+        self.assertEqual(by_account["us_exposure"]["prediction_status"], "missing")
+        self.assertEqual(
+            by_account["us_exposure"]["participation_status"],
+            "cash_unavailable",
+        )
+        self.assertEqual(by_account["hk_exposure"]["prediction_status"], "current")
+
+    def test_a_share_rule_cycle_uses_frozen_mechanical_contract(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        profile = json.loads(json.dumps(load_shadow_profile(root, "a_share")))
+        profile.update({
+            "accounts": [{
+                "id": "zz500",
+                "name": "中证500规则组合",
+                "scope": "zz500",
+                "benchmark": "000905",
+                "cash": 1_000_000,
+                "top_n": 2,
+            }],
+            "account_id": "zz500",
+            "initial_cash": 1_000_000,
+            "top_n": 2,
+            "max_single_weight": 0.50,
+        })
+        signals = pd.DataFrame([
+            {
+                "code": "000001",
+                "horizon": 20,
+                "score": 0.90,
+                "rule_eligible": True,
+                "target_risky_exposure": 1.0,
+                "signal_kind": "transparent_rule",
+                "model_version": "rule-a-mom",
+                "account_id": "zz500",
+                "research_scope": "zz500",
+                "rebalance_frequency": "monthly",
+            },
+            {
+                "code": "000002",
+                "horizon": 20,
+                "score": 0.80,
+                "rule_eligible": True,
+                "target_risky_exposure": 1.0,
+                "signal_kind": "transparent_rule",
+                "model_version": "rule-a-mom",
+                "account_id": "zz500",
+                "research_scope": "zz500",
+                "rebalance_frequency": "monthly",
+            },
+        ])
+        account_contracts = {
+            "zz500": {
+                "account": {
+                    "id": "zz500",
+                    "scope": "zz500",
+                    "benchmark": "000905",
+                    "cash": 1_000_000,
+                    "top_n": 2,
+                },
+                "trading": {
+                    "lot_size": 100,
+                    "max_single_weight": 0.50,
+                },
+                "rebalance_frequency": "monthly",
+                "rule_execution_policy": {
+                    "version": "campaign-transparent-v1",
+                    "rank_buffer_pct": 0.20,
+                    "minimum_target_change": 0.0,
+                    "partial_adjustment_rate": 1.0,
+                    "max_daily_turnover": 1.0,
+                    "max_industry_weight": 1.0,
+                    "max_holding_days": 0,
+                },
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PortfolioStore(tmp)
+            result = run_shadow_cycle(
+                market="a_share",
+                profile=profile,
+                store=store,
+                provider=FakeAShareProvider(),
+                predictions=signals,
+                as_of="2026-08-14",
+                prediction_as_of="2026-08-13",
+                run_id="rule-shadow-a",
+                account_contracts=account_contracts,
+            )
+            pending = store.load_pending()
+
+        self.assertEqual(result["decision_mode"], "transparent_rule")
+        self.assertEqual({row["code"] for row in result["selected"]}, {"000001", "000002"})
+        self.assertGreater(result["pending_orders"], 0)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(result["accounts"][0]["rebalance_frequency"], "monthly")
+        self.assertTrue(result["accounts"][0]["rebalance_due"])
 
     def test_missing_candidate_prediction_never_falls_back_to_champion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1425,15 +1425,48 @@ _SYSTEM_ITERATION_FIELDS = (
     "champion",
 )
 
+_SYSTEM_MODEL_VERSION_FIELDS = (
+    "market",
+    "horizon",
+    "model_version",
+    "display_version",
+    "status",
+    "status_label",
+    "champion_model_version",
+    "shadow_cycles",
+    "shadow_cycles_remaining",
+    "registered_at",
+    "artifact",
+    "account_scope",
+    "selected_at",
+    "outcome",
+    "ended_at",
+    "candidate_kind",
+    "admission_grade",
+    "source_campaign",
+    "source_trial_id",
+    "promotion_policy",
+)
+
 
 def _system_iteration_summary(status: dict[str, Any]) -> dict[str, Any]:
     """Keep the global overview bounded to its public summary contract."""
 
-    return {
+    result = {
         key: status[key]
         for key in _SYSTEM_ITERATION_FIELDS
         if key in status
     }
+    for key in ("candidate", "champion"):
+        value = result.get(key)
+        if not isinstance(value, dict):
+            continue
+        result[key] = {
+            field: value[field]
+            for field in _SYSTEM_MODEL_VERSION_FIELDS
+            if field in value
+        }
+    return result
 
 
 def _latest_baseline_first_as_of(root: Path, market: str) -> str | None:

@@ -719,6 +719,18 @@ def build_parser() -> argparse.ArgumentParser:
         )
         model_iteration.add_argument("--repo-root", type=Path, default=Path("."))
 
+    shadow_admission = sub.add_parser(
+        "admit-personal-quant-shadow",
+        help="Freeze and register one transparent-rule Shadow candidate per market.",
+    )
+    shadow_admission.add_argument("--repo-root", type=Path, default=Path("."))
+    shadow_admission.add_argument(
+        "--campaign-report",
+        type=Path,
+        required=True,
+        help="Sealed transparent campaign report used as admission evidence.",
+    )
+
     intelligence_ingest = sub.add_parser(
         "intelligence-ingest",
         help="Incrementally collect official announcements, policies, and licensed news.",
@@ -1458,6 +1470,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in {"run-model-iteration", "run-model-shadow"}:
         ensure_dirs(args.logs_dir)
         return _command_run_model_iteration(args)
+    if args.command == "admit-personal-quant-shadow":
+        ensure_dirs(args.logs_dir)
+        return _command_admit_personal_quant_shadow(args)
     if args.command in {
         "intelligence-ingest", "intelligence-backfill",
         "intelligence-extract", "intelligence-status", "intelligence-evaluate",
@@ -1958,6 +1973,18 @@ def _command_run_model_iteration(args: argparse.Namespace) -> int:
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if str(result.get("status") or "") in {"complete", "no_candidate"} else 2
+
+
+def _command_admit_personal_quant_shadow(args: argparse.Namespace) -> int:
+    from .research.shadow_admission import admit_campaign_shadows
+
+    try:
+        result = admit_campaign_shadows(args.repo_root, args.campaign_report)
+    except (OSError, ValueError) as exc:
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
 
 
 def _command_intelligence(args: argparse.Namespace) -> int:

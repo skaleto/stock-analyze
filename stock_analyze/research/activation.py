@@ -522,6 +522,7 @@ class ModelRegistry:
 
         state = self._read()
         state.setdefault("champion_model_version", None)
+        state.setdefault("formal_strategy_activated", False)
         models = state.setdefault("models", {})
         model = models.setdefault(
             model_version,

@@ -416,6 +416,11 @@ function validateSystemModelVersion(
       "selected_at",
       "outcome",
       "ended_at",
+      "candidate_kind",
+      "admission_grade",
+      "source_campaign",
+      "source_trial_id",
+      "promotion_policy",
     ],
   );
   const market = systemString(version.market, `${path}.market`);
@@ -436,6 +441,11 @@ function validateSystemModelVersion(
     "outcome",
     "ended_at",
     "account_scope",
+    "candidate_kind",
+    "admission_grade",
+    "source_campaign",
+    "source_trial_id",
+    "promotion_policy",
   ].forEach((key) => systemOptionalString(version[key], `${path}.${key}`));
   ["horizon", "shadow_cycles", "shadow_cycles_remaining"].forEach(
     (key) => systemInteger(version[key], `${path}.${key}`),
@@ -1750,6 +1760,26 @@ function validateModelResearch(value: unknown): ModelResearchData {
         stringAt(account.scope, `${path}.scope`);
         stringAt(account.benchmark, `${path}.benchmark`);
         numberAt(account.selectedCount, `${path}.selectedCount`);
+        [
+          "candidateVersion",
+          "candidateLabel",
+          "candidateKind",
+          "admissionGrade",
+          "candidateStatus",
+          "candidateStatusLabel",
+          "sourceCampaign",
+          "sourceTrialId",
+          "participationStatus",
+          "predictionStatus",
+          "rebalanceFrequency",
+          "lastRebalanceSignalDate",
+        ].forEach((key) => optionalString(account[key], `${path}.${key}`));
+        if (account.rebalanceDue != null) {
+          booleanAt(account.rebalanceDue, `${path}.rebalanceDue`);
+        }
+        if (account.targetRiskyExposure != null) {
+          numberAt(account.targetRiskyExposure, `${path}.targetRiskyExposure`);
+        }
         optionalString(account.date, `${path}.date`);
         ["cash", "marketValue", "totalValue", "benchmarkClose"].forEach(
           (key) => {

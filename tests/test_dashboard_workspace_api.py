@@ -1644,6 +1644,80 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         )
         self.assertIn("momentum_20", economics["baselineComparison"])
 
+    def test_simulation_accounts_explain_rule_shadow_admission_and_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._build(
+                Path(tmp),
+                models={"status": "available", "models": [_model()]},
+                iteration=_iteration(
+                    decision_mode="transparent_rule",
+                    candidate={
+                        "model_version": "scoped-a-share",
+                        "display_version": "1 个账户主线",
+                        "status": "shadow",
+                        "status_label": "探索型 Shadow",
+                        "candidate_kind": "transparent_rule",
+                        "admission_grade": "exploratory",
+                        "source_campaign": "campaign-v1",
+                        "source_trial_id": "a-zz500-mom",
+                        "promotion_policy": "strict-forward-review-v1",
+                        "shadow_cycles": 0,
+                        "shadow_cycles_remaining": 12,
+                    },
+                    account_candidates=[
+                        {
+                            "account_id": "hs300",
+                            "status": "registry_missing",
+                            "participation_status": "cash_unavailable",
+                        },
+                        {
+                            "account_id": "zz500",
+                            "model_version": "rule-a-mom-v1",
+                            "display_version": "A_MOM_02",
+                            "status": "shadow",
+                            "status_label": "模拟验证",
+                            "candidate_kind": "transparent_rule",
+                            "admission_grade": "exploratory",
+                            "source_campaign": "campaign-v1",
+                            "source_trial_id": "a-zz500-mom",
+                            "participation_status": "shadow_running",
+                        },
+                    ],
+                    accounts=[
+                        {
+                            "account_id": "hs300",
+                            "scope": "hs300",
+                            "benchmark": "000300",
+                            "selected_count": 0,
+                            "participation_status": "cash_unavailable",
+                        },
+                        {
+                            "account_id": "zz500",
+                            "scope": "zz500",
+                            "benchmark": "000905",
+                            "selected_count": 50,
+                            "participation_status": "shadow_running",
+                            "rebalance_frequency": "monthly",
+                            "rebalance_due": True,
+                        },
+                    ],
+                ),
+            )
+
+        by_account = {
+            row["accountId"]: row for row in payload["simulation"]["accounts"]
+        }
+        self.assertEqual(by_account["hs300"]["participationStatus"], "cash_unavailable")
+        self.assertEqual(by_account["zz500"]["candidateVersion"], "rule-a-mom-v1")
+        self.assertEqual(by_account["zz500"]["candidateKind"], "transparent_rule")
+        self.assertEqual(by_account["zz500"]["admissionGrade"], "exploratory")
+        self.assertEqual(by_account["zz500"]["rebalanceFrequency"], "monthly")
+        self.assertTrue(by_account["zz500"]["rebalanceDue"])
+        self.assertEqual(
+            payload["simulation"]["candidate"]["admission_grade"],
+            "exploratory",
+        )
+
     def test_model_resource_separates_rule_only_usage_from_model_attribution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

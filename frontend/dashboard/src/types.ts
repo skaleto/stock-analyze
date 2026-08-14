@@ -631,6 +631,11 @@ export type ModelVersionSummary = {
   shadow_cycles_remaining?: number;
   registered_at?: string | null;
   selected_at?: string | null;
+  candidate_kind?: string;
+  admission_grade?: string;
+  source_campaign?: string;
+  source_trial_id?: string;
+  promotion_policy?: string;
 };
 
 export type ModelIterationHistory = ModelVersionSummary & {

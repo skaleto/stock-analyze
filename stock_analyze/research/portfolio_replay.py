@@ -473,6 +473,47 @@ def _scheduled_rebalance_due(
     return current.to_period("M") != previous.to_period("M")
 
 
+def scheduled_rebalance_due(
+    previous_signal_date: str | None,
+    current_signal_date: str,
+    frequency: str,
+) -> bool:
+    """Apply the replay calendar rule to a forward Shadow decision."""
+
+    if not previous_signal_date:
+        return True
+    return _scheduled_rebalance_due(
+        [str(previous_signal_date), str(current_signal_date)],
+        1,
+        frequency,
+    )
+
+
+def mechanical_rule_transition(
+    group: pd.DataFrame,
+    *,
+    state: Mapping[str, Any],
+    prices: Mapping[str, float],
+    nav_before: float,
+    account: Mapping[str, Any],
+    trading: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    signal_date: str,
+) -> tuple[dict[str, int], set[str], list[dict[str, Any]]]:
+    """Public parity adapter for the already-tested transparent rule replay."""
+
+    return _mechanical_rule_transition(
+        group,
+        state=state,
+        prices=prices,
+        nav_before=nav_before,
+        account=account,
+        trading=trading,
+        policy=policy,
+        signal_date=signal_date,
+    )
+
+
 def _benchmark_aware_aim_weights(
     group: pd.DataFrame,
     *,
@@ -1600,8 +1641,10 @@ __all__ = [
     "SIMULATOR_VERSION",
     "annualized_relative_wealth_excess",
     "cumulative_relative_wealth",
+    "mechanical_rule_transition",
     "replay_executable_portfolio",
     "replay_fixed_top_n_diagnostic_portfolio",
     "replay_model_portfolio",
     "replay_rule_portfolio",
+    "scheduled_rebalance_due",
 ]

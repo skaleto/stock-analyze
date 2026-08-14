@@ -13,6 +13,7 @@ from stock_analyze.dashboard_aggregator import (
     build_dashboard_instrument_data,
 )
 from stock_analyze.dashboard_api import (
+    _system_iteration_summary,
     build_dashboard_operations_data,
     build_dashboard_overview_data,
     build_dashboard_portfolio_data,
@@ -239,6 +240,28 @@ def _seed_shadow_repo(root: Path) -> None:
 
 
 class DashboardModelShadowTests(unittest.TestCase):
+    def test_global_model_summary_keeps_grade_but_bounds_account_details(self) -> None:
+        summary = _system_iteration_summary({
+            "status": "complete",
+            "candidate": {
+                "market": "a_share",
+                "horizon": 20,
+                "model_version": "scoped-a",
+                "display_version": "1 个账户主线",
+                "status": "shadow",
+                "status_label": "探索型 Shadow",
+                "candidate_kind": "transparent_rule",
+                "admission_grade": "exploratory",
+                "source_campaign": "campaign-v1",
+                "source_trial_id": "a-zz500-mom",
+                "promotion_policy": "strict-forward-review-v1",
+                "account_candidates": [{"debug": "detail-only"}],
+            },
+        })
+
+        self.assertEqual(summary["candidate"]["admission_grade"], "exploratory")
+        self.assertNotIn("account_candidates", summary["candidate"])
+
     def test_scoped_runtime_status_is_the_dashboard_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -268,10 +291,20 @@ class DashboardModelShadowTests(unittest.TestCase):
                         {
                             "account_id": "us_exposure",
                             "model_version": "us-v1",
+                            "status": "registry_missing",
+                            "participation_status": "cash_unavailable",
                         },
                         {
                             "account_id": "hk_exposure",
                             "model_version": "hk-v1",
+                            "status": "shadow",
+                            "status_label": "模拟验证",
+                            "candidate_kind": "transparent_rule",
+                            "admission_grade": "promising",
+                            "source_campaign": "campaign-v1",
+                            "source_trial_id": "qdii-hk-trend",
+                            "promotion_policy": "strict-forward-review-v1",
+                            "participation_status": "shadow_running",
                         },
                     ],
                     "updated_at": "2026-08-14T12:00:00+08:00",
@@ -282,6 +315,9 @@ class DashboardModelShadowTests(unittest.TestCase):
             status = _read_model_iteration_status(root, "cn_qdii_etf")
 
         self.assertEqual(status["candidate"]["model_version"], "scoped-abc123")
+        self.assertEqual(status["candidate"]["candidate_kind"], "transparent_rule")
+        self.assertEqual(status["candidate"]["admission_grade"], "promising")
+        self.assertEqual(status["candidate"]["status_label"], "前景型 Shadow")
         self.assertEqual(
             len(status["candidate"]["account_candidates"]),
             2,

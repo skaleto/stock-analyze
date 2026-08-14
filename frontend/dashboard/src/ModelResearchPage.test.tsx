@@ -903,6 +903,7 @@ describe("ModelResearchPage", () => {
             benchmark: "000300",
             selectedCount: 3,
             totalValue: 503000,
+            participationStatus: "cash_unavailable",
           },
           {
             accountId: "zz500",
@@ -910,6 +911,13 @@ describe("ModelResearchPage", () => {
             benchmark: "000905",
             selectedCount: 2,
             totalValue: 498000,
+            candidateVersion: "rule-a-mom-v1",
+            candidateLabel: "A_MOM_02",
+            candidateKind: "transparent_rule",
+            admissionGrade: "exploratory",
+            participationStatus: "shadow_running",
+            rebalanceFrequency: "monthly",
+            rebalanceDue: true,
           },
         ],
         evaluation: {
@@ -987,8 +995,12 @@ describe("ModelResearchPage", () => {
     await screen.findByText("A20-V005");
     await user.click(screen.getByRole("button", { name: /模拟运行/ }));
     const simulation = screen.getByRole("region", { name: "模拟运行详情" });
-    expect(within(simulation).getAllByText("hs300")).toHaveLength(2);
-    expect(within(simulation).getAllByText("zz500")).toHaveLength(2);
+    expect(within(simulation).getByText("hs300")).toBeInTheDocument();
+    expect(within(simulation).getByText("zz500")).toBeInTheDocument();
+    expect(within(simulation).getByText("A_MOM_02")).toBeInTheDocument();
+    expect(within(simulation).getByText("探索型")).toBeInTheDocument();
+    expect(within(simulation).getByText("Shadow 运行中")).toBeInTheDocument();
+    expect(within(simulation).getByText("每月 · 本期调仓")).toBeInTheDocument();
     expect(within(simulation).getByText("5.00%")).toBeInTheDocument();
     expect(within(simulation).getByText("8.50%")).toBeInTheDocument();
     expect(within(simulation).getByText("11.20 bp")).toBeInTheDocument();
