@@ -434,7 +434,7 @@ describe("StrategyWorkspacePage", () => {
       />,
     );
     await screen.findByRole("region", { name: "当前持仓" });
-    expect(fetchMock).toHaveBeenCalledTimes(8);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8));
 
     rerender(
       <StrategyWorkspacePage
