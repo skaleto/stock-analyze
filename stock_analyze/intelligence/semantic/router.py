@@ -7,6 +7,9 @@ import re
 from typing import Iterable, Mapping, Sequence
 
 
+SEMANTIC_ROUTER_VERSION = "semantic-router-v1"
+
+
 _TITLE_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("earnings_forecast", ("业绩预告", "盈利预测")),
     ("earnings_flash", ("业绩快报",)),
@@ -525,6 +528,7 @@ def _blocked(reason: str) -> SemanticRoute:
 
 
 __all__ = [
+    "SEMANTIC_ROUTER_VERSION",
     "SemanticRoute",
     "classify_document_kind",
     "route_document",

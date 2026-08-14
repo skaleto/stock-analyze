@@ -63,7 +63,11 @@ from .provider import (
     SemanticInputBundle,
     SemanticProviderIdentity,
 )
-from .router import classify_document_kind, title_event_categories
+from .router import (
+    SEMANTIC_ROUTER_VERSION,
+    classify_document_kind,
+    title_event_categories,
+)
 from .taxonomy import EventTaxonomy, FactRequirement
 from .validation import (
     CandidateValidationError,
@@ -79,6 +83,8 @@ DEFAULT_LIMIT = 50
 DEFAULT_MAX_INPUT_CHARACTERS = 40_000
 CODING_PLAN_SHARD_SIZE = 25
 CODING_PLAN_MAX_VALIDATION_ATTEMPTS = 2
+DETERMINISTIC_ROUTER_PROVIDER = "deterministic-router"
+DETERMINISTIC_ROUTE_CONTRACT_VERSION = "semantic-deterministic-route-v1"
 PAYLOAD_CONTRACT_VERSION = "semantic-payload-v3"
 MAX_JOB_FILE_BYTES = 64 * 1024 * 1024
 MAX_JOB_LINE_BYTES = 2 * 1024 * 1024
@@ -458,6 +464,7 @@ def prepare_job(
     _document_ids: Sequence[int] | None = None,
     _repair_reason: str = "",
     _allow_terminal_retry: bool = True,
+    _auto_finalize_routes: bool = True,
 ) -> dict[str, object]:
     """Write one immutable bounded job without requiring provider credentials."""
 
@@ -528,6 +535,7 @@ def prepare_job(
     )
     profile_payload = json.loads(profile_path.read_text(encoding="utf-8"))
     profile_hash = canonical_json_hash(profile_payload)
+    deterministic_router_model = _deterministic_router_model(profile_hash)
     prompt_hash = _text_hash(prompt)
     schema_hash = canonical_json_hash(schema)
     taxonomy_hash = _file_hash(taxonomy_path)
@@ -559,6 +567,7 @@ def prepare_job(
     )
     repair_reason = str(_repair_reason).strip()
     repair_id = ""
+    route_finalization: dict[str, object] | None = None
     if explicit_ids:
         if any(document_id <= 0 for document_id in explicit_ids):
             raise SemanticExchangeError("semantic_repair_document_id_invalid")
@@ -595,6 +604,7 @@ def prepare_job(
             priority_codes=priority_codes,
             allow_terminal_retry=_allow_terminal_retry,
             coding_plan_terminal_failures=coding_plan_terminal_failures,
+            deterministic_router_model=deterministic_router_model,
         )
     for document_id in candidate_ids:
         if len(inputs) >= bounded_limit:
@@ -615,6 +625,7 @@ def prepare_job(
             taxonomy_version=taxonomy.taxonomy_version,
             parser_version=bundle.parser_version,
             allow_terminal_retry=_allow_terminal_retry,
+            deterministic_router_model=deterministic_router_model,
         ):
             continue
         extraction_payload = dict(bundle.payload)
@@ -748,6 +759,27 @@ def prepare_job(
             )
         items.append(item)
 
+    if not inputs and not explicit_ids and _auto_finalize_routes:
+        route_finalization = finalize_deterministic_routes(
+            root,
+            profile_id=profile_id,
+            limit=max(bounded_limit * 5, 500),
+        )
+        retried = prepare_job(
+            root,
+            profile_id=profile_id,
+            limit=bounded_limit,
+            max_input_characters=character_budget,
+            executor_mode=executor_mode,
+            executor_provider=executor_provider,
+            executor_model=executor_model,
+            executor_client_version=executor_client_version,
+            _allow_terminal_retry=_allow_terminal_retry,
+            _auto_finalize_routes=False,
+        )
+        retried["route_finalization"] = route_finalization
+        return retried
+
     contract = {
         "contract_version": JOB_CONTRACT_VERSION,
         "profile_id": str(profile["profile_id"]),
@@ -831,7 +863,10 @@ def prepare_job(
                     manifest=existing,
                     inputs=inputs,
                 )
-            return _prepare_summary(existing, job_dir, reused=True)
+            summary = _prepare_summary(existing, job_dir, reused=True)
+            if route_finalization is not None:
+                summary["route_finalization"] = route_finalization
+            return summary
         temporary = Path(
             tempfile.mkdtemp(
                 prefix=f".{job_id}.",
@@ -876,7 +911,195 @@ def prepare_job(
                 shutil.rmtree(temporary)
     if uses_v21_contract:
         _register_v21_lineage(store, manifest=manifest, inputs=inputs)
-    return _prepare_summary(manifest, job_dir, reused=False)
+    summary = _prepare_summary(manifest, job_dir, reused=False)
+    if route_finalization is not None:
+        summary["route_finalization"] = route_finalization
+    return summary
+
+
+def finalize_deterministic_routes(
+    repo_root: str | Path,
+    *,
+    profile_id: str = DEFAULT_PROFILE_ID,
+    limit: int = 5_000,
+) -> dict[str, object]:
+    """Persist version-bound terminal routes that do not require an executor."""
+
+    root = Path(repo_root).resolve()
+    bounded_limit = max(1, min(int(limit), 100_000))
+    profile, profile_path = _load_profile(root, profile_id)
+    taxonomy_path = _rooted_path(root, str(profile["taxonomy_path"]))
+    taxonomy = EventTaxonomy.load(taxonomy_path)
+    if taxonomy.taxonomy_version != str(profile["taxonomy_version"]):
+        raise SemanticExchangeError("semantic_profile_taxonomy_version_mismatch")
+    prompt_version = str(profile["prompt_version"])
+    prompt = load_semantic_prompt(root, prompt_version)
+    schema_version = str(profile["schema_version"])
+    if schema_version == LITE_SCHEMA_VERSION:
+        schema = announcement_event_lite_schema(taxonomy)
+    elif schema_version == MENTION_SCHEMA_VERSION:
+        schema = announcement_mention_lite_schema()
+    else:
+        raise SemanticExchangeError("semantic_profile_schema_version_mismatch")
+    profile_payload = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile_hash = canonical_json_hash(profile_payload)
+    router_model = _deterministic_router_model(profile_hash)
+    document_ir_version = str(profile.get("document_ir_version") or "")
+    retriever_version = str(profile.get("retriever_version") or "")
+    character_budget = int(profile.get("max_evidence_packet_chars") or 0)
+    semantic_contract_hash = canonical_json_hash(
+        {
+            "execution_contract_version": EXECUTION_CONTRACT_VERSION,
+            "profile_hash": profile_hash,
+            "prompt_hash": _text_hash(prompt),
+            "schema_hash": canonical_json_hash(schema),
+            "taxonomy_hash": _file_hash(taxonomy_path),
+            "document_ir_version": document_ir_version,
+            "retriever_version": retriever_version,
+            "compiler_version": str(profile.get("compiler_version") or ""),
+            "max_evidence_packet_chars": (
+                character_budget if document_ir_version else None
+            ),
+        }
+    )
+    store = IntelligenceStore(root / "data" / "shared" / "intelligence")
+    route_output_store = LocalBlobStore(
+        root / "data" / "shared" / "intelligence" / "artifacts",
+        key_prefix="announcements",
+    )
+    pipeline = SemanticPipeline(
+        store=store,
+        blob_store=_BundleOnlyBlobStore(),
+        provider=_BundleOnlyProvider(),
+        taxonomy=taxonomy,
+        prompt_version=prompt_version,
+        schema_version=schema_version,
+        document_ir_version=document_ir_version,
+        retriever_version=retriever_version,
+        audit_sample_rate=float(profile.get("audit_sample_rate", 0.05)),
+    )
+    terminal_failures = (
+        _coding_plan_terminal_failure_items(
+            root,
+            semantic_contract_hash=semantic_contract_hash,
+        )
+        if document_ir_version
+        else ()
+    )
+    candidate_ids = _exchange_candidate_ids(
+        store,
+        profile=profile,
+        prompt_version=prompt_version,
+        schema_version=schema_version,
+        taxonomy_version=taxonomy.taxonomy_version,
+        limit=bounded_limit,
+        priority_codes=_latest_research_universe(
+            root,
+            market=str(profile.get("market") or ""),
+        ),
+        allow_terminal_retry=True,
+        coding_plan_terminal_failures=terminal_failures,
+        deterministic_router_model=router_model,
+    )
+    finalized = 0
+    reused = 0
+    deep_extraction = 0
+    blocked = 0
+    by_decision: dict[str, int] = {}
+    by_reason: dict[str, int] = {}
+    for document_id in candidate_ids:
+        snapshot = store.semantic_document_snapshot(document_id)
+        if not _profile_allows_snapshot(profile, snapshot):
+            continue
+        route = pipeline.route(document_id)
+        by_decision[route.decision] = by_decision.get(route.decision, 0) + 1
+        for reason in route.reason_codes:
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+        if route.requires_deep_extraction:
+            deep_extraction += 1
+            continue
+        if route.decision == "blocked_artifact":
+            blocked += 1
+            continue
+        if route.decision not in {"no_event", "context_only"}:
+            continue
+        artifact = _mapping(
+            snapshot.get("artifact"),
+            "semantic_deterministic_route_artifact_missing",
+        )
+        artifact_hash = str(artifact.get("content_hash") or "")
+        parser_version = str(artifact.get("parser_version") or "")
+        route_payload = {
+            "contract_version": DETERMINISTIC_ROUTE_CONTRACT_VERSION,
+            "document_id": int(document_id),
+            "artifact_hash": artifact_hash,
+            "parser_version": parser_version,
+            "profile_id": profile_id,
+            "profile_hash": profile_hash,
+            "router_version": SEMANTIC_ROUTER_VERSION,
+            "decision": route.decision,
+            "reason_codes": list(route.reason_codes),
+            "document_kind": route.document_kind,
+        }
+        input_hash = canonical_json_hash(route_payload)
+        claim = store.claim_semantic_run(
+            document_id=int(document_id),
+            artifact_hash=artifact_hash,
+            provider=DETERMINISTIC_ROUTER_PROVIDER,
+            model=router_model,
+            prompt_version=prompt_version,
+            schema_version=schema_version,
+            taxonomy_version=taxonomy.taxonomy_version,
+            parser_version=parser_version,
+            input_hash=input_hash,
+        )
+        if bool(claim["claimed"]):
+            raw_output = (_canonical_json(route_payload) + "\n").encode("utf-8")
+            output_hash = hashlib.sha256(raw_output).hexdigest()
+            output_uri = route_output_store.put_if_absent(
+                (
+                    "announcements/semantic-routing/"
+                    f"{output_hash[:2]}/{output_hash}.json"
+                ),
+                raw_output,
+                "application/json",
+            )
+            store.finish_semantic_run(
+                str(claim["run_id"]),
+                status="no_event",
+                output_hash=output_hash,
+                output_uri=output_uri,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=0,
+                cost_microunits=0,
+                error=(
+                    f"deterministic_route:{route.decision}:"
+                    f"{':'.join(route.reason_codes)}"
+                ),
+            )
+            finalized += 1
+            continue
+        if str(claim.get("status") or "") != "no_event":
+            raise SemanticExchangeError(
+                "semantic_deterministic_route_claim_conflict",
+                detail=f"document_id={document_id};status={claim.get('status')}",
+            )
+        reused += 1
+    return {
+        "status": "complete",
+        "profile_id": profile_id,
+        "profile_hash": profile_hash,
+        "router_version": SEMANTIC_ROUTER_VERSION,
+        "router_model": router_model,
+        "scanned": len(candidate_ids),
+        "finalized": finalized,
+        "reused": reused,
+        "deep_extraction": deep_extraction,
+        "blocked": blocked,
+        "by_decision": dict(sorted(by_decision.items())),
+        "by_reason": dict(sorted(by_reason.items())),
+    }
 
 
 def _write_coding_plan_execution_view(
@@ -3807,6 +4030,10 @@ def canonical_json_hash(value: object) -> str:
     return _text_hash(_canonical_json(value))
 
 
+def _deterministic_router_model(profile_hash: str) -> str:
+    return f"{SEMANTIC_ROUTER_VERSION}:{str(profile_hash)[:16]}"
+
+
 def _load_profile(
     root: Path,
     profile_id: str,
@@ -3906,6 +4133,7 @@ def _exchange_candidate_ids(
     coding_plan_terminal_failures: Sequence[
         tuple[int, str, str]
     ] = (),
+    deterministic_router_model: str = "",
 ) -> list[int]:
     suffixes = [
         str(value).upper()
@@ -3936,6 +4164,9 @@ def _exchange_candidate_ids(
         str(prompt_version),
         str(schema_version),
         str(taxonomy_version),
+        DETERMINISTIC_ROUTER_PROVIDER,
+        str(deterministic_router_model),
+        str(deterministic_router_model),
         max(1, min(int(limit), 100_000)),
     ]
     normalized_priority = sorted(
@@ -4043,7 +4274,13 @@ def _exchange_candidate_ids(
                   AND s.taxonomy_version=?
                   AND s.parser_version=a.parser_version
                   AND (
-                    s.status='no_event'
+                    (
+                      s.status='no_event'
+                      AND (
+                        s.provider<>?
+                        OR (?<>'' AND s.model=?)
+                      )
+                    )
                     OR ({terminal_failure_sql})
                     OR (
                       s.status='succeeded'
@@ -4191,6 +4428,7 @@ def _already_terminal(
     taxonomy_version: str,
     parser_version: str,
     allow_terminal_retry: bool = True,
+    deterministic_router_model: str = "",
 ) -> bool:
     terminal_failure_sql = (
         "(s.status='failed_terminal' "
@@ -4207,7 +4445,13 @@ def _already_terminal(
               AND s.prompt_version=? AND s.schema_version=?
               AND s.taxonomy_version=? AND s.parser_version=?
               AND (
-                s.status='no_event'
+                (
+                  s.status='no_event'
+                  AND (
+                    s.provider<>?
+                    OR (?<>'' AND s.model=?)
+                  )
+                )
                 OR ({terminal_failure_sql})
                 OR (
                   s.status='succeeded'
@@ -4234,6 +4478,9 @@ def _already_terminal(
                 str(schema_version),
                 str(taxonomy_version),
                 str(parser_version),
+                DETERMINISTIC_ROUTER_PROVIDER,
+                str(deterministic_router_model),
+                str(deterministic_router_model),
             ),
         ).fetchone()
     return row is not None
@@ -5084,6 +5331,7 @@ __all__ = [
     "SemanticExchangeError",
     "canonical_json_hash",
     "collect_coding_plan_outputs",
+    "finalize_deterministic_routes",
     "import_job",
     "job_status",
     "prepare_job",

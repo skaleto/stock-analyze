@@ -334,6 +334,36 @@ class IntelligenceCliTest(unittest.TestCase):
         )
         self.assertEqual(json.loads(output.getvalue())["job_id"], "sj-test")
 
+    def test_semantic_route_finalize_is_bounded_and_provider_free(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "stock_analyze.intelligence.semantic.exchange."
+                "finalize_deterministic_routes",
+                return_value={
+                    "status": "complete",
+                    "scanned": 5000,
+                    "finalized": 4600,
+                    "deep_extraction": 400,
+                },
+            ) as finalize,
+            redirect_stdout(output),
+        ):
+            exit_code = main([
+                "intelligence-semantic-route-finalize",
+                "--repo-root", "/tmp/repo",
+                "--profile", "a-share-announcement-mentions-v27",
+                "--limit", "5000",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        finalize.assert_called_once_with(
+            Path("/tmp/repo"),
+            profile_id="a-share-announcement-mentions-v27",
+            limit=5000,
+        )
+        self.assertEqual(json.loads(output.getvalue())["finalized"], 4600)
+
     def test_semantic_run_accepts_executor_config_path(self) -> None:
         output = io.StringIO()
         with (

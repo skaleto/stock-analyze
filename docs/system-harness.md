@@ -83,6 +83,10 @@ python3 -m stock_analyze serve-dashboard --host 127.0.0.1 --port 8765
 python3 -m stock_analyze --market a_share run-model-iteration --offline
 python3 -m stock_analyze intelligence-status
 python3 -m stock_analyze intelligence-evaluate --market a_share
+python3 -m stock_analyze intelligence-semantic-route-finalize \
+  --repo-root . \
+  --profile a-share-announcement-mentions-v27 \
+  --limit 5000
 python3 -m stock_analyze intelligence-artifact-job-status \
   --repo-root .
 
@@ -98,6 +102,14 @@ curl -s 'http://127.0.0.1:8765/api/dashboard/governance.json?market=a_share&agen
 历史公告 PDF 下载和解析可以交给本机有界 worker，但 ECS SQLite 始终是唯一
 权威库。本机不需要 OSS 或 LLM 凭据。worker 单次默认最多 10 批/1 小时，
 单批最多 30 分钟，失败执行退避和隔离。执行与交接入口见
+
+`intelligence-semantic-route-finalize` 不调用任何大模型。它只把当前
+`artifact_hash + profile_hash + router_version` 下确定为 `no_event` 或
+`context_only` 的已解析公告写入语义终态账本，使后续有界扫描继续向后推进。
+深抽取候选、OCR 阻塞项和二次失败隔离项不会被该命令伪装成成功。
+`intelligence-semantic-prepare` 在优先扫描未找到执行器任务时，会自动执行同一套
+有界结案逻辑并重试一次；日常任务不需要额外人工调用，且明显事件公告仍保持
+优先。独立命令用于加速历史 backlog 或审计路由分布。
 [local artifact worker harness](superpowers/plans/2026-07-30-local-artifact-worker-harness.md)。
 
 ## 5. 周度和月度人工动作
