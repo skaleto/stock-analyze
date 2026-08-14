@@ -1,8 +1,8 @@
 # 证据优先的策略恢复计划
 
-> 日期：2026-08-14  
-> Campaign ID：`strategy-recovery-20260814-v1`  
-> 适用范围：A 股 `hs300` / `zz500`，跨境 ETF `hk_exposure` / `us_exposure`  
+> 日期：2026-08-14
+> Campaign ID：`strategy-recovery-20260814-v1`
+> 适用范围：A 股 `hs300` / `zz500`，跨境 ETF `hk_exposure` / `us_exposure`
 > 目标：用一次有固定边界的完整研究战役，回答“哪些策略具备真实、可执行、净成本后优势”，而不是继续追逐“必须训练出一个机器学习模型”。
 
 ## 1. 先冻结现状
