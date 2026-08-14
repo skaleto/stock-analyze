@@ -14,12 +14,23 @@ readonly DASHBOARD_FILES=(
   "stock_analyze/dashboard_workspace_api.py"
   "stock_analyze/dashboard_runtime.py"
   "stock_analyze/model_iteration.py"
+  "stock_analyze/model_shadow.py"
+  "stock_analyze/research/activation.py"
+  "stock_analyze/research/pipeline.py"
+  "stock_analyze/research/portfolio_replay.py"
+  "stock_analyze/research/shadow_admission.py"
   "tests/test_cli_dashboard_routes.py"
+  "tests/test_dashboard_model_shadow.py"
   "tests/test_dashboard_finance.py"
   "tests/test_dashboard_http.py"
   "tests/test_dashboard_resource_api.py"
   "tests/test_dashboard_runtime.py"
   "tests/test_dashboard_workspace_api.py"
+  "tests/test_model_iteration.py"
+  "tests/test_model_shadow.py"
+  "tests/test_research_activation.py"
+  "tests/test_research_pipeline.py"
+  "tests/test_research_shadow_admission.py"
   "scripts/system-audit.sh"
   "docs/system-harness.md"
   "docs/system-overview.md"
@@ -39,6 +50,12 @@ readonly DASHBOARD_TEST_MODULES=(
   "tests.test_dashboard_runtime"
   "tests.test_dashboard_workspace_api"
   "tests.test_cli_dashboard_routes"
+  "tests.test_dashboard_model_shadow"
+  "tests.test_model_iteration"
+  "tests.test_model_shadow"
+  "tests.test_research_activation"
+  "tests.test_research_pipeline"
+  "tests.test_research_shadow_admission"
 )
 readonly DASHBOARD_CANARY_ENDPOINTS=(
   "/api/dashboard/system-overview.json"
@@ -863,7 +880,7 @@ service=$service_name
 preimage_manifest_sha256=$preimage_sha
 release_input_manifest_sha256=$release_sha
 canary_results_sha256=$canary_sha
-rollback_scope=dashboard-files-and-reports-app-only
+rollback_scope=allowlisted-app-files-and-reports-app-only
 EOF
 REMOTE
 
@@ -924,7 +941,7 @@ app_dir=$app_dir
 backup_dir=$backup_dir
 service=$service_name
 rollback_result_sha256=$rollback_sha
-rollback_scope=dashboard-files-and-reports-app-only
+rollback_scope=allowlisted-app-files-and-reports-app-only
 EOF
   exit "$exit_code"
 }
@@ -1006,7 +1023,7 @@ handle_exit() {
   trap - EXIT
 
   if [[ "$exit_code" -ne 0 && "$SYNC_STARTED" -eq 1 && "$BACKUP_READY" -eq 1 ]]; then
-    printf 'deployment failed; restoring Dashboard-only backup %s\n' \
+    printf 'deployment failed; restoring allowlisted app backup %s\n' \
       "$BACKUP_DIR" >&2
     if restore_remote_backup; then
       printf 'automatic rollback verified: %s\n' "$BACKUP_DIR" >&2

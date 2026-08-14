@@ -98,6 +98,11 @@ export type ModelResearchCandidate = {
   shadow_cycles?: number;
   shadow_cycles_remaining?: number;
   horizon?: number | string | null;
+  candidate_kind?: string;
+  admission_grade?: string;
+  source_campaign?: string;
+  source_trial_id?: string;
+  promotion_policy?: string;
 };
 
 export type ModelResearchSimulationAccount = {
@@ -379,6 +384,20 @@ export type ModelResearchData = {
       scope: string;
       benchmark: string;
       selectedCount: number;
+      candidateVersion?: string;
+      candidateLabel?: string;
+      candidateKind?: string;
+      admissionGrade?: string;
+      candidateStatus?: string;
+      candidateStatusLabel?: string;
+      sourceCampaign?: string;
+      sourceTrialId?: string;
+      participationStatus?: string;
+      predictionStatus?: string;
+      rebalanceFrequency?: string;
+      rebalanceDue?: boolean | null;
+      lastRebalanceSignalDate?: string | null;
+      targetRiskyExposure?: number | null;
       date?: string | null;
       cash?: number | null;
       marketValue?: number | null;

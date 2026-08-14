@@ -12,6 +12,8 @@ from .utils import now_iso, read_json, write_json
 
 
 REQUIRED_SHADOW_CYCLES = 12
+SHADOW_ADMISSION_CONTRACT = "personal-quant-shadow-v1"
+TRANSPARENT_RULE_RUNTIME_CONTRACT = "transparent-rule-shadow-v1"
 _MARKET_PREFIX = {
     "a_share": "A",
     "cn_qdii_etf": "Q",
@@ -262,6 +264,7 @@ def model_version_summary(
         "horizon": int(horizon),
         "model_version": str(model_version),
         "spec_id": str(metadata.get("spec_id") or ""),
+        "spec_hash": str(metadata.get("spec_hash") or ""),
         "display_version": version_display_name(market, horizon, model_version, registry),
         "status": str(metadata.get("status") or "research"),
         "status_label": lifecycle_label(metadata.get("status") or "research"),
@@ -270,6 +273,12 @@ def model_version_summary(
         "shadow_cycles_remaining": max(0, REQUIRED_SHADOW_CYCLES - cycle_count),
         "registered_at": metadata.get("registered_at"),
         "artifact": metadata.get("artifact"),
+        "candidate_kind": metadata.get("candidate_kind"),
+        "runtime_contract": metadata.get("runtime_contract"),
+        "admission_grade": metadata.get("admission_grade"),
+        "source_campaign": metadata.get("source_campaign"),
+        "source_trial_id": metadata.get("source_trial_id"),
+        "promotion_policy": metadata.get("promotion_policy"),
     }
 
 
@@ -439,6 +448,23 @@ def _eligible_candidate_versions(
     expected_spec_hash: str = "",
     require_current_protocol: bool = False,
 ) -> set[str]:
+    admitted_rules = {
+        version
+        for version, metadata in models.items()
+        if str((metadata or {}).get("candidate_kind") or "")
+        == "transparent_rule"
+        and str((metadata or {}).get("runtime_contract") or "")
+        == TRANSPARENT_RULE_RUNTIME_CONTRACT
+        and str(
+            (((metadata or {}).get("development_admission") or {}).get(
+                "contract"
+            ))
+            or ""
+        )
+        == SHADOW_ADMISSION_CONTRACT
+        and bool(str((metadata or {}).get("spec_id") or ""))
+        and bool(str((metadata or {}).get("spec_hash") or ""))
+    }
     if not expected_spec_id:
         return set(models)
     exact = {
@@ -457,8 +483,8 @@ def _eligible_candidate_versions(
             ) or "") == TRAINING_PROTOCOL_VERSION
         )
     }
-    if exact:
-        return exact
+    if exact or admitted_rules:
+        return exact | admitted_rules
     if require_current_protocol:
         return set()
     return {

@@ -15,7 +15,7 @@ export SA_ECS_REMOTE=root@120.55.188.242:/opt/stock-analyze/app
 export SA_ECS_SSH_OPTS='-i /Users/bytedance/.ssh/ai_baby_aliyun'
 ./scripts/system-audit.sh --remote
 
-# Dashboard-only 发布：远端预镜像与本地 release input 必须分别审阅
+# 受限应用发布：远端预镜像与本地 release input 必须分别审阅
 ./scripts/deploy-dashboard-workspaces-to-ecs.sh capture-preimage \
   > /tmp/dashboard-preimage.manifest
 ./scripts/deploy-dashboard-workspaces-to-ecs.sh validate-manifest \
@@ -35,14 +35,14 @@ export SA_DASHBOARD_RELEASE_INPUT_MANIFEST=/tmp/dashboard-release-input.manifest
   --output data/competition/system-doc-archive.json
 ```
 
-Dashboard 发布只同步固定后端/测试文件、`scripts/system-audit.sh`、两份系统
-文档与 `reports/app`，只重启 `stock-analyze-dashboard.service`。外部审阅的
+受限应用发布只同步固定 Dashboard、模型 Shadow 后端及对应测试文件、
+`scripts/system-audit.sh`、两份系统文档与 `reports/app`。它只重启 `stock-analyze-dashboard.service`。外部审阅的
 release-input 清单必须绑定当前 40 位 commit；受版本控制的发布文件、前端源码
 和构建脚本必须与该 commit 一致。`reports/app` 是生成目录，不要求纳入 Git，
 但其完整树哈希必须与审阅清单一致。
 
 脚本在远端取得独占锁后核对预镜像 SHA 并创建回滚备份。同步、目标测试、HTTP
-状态、250 KB 体积或 0.5 秒热响应门禁失败时，只恢复 Dashboard 白名单与静态
+状态、250 KB 体积或 0.5 秒热响应门禁失败时，只恢复应用白名单与静态
 资源；恢复后重新核对整份预镜像、检查 service，并验证系统总览 API 和应用页。
 结果写入 `rollback-result.txt` 与 `release-manifest.txt`，之后才释放锁。它不会
 同步配置、清理运行时、安装 unit 或改动 timer。

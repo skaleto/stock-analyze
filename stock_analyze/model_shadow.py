@@ -32,6 +32,10 @@ from .research.strategy_ensemble import (
     load_provider_return_history,
     risk_adjusted_target_weights,
 )
+from .research.portfolio_replay import (
+    mechanical_rule_transition,
+    scheduled_rebalance_due,
+)
 from .research.storage import ResearchStore
 from .run_ledger import RunLedger
 from .store import PortfolioStore
@@ -52,6 +56,9 @@ def _decision_fingerprint(selected: pd.DataFrame) -> str:
         for column in (
             "code",
             "account_id",
+            "signal_kind",
+            "spec_id",
+            "spec_hash",
             "horizon",
             "model_version",
             "confidence",
@@ -222,6 +229,7 @@ def _scoped_iteration_inputs(
     frames: list[pd.DataFrame] = []
     model_versions: dict[str, str] = {}
     prediction_paths: dict[str, str] = {}
+    account_contracts: dict[str, dict[str, Any]] = {}
     issue_status = ""
     issue_reason = ""
 
@@ -239,6 +247,7 @@ def _scoped_iteration_inputs(
                 "account_scope": scope,
                 "status": "registry_missing",
                 "status_label": "主线尚未训练",
+                "participation_status": "cash_unavailable",
             })
             issue_status = issue_status or "no_candidate"
             issue_reason = issue_reason or "部分账户尚未生成主线模型"
@@ -257,6 +266,7 @@ def _scoped_iteration_inputs(
                 "account_scope": scope,
                 "status": "no_candidate",
                 "status_label": "没有通过验收的候选",
+                "participation_status": "cash_unavailable",
             })
             issue_status = issue_status or "no_candidate"
             issue_reason = issue_reason or "部分账户当前没有待验证候选模型"
@@ -268,7 +278,6 @@ def _scoped_iteration_inputs(
             "account_scope": scope,
             **candidate,
         }
-        model_versions[account_id] = model_version
         try:
             prediction_path = latest_iteration_prediction_path(
                 root,
@@ -282,6 +291,7 @@ def _scoped_iteration_inputs(
             account_candidates.append({
                 **account_row,
                 "prediction_status": "missing",
+                "participation_status": "cash_unavailable",
             })
             issue_status = issue_status or "prediction_missing"
             issue_reason = issue_reason or "部分账户候选模型预测尚未生成"
@@ -296,6 +306,7 @@ def _scoped_iteration_inputs(
                 **account_row,
                 "prediction_status": "stale",
                 "prediction_as_of": observed,
+                "participation_status": "cash_unavailable",
             })
             issue_status = issue_status or "prediction_stale"
             issue_reason = issue_reason or "部分账户缺少当日模型预测"
@@ -305,14 +316,32 @@ def _scoped_iteration_inputs(
         frame["account_id"] = account_id
         frame["research_scope"] = scope
         frames.append(frame)
+        model_versions[account_id] = model_version
         prediction_paths[account_id] = str(prediction_path)
+        if candidate.get("candidate_kind") == "transparent_rule":
+            artifact_path = Path(str(candidate.get("artifact") or ""))
+            if not artifact_path.is_absolute():
+                artifact_path = root / artifact_path
+            try:
+                artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    f"model_iteration_rule_artifact:{account_id}"
+                ) from exc
+            contract = artifact.get("portfolio_contract")
+            if not isinstance(contract, dict):
+                raise ValueError(
+                    f"model_iteration_rule_contract:{account_id}"
+                )
+            account_contracts[account_id] = dict(contract)
         account_candidates.append({
             **account_row,
             "prediction_status": "current",
             "prediction_path": str(prediction_path),
+            "participation_status": "shadow_running",
         })
 
-    if issue_status:
+    if not frames:
         return {
             "ready": False,
             "status": issue_status,
@@ -341,6 +370,11 @@ def _scoped_iteration_inputs(
         "prediction_paths": prediction_paths,
         "account_candidates": account_candidates,
         "model_versions": model_versions,
+        "account_contracts": account_contracts,
+        "unavailable_account_count": sum(
+            row.get("participation_status") == "cash_unavailable"
+            for row in account_candidates
+        ),
     }
 
 
@@ -488,6 +522,66 @@ def build_model_candidates(
     return selected, diagnostics
 
 
+def build_rule_candidates(
+    predictions: pd.DataFrame,
+    profile: Mapping[str, Any],
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Filter transparent rule ranks without inventing probability forecasts."""
+
+    required = {
+        "code",
+        "horizon",
+        "score",
+        "rule_eligible",
+        "target_risky_exposure",
+        "signal_kind",
+    }
+    missing = sorted(required.difference(predictions.columns))
+    if missing:
+        raise ValueError(f"rule_shadow_signal_schema:{','.join(missing)}")
+    frame = predictions.copy()
+    frame["horizon"] = pd.to_numeric(frame["horizon"], errors="coerce")
+    frame["score"] = pd.to_numeric(frame["score"], errors="coerce")
+    frame["target_risky_exposure"] = pd.to_numeric(
+        frame["target_risky_exposure"], errors="coerce"
+    )
+    frame = frame.loc[
+        frame["horizon"].eq(int(profile["horizon"]))
+        & frame["signal_kind"].astype(str).eq("transparent_rule")
+    ].copy()
+    valid = frame["score"].notna() & frame["target_risky_exposure"].notna()
+    eligible = valid & frame["rule_eligible"].map(_truthy)
+    selected = frame.loc[eligible].copy()
+    if not selected.empty:
+        selected["code"] = selected["code"].map(_normalise_code)
+        selected["prediction_applied"] = False
+        selected["reason"] = selected.get(
+            "reason",
+            selected["score"].map(lambda value: f"规则得分 {float(value):.4f}"),
+        )
+        selected = (
+            selected.sort_values(["score", "code"], ascending=[False, True])
+            .drop_duplicates("code", keep="first")
+            .reset_index(drop=True)
+        )
+    return selected, {
+        "decision_mode": "transparent_rule",
+        "source_rows": int(len(predictions)),
+        "horizon_rows": int(len(frame)),
+        "invalidated_rows": int((~valid).sum()),
+        "eligible_rows": int(len(selected)),
+        "minimum_confidence": None,
+        "horizon": int(profile["horizon"]),
+        "regime": "rule",
+        "funnel": [
+            {"key": "signals", "label": "规则信号", "count": int(len(frame))},
+            {"key": "valid", "label": "数据有效", "count": int(valid.sum())},
+            {"key": "rule_eligible", "label": "规则可选", "count": int(eligible.sum())},
+        ],
+        "near_misses": [],
+    }
+
+
 def _decision_diagnostics_status(
     diagnostics: Mapping[str, Any],
     selected: pd.DataFrame,
@@ -504,6 +598,22 @@ def _decision_diagnostics_status(
         row["name"] = str((name_lookup or {}).get(code) or code)
         near_misses.append(row)
     selected_count = int(len(selected))
+    if str(diagnostics.get("decision_mode") or "") == "transparent_rule":
+        qualified_count = counts.get(
+            "scope_eligible", counts.get("rule_eligible", selected_count)
+        )
+        return {
+            "outcome": "selected" if selected_count else "cash",
+            "summary": (
+                f"{qualified_count}只证券满足透明规则与可投资范围，"
+                f"当前目标组合保留{selected_count}只"
+                if selected_count
+                else "本期透明规则没有可持有证券，候选模拟组合保持现金"
+            ),
+            "regime": str(diagnostics.get("regime") or "rule"),
+            "funnel": funnel,
+            "near_misses": [],
+        }
     if selected_count:
         qualified_count = counts.get(
             "scope_eligible", counts.get("positive_excess", selected_count)
@@ -552,6 +662,35 @@ def synthetic_config(profile: Mapping[str, Any]) -> dict[str, Any]:
             "min_trade_weight": float(profile.get("min_trade_weight", 0.005)),
         },
     }
+
+
+def _profile_for_ready_accounts(
+    profile: Mapping[str, Any],
+    ready_account_ids: set[str],
+) -> dict[str, Any]:
+    ready_accounts = [
+        dict(account)
+        for account in profile.get("accounts") or []
+        if str(account.get("id") or "") in ready_account_ids
+    ]
+    if not ready_accounts or {
+        str(account.get("id") or "") for account in ready_accounts
+    } != ready_account_ids:
+        raise ValueError("model_iteration_ready_account_profile")
+    scoped_profile = dict(profile)
+    scoped_profile["accounts"] = ready_accounts
+    scoped_profile["initial_cash"] = sum(
+        float(account.get("cash") or 0.0) for account in ready_accounts
+    )
+    scoped_profile["account_id"] = (
+        str(ready_accounts[0]["id"])
+        if len(ready_accounts) == 1
+        else "multi_scope"
+    )
+    scoped_profile["top_n"] = max(
+        int(account.get("top_n") or 1) for account in ready_accounts
+    )
+    return scoped_profile
 
 
 def _pending_count(pending: list[dict[str, Any]]) -> int:
@@ -692,6 +831,163 @@ def _enrich_candidates(
     return pd.DataFrame(rows)
 
 
+def _run_rule_account_transition(
+    scoped_candidates: pd.DataFrame,
+    scoped_pool: pd.DataFrame,
+    *,
+    account: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    state_snapshot: Mapping[str, Any],
+    previous_account: Mapping[str, Any],
+    previous_signals: pd.DataFrame,
+    provider: Any,
+    as_of: str,
+    prediction_as_of: str,
+    market: str,
+) -> tuple[pd.DataFrame, dict[str, Any], list[dict[str, Any]]]:
+    account_id = str(account["id"])
+    contract_account = {
+        **dict(account),
+        **{
+            key: value
+            for key, value in dict(contract.get("account") or {}).items()
+            if key != "cash"
+        },
+    }
+    trading = dict(contract.get("trading") or {})
+    policy = dict(contract.get("rule_execution_policy") or {})
+    frequency = str(contract.get("rebalance_frequency") or "daily")
+    observed_frequencies = {
+        str(value)
+        for value in scoped_candidates.get(
+            "rebalance_frequency", pd.Series(dtype=str)
+        ).dropna()
+        if str(value).strip()
+    }
+    if observed_frequencies and observed_frequencies != {frequency}:
+        raise ValueError(f"rule_shadow_rebalance_contract:{account_id}")
+
+    previous_rebalance_date = str(
+        previous_account.get("last_rebalance_signal_date") or ""
+    )
+    rebalance_due = scheduled_rebalance_due(
+        previous_rebalance_date or None,
+        prediction_as_of,
+        frequency,
+    )
+    target_exposures = pd.to_numeric(
+        scoped_candidates.get("target_risky_exposure", pd.Series(dtype=float)),
+        errors="coerce",
+    ).dropna()
+    if target_exposures.empty:
+        raise ValueError(f"rule_shadow_target_exposure_missing:{account_id}")
+    if float(target_exposures.max() - target_exposures.min()) > 1e-10:
+        raise ValueError(f"rule_shadow_target_exposure_mixed:{account_id}")
+    target_exposure = min(max(float(target_exposures.median()), 0.0), 1.0)
+
+    account_state = (state_snapshot.get("accounts") or {}).get(account_id, {})
+    prices = {
+        _normalise_code(row["code"]): float(row["latest_price"])
+        for row in scoped_pool.to_dict(orient="records")
+        if safe_float(row.get("latest_price")) is not None
+    }
+    for code, position in (account_state.get("positions") or {}).items():
+        normalized = _normalise_code(code)
+        if normalized in prices:
+            continue
+        quote = provider.price_snapshot(normalized, as_of=as_of)
+        price = safe_float(getattr(quote, "close", None)) or safe_float(
+            position.get("last_price")
+        ) or safe_float(position.get("avg_cost"))
+        if price is not None and price > 0.0:
+            prices[normalized] = price
+    nav_before = max(float(account_state.get("cash") or 0.0), 0.0) + sum(
+        max(int(position.get("shares") or 0), 0)
+        * float(prices.get(_normalise_code(code), 0.0))
+        for code, position in (account_state.get("positions") or {}).items()
+    )
+
+    decisions: list[dict[str, Any]] = []
+    if rebalance_due:
+        target_shares, _, decisions = mechanical_rule_transition(
+            scoped_pool,
+            state=account_state,
+            prices=prices,
+            nav_before=nav_before,
+            account={
+                **contract_account,
+                "cash_reserve_pct": 1.0 - target_exposure,
+            },
+            trading=trading,
+            policy=policy,
+            signal_date=prediction_as_of,
+        )
+        weights = {
+            code: shares * prices[code] / nav_before
+            for code, shares in target_shares.items()
+            if shares > 0 and code in prices and nav_before > 0.0
+        }
+        selected = _materialize_transition_selection(
+            scoped_pool,
+            weights=weights,
+            account=contract_account,
+            state=state_snapshot,
+            provider=provider,
+            as_of=as_of,
+            market=market,
+        )
+        if not selected.empty and decisions:
+            decision_frame = pd.DataFrame(decisions).drop(
+                columns=["rank", "current_weight", "aim_weight", "target_weight"],
+                errors="ignore",
+            )
+            selected = selected.merge(
+                decision_frame,
+                on="code",
+                how="left",
+                validate="many_to_one",
+            )
+    else:
+        prior_scope = previous_signals.loc[
+            previous_signals.get("account_id", pd.Series(dtype=str))
+            .astype(str)
+            .eq(account_id)
+        ].copy()
+        selected = (
+            prior_scope
+            if not prior_scope.empty
+            else _materialize_transition_selection(
+                scoped_pool,
+                weights=_current_weights(
+                    dict(state_snapshot), account_id, provider, as_of
+                ),
+                account=contract_account,
+                state=state_snapshot,
+                provider=provider,
+                as_of=as_of,
+                market=market,
+            )
+        )
+
+    diagnostics = {
+        "decision_mode": "transparent_rule",
+        "participation_status": "shadow_running",
+        "execution_policy_version": str(
+            policy.get("version") or "campaign-transparent-v1"
+        ),
+        "rebalance_frequency": frequency,
+        "rebalance_due": rebalance_due,
+        "last_rebalance_signal_date": (
+            prediction_as_of if rebalance_due else previous_rebalance_date or None
+        ),
+        "target_risky_exposure": target_exposure,
+        "top_n": int(contract_account["top_n"]),
+        "rule_decision_count": len(decisions),
+        "rule_trade_count": sum(bool(row.get("trade_allowed")) for row in decisions),
+    }
+    return selected, diagnostics, decisions
+
+
 def _dimension_value(value: Any) -> str:
     try:
         if pd.isna(value):
@@ -791,6 +1087,9 @@ def _selected_status_rows(frame: pd.DataFrame) -> list[dict[str, Any]]:
         "account_id",
         "code",
         "name",
+        "signal_kind",
+        "spec_id",
+        "spec_hash",
         "score",
         "target_weight",
         "confidence",
@@ -832,13 +1131,60 @@ def run_shadow_cycle(
     prediction_as_of: str,
     run_id: str,
     name_lookup: Mapping[str, str] | None = None,
+    account_contracts: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Execute one idempotent mark-to-market and model decision cycle."""
+    """Execute one isolated ML-prediction or transparent-rule paper cycle."""
 
     if market not in competition.MARKETS:
         raise competition.UnknownMarket(market)
+    signal_kinds = {
+        str(value)
+        for value in predictions.get("signal_kind", pd.Series(dtype=str)).dropna()
+        if str(value).strip()
+    }
+    if (
+        signal_kinds.difference({"transparent_rule", "model_prediction"})
+        or len(signal_kinds) > 1
+    ):
+        raise ValueError("model_iteration_signal_kind_mixed")
+    decision_mode = (
+        "transparent_rule" if signal_kinds == {"transparent_rule"} else "model_prediction"
+    )
     config = synthetic_config(profile)
-    accounts = [dict(account) for account in profile.get("accounts") or []]
+    contracts = {
+        str(key): dict(value)
+        for key, value in (account_contracts or {}).items()
+        if isinstance(value, Mapping)
+    }
+    if decision_mode == "transparent_rule":
+        trading_contracts = [
+            dict(contract.get("trading") or {})
+            for contract in contracts.values()
+            if isinstance(contract.get("trading"), Mapping)
+        ]
+        if trading_contracts:
+            canonical_trading = trading_contracts[0]
+            if any(row != canonical_trading for row in trading_contracts[1:]):
+                raise ValueError("rule_shadow_trading_contract_mixed")
+            config["trading"].update(canonical_trading)
+        contract_accounts = {
+            account_id: dict(contract.get("account") or {})
+            for account_id, contract in contracts.items()
+        }
+        config["accounts"] = [
+            {
+                **dict(account),
+                **{
+                    key: value
+                    for key, value in contract_accounts.get(
+                        str(account["id"]), {}
+                    ).items()
+                    if key not in {"cash"}
+                },
+            }
+            for account in config.get("accounts") or []
+        ]
+    accounts = [dict(account) for account in config.get("accounts") or []]
     account_id = "multi_scope" if len(accounts) > 1 else str(accounts[0]["id"])
     market_module = competition.get_market_module(market)
     if not store.state_path.exists():
@@ -857,7 +1203,11 @@ def run_shadow_cycle(
         as_of=as_of,
         notes=f"model shadow; trades={len(trades)}",
     )
-    candidates, diagnostics = build_model_candidates(predictions, profile)
+    candidates, diagnostics = (
+        build_rule_candidates(predictions, profile)
+        if decision_mode == "transparent_rule"
+        else build_model_candidates(predictions, profile)
+    )
     candidates, scope_routing = _route_candidates_to_accounts(
         candidates,
         market=market,
@@ -875,9 +1225,23 @@ def run_shadow_cycle(
     account_optimizer_diagnostics: dict[str, dict[str, Any]] = {}
     cost_aware_decisions: list[dict[str, Any]] = []
     state_snapshot = store.load_state()
+    previous_status = read_json(store.data_dir / "shadow_status.json", {})
+    previous_accounts = {
+        str(row.get("account_id") or ""): dict(row)
+        for row in previous_status.get("accounts") or []
+        if str(row.get("account_id") or "")
+    }
+    try:
+        previous_signals = pd.read_csv(
+            store.data_dir / "latest_signals.csv",
+            dtype={"code": str, "account_id": str},
+        )
+    except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError):
+        previous_signals = pd.DataFrame()
     for account in accounts:
+        current_account_id = str(account["id"])
         scoped_candidates = candidates.loc[
-            candidates["account_id"].astype(str).eq(str(account["id"]))
+            candidates["account_id"].astype(str).eq(current_account_id)
         ]
         scoped_pool = _enrich_candidates(
             scoped_candidates,
@@ -887,6 +1251,45 @@ def run_shadow_cycle(
             name_lookup=name_lookup,
             account=account,
         )
+        if decision_mode == "transparent_rule":
+            contract = contracts.get(current_account_id)
+            if scoped_candidates.empty and contract is None:
+                account_optimizer_diagnostics[current_account_id] = {
+                    "decision_mode": "transparent_rule",
+                    "participation_status": "cash_unavailable",
+                    "execution_policy_version": "campaign-transparent-v1",
+                    "rebalance_due": False,
+                }
+                continue
+            if contract is None:
+                raise ValueError(
+                    f"rule_shadow_account_contract_missing:{current_account_id}"
+                )
+            scoped_selected, account_diagnostics, rule_decisions = (
+                _run_rule_account_transition(
+                    scoped_candidates,
+                    scoped_pool,
+                    account=account,
+                    contract=contract,
+                    state_snapshot=state_snapshot,
+                    previous_account=previous_accounts.get(current_account_id, {}),
+                    previous_signals=previous_signals,
+                    provider=provider,
+                    as_of=as_of,
+                    prediction_as_of=prediction_as_of,
+                    market=market,
+                )
+            )
+            for raw in rule_decisions:
+                cost_aware_decisions.append({
+                    **raw,
+                    "account_id": current_account_id,
+                    "signal_date": prediction_as_of,
+                    "scheduled_rebalance": True,
+                })
+            account_optimizer_diagnostics[current_account_id] = account_diagnostics
+            selected_parts.append(scoped_selected)
+            continue
         if scoped_pool.empty:
             continue
         scoped_selected = scoped_pool.head(max(int(account["top_n"]) * 3, 3)).copy()
@@ -1022,8 +1425,13 @@ def run_shadow_cycle(
             _decision_fingerprint(selected),
         ]
     )
-    previous_status = read_json(store.data_dir / "shadow_status.json", {})
     decision_changed = previous_status.get("decision_key") != decision_key
+    if decision_mode == "transparent_rule" and not any(
+        bool(row.get("rebalance_due"))
+        for row in account_optimizer_diagnostics.values()
+    ):
+        decision_changed = False
+        decision_key = str(previous_status.get("decision_key") or decision_key)
 
     if decision_changed:
         previous_pending = store.load_pending()
@@ -1125,6 +1533,7 @@ def run_shadow_cycle(
         "prediction_as_of": prediction_as_of,
         "horizon": int(profile["horizon"]),
         "model_versions": model_versions,
+        "decision_mode": decision_mode,
         "decision_key": decision_key,
         "decision_changed": decision_changed,
         "candidate_rows": diagnostics["source_rows"],
@@ -1134,13 +1543,27 @@ def run_shadow_cycle(
         "scope_routing": scope_routing,
         "selected_count": int(len(selected)),
         "invalidated_rows": diagnostics["invalidated_rows"],
-        "minimum_confidence": diagnostics["minimum_confidence"],
+        **(
+            {"minimum_confidence": diagnostics["minimum_confidence"]}
+            if decision_mode == "model_prediction"
+            else {}
+        ),
         "cash_only": bool(selected.empty),
         "cash_reason": (
-            "模型未发现满足条件的上行机会" if selected.empty else None
+            (
+                "透明规则当前保持现金"
+                if decision_mode == "transparent_rule"
+                else "模型未发现满足条件的上行机会"
+            )
+            if selected.empty
+            else None
         ),
         "decision_diagnostics": decision_diagnostics,
-        "execution_policy_version": "cost-aware-aim-v1",
+        "execution_policy_version": (
+            "campaign-transparent-v1"
+            if decision_mode == "transparent_rule"
+            else "cost-aware-aim-v1"
+        ),
         "cost_aware_decisions": cost_aware_decisions,
         "trades_executed": int(len(trades)),
         "pending_orders": pending_orders,
@@ -1157,6 +1580,22 @@ def run_shadow_cycle(
                 "optimizer_diagnostics": account_optimizer_diagnostics.get(
                     str(account["id"]), {}
                 ),
+                **{
+                    key: account_optimizer_diagnostics.get(
+                        str(account["id"]), {}
+                    ).get(key)
+                    for key in (
+                        "decision_mode",
+                        "participation_status",
+                        "rebalance_frequency",
+                        "rebalance_due",
+                        "last_rebalance_signal_date",
+                        "target_risky_exposure",
+                    )
+                    if key in account_optimizer_diagnostics.get(
+                        str(account["id"]), {}
+                    )
+                },
                 **{
                     key: latest_nav_by_account.get(
                         str(account["id"]), {}
@@ -1231,6 +1670,7 @@ def run_model_iteration(
 ) -> dict[str, Any]:
     root = Path(repo_root)
     profile = load_shadow_profile(root, market)
+    runtime_profile = profile
     horizon = int(profile["horizon"])
     scoped_inputs = _scoped_iteration_inputs(
         root,
@@ -1296,6 +1736,11 @@ def run_model_iteration(
             "account_candidates": scoped_inputs["account_candidates"],
             "model_versions": scoped_inputs["model_versions"],
         }
+        account_contracts = scoped_inputs["account_contracts"]
+        runtime_profile = _profile_for_ready_accounts(
+            profile,
+            set(scoped_inputs["prediction_paths"]),
+        )
     else:
         candidate = ensure_iteration_candidate(
             root,
@@ -1379,6 +1824,7 @@ def run_model_iteration(
         )
         prediction_status_fields = {"prediction_path": str(prediction_path)}
         runtime_fields = {}
+        account_contracts = {}
     data_dir = iteration_portfolio_dir(root, market, horizon, model_version)
     store = PortfolioStore(data_dir)
     cache_dir = (
@@ -1392,13 +1838,13 @@ def run_model_iteration(
         offline=offline,
         as_of=as_of,
     )
-    config = synthetic_config(profile)
+    config = synthetic_config(runtime_profile)
     ledger = RunLedger(data_dir)
     try:
         with ledger.run("run-model-iteration", as_of, config) as context:
             result = run_shadow_cycle(
                 market=market,
-                profile=profile,
+                profile=runtime_profile,
                 store=store,
                 provider=provider,
                 predictions=predictions,
@@ -1408,6 +1854,7 @@ def run_model_iteration(
                 name_lookup=(
                     _a_share_name_lookup(root, as_of) if market == "a_share" else None
                 ),
+                account_contracts=account_contracts,
             )
             status = {
                 **result,
@@ -1460,6 +1907,7 @@ __all__ = [
     "MODEL_ITERATION_LABEL",
     "MODEL_ITERATION_PORTFOLIO_LABEL",
     "build_model_candidates",
+    "build_rule_candidates",
     "latest_prediction_path",
     "latest_iteration_prediction_path",
     "load_shadow_profile",

@@ -105,6 +105,25 @@ class ResearchActivationTest(unittest.TestCase):
         self.assertFalse(model["formal_strategy_activated"])
         self.assertEqual(len(second["lifecycle_events"]), 1)
 
+    def test_shadow_admission_preserves_existing_formal_activation_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = ModelRegistry(Path(tmp) / "registry.json")
+            state = registry.initialize_champion("champion-v1", roles=("ranker",))
+            state["formal_strategy_activated"] = True
+            registry._write(state)
+
+            admitted = registry.admit_development_shadow(
+                "candidate-v2",
+                metadata={"artifact": "/tmp/candidate.joblib"},
+                admission={"contract": "baseline-first-v1"},
+            )
+
+        self.assertTrue(admitted["formal_strategy_activated"])
+        self.assertEqual(admitted["champion_model_version"], "champion-v1")
+        self.assertFalse(
+            admitted["models"]["candidate-v2"]["formal_strategy_activated"]
+        )
+
     def test_registry_rejects_expired_shadow_without_changing_champion(self):
         with tempfile.TemporaryDirectory() as tmp:
             registry = ModelRegistry(Path(tmp) / "registry.json")

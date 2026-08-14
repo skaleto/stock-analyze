@@ -197,6 +197,55 @@ class ModelIterationLifecycleTest(unittest.TestCase):
 
         self.assertIsNone(candidate)
 
+    def test_account_scoped_admitted_transparent_rule_is_selectable_and_auditable(self):
+        from stock_analyze.model_iteration import ensure_iteration_candidate
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            registry_path = (
+                root / "data/research/models/a_share/zz500/20/registry.json"
+            )
+            registry_path.parent.mkdir(parents=True)
+            registry_path.write_text(json.dumps({
+                "champion_model_version": None,
+                "formal_strategy_activated": False,
+                "models": {
+                    "old-mainline": {
+                        "status": "rejected",
+                        "spec_id": "retired-mainline",
+                    },
+                    "rule-a-mom": {
+                        "status": "shadow",
+                        "registered_at": "2026-08-14T20:00:00+08:00",
+                        "candidate_kind": "transparent_rule",
+                        "runtime_contract": "transparent-rule-shadow-v1",
+                        "spec_id": "A_MOM_02",
+                        "spec_hash": "rule-hash",
+                        "artifact": "data/rule-a-mom.json",
+                        "admission_grade": "exploratory",
+                        "source_campaign": "campaign-v1",
+                        "promotion_policy": "strict-forward-review-v1",
+                        "development_admission": {
+                            "contract": "personal-quant-shadow-v1",
+                        },
+                    },
+                },
+            }), encoding="utf-8")
+
+            candidate = ensure_iteration_candidate(
+                root,
+                "a_share",
+                20,
+                account_scope="zz500",
+                as_of="2026-08-14",
+            )
+
+        self.assertEqual(candidate["model_version"], "rule-a-mom")
+        self.assertEqual(candidate["candidate_kind"], "transparent_rule")
+        self.assertEqual(candidate["admission_grade"], "exploratory")
+        self.assertEqual(candidate["source_campaign"], "campaign-v1")
+        self.assertEqual(candidate["promotion_policy"], "strict-forward-review-v1")
+
     def test_terminal_models_are_never_selected_as_iteration_candidates(self):
         from stock_analyze.model_iteration import ensure_iteration_candidate
 

@@ -1272,6 +1272,11 @@ def _candidate(value: Any) -> dict[str, Any]:
         "shadow_cycles_remaining",
         "horizon",
         "account_scope",
+        "candidate_kind",
+        "admission_grade",
+        "source_campaign",
+        "source_trial_id",
+        "promotion_policy",
     )
     result: dict[str, Any] = {}
     for key in keys:
@@ -1316,16 +1321,50 @@ def _simulation_account(iteration: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _simulation_accounts(iteration: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = {
+        _text(raw.get("account_id") or raw.get("id"), limit=256): raw
+        for raw in _rows(iteration.get("account_candidates"))
+        if _text(raw.get("account_id") or raw.get("id"), limit=256)
+    }
     rows: list[dict[str, Any]] = []
     for raw in _rows(iteration.get("accounts")):
         account_id = _text(raw.get("account_id") or raw.get("id"), limit=256)
         if not account_id:
             continue
+        candidate = candidates.get(account_id, {})
         rows.append({
             "accountId": account_id,
             "scope": _text(raw.get("scope"), limit=256),
             "benchmark": _text(raw.get("benchmark"), limit=256),
             "selectedCount": _integer(raw.get("selected_count")),
+            "candidateVersion": _text(candidate.get("model_version"), limit=256),
+            "candidateLabel": _text(candidate.get("display_version"), limit=256),
+            "candidateKind": _text(candidate.get("candidate_kind"), limit=128),
+            "admissionGrade": _text(candidate.get("admission_grade"), limit=128),
+            "candidateStatus": _text(candidate.get("status"), limit=128),
+            "candidateStatusLabel": _text(candidate.get("status_label"), limit=256),
+            "sourceCampaign": _text(candidate.get("source_campaign"), limit=256),
+            "sourceTrialId": _text(candidate.get("source_trial_id"), limit=256),
+            "participationStatus": _text(
+                raw.get("participation_status")
+                or candidate.get("participation_status"),
+                limit=128,
+            ),
+            "predictionStatus": _text(candidate.get("prediction_status"), limit=128),
+            "rebalanceFrequency": _text(
+                raw.get("rebalance_frequency"), limit=128
+            ),
+            "rebalanceDue": (
+                bool(raw.get("rebalance_due"))
+                if raw.get("rebalance_due") is not None
+                else None
+            ),
+            "lastRebalanceSignalDate": _scalar(
+                raw.get("last_rebalance_signal_date"), text_limit=256
+            ),
+            "targetRiskyExposure": _finite_number(
+                raw.get("target_risky_exposure")
+            ),
             "date": _scalar(raw.get("date"), text_limit=256),
             "cash": _finite_number(raw.get("cash")),
             "marketValue": _finite_number(raw.get("market_value")),

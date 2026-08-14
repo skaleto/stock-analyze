@@ -642,6 +642,33 @@ def _dashboard_identity_allowed(market: str, agent: str, root: Path) -> bool:
     )
 
 
+def _public_account_candidates(value: Any) -> list[dict[str, Any]]:
+    fields = (
+        "account_id",
+        "account_scope",
+        "model_version",
+        "display_version",
+        "status",
+        "status_label",
+        "prediction_status",
+        "prediction_as_of",
+        "participation_status",
+        "candidate_kind",
+        "runtime_contract",
+        "admission_grade",
+        "source_campaign",
+        "source_trial_id",
+        "promotion_policy",
+        "shadow_cycles",
+        "shadow_cycles_remaining",
+    )
+    return [
+        {key: row.get(key) for key in fields if key in row}
+        for row in value or []
+        if isinstance(row, dict)
+    ][:20]
+
+
 def _read_model_iteration_status(root: Path, market: str) -> dict[str, Any]:
     profile = load_shadow_profile(root, market)
     horizon = int(profile["horizon"])
@@ -678,6 +705,36 @@ def _read_model_iteration_status(root: Path, market: str) -> dict[str, Any]:
     payload["horizon"] = horizon
 
     if "account_candidates" in payload:
+        account_candidates = _public_account_candidates(payload.get("account_candidates"))
+        payload["account_candidates"] = account_candidates
+        raw_model_versions = payload.get("model_versions")
+        if isinstance(raw_model_versions, dict):
+            payload["model_versions"] = sorted(
+                {str(value) for value in raw_model_versions.values() if str(value)}
+            )
+        candidate_kinds = {
+            str(row.get("candidate_kind") or "")
+            for row in account_candidates
+            if str(row.get("candidate_kind") or "")
+        }
+        admission_grades = {
+            str(row.get("admission_grade") or "")
+            for row in account_candidates
+            if str(row.get("admission_grade") or "")
+        }
+        candidate_kind = (
+            next(iter(candidate_kinds)) if len(candidate_kinds) == 1 else None
+        )
+        admission_grade = (
+            next(iter(admission_grades)) if len(admission_grades) == 1 else None
+        )
+        grade_label = {
+            "promising": "前景型 Shadow",
+            "exploratory": "探索型 Shadow",
+        }.get(str(admission_grade or ""))
+        active_candidate_rows = [
+            row for row in account_candidates if row.get("model_version")
+        ]
         model_version = str(payload.get("model_version") or "")
         candidate = (
             {
@@ -689,13 +746,35 @@ def _read_model_iteration_status(root: Path, market: str) -> dict[str, Any]:
                 ),
                 "status": str(payload.get("lifecycle_status") or "shadow"),
                 "status_label": str(
-                    payload.get("lifecycle_status_label") or "模拟验证"
+                    grade_label
+                    or payload.get("lifecycle_status_label")
+                    or "模拟验证"
                 ),
                 "shadow_cycles": int(payload.get("shadow_cycles") or 0),
                 "shadow_cycles_remaining": int(
                     payload.get("shadow_cycles_remaining") or 0
                 ),
-                "account_candidates": payload.get("account_candidates") or [],
+                "account_candidates": account_candidates,
+                **(
+                    {"candidate_kind": candidate_kind}
+                    if candidate_kind else {}
+                ),
+                **(
+                    {"admission_grade": admission_grade}
+                    if admission_grade else {}
+                ),
+                **(
+                    {
+                        key: active_candidate_rows[0].get(key)
+                        for key in (
+                            "source_campaign",
+                            "source_trial_id",
+                            "promotion_policy",
+                        )
+                        if active_candidate_rows[0].get(key) is not None
+                    }
+                    if len(active_candidate_rows) == 1 else {}
+                ),
                 "selected_at": payload.get("updated_at"),
             }
             if model_version
