@@ -1418,6 +1418,27 @@ def _system_iteration_summary(status: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _latest_baseline_first_as_of(root: Path, market: str) -> str | None:
+    report_root = root / "reports" / "research"
+    paths = sorted(
+        report_root.glob("baseline_first_*.json"),
+        key=lambda path: path.name,
+        reverse=True,
+    )[:100]
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict) or payload.get("market") != market:
+            continue
+        as_of = str(payload.get("as_of") or "").strip()
+        if len(as_of) == 8 and as_of.isdigit():
+            return f"{as_of[:4]}-{as_of[4:6]}-{as_of[6:]}"
+        return as_of or None
+    return None
+
+
 def build_dashboard_system_overview_data(
     *,
     repo_root: str | Path | None = None,
@@ -1462,11 +1483,16 @@ def build_dashboard_system_overview_data(
                     ),
                 }
             )
+        iteration = _system_iteration_summary(status)
+        if not iteration.get("as_of"):
+            latest_research_as_of = _latest_baseline_first_as_of(root, market)
+            if latest_research_as_of:
+                iteration["as_of"] = latest_research_as_of
         models.append(
             {
                 "market": market,
                 "market_label": agg.MARKET_LABELS.get(market, market),
-                "iteration": _system_iteration_summary(status),
+                "iteration": iteration,
             }
         )
     try:

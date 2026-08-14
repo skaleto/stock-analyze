@@ -1005,6 +1005,39 @@ class DashboardResourceApiTests(unittest.TestCase):
         self.assertNotIn("scope_routing", iteration)
         self.assertNotIn("private_debug_payload", iteration)
 
+    def test_system_overview_uses_latest_research_date_without_a_candidate(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_repo(root)
+            report_dir = root / "reports" / "research"
+            report_dir.mkdir(parents=True)
+            (report_dir / "baseline_first_20260813_hs300.json").write_text(
+                json.dumps({
+                    "market": "a_share",
+                    "as_of": "20260813",
+                    "status": "baseline_wins",
+                }),
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "stock_analyze.dashboard_api.agg._read_model_iteration_status",
+                return_value={
+                    "status": "no_candidate",
+                    "candidate": None,
+                    "champion": None,
+                },
+            ):
+                payload = build_dashboard_system_overview_data(repo_root=root)
+
+        by_market = {row["market"]: row for row in payload["models"]}
+        self.assertEqual(
+            by_market["a_share"]["iteration"]["as_of"],
+            "2026-08-13",
+        )
+        self.assertNotIn("as_of", by_market["cn_qdii_etf"]["iteration"])
+
     def test_system_overview_redacts_intelligence_ingestion_errors(self) -> None:
         sensitive_path = "/opt/stock-analyze/secrets/intelligence.env"
         sensitive_key = "DEEPSEEK_API_KEY=plainsecretvalue123456"

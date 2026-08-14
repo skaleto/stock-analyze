@@ -161,7 +161,7 @@ trend baseline is the only positive development result, but its 22.91 annual
 turnover and 81.11% capital utilization remain outside the declared deployment
 quality contract, so it was not promoted indirectly.
 
-Verification completed locally with 2,058 Python tests (6 skipped), 232
+Verification completed locally with 2,060 Python tests (6 skipped), 232
 frontend tests, a production frontend build, Python compile checks, shell
 syntax checks, and real-data A-share/QDII runs. ECS deployment and remote
 evidence are recorded in the release verification rather than inferred from

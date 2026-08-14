@@ -631,6 +631,42 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertEqual(validation_stage["primary"], "经典模型 3 项未通过")
         self.assertEqual(validation_stage["secondary"], "注册模型 0 / 0 通过")
 
+    def test_current_mainline_stage_summary_overrides_legacy_tabular_run(self) -> None:
+        model = _model("baseline-first-20260813-test")
+        spec = mainline_specs("a_share", "hs300")[0]
+        model.update({
+            "account_scope": "hs300",
+            "spec_id": spec.spec_id,
+            "spec_hash": spec.spec_hash,
+        })
+        model["metrics"]["training_protocol_version"] = (
+            TRAINING_PROTOCOL_VERSION
+        )
+        tabular = {
+            "status": "available",
+            "best": {
+                "estimator": "lightgbm_regression",
+                "selectedFeatureCount": 88,
+                "gate": {"passed": False, "reasons": ["legacy_failure"]},
+            },
+            "latest": None,
+            "experiments": [],
+        }
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_workspace_api._read_tabular_research_evidence",
+            return_value=tabular,
+        ):
+            payload = self._build(
+                Path(tmp),
+                models={"status": "available", "models": [model]},
+            )
+
+        stages = {row["key"]: row for row in payload["stages"]}
+        self.assertEqual(stages["training"]["primary"], "1 个最新研究版本")
+        self.assertEqual(stages["training"]["secondary"], "4200 条样本支持")
+        self.assertEqual(stages["validation"]["primary"], "0 / 1 通过")
+        self.assertEqual(stages["validation"]["secondary"], "1 个阻塞项")
+
     def test_model_resource_separates_latest_training_from_current_challenger(self) -> None:
         latest = _model("A20-V006")
         latest["trained_at"] = "2026-08-01T02:30:00+08:00"
