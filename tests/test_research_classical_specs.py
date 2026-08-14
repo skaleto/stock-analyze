@@ -53,7 +53,7 @@ class ResearchClassicalSpecsTest(unittest.TestCase):
         self.assertEqual({item.horizon for item in specs}, {20})
         self.assertEqual(
             {item.hypothesis_id for item in specs},
-            {"balanced_momentum_lowvol_anchor_residual"},
+            {"momentum_baseline_residual"},
         )
         self.assertEqual({item.rebalance_frequency for item in specs}, {"monthly"})
         self.assertTrue(all(item.feature_allowlist for item in specs))
@@ -64,7 +64,7 @@ class ResearchClassicalSpecsTest(unittest.TestCase):
         self.assertEqual({item.estimator for item in specs}, {"ridge"})
         self.assertEqual(
             {item.ranking_target for item in specs},
-            {"momentum_lowvol_anchor_residual_v1"},
+            {"momentum_anchor_residual_v1"},
         )
         self.assertEqual(
             {item.feature_selection_mode for item in specs},
@@ -72,9 +72,19 @@ class ResearchClassicalSpecsTest(unittest.TestCase):
         )
         self.assertEqual(
             specs[0].spec_id,
-            "h20_balanced_anchor_residual_ridge_v4",
+            "h20_momentum_baseline_residual_ridge_v1",
         )
-        self.assertEqual(specs[0].parameter_map["residual_tilt_weight"], 0.15)
+        self.assertEqual(specs[0].parameter_map["residual_tilt_weight"], 0.10)
+
+    def test_qdii_h10_mainline_is_weekly_trend_residual_ridge(self) -> None:
+        spec = mainline_specs("cn_qdii_etf", "us_exposure")[0]
+
+        self.assertEqual(spec.spec_id, "h10_trend_baseline_residual_ridge_v1")
+        self.assertEqual(spec.estimator, "ridge")
+        self.assertEqual(spec.rebalance_frequency, "weekly")
+        self.assertEqual(spec.ranking_target, "qdii_trend_anchor_residual_v1")
+        self.assertEqual(spec.feature_selection_mode, "fixed_profile_v1")
+        self.assertEqual(spec.parameter_map["residual_tilt_weight"], 0.10)
 
     def test_specs_are_serializable_for_the_trial_ledger(self) -> None:
         rows = [item.as_ledger_spec() for item in a_share_h3_specs("zz500")]
@@ -95,7 +105,8 @@ class ResearchClassicalSpecsTest(unittest.TestCase):
         self.assertEqual(len(qdii), 1)
         self.assertEqual(a_share[0].horizon, 20)
         self.assertEqual(qdii[0].horizon, 10)
-        self.assertEqual(qdii[0].estimator, "hgbr")
+        self.assertEqual(qdii[0].estimator, "ridge")
+        self.assertEqual(qdii[0].rebalance_frequency, "weekly")
 
     def test_mainline_rejects_undeclared_market(self) -> None:
         with self.assertRaisesRegex(ValueError, "classical_mainline_market"):

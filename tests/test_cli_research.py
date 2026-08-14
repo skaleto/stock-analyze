@@ -92,9 +92,11 @@ class CLIResearchTest(unittest.TestCase):
         for command in (
             "prepare-research-data",
             "run-prediction-research",
+            "refresh-research-labels",
             "train-prediction-models",
             "run-classical-tournament",
             "run-unified-model-arena",
+            "run-baseline-first-research",
             "run-cross-sectional-alpha-repair",
             "run-regime-tabular-alpha",
             "predict",
@@ -186,6 +188,40 @@ class CLIResearchTest(unittest.TestCase):
 
         self.assertEqual(code, 0)
         repair.assert_called_once_with(account_scope="zz500", horizon=20)
+
+    def test_cli_dispatches_provider_market_baseline_first_research(self):
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "stock_analyze.research.pipeline.ResearchPipeline.run_baseline_first_research",
+            return_value={"status": "baseline_wins", "results": []},
+        ) as evaluate:
+            code = main(
+                [
+                    "--market", "cn_qdii_etf", "--agent", "codex",
+                    "--as-of", "2026-08-07", "run-baseline-first-research",
+                    "--offline", "--repo-root", tmp,
+                    "--account-scope", "us_exposure",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        evaluate.assert_called_once_with(
+            account_scope="us_exposure",
+            horizon=None,
+        )
+
+    def test_cli_dispatches_latest_snapshot_label_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "stock_analyze.research.pipeline.ResearchPipeline.refresh_labels",
+            return_value={"status": "complete", "snapshot_date": "20260807"},
+        ) as refresh:
+            code = main([
+                "--market", "cn_qdii_etf", "--agent", "codex",
+                "--as-of", "2026-08-09", "refresh-research-labels",
+                "--offline", "--repo-root", tmp,
+            ])
+
+        self.assertEqual(code, 0)
+        refresh.assert_called_once_with()
 
     def test_cli_dispatches_frozen_regime_tabular_alpha_config(self):
         with tempfile.TemporaryDirectory() as tmp, patch(

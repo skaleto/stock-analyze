@@ -491,6 +491,87 @@ class ModelRegistry:
         self._write(state)
         return state
 
+    def admit_development_shadow(
+        self,
+        model_version: str,
+        *,
+        metadata: dict,
+        admission: dict,
+    ) -> dict:
+        """Freeze one development winner without changing any active role."""
+
+        state = self._read()
+        state.setdefault("champion_model_version", None)
+        models = state.setdefault("models", {})
+        model = models.setdefault(
+            model_version,
+            {"status": "research", "gate_history": []},
+        )
+        current_status = str(model.get("status") or "research")
+        if current_status in {"active", "superseded", "rejected", "quarantined"}:
+            return state
+        model.update({key: value for key, value in metadata.items() if key != "status"})
+        model["status"] = "shadow"
+        model["formal_strategy_activated"] = False
+        model.setdefault("registered_at", datetime.now().astimezone().isoformat(timespec="seconds"))
+        role_status = model.setdefault("role_status", {})
+        role_status["classifier"] = "research"
+        role_status["ranker"] = "shadow"
+        role_status["portfolio"] = "shadow"
+        model["development_admission"] = dict(admission)
+        event_id = (
+            f"development-shadow:{model_version}:"
+            f"{str(admission.get('contract') or 'unknown')}"
+        )
+        events = state.setdefault("lifecycle_events", [])
+        if not any(str(event.get("event_id") or "") == event_id for event in events):
+            events.append({
+                "event_id": event_id,
+                "event_type": "development_shadow_admission",
+                "model_version": model_version,
+                "admission": dict(admission),
+                "evaluated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            })
+        self._write(state)
+        return state
+
+    def reject_shadow(
+        self,
+        model_version: str,
+        *,
+        reason: str,
+        event_id: str,
+    ) -> dict:
+        state = self._read()
+        models = state.setdefault("models", {})
+        model = models.get(model_version)
+        if model is None:
+            raise ValueError("model_version_missing")
+        events = state.setdefault("lifecycle_events", [])
+        if any(str(event.get("event_id") or "") == str(event_id) for event in events):
+            return state
+        if str(model.get("status") or "") != "shadow":
+            return state
+        model["status"] = "rejected"
+        model["rejection_reasons"] = [str(reason)]
+        for role, status in list((model.get("role_status") or {}).items()):
+            if status in {"research", "shadow"}:
+                model["role_status"][role] = "rejected"
+        model["shadow_evaluation"] = {
+            "evaluated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "status": "rejected",
+            "reason": str(reason),
+        }
+        events.append({
+            "event_id": str(event_id),
+            "event_type": "shadow_rejection",
+            "model_version": model_version,
+            "reason": str(reason),
+            "evaluated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        })
+        self._write(state)
+        return state
+
     def record_gate(self, model_version: str, report: GateReport) -> dict:
         state = self._read()
         model = state.setdefault("models", {}).setdefault(

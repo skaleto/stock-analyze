@@ -68,6 +68,64 @@ def passing_evidence(**overrides) -> ActivationEvidence:
 
 
 class ResearchActivationTest(unittest.TestCase):
+    def test_registry_admits_development_winner_as_versioned_shadow_idempotently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = ModelRegistry(Path(tmp) / "registry.json")
+            metadata = {
+                "artifact": "/tmp/model.joblib",
+                "spec_id": "baseline-residual-v1",
+                "spec_hash": "abc123",
+                "metrics": {"training_protocol_version": "fixture-v1"},
+            }
+
+            first = registry.admit_development_shadow(
+                "model-v1",
+                metadata=metadata,
+                admission={"contract": "baseline-first-v1", "report": "/tmp/report.json"},
+            )
+            second = registry.admit_development_shadow(
+                "model-v1",
+                metadata=metadata,
+                admission={"contract": "baseline-first-v1", "report": "/tmp/report.json"},
+            )
+
+        model = first["models"]["model-v1"]
+        self.assertEqual(model["status"], "shadow")
+        self.assertEqual(model["role_status"]["ranker"], "shadow")
+        self.assertEqual(model["role_status"]["portfolio"], "shadow")
+        self.assertEqual(model["role_status"]["classifier"], "research")
+        self.assertIsNone(first["champion_model_version"])
+        self.assertFalse(model["formal_strategy_activated"])
+        self.assertEqual(len(second["lifecycle_events"]), 1)
+
+    def test_registry_rejects_expired_shadow_without_changing_champion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = ModelRegistry(Path(tmp) / "registry.json")
+            registry.initialize_champion("champion-v1", roles=("ranker",))
+            registry.admit_development_shadow(
+                "candidate-v2",
+                metadata={"artifact": "/tmp/candidate.joblib"},
+                admission={"contract": "baseline-first-v1"},
+            )
+
+            first = registry.reject_shadow(
+                "candidate-v2",
+                reason="shadow_evidence_cap_reached",
+                event_id="shadow-stop:candidate-v2:16",
+            )
+            second = registry.reject_shadow(
+                "candidate-v2",
+                reason="shadow_evidence_cap_reached",
+                event_id="shadow-stop:candidate-v2:16",
+            )
+
+        self.assertEqual(first["models"]["candidate-v2"]["status"], "rejected")
+        self.assertEqual(first["champion_model_version"], "champion-v1")
+        self.assertEqual(len([
+            event for event in second["lifecycle_events"]
+            if event["event_id"] == "shadow-stop:candidate-v2:16"
+        ]), 1)
+
     def test_passes_complete_shadow_to_active_evidence(self):
         report = evaluate_activation(passing_evidence(), current_status="shadow", target_status="active")
         self.assertTrue(report.passed)

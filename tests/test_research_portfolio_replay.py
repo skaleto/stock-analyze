@@ -635,6 +635,45 @@ class ResearchPortfolioReplayTest(unittest.TestCase):
         )
         self.assertEqual(result.metrics["rebalance_frequency"], "monthly")
 
+    def test_weekly_rebalance_runs_on_first_available_session_only(self):
+        dates = ["20260102", "20260105", "20260106", "20260109", "20260112"]
+
+        due = [
+            portfolio_replay._scheduled_rebalance_due(dates, index, "weekly")
+            for index in range(len(dates))
+        ]
+
+        self.assertEqual(due, [True, True, False, False, True])
+
+    def test_weekly_rebalance_handles_iso_year_boundary(self):
+        dates = ["20251231", "20260101", "20260102", "20260105"]
+
+        due = [
+            portfolio_replay._scheduled_rebalance_due(dates, index, "weekly")
+            for index in range(len(dates))
+        ]
+
+        self.assertEqual(due, [True, False, False, True])
+
+    def test_executable_replay_accepts_weekly_frequency(self):
+        frame = replay_rows()
+        contract = {
+            "accounts": [{"id": "hs300", "cash": 100_000.0, "top_n": 2}],
+            "trading": {
+                "lot_size": 100,
+                "commission_rate": 0.0,
+                "min_commission": 0.0,
+                "stamp_tax_rate": 0.0,
+                "slippage_rate": 0.0,
+                "max_single_weight": 1.0,
+            },
+            "rebalance_frequency": "weekly",
+        }
+
+        result = replay_executable_portfolio(frame, contract=contract)
+
+        self.assertEqual(result.metrics["rebalance_frequency"], "weekly")
+
     def test_monthly_rebalance_allows_midmonth_hard_risk_exit_without_reentry(self):
         rows = []
         for trade_date in ("20260129", "20260130", "20260202"):

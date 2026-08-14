@@ -466,6 +466,7 @@ def build_parser() -> argparse.ArgumentParser:
     for command, help_text in (
         ("prepare-research-data", "Build immutable feature snapshots from market caches."),
         ("run-prediction-research", "Build labels, events, regimes, and event studies."),
+        ("refresh-research-labels", "Refresh labels on the latest feature snapshot."),
         ("train-prediction-models", "Train and register calibrated challenger models."),
         ("predict", "Generate research or active prediction records."),
     ):
@@ -538,6 +539,19 @@ def build_parser() -> argparse.ArgumentParser:
     cross_sectional_repair.add_argument("--max-full-history-instruments", type=int, default=500)
     cross_sectional_repair.add_argument("--account-scope", default=None)
     cross_sectional_repair.add_argument("--horizon", type=int, default=20)
+
+    baseline_first = sub.add_parser(
+        "run-baseline-first-research",
+        help="Compare the transparent baseline and bounded residual on development folds.",
+    )
+    baseline_first.add_argument(
+        "--offline", action="store_true", help="Use local research snapshots only."
+    )
+    baseline_first.add_argument("--repo-root", type=Path, default=Path("."))
+    baseline_first.add_argument("--force", action="store_true", help=argparse.SUPPRESS)
+    baseline_first.add_argument("--max-full-history-instruments", type=int, default=500)
+    baseline_first.add_argument("--account-scope", default=None)
+    baseline_first.add_argument("--horizon", type=int, default=None)
 
     regime_tabular = sub.add_parser(
         "run-regime-tabular-alpha",
@@ -1240,9 +1254,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in {
         "prepare-research-data",
         "run-prediction-research",
+        "refresh-research-labels",
         "train-prediction-models",
         "run-classical-tournament",
         "run-unified-model-arena",
+        "run-baseline-first-research",
         "run-cross-sectional-alpha-repair",
         "run-regime-tabular-alpha",
         "freeze-regime-tabular-forward",
@@ -1516,6 +1532,8 @@ def _command_research_workflow(args: argparse.Namespace) -> int:
             result = pipeline.prepare_data(force=bool(args.force))
         elif args.command == "run-prediction-research":
             result = pipeline.run_research()
+        elif args.command == "refresh-research-labels":
+            result = pipeline.refresh_labels()
         elif args.command == "train-prediction-models":
             result = pipeline.train_models()
         elif args.command == "run-classical-tournament":
@@ -1531,6 +1549,11 @@ def _command_research_workflow(args: argparse.Namespace) -> int:
             )
         elif args.command == "run-cross-sectional-alpha-repair":
             result = pipeline.run_cross_sectional_alpha_repair(
+                account_scope=args.account_scope,
+                horizon=args.horizon,
+            )
+        elif args.command == "run-baseline-first-research":
+            result = pipeline.run_baseline_first_research(
                 account_scope=args.account_scope,
                 horizon=args.horizon,
             )

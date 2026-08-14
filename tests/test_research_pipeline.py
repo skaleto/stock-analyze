@@ -11,7 +11,8 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from stock_analyze.research.pipeline import ResearchPipeline
+from stock_analyze.research.pipeline import ResearchPipeline, _shadow_stop_reason
+from stock_analyze.research.classical_specs import mainline_specs
 from stock_analyze.research.source_features import SourceCollection
 from stock_analyze.research.schemas import PredictionRecord
 from stock_analyze.research.labels import LABEL_CONTRACT_VERSION
@@ -60,6 +61,227 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(qdii["execution_policy"]["minimum_target_change"], 0.02)
         self.assertEqual(qdii["execution_policy"]["partial_adjustment_rate"], 0.25)
         self.assertEqual(qdii["execution_policy"]["max_daily_turnover"], 0.08)
+
+    def test_classical_tournament_rejects_stale_label_contract_before_fitting(self):
+        labels = pd.DataFrame({
+            "code": ["513100", "513500"],
+            "label_contract_version": ["next-open-v1", "next-open-v1"],
+        })
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "research_label_contract_stale:required=next-open-v2:observed=next-open-v1",
+        ):
+            ResearchPipeline._validate_current_label_contract(labels)
+
+    def test_classical_tournament_rejects_mixed_label_contracts(self):
+        labels = pd.DataFrame({
+            "code": ["513100", "513500"],
+            "label_contract_version": [LABEL_CONTRACT_VERSION, "next-open-v1"],
+        })
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "observed=next-open-v1,next-open-v2",
+        ):
+            ResearchPipeline._validate_current_label_contract(labels)
+
+    def test_classical_tournament_accepts_current_label_contract(self):
+        labels = pd.DataFrame({
+            "code": ["513100", "513500"],
+            "label_contract_version": [LABEL_CONTRACT_VERSION] * 2,
+        })
+
+        ResearchPipeline._validate_current_label_contract(labels)
+
+    def test_classical_tournament_rejects_partially_missing_label_contract(self):
+        labels = pd.DataFrame({
+            "code": ["513100", "513500"],
+            "label_contract_version": [LABEL_CONTRACT_VERSION, None],
+        })
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "observed=missing,next-open-v2",
+        ):
+            ResearchPipeline._validate_current_label_contract(labels)
+
+    def test_refresh_labels_uses_latest_feature_snapshot_before_non_trading_day(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root,
+                market="cn_qdii_etf",
+                agent="codex",
+                as_of="2026-08-09",
+                offline=True,
+            )
+            pipeline.store.write_feature_snapshot(
+                "cn_qdii_etf",
+                "2026-08-07",
+                pd.DataFrame([self._scoped_feature("513100")]),
+            )
+            labels = pd.DataFrame([{
+                "code": "513100",
+                "trade_date": "20260807",
+                "horizon": 10,
+                "label": "up",
+                "label_contract_version": LABEL_CONTRACT_VERSION,
+            }])
+
+            with patch.object(
+                pipeline,
+                "_build_forward_label_snapshot",
+                return_value=(labels, 1.0),
+            ):
+                result = pipeline.refresh_labels()
+
+            written = pipeline.store.read_label_snapshot(
+                "cn_qdii_etf", "2026-08-07"
+            )
+
+        self.assertEqual(result["snapshot_date"], "20260807")
+        self.assertEqual(result["label_contract_version"], LABEL_CONTRACT_VERSION)
+        self.assertEqual(len(written), 1)
+
+    def test_baseline_first_winner_is_trained_only_on_development_and_frozen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="codex",
+                as_of="2026-08-07",
+                offline=True,
+            )
+            dataset = pd.DataFrame({
+                "trade_date": ["20240102", "20241231", "20250102"],
+                "horizon": [20, 20, 20],
+                "label_end_date": ["20240201", "20250131", "20250201"],
+                "label": ["up", "flat", "down"],
+                "excess_return": [0.01, 0.0, -0.01],
+                "momentum_20": [0.1, 0.0, -0.1],
+                "momentum_60": [0.2, 0.0, -0.2],
+            })
+            bundle = SimpleNamespace(
+                model_version="baseline-first-model-v1",
+                metrics={"training_protocol_version": "fixture-v1"},
+            )
+            result = {
+                "evaluation_contract": "baseline-first-incremental-v2",
+                "report_path": str(root / "reports" / "research" / "report.md"),
+                "trial_declaration_id": "trial-v1",
+                "incremental_gate": {"net_excess_return_delta": 0.02},
+            }
+            spec = mainline_specs("a_share", "hs300")[0]
+
+            with patch(
+                "stock_analyze.research.pipeline.train_model_bundle",
+                return_value=bundle,
+            ) as train, patch(
+                "stock_analyze.research.pipeline.save_model_bundle",
+            ), patch.object(
+                __import__(
+                    "stock_analyze.research.pipeline",
+                    fromlist=["ModelRegistry"],
+                ).ModelRegistry,
+                "admit_development_shadow",
+                return_value={
+                    "models": {
+                        bundle.model_version: {"status": "shadow"},
+                    }
+                },
+            ):
+                frozen = pipeline._freeze_baseline_first_candidate(
+                    dataset=dataset,
+                    feature_columns=("momentum_20", "momentum_60"),
+                    model_spec=spec,
+                    portfolio_contract={"accounts": [], "trading": {}},
+                    account_scope="hs300",
+                    development_start="20240101",
+                    development_end="20241231",
+                    evaluation=result,
+                )
+            transfer_report = Path(frozen["transfer_report"])
+            transfer_payload = json.loads(
+                transfer_report.read_text(encoding="utf-8")
+            )
+
+        trained = train.call_args.args[0]
+        self.assertEqual(trained["trade_date"].tolist(), ["20240102", "20241231"])
+        self.assertEqual(frozen["status"], "shadow")
+        self.assertEqual(frozen["model_version"], bundle.model_version)
+        self.assertIn("tournaments", transfer_report.parts)
+        self.assertEqual(transfer_payload["formal_strategy_activated"], False)
+        self.assertEqual(
+            transfer_payload["candidates"][0]["model_version"],
+            bundle.model_version,
+        )
+
+    def test_baseline_first_window_is_frozen_without_legacy_tournament(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="codex",
+                as_of="2026-08-07",
+                offline=True,
+            )
+            dates = pd.date_range("2020-01-02", periods=300, freq="B")
+            dataset = pd.DataFrame({
+                "trade_date": dates.strftime("%Y%m%d"),
+                "label_end_date": (
+                    dates + pd.offsets.BDay(20)
+                ).strftime("%Y%m%d"),
+                "research_scope": "hs300",
+            })
+
+            first = pipeline._baseline_first_window_payload(
+                dataset=dataset,
+                account_scope="hs300",
+                horizon=20,
+            )
+            extended = pd.concat([
+                dataset,
+                pd.DataFrame({
+                    "trade_date": ["20260810"],
+                    "label_end_date": ["20260907"],
+                    "research_scope": ["hs300"],
+                }),
+            ], ignore_index=True)
+            second = pipeline._baseline_first_window_payload(
+                dataset=extended,
+                account_scope="hs300",
+                horizon=20,
+            )
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["source"], "deterministic_initialization")
+        self.assertTrue(first["historically_consumed"])
+
+    def test_shadow_stop_reason_extends_missing_evidence_but_caps_at_week_sixteen(self):
+        reports = {
+            "ranker": SimpleNamespace(reasons=("forward_evidence_status", "forward_cycles")),
+            "portfolio": SimpleNamespace(reasons=("forward_evidence_status", "forward_cycles")),
+        }
+
+        self.assertIsNone(_shadow_stop_reason(12, reports))
+        self.assertEqual(
+            _shadow_stop_reason(16, reports),
+            "shadow_evidence_cap_reached",
+        )
+
+    def test_shadow_stop_reason_rejects_hard_quality_failure_at_week_twelve(self):
+        reports = {
+            "ranker": SimpleNamespace(reasons=("forward_net_excess_return",)),
+            "portfolio": SimpleNamespace(reasons=("forward_net_excess_return",)),
+        }
+
+        self.assertEqual(
+            _shadow_stop_reason(12, reports),
+            "shadow_quality_gate_failed:forward_net_excess_return",
+        )
 
     def test_materialized_stock_basic_repairs_unclassified_industry(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -123,6 +345,17 @@ class ResearchPipelineTest(unittest.TestCase):
             "impact_capped_notional_ratio": 0.0,
             "edge_calibration_available": True,
             "attribution_status": "reconciled",
+            "diagnostic_net_excess_return": 0.03,
+            "diagnostic_max_drawdown": 0.12,
+            "diagnostic_annual_turnover": 4.0,
+            "diagnostic_trade_count": 25,
+            "diagnostic_capital_utilization": 0.92,
+            "diagnostic_all_accounts_positive_active": True,
+            "diagnostic_simulator_version": "paper-parity-daily-v1",
+            "diagnostic_execution_evidence_status": "available",
+            "diagnostic_missing_liquidity_notional_ratio": 0.0,
+            "diagnostic_impact_capped_notional_ratio": 0.0,
+            "diagnostic_attribution_status": "reconciled",
             "forward_evidence_status": "available",
             "forward_cycles": 12,
             "forward_net_excess_return": 0.02,
@@ -1431,7 +1664,13 @@ class ResearchPipelineTest(unittest.TestCase):
                 "a_share", "2026-07-10", pd.DataFrame([self._scoped_feature()])
             )
             pipeline.store.write_label_snapshot(
-                "a_share", "2026-07-10", pd.DataFrame([{"code": "000001", "trade_date": "20260710", "horizon": 3, "label": "up"}])
+                "a_share", "2026-07-10", pd.DataFrame([{
+                    "code": "000001",
+                    "trade_date": "20260710",
+                    "horizon": 3,
+                    "label": "up",
+                    "label_contract_version": LABEL_CONTRACT_VERSION,
+                }])
             )
 
             def bundle(*_args, horizon, **_kwargs):
@@ -1508,6 +1747,7 @@ class ResearchPipelineTest(unittest.TestCase):
                     "account_id": row["account_id"],
                     "horizon": 3,
                     "label": "up",
+                    "label_contract_version": LABEL_CONTRACT_VERSION,
                 }
                 for row in features.to_dict(orient="records")
             ])
@@ -1597,6 +1837,67 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertIn(
             "forward_evidence_status",
             registry["models"]["m5"]["gate_history"][-1]["reasons"],
+        )
+
+    def test_shadow_cycle_only_evaluates_roles_currently_in_shadow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="codex",
+                as_of="2026-07-10",
+                offline=True,
+            )
+            model_root = pipeline._model_root(20, "hs300")
+            model_root.mkdir(parents=True)
+            (model_root / "registry.json").write_text(
+                json.dumps({
+                    "champion_model_version": None,
+                    "models": {
+                        "m20": {
+                            "status": "shadow",
+                            "role_status": {
+                                "classifier": "research",
+                                "ranker": "shadow",
+                                "portfolio": "shadow",
+                            },
+                            "gate_history": [],
+                        }
+                    },
+                }),
+                encoding="utf-8",
+            )
+            bundle = SimpleNamespace(
+                model_version="m20",
+                metrics=self._passing_gate_metrics(),
+            )
+
+            with (
+                patch(
+                    "stock_analyze.research.pipeline.load_forward_portfolio_evidence",
+                    return_value={},
+                ),
+                patch(
+                    "stock_analyze.research.pipeline.ShadowCycleTracker.record",
+                    return_value={"is_new_cycle": True, "count": 1},
+                ),
+            ):
+                result = pipeline._advance_shadow_cycle(
+                    20,
+                    bundle,
+                    10,
+                    account_scope="hs300",
+                )
+
+            registry = json.loads((model_root / "registry.json").read_text())
+
+        model = registry["models"]["m20"]
+        self.assertEqual(result["status"], "shadow")
+        self.assertEqual(model["role_status"]["classifier"], "research")
+        self.assertEqual(
+            [gate["model_role"] for gate in model["gate_history"]],
+            ["ranker", "portfolio"],
         )
 
     def test_pinned_iteration_candidate_runs_alongside_existing_champion(self):

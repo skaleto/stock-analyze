@@ -99,6 +99,12 @@ class ResearchLocalTrainingTest(unittest.TestCase):
                 "2026-08-07",
                 pd.DataFrame([{"code": "000001", "trade_date": "20260807", "horizon": 3, "label": "up"}]),
             )
+            window_manifest = (
+                source / "data/research/baseline_first/a_share/hs300"
+                / "window_manifest.json"
+            )
+            window_manifest.parent.mkdir(parents=True)
+            window_manifest.write_text('{"payload":{"frozen":true}}', encoding="utf-8")
 
             manifest = export_training_bundle(
                 source,
@@ -112,11 +118,16 @@ class ResearchLocalTrainingTest(unittest.TestCase):
             target_features = ResearchStore(target / "data/research").read_feature_snapshot(
                 "a_share", "2026-08-07"
             )
+            target_window_manifest = (
+                target / "data/research/baseline_first/a_share/hs300"
+                / "window_manifest.json"
+            ).is_file()
 
         self.assertEqual(manifest["kind"], "research_training_input")
         self.assertEqual(verified["status"], "verified")
         self.assertEqual(installed["status"], "installed")
         self.assertEqual(target_features.iloc[0]["code"], "000001")
+        self.assertTrue(target_window_manifest)
 
     def test_tampered_bundle_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -147,6 +147,15 @@ class ResearchStore:
             )
         return max(common_dates)
 
+    def latest_feature_snapshot_date(self, market: str, *, as_of: str) -> str:
+        cutoff = str(as_of).replace("-", "")[:8]
+        dates = self._snapshot_dates("features", market, cutoff=cutoff)
+        if not dates:
+            raise FileNotFoundError(
+                f"research_feature_snapshot_missing:{market}:as_of={cutoff}"
+            )
+        return max(dates)
+
     def prune_dated_artifacts(
         self,
         market: str,

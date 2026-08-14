@@ -101,6 +101,7 @@ function bps(input: unknown): string {
 function rebalanceFrequencyLabel(input: string | null | undefined): string {
   const labels: Record<string, string> = {
     daily: "每日",
+    weekly: "每周",
     monthly: "每月",
   };
   return labels[String(input ?? "").toLowerCase()] ?? "-";
@@ -193,6 +194,8 @@ function baselineLabel(input: string): string {
     momentum_20: "20日动量",
     low_volatility_20: "20日低波动",
     no_trade: "空仓基线",
+    transparent_baseline: "透明规则基线",
+    candidate_increment: "机器学习增量",
   };
   return labels[input] ?? input;
 }
@@ -238,6 +241,13 @@ function reasonLabel(reason: string): string {
     capital_utilization: "资金利用率不足",
     positive_folds: "分段超额收益并非全部为正",
     point_in_time_audit: "点时数据审计未通过",
+    positive_rank_ic: "候选排序能力未转为正值",
+    positive_candidate_net_return: "候选扣费后收益未转为正值",
+    positive_net_increment: "机器学习增量没有战胜透明基线",
+    positive_fold_majority: "多数开发折没有获得正增量",
+    absolute_turnover: "绝对换手率超过上限",
+    relative_turnover: "相对基线的换手增幅超过上限",
+    drawdown_delta: "相对基线的回撤恶化超过上限",
   };
   const [maybeRole, code] = reason.includes(":")
     ? reason.split(":", 2)
@@ -377,6 +387,21 @@ function ModelTable({
           key: "deployable-active",
           label: "可部署组合 · 净超额",
           render: (row) => percent(deployableNetExcessReturn(row)),
+        },
+        {
+          key: "transparent-baseline",
+          label: "透明基线 · 净超额",
+          render: (row) => percent(
+            row.baselineComparison?.transparent_baseline?.net_excess_return,
+          ),
+        },
+        {
+          key: "candidate-increment",
+          label: "机器学习增量",
+          render: (row) => percent(
+            row.baselineComparison?.candidate_increment
+              ?.net_excess_return_delta,
+          ),
         },
         {
           key: "calibration",

@@ -47,6 +47,7 @@ from .classical_specs import (
 from .classical_tournament import run_classical_tournament as execute_classical_tournament
 from .cross_sectional_candidate import evaluate_cross_sectional_candidate
 from .event_study import build_event_study_from_parquet
+from .evaluation_windows import build_account_windows, seal_evaluation_manifest
 from .events import write_events_incremental
 from .feature_registry import (
     DEFAULT_REGISTRY,
@@ -105,6 +106,48 @@ from .trial_ledger import DEFAULT_CLASSICAL_TRIAL_SPECS, TrialLedger
 from .universe import attach_point_in_time_universe
 
 
+_SHADOW_EXTENSION_REASONS = {
+    "forward_evidence_status",
+    "forward_cycles",
+    "lookthrough_evidence_status",
+    "underlying_profile_coverage",
+    "underlying_company_weight_coverage",
+}
+
+
+def _shadow_stop_reason(
+    cycle_count: int,
+    reports: dict[str, Any],
+) -> str | None:
+    if int(cycle_count) < 12:
+        return None
+    reasons = sorted({
+        str(reason)
+        for role in ("ranker", "portfolio")
+        for reason in getattr(reports.get(role), "reasons", ("gate_missing",))
+    })
+    if not reasons:
+        return None
+    if int(cycle_count) >= 16:
+        return "shadow_evidence_cap_reached"
+    if "forward_evidence_status" in reasons:
+        reasons = [
+            reason
+            for reason in reasons
+            if reason not in {
+                "forward_net_excess_return",
+                "forward_max_drawdown",
+                "forward_all_accounts_positive_active",
+            }
+        ]
+    hard_reasons = [
+        reason for reason in reasons if reason not in _SHADOW_EXTENSION_REASONS
+    ]
+    if hard_reasons:
+        return "shadow_quality_gate_failed:" + ",".join(hard_reasons)
+    return None
+
+
 class ResearchPipeline:
     _FEATURE_BATCH_SIZE = 32
     _A_SHARE_ENRICH_BATCH_SIZE = 64
@@ -136,6 +179,32 @@ class ResearchPipeline:
         "benchmark_exit_price", "benchmark_return", "excess_return",
         "account_id", "research_scope", "benchmark_code",
     )
+
+    @staticmethod
+    def _validate_current_label_contract(labels: pd.DataFrame) -> None:
+        if "label_contract_version" not in labels.columns:
+            observed = "missing"
+        else:
+            versions = (
+                labels["label_contract_version"]
+                .astype("string")
+                .str.strip()
+            )
+            observed_values = {
+                str(value)
+                for value in versions.loc[
+                    versions.notna() & versions.ne("")
+                ].unique().tolist()
+            }
+            if bool((versions.isna() | versions.eq("")).any()):
+                observed_values.add("missing")
+            observed_versions = sorted(observed_values)
+            observed = ",".join(observed_versions) if observed_versions else "missing"
+        if observed != LABEL_CONTRACT_VERSION:
+            raise ValueError(
+                "research_label_contract_stale:"
+                f"required={LABEL_CONTRACT_VERSION}:observed={observed}"
+            )
 
     def __init__(
         self,
@@ -1479,9 +1548,10 @@ class ResearchPipeline:
         )
         return scored
 
-    def run_research(self) -> dict[str, Any]:
-        features = self.store.read_feature_snapshot(self.market, self.as_of)
-        features_rows = len(features)
+    def _build_forward_label_snapshot(
+        self,
+        features: pd.DataFrame,
+    ) -> tuple[pd.DataFrame, float]:
         price_columns = [
             column for column in ("code", "trade_date", "open", "high", "low", "close")
             if column in features.columns
@@ -1522,11 +1592,32 @@ class ResearchPipeline:
             raise ValueError(f"research_label_scope_missing:{self.market}")
         labels = pd.concat(label_parts, ignore_index=True, sort=False)
         benchmark_coverage = min(benchmark_coverages)
-        label_parts.clear()
-        del label_parts, part, account_features, benchmark
+        return labels, benchmark_coverage
+
+    def refresh_labels(self) -> dict[str, Any]:
+        snapshot_date = self.store.latest_feature_snapshot_date(
+            self.market,
+            as_of=self.as_of,
+        )
+        features = self.store.read_feature_snapshot(self.market, snapshot_date)
+        labels, benchmark_coverage = self._build_forward_label_snapshot(features)
+        self._validate_current_label_contract(labels)
+        self.store.write_label_snapshot(self.market, snapshot_date, labels)
+        return {
+            "status": "complete",
+            "snapshot_date": snapshot_date,
+            "labels_rows": int(len(labels)),
+            "benchmark_coverage": round(float(benchmark_coverage), 4),
+            "label_contract_version": LABEL_CONTRACT_VERSION,
+        }
+
+    def run_research(self) -> dict[str, Any]:
+        features = self.store.read_feature_snapshot(self.market, self.as_of)
+        features_rows = len(features)
+        labels, benchmark_coverage = self._build_forward_label_snapshot(features)
         labels_rows = len(labels)
         self.store.write_label_snapshot(self.market, self.as_of, labels)
-        del labels, price_columns
+        del labels
         gc.collect()
 
         market_daily = features.groupby("trade_date", as_index=False).agg(
@@ -1624,6 +1715,7 @@ class ResearchPipeline:
         )
         features = self.store.read_feature_snapshot(self.market, snapshot_date)
         labels = self.store.read_label_snapshot(self.market, snapshot_date)
+        self._validate_current_label_contract(labels)
         if account_scope is None:
             scope_column = (
                 "research_scope"
@@ -1945,6 +2037,7 @@ class ResearchPipeline:
         )
         features = self.store.read_feature_snapshot(self.market, snapshot_date)
         labels = self.store.read_label_snapshot(self.market, snapshot_date)
+        self._validate_current_label_contract(labels)
         scope_column = (
             "research_scope"
             if "research_scope" in features.columns
@@ -2148,17 +2241,256 @@ class ResearchPipeline:
             baseline=baseline,
         )
 
-    def run_cross_sectional_alpha_repair(
+    def _freeze_baseline_first_candidate(
+        self,
+        *,
+        dataset: pd.DataFrame,
+        feature_columns: tuple[str, ...],
+        model_spec: Any,
+        portfolio_contract: dict[str, Any],
+        account_scope: str,
+        development_start: str,
+        development_end: str,
+        evaluation: dict[str, Any],
+    ) -> dict[str, Any]:
+        development = dataset.loc[
+            dataset["trade_date"].astype(str).between(
+                str(development_start),
+                str(development_end),
+                inclusive="both",
+            )
+        ].copy()
+        if development.empty:
+            raise ValueError("baseline_first_freeze_development_empty")
+        effective_contract = {
+            **portfolio_contract,
+            "rebalance_frequency": str(model_spec.rebalance_frequency),
+        }
+        bundle = train_model_bundle(
+            development,
+            feature_columns=feature_columns,
+            horizon=int(model_spec.horizon),
+            random_state=int(model_spec.random_state),
+            portfolio_contract=effective_contract,
+            account_scope=str(account_scope),
+            model_spec=model_spec,
+            trial_declaration_id=str(
+                evaluation.get("trial_declaration_id") or ""
+            ),
+        )
+        model_root = self._model_root(int(model_spec.horizon), account_scope)
+        transfer_root = (
+            model_root
+            / "tournaments"
+            / (
+                f"{str(evaluation.get('as_of') or self.run_key)}-"
+                f"{TRAINING_PROTOCOL_VERSION}-{str(model_spec.spec_hash)[:12]}"
+            )
+        )
+        artifact = (
+            transfer_root
+            / "candidates"
+            / str(model_spec.spec_id)
+            / f"{bundle.model_version}.joblib"
+        )
+        save_model_bundle(bundle, artifact)
+        transfer_report = transfer_root / "report.json"
+        metrics = {
+            **dict(bundle.metrics),
+            "baseline_first_admission": True,
+            "baseline_incremental_net_excess_return": (
+                (evaluation.get("incremental_gate") or {}).get(
+                    "net_excess_return_delta"
+                )
+            ),
+        }
+        registry = ModelRegistry(model_root / "registry.json")
+        state = registry.admit_development_shadow(
+            bundle.model_version,
+            metadata={
+                "artifact": str(artifact),
+                "account_scope": str(account_scope),
+                "spec_id": str(model_spec.spec_id),
+                "spec_hash": str(model_spec.spec_hash),
+                "metrics": metrics,
+                "tournament_report": str(transfer_report),
+            },
+            admission={
+                "contract": str(evaluation.get("evaluation_contract") or ""),
+                "report": str(evaluation.get("report_path") or ""),
+                "development_start": str(development_start),
+                "development_end": str(development_end),
+                "trial_declaration_id": str(
+                    evaluation.get("trial_declaration_id") or ""
+                ),
+            },
+        )
+        model = (state.get("models") or {}).get(bundle.model_version) or {}
+        transfer_payload = {
+            "schema_version": 1,
+            "evaluation_contract": str(
+                evaluation.get("evaluation_contract") or ""
+            ),
+            "market": self.market,
+            "account_scope": str(account_scope),
+            "horizon": int(model_spec.horizon),
+            "as_of": str(evaluation.get("as_of") or self.run_key),
+            "formal_strategy_activated": False,
+            "source_evaluation_report": str(
+                evaluation.get("json_path") or evaluation.get("report_path") or ""
+            ),
+            "candidates": [{
+                "model_version": str(bundle.model_version),
+                "status": str(model.get("status") or "shadow"),
+                "artifact": str(artifact),
+                "spec_id": str(model_spec.spec_id),
+                "spec_hash": str(model_spec.spec_hash),
+            }],
+        }
+        write_text_atomic(
+            transfer_report,
+            json.dumps(
+                transfer_payload,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "status": str(model.get("status") or "shadow"),
+            "admitted": str(model.get("status") or "shadow") == "shadow",
+            "model_version": str(bundle.model_version),
+            "artifact": str(artifact),
+            "spec_id": str(model_spec.spec_id),
+            "spec_hash": str(model_spec.spec_hash),
+            "transfer_report": str(transfer_report),
+            "formal_strategy_activated": False,
+        }
+
+    def _baseline_first_window_payload(
+        self,
+        *,
+        dataset: pd.DataFrame,
+        account_scope: str,
+        horizon: int,
+    ) -> dict[str, Any]:
+        """Freeze the consumed final boundary outside the retired tournament."""
+
+        manifest_path = (
+            self.repo_root
+            / "data" / "research" / "baseline_first" / self.market
+            / str(account_scope) / "window_manifest.json"
+        )
+        if manifest_path.exists():
+            try:
+                state = json.loads(manifest_path.read_text(encoding="utf-8"))
+                payload = dict(state["payload"])
+            except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+                raise ValueError("baseline_first_window_manifest_invalid") from exc
+            seal_evaluation_manifest(manifest_path, payload)
+            return payload
+
+        source_payload: dict[str, Any] | None = None
+        source_declaration_id = ""
+        legacy_root = self._model_root(int(horizon), account_scope) / "tournaments"
+        for candidate in reversed(sorted(legacy_root.glob("*/evaluation_manifest.json"))):
+            try:
+                state = json.loads(candidate.read_text(encoding="utf-8"))
+                payload = dict(state["payload"])
+            except (OSError, json.JSONDecodeError, KeyError, TypeError):
+                continue
+            if (
+                str(payload.get("market") or "") == self.market
+                and str(payload.get("account_scope") or "") == str(account_scope)
+                and int(payload.get("horizon") or 0) == int(horizon)
+                and all(
+                    payload.get(key)
+                    for key in (
+                        "development_start",
+                        "development_end",
+                        "final_start",
+                        "final_end",
+                    )
+                )
+            ):
+                source_payload = payload
+                source_declaration_id = str(state.get("declaration_id") or "")
+                break
+
+        if source_payload is None:
+            windows = build_account_windows(
+                dataset,
+                account_scope=account_scope,
+                horizon=int(horizon),
+                n_splits=4,
+                embargo_days=int(horizon),
+            )
+            final_fold = windows.folds[-1]
+            development = dataset.loc[
+                dataset["trade_date"].astype(str).isin(final_fold.train_dates)
+            ]
+            observed_final = dataset.loc[
+                dataset["trade_date"].astype(str).isin(
+                    final_fold.validation_dates
+                )
+            ]
+            if development.empty or observed_final.empty:
+                raise ValueError("baseline_first_window_empty")
+            source_payload = {
+                "development_start": str(development["trade_date"].min()),
+                "development_end": str(development["trade_date"].max()),
+                "final_start": str(observed_final["trade_date"].min()),
+                "final_end": str(observed_final["trade_date"].max()),
+            }
+
+        boundaries = {
+            key: str(source_payload[key])
+            for key in (
+                "development_start",
+                "development_end",
+                "final_start",
+                "final_end",
+            )
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(boundaries, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:16]
+        manifest = seal_evaluation_manifest(
+            manifest_path,
+            {
+                "protocol": "baseline-first-window-v1",
+                "market": self.market,
+                "account_scope": str(account_scope),
+                "horizon": int(horizon),
+                "spec_hashes": ["baseline-first-window-v1"],
+                "data_fingerprint": fingerprint,
+                **boundaries,
+                "source": (
+                    "legacy_sealed_tournament"
+                    if source_declaration_id
+                    else "deterministic_initialization"
+                ),
+                "source_declaration_id": source_declaration_id,
+                "historically_consumed": True,
+            },
+        )
+        return dict(manifest["payload"])
+
+    def run_baseline_first_research(
         self,
         *,
         account_scope: str | None = None,
-        horizon: int = 20,
+        horizon: int | None = None,
     ) -> dict[str, Any]:
-        """Evaluate the frozen H20 objective ablation without opening final data."""
+        """Compare the declared baseline and residual on development folds only."""
 
-        if self.market != "a_share" or int(horizon) != 20:
+        target_horizon = int(
+            horizon if horizon is not None else mainline_horizon(self.market)
+        )
+        if target_horizon != mainline_horizon(self.market):
             raise ValueError(
-                f"cross_sectional_repair_not_predeclared:{self.market}:{int(horizon)}"
+                f"baseline_first_not_predeclared:{self.market}:{target_horizon}"
             )
         snapshot_date = self.store.latest_common_snapshot_date(
             self.market,
@@ -2166,6 +2498,7 @@ class ResearchPipeline:
         )
         features = self.store.read_feature_snapshot(self.market, snapshot_date)
         labels = self.store.read_label_snapshot(self.market, snapshot_date)
+        self._validate_current_label_contract(labels)
         scope_column = (
             "research_scope"
             if "research_scope" in features.columns
@@ -2179,22 +2512,27 @@ class ResearchPipeline:
                 for value in features[scope_column].dropna().astype(str).unique()
                 if str(value).strip()
             )
+            del features, labels
+            gc.collect()
             results = [
-                self.run_cross_sectional_alpha_repair(
+                self.run_baseline_first_research(
                     account_scope=scope,
-                    horizon=int(horizon),
+                    horizon=target_horizon,
                 )
                 for scope in scopes
             ]
+            statuses = {str(item.get("status") or "") for item in results}
             return {
                 "status": (
                     "development_pass"
-                    if any(item.get("status") == "development_pass" for item in results)
-                    else "research"
+                    if "development_pass" in statuses
+                    else "insufficient_evidence"
+                    if "insufficient_evidence" in statuses
+                    else "baseline_wins"
                 ),
                 "snapshot_date": snapshot_date,
                 "market": self.market,
-                "horizon": int(horizon),
+                "horizon": target_horizon,
                 "account_scopes": scopes,
                 "results": results,
             }
@@ -2214,7 +2552,7 @@ class ResearchPipeline:
                 scoped_labels[label_scope_column].astype(str).eq(normalized_scope)
             ].copy()
         scoped_labels = scoped_labels.loc[
-            pd.to_numeric(scoped_labels["horizon"], errors="coerce").eq(int(horizon))
+            pd.to_numeric(scoped_labels["horizon"], errors="coerce").eq(target_horizon)
         ].copy()
         if scoped_features.empty or scoped_labels.empty:
             raise ValueError(
@@ -2233,11 +2571,11 @@ class ResearchPipeline:
             how="inner",
             suffixes=("", "_label"),
         )
-        spec = a_share_h20_specs(normalized_scope)[0]
+        spec = mainline_specs(self.market, normalized_scope)[0]
         feature_contract = account_feature_contract(
             self.market,
             normalized_scope,
-            int(horizon),
+            target_horizon,
         )
         feature_columns = tuple(
             column
@@ -2247,21 +2585,12 @@ class ResearchPipeline:
             and pd.to_numeric(dataset[column], errors="coerce").notna().mean()
             >= feature_contract.minimum_coverage
         )
-        manifest_path = (
-            self.repo_root
-            / "data" / "research" / "models" / self.market
-            / normalized_scope / str(int(horizon))
-            / "tournaments" / str(snapshot_date).replace("-", "")
-            / "evaluation_manifest.json"
+        payload = self._baseline_first_window_payload(
+            dataset=dataset,
+            account_scope=normalized_scope,
+            horizon=target_horizon,
         )
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            payload = manifest["payload"]
-        except (OSError, json.JSONDecodeError, KeyError) as exc:
-            raise ValueError(
-                f"cross_sectional_repair_manifest_missing:{manifest_path}"
-            ) from exc
-        return evaluate_cross_sectional_candidate(
+        evaluation = evaluate_cross_sectional_candidate(
             self.repo_root,
             market=self.market,
             account_scope=normalized_scope,
@@ -2274,6 +2603,41 @@ class ResearchPipeline:
             development_end=str(payload["development_end"]),
             observed_final_start=str(payload["final_start"]),
             observed_final_end=str(payload["final_end"]),
+        )
+        if evaluation.get("status") == "development_pass":
+            admission = self._freeze_baseline_first_candidate(
+                dataset=dataset,
+                feature_columns=feature_columns,
+                model_spec=spec,
+                portfolio_contract=self._research_portfolio_contract(normalized_scope),
+                account_scope=normalized_scope,
+                development_start=str(payload["development_start"]),
+                development_end=str(payload["development_end"]),
+                evaluation=evaluation,
+            )
+            evaluation = {
+                **evaluation,
+                "registry_mutated": bool(admission.get("admitted")),
+                "shadow_admission": admission,
+            }
+            write_text_atomic(
+                Path(str(evaluation["json_path"])),
+                json.dumps(evaluation, ensure_ascii=False, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        return evaluation
+
+    def run_cross_sectional_alpha_repair(
+        self,
+        *,
+        account_scope: str | None = None,
+        horizon: int = 20,
+    ) -> dict[str, Any]:
+        """Backward-compatible alias for the baseline-first development run."""
+
+        return self.run_baseline_first_research(
+            account_scope=account_scope,
+            horizon=horizon,
         )
 
     @staticmethod
@@ -3524,8 +3888,16 @@ class ResearchPipeline:
         status = str(model.get("status", "shadow"))
         if cycle["is_new_cycle"] and status == "shadow":
             role_status = model.setdefault("role_status", {})
-            for role in ("classifier", "ranker", "portfolio"):
-                role_status.setdefault(role, "shadow")
+            if not role_status:
+                role_status.update({
+                    role: "shadow"
+                    for role in ("classifier", "ranker", "portfolio")
+                })
+            shadow_roles = tuple(
+                role
+                for role in ("classifier", "ranker", "portfolio")
+                if role_status.get(role) == "shadow"
+            )
             registry._write(state)
             reports = evaluate_role_activation(
                 activation_evidence_from_metrics(
@@ -3535,9 +3907,20 @@ class ResearchPipeline:
                 current_status="shadow",
                 target_status="active",
             )
-            for role, report in reports.items():
+            for role in shadow_roles:
+                report = reports[role]
                 state = registry.record_role_gate(bundle.model_version, role, report)
             status = str(state["models"][bundle.model_version]["status"])
+            stop_reason = _shadow_stop_reason(cycle["count"], reports)
+            if status == "shadow" and stop_reason:
+                state = registry.reject_shadow(
+                    bundle.model_version,
+                    reason=stop_reason,
+                    event_id=(
+                        f"shadow-stop:{bundle.model_version}:{cycle['count']}"
+                    ),
+                )
+                status = str(state["models"][bundle.model_version]["status"])
         return {**cycle, "status": status}
 
     def _write_iteration_candidate_predictions(

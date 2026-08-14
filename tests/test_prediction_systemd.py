@@ -110,7 +110,10 @@ class PredictionSystemdTest(unittest.TestCase):
         service = (UNIT_DIR / "stock-analyze-model-training.service").read_text(encoding="utf-8")
         timer = (UNIT_DIR / "stock-analyze-model-training.timer").read_text(encoding="utf-8")
 
-        self.assertIn("run-classical-tournament --offline", service)
+        self.assertIn("refresh-research-labels --offline", service)
+        self.assertNotIn("run-prediction-research --offline", service)
+        self.assertIn("run-baseline-first-research --offline", service)
+        self.assertNotIn("run-classical-tournament --offline", service)
         self.assertNotIn("train-prediction-models --offline", service)
         self.assertNotIn("active", service.lower())
         self.assertIn("flock", service)

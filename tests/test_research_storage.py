@@ -122,6 +122,30 @@ class ResearchStorageTest(unittest.TestCase):
 
         self.assertEqual(selected, "20260717")
 
+    def test_latest_feature_snapshot_does_not_require_an_existing_label(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ResearchStore(Path(tmp))
+            for day in ("2026-07-16", "2026-07-17"):
+                store.write_feature_snapshot(
+                    "a_share",
+                    day,
+                    pd.DataFrame([{
+                        "code": "000001",
+                        "trade_date": day.replace("-", ""),
+                    }]),
+                )
+            store.write_label_snapshot(
+                "a_share",
+                "2026-07-16",
+                pd.DataFrame([{"code": "000001", "trade_date": "20260716"}]),
+            )
+
+            selected = store.latest_feature_snapshot_date(
+                "a_share", as_of="2026-07-18"
+            )
+
+        self.assertEqual(selected, "20260717")
+
     def test_attribution_snapshot_is_scoped_and_preserves_lineage_ids(self):
         frame = pd.DataFrame([
             {
