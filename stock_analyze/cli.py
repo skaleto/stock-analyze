@@ -560,6 +560,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Verified immutable ECS input bundle that fixes snapshot provenance.",
     )
 
+    strategy_campaign = sub.add_parser(
+        "run-strategy-campaign",
+        help="Run one sealed, bounded transparent-strategy recovery campaign.",
+    )
+    strategy_campaign.add_argument(
+        "--offline", action="store_true", help="Use immutable local bundles only."
+    )
+    strategy_campaign.add_argument("--repo-root", type=Path, default=Path("."))
+    strategy_campaign.add_argument("--campaign", default=None)
+    strategy_campaign.add_argument(
+        "--input-bundle",
+        type=Path,
+        action="append",
+        default=[],
+        help="Path to a verified research-training input manifest; pass once per market.",
+    )
+    strategy_campaign.add_argument(
+        "--stage",
+        choices=["transparent", "incremental-ml"],
+        default="transparent",
+    )
+
     regime_tabular = sub.add_parser(
         "run-regime-tabular-alpha",
         help="Run the frozen ZZ500 regime-aware LightGBM development evaluation.",
@@ -1298,6 +1320,9 @@ def main(argv: list[str] | None = None) -> int:
     }:
         ensure_dirs(args.logs_dir)
         return _command_research_workflow(args)
+    if args.command == "run-strategy-campaign":
+        ensure_dirs(args.logs_dir)
+        return _command_strategy_campaign(args)
     if args.command == "run-rule-core-diagnostic":
         ensure_dirs(args.logs_dir)
         return _command_rule_core_diagnostic(args)
@@ -1638,6 +1663,24 @@ def _command_research_workflow(args: argparse.Namespace) -> int:
         else result
     )
     print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0 if result.get("status") not in {"failed", "fallback"} else 2
+
+
+def _command_strategy_campaign(args: argparse.Namespace) -> int:
+    from .research.strategy_campaign import run_strategy_campaign
+
+    try:
+        result = run_strategy_campaign(
+            repo_root=args.repo_root,
+            campaign_id=args.campaign,
+            as_of=args.as_of,
+            stage=str(args.stage).replace("-", "_"),
+            input_manifests=tuple(args.input_bundle),
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI reports sealed input failures
+        print(f"error: run-strategy-campaign failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result.get("status") not in {"failed", "fallback"} else 2
 
 

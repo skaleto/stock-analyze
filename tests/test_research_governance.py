@@ -11,6 +11,7 @@ from stock_analyze.research.governance import (
     build_aligned_trial_return_matrix,
     deflated_sharpe_probability,
     probability_of_backtest_overfit,
+    evaluate_campaign_governance,
 )
 
 
@@ -117,6 +118,41 @@ class ResearchGovernanceTest(unittest.TestCase):
         )
 
         self.assertAlmostEqual(period_probability, annual_probability)
+
+    def test_campaign_governance_counts_comparable_legacy_trials(self):
+        dates = pd.date_range("2025-01-02", periods=40, freq="B").strftime("%Y%m%d")
+        trials = [
+            {
+                "trial_id": trial_id,
+                "oos_returns": [
+                    {"date": day, "return": float(value)}
+                    for day, value in zip(dates, returns)
+                ],
+            }
+            for trial_id, returns in (
+                ("selected", np.full(40, 0.002)),
+                ("campaign-2", np.linspace(-0.002, 0.002, 40)),
+                ("campaign-3", np.linspace(0.002, -0.002, 40)),
+            )
+        ]
+        legacy = [{
+            "trial_id": "legacy-1",
+            "oos_returns": [
+                {"date": day, "return": float(value)}
+                for day, value in zip(dates, np.full(40, -0.001))
+            ],
+        }]
+
+        result = evaluate_campaign_governance(
+            trials,
+            selected_trial_id="selected",
+            legacy_trials=legacy,
+        )
+
+        self.assertEqual(result["valid_trial_count"], 4)
+        self.assertEqual(result["selected_trial_id"], "selected")
+        self.assertGreaterEqual(result["deflated_sharpe_probability"], 0.0)
+        self.assertLessEqual(result["probability_of_backtest_overfit"], 1.0)
 
 
 if __name__ == "__main__":

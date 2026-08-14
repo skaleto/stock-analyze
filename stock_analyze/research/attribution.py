@@ -21,10 +21,63 @@ import json
 import math
 from typing import Mapping
 
+import pandas as pd
+
 
 SUPPORTED_MARKETS = frozenset({"a_share", "cn_qdii_etf"})
 ATTRIBUTION_CONTRACT_VERSION = "pnl-attribution-v2"
 DEFAULT_MAX_RESIDUAL_RATIO = 0.05
+
+
+def summarize_replay_attribution(periods: pd.DataFrame) -> dict[str, object]:
+    """Split replay active return into six campaign-level, additive effects."""
+
+    required = {
+        "active_return",
+        "benchmark_return",
+        "target_risky_exposure",
+        "beginning_capital_utilization",
+        "security_selection_return",
+        "execution_cost_effect",
+    }
+    missing = required.difference(periods.columns)
+    if missing:
+        raise ValueError(
+            f"replay_attribution_missing_columns:{','.join(sorted(missing))}"
+        )
+
+    def total(column: str) -> float:
+        return float(pd.to_numeric(periods[column], errors="coerce").fillna(0.0).sum())
+
+    benchmark = pd.to_numeric(periods["benchmark_return"], errors="coerce").fillna(0.0)
+    target = pd.to_numeric(
+        periods["target_risky_exposure"], errors="coerce"
+    ).fillna(0.0)
+    actual = pd.to_numeric(
+        periods["beginning_capital_utilization"], errors="coerce"
+    ).fillna(0.0)
+    raw_selection = total("security_selection_return")
+    beta = total("beta_effect") if "beta_effect" in periods.columns else 0.0
+    active_cash = (
+        total("active_cash_effect") if "active_cash_effect" in periods.columns else 0.0
+    )
+    strategic_timing = float(((target - 1.0) * benchmark).sum())
+    components = {
+        "selection": raw_selection - beta,
+        "timing": strategic_timing - active_cash,
+        "beta": beta,
+        "active_cash": active_cash,
+        "fees": total("execution_cost_effect"),
+        "unfilled": float(((actual - target) * benchmark).sum()),
+    }
+    active_total = total("active_return")
+    error = active_total - float(sum(components.values()))
+    return {
+        "status": "reconciled" if abs(error) <= 1e-10 else "mismatch",
+        "components": components,
+        "active_return_total": active_total,
+        "reconciliation_error": float(error),
+    }
 
 
 @dataclass(frozen=True)

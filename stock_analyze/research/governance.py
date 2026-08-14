@@ -153,6 +153,60 @@ def probability_of_backtest_overfit(
     return float(negative_logits / evaluated) if evaluated else 1.0
 
 
+def evaluate_campaign_governance(
+    trials: list[dict[str, Any]],
+    *,
+    selected_trial_id: str,
+    legacy_trials: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
+) -> dict[str, Any]:
+    """Calculate DSR/PBO from every same-window trial, including prior trials."""
+
+    combined = [*trials, *legacy_trials]
+    identifiers = [str(item.get("trial_id") or "") for item in combined]
+    if not identifiers or not all(identifiers) or len(identifiers) != len(set(identifiers)):
+        raise ValueError("campaign_governance_trial_ids_invalid")
+    matrix = build_aligned_trial_return_matrix(combined)
+    selected = str(selected_trial_id)
+    if selected not in matrix.columns:
+        raise ValueError("campaign_governance_selected_trial_missing")
+    raw_sharpes = {
+        column: _sharpe(matrix[column].to_numpy(dtype=float))
+        for column in matrix.columns
+    }
+    annual_sharpes = {
+        column: value * math.sqrt(252.0)
+        for column, value in raw_sharpes.items()
+    }
+    selected_values = matrix[selected].to_numpy(dtype=float)
+    skew = float(pd.Series(selected_values).skew()) if len(selected_values) > 2 else 0.0
+    kurtosis = (
+        float(pd.Series(selected_values).kurtosis() + 3.0)
+        if len(selected_values) > 3 else 3.0
+    )
+    if not math.isfinite(skew):
+        skew = 0.0
+    if not math.isfinite(kurtosis):
+        kurtosis = 3.0
+    return {
+        "selected_trial_id": selected,
+        "valid_trial_count": int(len(matrix.columns)),
+        "observations": int(len(matrix)),
+        "trial_sharpes": annual_sharpes,
+        "deflated_sharpe_probability": deflated_sharpe_probability(
+            observed_sharpe=annual_sharpes[selected],
+            trial_sharpes=list(annual_sharpes.values()),
+            observations=len(matrix),
+            skew=skew,
+            kurtosis=kurtosis,
+            periods_per_year=252.0,
+        ),
+        "probability_of_backtest_overfit": probability_of_backtest_overfit(
+            matrix
+        ),
+        "legacy_trial_count": int(len(legacy_trials)),
+    }
+
+
 @dataclass(frozen=True)
 class TrialRegistry:
     path: Path
@@ -200,5 +254,6 @@ __all__ = [
     "TrialRegistry",
     "build_aligned_trial_return_matrix",
     "deflated_sharpe_probability",
+    "evaluate_campaign_governance",
     "probability_of_backtest_overfit",
 ]

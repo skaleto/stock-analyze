@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest.mock import patch
 
@@ -157,6 +158,15 @@ class ResearchPortfolioReplayTest(unittest.TestCase):
             1e-10,
         )
         self.assertEqual(result.metrics["attribution_status"], "reconciled")
+        contribution_total = sum(
+            sum(json.loads(row or "{}").values())
+            for row in result.periods["security_selection_contributions"]
+        )
+        self.assertAlmostEqual(
+            contribution_total,
+            float(result.periods["security_selection_return"].sum()),
+            places=12,
+        )
         self.assertIn("cash_position_effect_total", result.metrics)
         self.assertIn("security_selection_return_total", result.metrics)
         self.assertIn("execution_cost_effect_total", result.metrics)
@@ -505,6 +515,64 @@ class ResearchPortfolioReplayTest(unittest.TestCase):
         self.assertLessEqual(result.metrics["passive_cash_ratio"], 0.05)
         self.assertTrue((result.nav["cash"] >= -1e-8).all())
         self.assertEqual(result.trades.loc[result.trades["side"].eq("buy"), "code"].nunique(), 2)
+
+    def test_dynamic_target_exposure_separates_strategic_cash_from_failed_fills(self):
+        evaluation = replay_rows().assign(_target_risky_exposure=0.50)
+        contract = {
+            "accounts": [{"id": "hs300", "cash": 100_000.0, "top_n": 1}],
+            "trading": {
+                "lot_size": 100,
+                "commission_rate": 0.0,
+                "min_commission": 0.0,
+                "stamp_tax_rate": 0.0,
+                "slippage_rate": 0.0,
+                "max_single_weight": 1.0,
+            },
+            "rule_execution_policy": {
+                "version": "mechanical-rule-v1",
+                "minimum_target_change": 0.0,
+                "max_daily_turnover": 1.0,
+                "max_industry_weight": 1.0,
+            },
+        }
+
+        result = portfolio_replay.replay_rule_portfolio(evaluation, contract=contract)
+
+        self.assertAlmostEqual(result.metrics["strategic_risky_exposure"], 0.50)
+        self.assertGreaterEqual(result.metrics["target_fill_ratio"], 0.95)
+        self.assertLess(result.metrics["capital_utilization"], 0.60)
+        self.assertLessEqual(result.metrics["cash_drag"], 0.05)
+        self.assertTrue({
+            "strategic_risky_exposure", "target_fill_ratio", "cash_drag",
+        }.issubset(result.periods.columns))
+
+    def test_double_cost_replay_scales_all_execution_costs_without_changing_signals(self):
+        evaluation = replay_rows()
+        base_contract = {
+            "accounts": [{"id": "hs300", "cash": 1_000_000.0, "top_n": 2}],
+            "trading": {
+                "lot_size": 100,
+                "commission_rate": 0.0003,
+                "min_commission": 0.0,
+                "stamp_tax_rate": 0.0005,
+                "slippage_rate": 0.0005,
+                "max_single_weight": 0.40,
+            },
+        }
+
+        base = replay_executable_portfolio(evaluation, contract=base_contract)
+        stressed = replay_executable_portfolio(
+            evaluation,
+            contract={**base_contract, "execution_cost_multiplier": 2.0},
+        )
+
+        self.assertEqual(stressed.metrics["execution_cost_multiplier"], 2.0)
+        self.assertEqual(stressed.metrics["decision_count"], base.metrics["decision_count"])
+        self.assertGreaterEqual(
+            stressed.metrics["total_execution_cost"],
+            base.metrics["total_execution_cost"] * 1.90,
+        )
+        self.assertLessEqual(stressed.metrics["net_return"], base.metrics["net_return"])
 
     def test_account_failure_cannot_be_hidden_by_pooled_result(self):
         profitable = replay_rows(account_id="hs300", winners=True)

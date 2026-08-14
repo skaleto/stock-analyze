@@ -100,6 +100,7 @@ class CLIResearchTest(unittest.TestCase):
             "run-classical-tournament",
             "run-unified-model-arena",
             "run-baseline-first-research",
+            "run-strategy-campaign",
             "run-cross-sectional-alpha-repair",
             "run-regime-tabular-alpha",
             "predict",
@@ -107,6 +108,38 @@ class CLIResearchTest(unittest.TestCase):
             args = parser.parse_args(["--market", "a_share", "--agent", "codex", command, "--offline"])
             self.assertEqual(args.command, command)
             self.assertTrue(args.offline)
+
+    def test_cli_dispatches_strategy_recovery_campaign(self):
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "stock_analyze.research.strategy_campaign.run_strategy_campaign",
+            return_value={"status": "complete", "campaign_id": "strategy-recovery-20260814-v1"},
+        ) as run_campaign:
+            first = Path(tmp) / "a-share" / "manifest.json"
+            second = Path(tmp) / "qdii" / "manifest.json"
+            first.parent.mkdir(parents=True)
+            second.parent.mkdir(parents=True)
+            first.write_text("{}", encoding="utf-8")
+            second.write_text("{}", encoding="utf-8")
+
+            code = main([
+                "--as-of", "2026-08-14",
+                "run-strategy-campaign",
+                "--offline",
+                "--repo-root", tmp,
+                "--campaign", "strategy-recovery-20260814-v1",
+                "--input-bundle", str(first),
+                "--input-bundle", str(second),
+                "--stage", "transparent",
+            ])
+
+        self.assertEqual(code, 0)
+        run_campaign.assert_called_once_with(
+            repo_root=Path(tmp),
+            campaign_id="strategy-recovery-20260814-v1",
+            as_of="2026-08-14",
+            stage="transparent",
+            input_manifests=(first, second),
+        )
 
     def test_cli_dispatches_unified_model_arena(self):
         with tempfile.TemporaryDirectory() as tmp, patch(

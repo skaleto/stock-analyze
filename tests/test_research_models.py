@@ -22,8 +22,12 @@ from stock_analyze.research.models import (
     make_purged_walk_forward_splits,
     save_model_bundle,
     train_model_bundle,
+    score_transparent_strategy,
 )
-from stock_analyze.research.classical_specs import ClassicalModelSpec
+from stock_analyze.research.classical_specs import (
+    ClassicalModelSpec,
+    transparent_strategy_specs,
+)
 
 
 def model_dataset(rows: int = 360) -> pd.DataFrame:
@@ -56,6 +60,90 @@ def model_dataset(rows: int = 360) -> pd.DataFrame:
 
 
 class ResearchModelsTest(unittest.TestCase):
+    def test_a_share_transparent_score_uses_frozen_weights_and_explains_sum(self):
+        frame = pd.DataFrame({
+            "trade_date": ["20260102"] * 3,
+            "code": ["000001", "000002", "000003"],
+            "momentum_20": [0.1, 0.2, 0.3],
+            "momentum_60": [0.1, 0.2, 0.3],
+            "momentum_120": [0.3, 0.2, 0.1],
+            "account_quality_percentile": [0.2, 0.5, 0.8],
+            "account_low_volatility_percentile": [0.8, 0.5, 0.2],
+            "pe_ttm": [10.0, 20.0, 30.0],
+            "pb": [1.0, 2.0, 3.0],
+        })
+        spec = transparent_strategy_specs("a_share", "hs300")[0]
+
+        scored = score_transparent_strategy(frame, spec)
+
+        np.testing.assert_allclose(
+            scored["score"],
+            np.array([0.60, 2.0 / 3.0, 11.0 / 15.0]),
+        )
+        contribution_columns = [
+            column for column in scored if column.startswith("contribution_")
+        ]
+        np.testing.assert_allclose(
+            scored[contribution_columns].sum(axis=1),
+            scored["score"],
+        )
+
+    def test_a_share_regime_rule_sets_one_account_level_half_exposure(self):
+        frame = pd.DataFrame({
+            "trade_date": ["20260102"] * 2,
+            "code": ["000001", "000002"],
+            "momentum_60": [0.1, 0.2],
+            "momentum_120": [0.2, 0.1],
+            "account_quality_percentile": [0.5, 0.7],
+            "account_low_volatility_percentile": [0.8, 0.4],
+            "benchmark_close": [95.0, 95.0],
+            "benchmark_sma_200": [100.0, 100.0],
+        })
+        spec = transparent_strategy_specs("a_share", "hs300")[4]
+
+        scored = score_transparent_strategy(frame, spec)
+
+        self.assertTrue(scored["_target_risky_exposure"].eq(0.50).all())
+        self.assertTrue(scored["regime_state"].eq("risk_off").all())
+
+    def test_qdii_trend_votes_drive_shared_exposure_and_dual_filter(self):
+        frame = pd.DataFrame({
+            "trade_date": ["20260102"] * 3,
+            "code": ["159920", "513500", "513100"],
+            "momentum_60": [0.10, 0.05, -0.10],
+            "momentum_120": [-0.02, -0.03, 0.01],
+            "sma_distance_200": [0.10, 0.05, -0.10],
+            "account_low_volatility_percentile": [0.7, 0.5, 0.3],
+            "account_liquidity_percentile": [0.8, 0.6, 0.4],
+            "discount_premium": [0.01, 0.02, 0.03],
+            "tracking_error_20": [0.01, 0.02, 0.03],
+        })
+        trend_spec = transparent_strategy_specs("cn_qdii_etf", "hk_exposure")[0]
+        dual_spec = transparent_strategy_specs("cn_qdii_etf", "hk_exposure")[2]
+
+        trend = score_transparent_strategy(frame, trend_spec)
+        dual = score_transparent_strategy(frame, dual_spec)
+
+        self.assertTrue(trend["_target_risky_exposure"].eq(1.0).all())
+        self.assertEqual(trend["positive_trend_votes"].tolist(), [2, 2, 1])
+        self.assertEqual(dual["_eligible_for_selection"].tolist(), [True, True, False])
+
+    def test_transparent_score_rescales_available_factors_without_future_fill(self):
+        frame = pd.DataFrame({
+            "trade_date": ["20260102"] * 2,
+            "code": ["000001", "000002"],
+            "momentum_60": [0.10, 0.20],
+            "momentum_120": [0.15, 0.25],
+            "account_quality_percentile": [np.nan, 0.80],
+            "account_low_volatility_percentile": [0.60, 0.40],
+        })
+        spec = transparent_strategy_specs("a_share", "hs300")[2]
+
+        scored = score_transparent_strategy(frame, spec)
+
+        self.assertTrue(np.isfinite(scored["score"]).all())
+        self.assertEqual(scored.loc[0, "available_factor_count"], 2)
+        self.assertTrue(pd.isna(scored.loc[0, "contribution_quality"]))
     def test_cross_sectional_ranking_target_removes_date_level_return_scale(self):
         frame = pd.DataFrame({
             "trade_date": ["20260102"] * 3 + ["20260105"] * 3,

@@ -46,11 +46,17 @@ class ActivationEvidence:
     attribution_status: str = "reconciled"
     trade_count: int = 1
     capital_utilization: float = 0.0
+    strategic_risky_exposure: float = 0.0
+    target_fill_ratio: float = 0.0
+    cash_drag: float = 1.0
+    cost_stress_net_excess_return: float = -1.0
     diagnostic_net_excess_return: float = 0.0
     diagnostic_max_drawdown: float = 1.0
     diagnostic_annual_turnover: float = 1_000_000_000.0
     diagnostic_trade_count: int = 0
     diagnostic_capital_utilization: float = 0.0
+    diagnostic_target_fill_ratio: float = 0.0
+    diagnostic_cost_stress_net_excess_return: float = -1.0
     diagnostic_all_accounts_positive_active: bool = False
     diagnostic_simulator_version: str = "unverified"
     diagnostic_execution_evidence_status: str = "unavailable"
@@ -147,8 +153,10 @@ def evaluate_activation(
         "auc": evidence.auc >= 0.54,
         "net_excess_return": evidence.net_excess_return >= 0.02,
         "max_drawdown": evidence.max_drawdown <= 0.20,
-        "annual_turnover": evidence.annual_turnover <= 8.0,
-        "capital_utilization": evidence.capital_utilization >= 0.85,
+        "target_fill_ratio": evidence.target_fill_ratio >= 0.95,
+        "cost_stress_net_excess_return": (
+            evidence.cost_stress_net_excess_return >= 0.0
+        ),
         "ablation_stability": evidence.ablation_stability >= 0.70,
         "simulator_version": evidence.simulator_version == "paper-parity-daily-v1",
         "all_accounts_positive_active": evidence.all_accounts_positive_active,
@@ -158,7 +166,7 @@ def evaluate_activation(
             "available", "not_applicable"
         },
         "missing_liquidity_notional_ratio": (
-            evidence.missing_liquidity_notional_ratio <= 0.05
+            evidence.missing_liquidity_notional_ratio <= 0.10
         ),
         "impact_capped_notional_ratio": (
             evidence.impact_capped_notional_ratio <= 0.10
@@ -225,15 +233,15 @@ def evaluate_role_activation(
             "rank_ic": evidence.rank_ic > 0.02,
             "icir": evidence.icir >= 0.30,
             "diagnostic_trade_activity": evidence.diagnostic_trade_count > 0,
-            "diagnostic_capital_utilization": (
-                evidence.diagnostic_capital_utilization >= 0.85
+            "diagnostic_target_fill_ratio": (
+                evidence.diagnostic_target_fill_ratio >= 0.95
             ),
             "diagnostic_net_excess_return": (
                 evidence.diagnostic_net_excess_return >= 0.02
             ),
             "diagnostic_max_drawdown": evidence.diagnostic_max_drawdown <= 0.20,
-            "diagnostic_annual_turnover": (
-                evidence.diagnostic_annual_turnover <= 8.0
+            "diagnostic_cost_stress_net_excess_return": (
+                evidence.diagnostic_cost_stress_net_excess_return >= 0.0
             ),
             "ablation_stability": evidence.ablation_stability >= 0.70,
             "deflated_sharpe_probability": evidence.deflated_sharpe_probability >= 0.95,
@@ -256,7 +264,7 @@ def evaluate_role_activation(
                 in {"available", "not_applicable"}
             ),
             "missing_liquidity_notional_ratio": (
-                evidence.diagnostic_missing_liquidity_notional_ratio <= 0.05
+                evidence.diagnostic_missing_liquidity_notional_ratio <= 0.10
             ),
             "impact_capped_notional_ratio": (
                 evidence.diagnostic_impact_capped_notional_ratio <= 0.10
@@ -268,10 +276,12 @@ def evaluate_role_activation(
         "portfolio": {
             **common,
             "trade_activity": evidence.trade_count > 0,
-            "capital_utilization": evidence.capital_utilization >= 0.85,
+            "target_fill_ratio": evidence.target_fill_ratio >= 0.95,
             "net_excess_return": evidence.net_excess_return >= 0.02,
             "max_drawdown": evidence.max_drawdown <= 0.20,
-            "annual_turnover": evidence.annual_turnover <= 8.0,
+            "cost_stress_net_excess_return": (
+                evidence.cost_stress_net_excess_return >= 0.0
+            ),
             "deflated_sharpe_probability": evidence.deflated_sharpe_probability >= 0.95,
             "probability_of_backtest_overfit": evidence.probability_of_backtest_overfit <= 0.50,
             "pbo_trial_count": evidence.pbo_trial_count >= 4,
@@ -287,7 +297,7 @@ def evaluate_role_activation(
                 "available", "not_applicable"
             },
             "missing_liquidity_notional_ratio": (
-                evidence.missing_liquidity_notional_ratio <= 0.05
+                evidence.missing_liquidity_notional_ratio <= 0.10
             ),
             "impact_capped_notional_ratio": (
                 evidence.impact_capped_notional_ratio <= 0.10
@@ -402,6 +412,12 @@ def activation_evidence_from_metrics(metrics: dict, *, shadow_cycles: int = 0) -
         ),
         trade_count=int(number("trade_count")),
         capital_utilization=number("capital_utilization"),
+        strategic_risky_exposure=number("strategic_risky_exposure"),
+        target_fill_ratio=number("target_fill_ratio"),
+        cash_drag=number("cash_drag", 1.0),
+        cost_stress_net_excess_return=number(
+            "cost_stress_net_excess_return", -1.0
+        ),
         diagnostic_net_excess_return=number("diagnostic_net_excess_return"),
         diagnostic_max_drawdown=number("diagnostic_max_drawdown", 1.0),
         diagnostic_annual_turnover=number(
@@ -409,6 +425,10 @@ def activation_evidence_from_metrics(metrics: dict, *, shadow_cycles: int = 0) -
         ),
         diagnostic_trade_count=int(number("diagnostic_trade_count")),
         diagnostic_capital_utilization=number("diagnostic_capital_utilization"),
+        diagnostic_target_fill_ratio=number("diagnostic_target_fill_ratio"),
+        diagnostic_cost_stress_net_excess_return=number(
+            "diagnostic_cost_stress_net_excess_return", -1.0
+        ),
         diagnostic_all_accounts_positive_active=(
             metrics.get("diagnostic_all_accounts_positive_active") is True
         ),

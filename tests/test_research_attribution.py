@@ -1,12 +1,41 @@
 import unittest
 
+import pandas as pd
+
 from stock_analyze.research.attribution import (
     DailyAttributionInput,
     attribute_daily_pnl,
+    summarize_replay_attribution,
 )
 
 
 class ResearchAttributionTest(unittest.TestCase):
+    def test_replay_attribution_splits_six_components_and_reconciles(self):
+        periods = pd.DataFrame({
+            "active_return": [0.010, -0.004],
+            "benchmark_return": [0.020, -0.010],
+            "target_risky_exposure": [0.50, 1.00],
+            "beginning_capital_utilization": [0.48, 0.97],
+            "security_selection_return": [0.020, -0.003],
+            "execution_cost_effect": [-0.0006, -0.0003],
+        })
+        periods["cash_position_effect"] = (
+            periods["beginning_capital_utilization"] - 1.0
+        ) * periods["benchmark_return"]
+        periods["active_return"] = (
+            periods["cash_position_effect"]
+            + periods["security_selection_return"]
+            + periods["execution_cost_effect"]
+        )
+
+        result = summarize_replay_attribution(periods)
+
+        self.assertEqual(
+            set(result["components"]),
+            {"selection", "timing", "beta", "active_cash", "fees", "unfilled"},
+        )
+        self.assertLessEqual(abs(result["reconciliation_error"]), 1e-10)
+        self.assertEqual(result["status"], "reconciled")
     def test_a_share_components_reconcile_to_net_pnl(self):
         result = attribute_daily_pnl(
             DailyAttributionInput(

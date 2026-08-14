@@ -5,10 +5,12 @@ import unittest
 from stock_analyze.research.classical_specs import (
     a_share_h3_specs,
     a_share_h20_specs,
+    incremental_residual_specs,
     mainline_horizon,
     mainline_specs,
     qdii_h5_specs,
     qdii_h10_specs,
+    transparent_strategy_specs,
 )
 
 
@@ -111,6 +113,70 @@ class ResearchClassicalSpecsTest(unittest.TestCase):
     def test_mainline_rejects_undeclared_market(self) -> None:
         with self.assertRaisesRegex(ValueError, "classical_mainline_market"):
             mainline_horizon("us_equity")
+
+    def test_strategy_recovery_predeclares_six_transparent_specs_per_scope(self) -> None:
+        a_share = transparent_strategy_specs("a_share", "hs300")
+        qdii = transparent_strategy_specs("cn_qdii_etf", "hk_exposure")
+
+        self.assertEqual(
+            [item.spec_id for item in a_share],
+            [
+                "A_MOM_01",
+                "A_MOM_02",
+                "A_QMLV_01",
+                "A_QMLV_02",
+                "A_REGIME_01",
+                "A_REGIME_02",
+            ],
+        )
+        self.assertEqual(
+            [item.spec_id for item in qdii],
+            [
+                "Q_TREND_01",
+                "Q_TREND_02",
+                "Q_DUAL_01",
+                "Q_DUAL_02",
+                "Q_TRACK_01",
+                "Q_TRACK_02",
+            ],
+        )
+        self.assertEqual({item.estimator for item in (*a_share, *qdii)}, {"rule"})
+        self.assertEqual({item.rebalance_frequency for item in a_share}, {"monthly"})
+        self.assertEqual({item.rebalance_frequency for item in qdii}, {"weekly"})
+        self.assertEqual(len({item.spec_hash for item in (*a_share, *qdii)}), 12)
+
+    def test_strategy_recovery_specs_are_scope_local_without_scope_tuning(self) -> None:
+        hs300 = transparent_strategy_specs("a_share", "hs300")
+        zz500 = transparent_strategy_specs("a_share", "zz500")
+
+        self.assertEqual(
+            [item.parameter_map for item in hs300],
+            [item.parameter_map for item in zz500],
+        )
+        self.assertTrue(
+            {item.spec_hash for item in hs300}.isdisjoint(
+                {item.spec_hash for item in zz500}
+            )
+        )
+
+    def test_incremental_residual_budget_is_two_fixed_models(self) -> None:
+        a_share = incremental_residual_specs(
+            "a_share",
+            "hs300",
+            baseline_spec_id="A_MOM_01",
+        )
+        qdii = incremental_residual_specs(
+            "cn_qdii_etf",
+            "hk_exposure",
+            baseline_spec_id="Q_TREND_01",
+        )
+
+        self.assertEqual([item.estimator for item in a_share], ["ridge", "hgbr"])
+        self.assertEqual([item.parameter_map["residual_tilt_weight"] for item in a_share], [0.05, 0.05])
+        self.assertEqual(a_share[0].parameter_map["alpha"], 25.0)
+        self.assertEqual(qdii[0].parameter_map["alpha"], 35.0)
+        self.assertEqual(a_share[1].parameter_map["max_leaf_nodes"], 7)
+        self.assertEqual(a_share[1].random_state, 20260814)
 
 
 if __name__ == "__main__":

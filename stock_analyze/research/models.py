@@ -9,7 +9,7 @@ import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import joblib
 import numpy as np
@@ -742,6 +742,256 @@ def _apply_ranking_anchor(
     if not 0.0 <= weight <= 1.0:
         raise ValueError("ranking_residual_weight_out_of_range")
     return anchor + weight * values
+
+
+def _transparent_percentile(
+    frame: pd.DataFrame,
+    column: str,
+    *,
+    lower_is_better: bool = False,
+    absolute: bool = False,
+    positive_only: bool = False,
+) -> pd.Series:
+    values = (
+        pd.to_numeric(frame[column], errors="coerce")
+        if column in frame.columns
+        else pd.Series(np.nan, index=frame.index, dtype=float)
+    )
+    if absolute:
+        values = values.abs()
+    if positive_only:
+        values = values.where(values > 0.0)
+    ranked = values.groupby(frame["trade_date"].astype(str), sort=False).rank(
+        pct=True,
+        method="average",
+        ascending=not lower_is_better,
+    )
+    return ranked.astype(float)
+
+
+def _transparent_numeric(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series(np.nan, index=frame.index, dtype=float)
+    return pd.to_numeric(frame[column], errors="coerce")
+
+
+def _mean_available(*values: pd.Series) -> pd.Series:
+    return pd.concat(values, axis=1).mean(axis=1, skipna=True)
+
+
+def _transparent_weighted_score(
+    frame: pd.DataFrame,
+    components: Mapping[str, tuple[pd.Series, float]],
+) -> pd.DataFrame:
+    result = frame.copy()
+    denominator = pd.Series(0.0, index=result.index, dtype=float)
+    numeric_components: dict[str, tuple[pd.Series, float]] = {}
+    for name, (raw_values, raw_weight) in components.items():
+        values = pd.to_numeric(raw_values, errors="coerce")
+        weight = float(raw_weight)
+        numeric_components[name] = (values, weight)
+        denominator += values.notna().astype(float) * weight
+    for name, (values, weight) in numeric_components.items():
+        contribution = weight * values / denominator.where(denominator > 0.0)
+        result[f"contribution_{name}"] = contribution.where(values.notna())
+    contribution_columns = [
+        f"contribution_{name}" for name in numeric_components
+    ]
+    result["score"] = result[contribution_columns].sum(axis=1, min_count=1)
+    result["available_factor_count"] = sum(
+        values.notna().astype(int)
+        for values, _ in numeric_components.values()
+    )
+    return result
+
+
+def _account_trend_exposure(
+    frame: pd.DataFrame,
+    signals: Mapping[str, pd.Series],
+) -> tuple[pd.Series, pd.Series]:
+    dates = frame["trade_date"].astype(str)
+    individual_votes = sum(
+        pd.to_numeric(values, errors="coerce").gt(0.0).astype(int)
+        for values in signals.values()
+    )
+    account_votes = pd.Series(0, index=frame.index, dtype=int)
+    for values in signals.values():
+        positive = pd.to_numeric(values, errors="coerce").gt(0.0)
+        majority = positive.groupby(dates, sort=False).transform("mean").ge(0.50)
+        account_votes += majority.astype(int)
+    signal_count = len(signals)
+    exposure = pd.Series(0.0, index=frame.index, dtype=float)
+    exposure.loc[account_votes.eq(signal_count)] = 1.0
+    exposure.loc[account_votes.eq(max(signal_count - 1, 1))] = 1.0
+    exposure.loc[account_votes.eq(1)] = 0.5
+    if signal_count == 2:
+        exposure.loc[account_votes.eq(2)] = 1.0
+    return individual_votes.astype(int), exposure
+
+
+def score_transparent_strategy(
+    frame: pd.DataFrame,
+    spec: ClassicalModelSpec,
+) -> pd.DataFrame:
+    """Score one frozen rule spec with date-local, point-in-time transforms."""
+
+    if spec.estimator != "rule":
+        raise ValueError(f"transparent_strategy_estimator:{spec.estimator}")
+    required = {"trade_date", "code"}
+    missing = required.difference(frame.columns)
+    if missing:
+        raise ValueError(
+            f"transparent_strategy_missing_columns:{','.join(sorted(missing))}"
+        )
+    result = frame.copy()
+    result["trade_date"] = result["trade_date"].astype(str)
+    result["code"] = result["code"].astype(str).str.zfill(6)
+    momentum_20 = _transparent_percentile(result, "momentum_20")
+    momentum_60 = _transparent_percentile(result, "momentum_60")
+    momentum_120 = _transparent_percentile(result, "momentum_120")
+    slow_momentum = _mean_available(momentum_60, momentum_120)
+    low_volatility = _transparent_numeric(
+        result, "account_low_volatility_percentile"
+    )
+    quality = _transparent_numeric(result, "account_quality_percentile")
+    value = _mean_available(
+        _transparent_percentile(
+            result, "pe_ttm", lower_is_better=True, positive_only=True
+        ),
+        _transparent_percentile(
+            result, "pb", lower_is_better=True, positive_only=True
+        ),
+    )
+
+    if spec.spec_id in {"A_MOM_01", "A_REGIME_01"}:
+        result = _transparent_weighted_score(
+            result,
+            {
+                "momentum_60": (momentum_60, 0.60),
+                "momentum_120": (momentum_120, 0.40),
+            },
+        )
+    elif spec.spec_id == "A_MOM_02":
+        result = _transparent_weighted_score(
+            result,
+            {
+                "momentum_20": (momentum_20, 0.20),
+                "momentum_60": (momentum_60, 0.40),
+                "momentum_120": (momentum_120, 0.40),
+            },
+        )
+    elif spec.spec_id in {"A_QMLV_01", "A_REGIME_02"}:
+        result = _transparent_weighted_score(
+            result,
+            {
+                "momentum": (slow_momentum, 0.45),
+                "quality": (quality, 0.35),
+                "low_volatility": (low_volatility, 0.20),
+            },
+        )
+    elif spec.spec_id == "A_QMLV_02":
+        result = _transparent_weighted_score(
+            result,
+            {
+                "momentum": (slow_momentum, 0.35),
+                "quality": (quality, 0.30),
+                "value": (value, 0.20),
+                "low_volatility": (low_volatility, 0.15),
+            },
+        )
+    elif spec.spec_id.startswith("A_"):
+        raise ValueError(f"transparent_strategy_unknown:{spec.spec_id}")
+    else:
+        sma_distance_200 = _transparent_numeric(result, "sma_distance_200")
+        trend_rank_200 = _transparent_percentile(result, "sma_distance_200")
+        trend_signals = {
+            "momentum_60": _transparent_numeric(result, "momentum_60"),
+            "momentum_120": _transparent_numeric(result, "momentum_120"),
+            "sma_200": sma_distance_200,
+        }
+        if spec.spec_id in {"Q_TREND_02", "Q_TRACK_02"}:
+            trend_signals = {
+                "momentum_120": trend_signals["momentum_120"],
+                "sma_200": trend_signals["sma_200"],
+            }
+            trend_score = _mean_available(momentum_120, trend_rank_200)
+        else:
+            trend_score = _mean_available(
+                momentum_60,
+                momentum_120,
+                trend_rank_200,
+            )
+        votes, exposure = _account_trend_exposure(result, trend_signals)
+        result["positive_trend_votes"] = votes
+        result["_target_risky_exposure"] = exposure
+        if spec.spec_id in {"Q_TREND_01", "Q_TREND_02"}:
+            result = _transparent_weighted_score(
+                result,
+                {"trend": (trend_score, 1.0)},
+            )
+        elif spec.spec_id in {"Q_DUAL_01", "Q_DUAL_02"}:
+            dual_momentum = _mean_available(momentum_60, momentum_120)
+            if spec.spec_id == "Q_DUAL_01":
+                result = _transparent_weighted_score(
+                    result,
+                    {"dual_momentum": (dual_momentum, 1.0)},
+                )
+            else:
+                result = _transparent_weighted_score(
+                    result,
+                    {
+                        "dual_momentum": (dual_momentum, 0.80),
+                        "low_volatility": (low_volatility, 0.20),
+                    },
+                )
+            eligible = sma_distance_200.gt(0.0) & result["score"].notna()
+            result["_eligible_for_selection"] = eligible
+            result["_target_risky_exposure"] = eligible.groupby(
+                result["trade_date"], sort=False
+            ).transform("any").astype(float)
+        elif spec.spec_id in {"Q_TRACK_01", "Q_TRACK_02"}:
+            product_quality = _mean_available(
+                _transparent_percentile(
+                    result, "discount_premium", lower_is_better=True, absolute=True
+                ),
+                _transparent_percentile(
+                    result, "tracking_error_20", lower_is_better=True
+                ),
+            )
+            liquidity = _transparent_numeric(
+                result, "account_liquidity_percentile"
+            )
+            result = _transparent_weighted_score(
+                result,
+                {
+                    "trend": (trend_score, 0.70),
+                    "product_quality": (product_quality, 0.20),
+                    "liquidity": (liquidity, 0.10),
+                },
+            )
+        else:
+            raise ValueError(f"transparent_strategy_unknown:{spec.spec_id}")
+
+    if spec.spec_id in {"A_REGIME_01", "A_REGIME_02"}:
+        if not {"benchmark_close", "benchmark_sma_200"}.issubset(result.columns):
+            raise ValueError("transparent_strategy_benchmark_regime_missing")
+        benchmark_close = pd.to_numeric(result["benchmark_close"], errors="coerce")
+        benchmark_sma = pd.to_numeric(result["benchmark_sma_200"], errors="coerce")
+        available = benchmark_close.notna() & benchmark_sma.notna()
+        risk_off = available & benchmark_close.lt(benchmark_sma)
+        result["regime_state"] = np.where(risk_off, "risk_off", "risk_on")
+        result["_target_risky_exposure"] = np.where(risk_off, 0.50, 1.0)
+        result.loc[~available, "_target_risky_exposure"] = np.nan
+        result.loc[~available, "regime_state"] = "unavailable"
+    elif spec.spec_id.startswith("A_"):
+        result["regime_state"] = "fully_invested"
+        result["_target_risky_exposure"] = 1.0
+
+    if "_eligible_for_selection" not in result.columns:
+        result["_eligible_for_selection"] = result["score"].notna()
+    result["strategy_spec_id"] = spec.spec_id
+    result["strategy_spec_hash"] = spec.spec_hash
+    return result
 
 
 def _select_training_features(

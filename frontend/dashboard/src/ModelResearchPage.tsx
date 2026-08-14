@@ -23,6 +23,7 @@ import type {
   ModelResearchArchive,
   ModelResearchHistoricalComparison,
   ModelResearchModel,
+  ModelResearchStrategyCampaign,
   ModelResearchTabularEvidence,
   ModelResearchTabularRun,
   BoundedColumn,
@@ -59,6 +60,11 @@ const statusLabels: Record<string, string> = {
   waiting: "等待中",
   waiting_schedule: "等待计划时间",
   waiting_upstream: "等待上游",
+  baseline_only: "仅规则基线",
+  falsified: "假设未成立",
+  insufficient_data: "证据不足",
+  shadow_ready: "可进入影子观察",
+  transparent_complete: "透明策略验收完成",
 };
 
 const fallbackReasonLabels: Record<string, string> = {
@@ -1185,6 +1191,105 @@ function HistoricalComparisonPanel({
   );
 }
 
+function campaignReasonLabel(reason: string): string {
+  const labels: Record<string, string> = {
+    ml_no_proven_increment: "机器学习没有证明净增量",
+    no_transparent_candidate_passed_gates_1_2: "透明候选未通过经济与稳健性门",
+    point_in_time_audit: "点时数据审计未通过",
+  };
+  return labels[reason] ?? reasonLabel(reason);
+}
+
+function StrategyCampaignPanel({
+  campaign,
+}: {
+  campaign: ModelResearchStrategyCampaign | undefined;
+}) {
+  if (!campaign || campaign.status === "unavailable" || !campaign.scopes.length) {
+    return null;
+  }
+  return (
+    <section className="workspace-detail-panel" aria-label="封闭策略验证">
+      <header className="workspace-detail-header">
+        <div>
+          <h3>封闭策略验证</h3>
+          <span>{campaign.campaignId ?? "-"}</span>
+        </div>
+        <WorkspaceStatusBadge status={workspaceStatus(campaign.status)} />
+      </header>
+      <div className="workspace-detail-body detail-stack">
+        <dl className="workspace-metric-grid">
+          <div>
+            <dt>试验状态</dt>
+            <dd>{statusLabel(campaign.status)}</dd>
+          </div>
+          <div>
+            <dt>正式策略</dt>
+            <dd>
+              {campaign.formalStrategyActivated ? "已接入" : "未接入正式策略"}
+            </dd>
+          </div>
+          <div>
+            <dt>完成时间</dt>
+            <dd>{campaign.completedAt?.replace("T", " ") ?? "-"}</dd>
+          </div>
+          <div>
+            <dt>输入封印</dt>
+            <dd>{campaign.manifestHash?.slice(0, 12) ?? "-"}</dd>
+          </div>
+        </dl>
+        <BoundedTable
+          rows={campaign.scopes}
+          rowKey={(row) => row.accountScope}
+          emptyLabel="本市场暂无 Campaign 范围"
+          columns={[
+            {
+              key: "scope",
+              label: "范围",
+              render: (row) => row.accountScope,
+            },
+            {
+              key: "status",
+              label: "结论",
+              render: (row) => statusLabel(row.status),
+            },
+            {
+              key: "rule",
+              label: "规则版本",
+              render: (row) => row.selectedRuleSpecId ?? "无",
+            },
+            {
+              key: "ml",
+              label: "ML 增量",
+              render: (row) => row.selectedIncrementalSpecId ?? "未采用",
+            },
+            {
+              key: "return",
+              label: "净收益 / 基准",
+              render: (row) => `${percent(row.netReturn)} / ${percent(row.benchmarkReturn)}`,
+            },
+            {
+              key: "excess",
+              label: "净超额",
+              render: (row) => percent(row.netExcessReturn),
+            },
+            {
+              key: "stress",
+              label: "2x 成本超额",
+              render: (row) => percent(row.costStressNetExcessReturn),
+            },
+            {
+              key: "reason",
+              label: "停止原因",
+              render: (row) => row.reasons.map(campaignReasonLabel).join("、") || "-",
+            },
+          ]}
+        />
+      </div>
+    </section>
+  );
+}
+
 function ModelResearchDetail({
   market,
   refreshToken,
@@ -1286,6 +1391,7 @@ function ModelResearchDetail({
           {data.truncationReason ? `：${data.truncationReason}` : ""}
         </div>
       ) : null}
+      <StrategyCampaignPanel campaign={data.strategyCampaign} />
       <StageFlow
         stages={data.stages}
         selectedKey={stage.key}
