@@ -14,6 +14,7 @@ import type { DashboardMarket } from "./workspaceRoute";
 import type {
   ModelResearchData,
   ModelResearchAccountSummary,
+  ModelResearchHistoricalComparison,
   ModelResearchModel,
   ModelResearchTabularEvidence,
   ModelResearchTabularRun,
@@ -886,6 +887,97 @@ function AccountSummaryTable({
   );
 }
 
+function HistoricalComparisonPanel({
+  comparison,
+}: {
+  comparison: ModelResearchHistoricalComparison | undefined;
+}) {
+  if (!comparison || !comparison.scopes.length) return null;
+  const rows = comparison.scopes.flatMap((scope) =>
+    scope.participants.map((participant) => ({
+      ...participant,
+      accountScope: scope.accountScope,
+      winner: scope.winner?.participantId === participant.participantId,
+    })),
+  );
+  const participantTypeLabels: Record<string, string> = {
+    formal_rule: "正式规则",
+    candidate_model: "候选模型",
+    baseline: "基线",
+  };
+  return (
+    <section
+      className="tabular-research-panel"
+      aria-label="同窗历史对比"
+    >
+      <header className="tabular-research-heading">
+        <div>
+          <span>历史诊断 · {comparison.asOf ?? "-"}</span>
+          <h3>同窗策略对比</h3>
+          <p>
+            {comparison.horizon} 日周期 · {comparison.scopes.length} 个独立账户
+          </p>
+        </div>
+        <WorkspaceStatusBadge status={workspaceStatus(comparison.status)} />
+      </header>
+      <BoundedTable
+        rows={rows}
+        rowKey={(row) => `${row.accountScope}:${row.participantId}`}
+        emptyLabel="尚无同窗比较结果"
+        columns={[
+          {
+            key: "account",
+            label: "账户",
+            render: (row) => accountScopeLabel(row.accountScope),
+          },
+          {
+            key: "name",
+            label: "策略 / 模型",
+            render: (row) => row.winner ? `${row.name} · 当前最佳` : row.name,
+          },
+          {
+            key: "type",
+            label: "身份",
+            render: (row) => (
+              participantTypeLabels[row.participantType] ?? row.participantType
+            ),
+          },
+          {
+            key: "net",
+            label: "净收益",
+            render: (row) => percent(row.metrics.netReturn),
+          },
+          {
+            key: "benchmark",
+            label: "基准收益",
+            render: (row) => percent(row.metrics.benchmarkReturn),
+          },
+          {
+            key: "excess",
+            label: "净超额",
+            render: (row) => percent(row.metrics.netExcessReturn),
+          },
+          {
+            key: "drawdown",
+            label: "最大回撤",
+            render: (row) => percent(row.metrics.maxDrawdown),
+          },
+          {
+            key: "ir",
+            label: "信息比率",
+            render: (row) => value(row.metrics.informationRatio),
+          },
+          {
+            key: "turnover",
+            label: "年化换手",
+            render: (row) => value(row.metrics.annualTurnover),
+          },
+        ]}
+      />
+    </section>
+  );
+}
+
 function ModelResearchDetail({
   market,
   refreshToken,
@@ -1081,6 +1173,9 @@ function ModelResearchDetail({
         ) : null}
         {stage.key === "validation" ? (
           <div className="detail-stack">
+            <HistoricalComparisonPanel
+              comparison={data.historicalComparison}
+            />
             <TabularResearchPanel evidence={data.tabularResearch} />
             <AccountSummaryTable accounts={data.validation.accounts} />
             <ModelTable models={data.validation.models} validation />

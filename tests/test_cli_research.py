@@ -94,6 +94,7 @@ class CLIResearchTest(unittest.TestCase):
             "run-prediction-research",
             "train-prediction-models",
             "run-classical-tournament",
+            "run-unified-model-arena",
             "run-cross-sectional-alpha-repair",
             "run-regime-tabular-alpha",
             "predict",
@@ -101,6 +102,22 @@ class CLIResearchTest(unittest.TestCase):
             args = parser.parse_args(["--market", "a_share", "--agent", "codex", command, "--offline"])
             self.assertEqual(args.command, command)
             self.assertTrue(args.offline)
+
+    def test_cli_dispatches_unified_model_arena(self):
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "stock_analyze.research.pipeline.ResearchPipeline.run_unified_model_arena",
+            return_value={"status": "complete", "scopes": []},
+        ) as arena:
+            code = main(
+                [
+                    "--market", "cn_qdii_etf", "--agent", "codex",
+                    "--as-of", "2026-08-13", "run-unified-model-arena",
+                    "--offline", "--repo-root", tmp,
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        arena.assert_called_once_with(horizon=None)
 
     def test_cli_dispatches_rule_core_diagnostic(self):
         with tempfile.TemporaryDirectory() as tmp, patch(

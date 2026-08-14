@@ -5,6 +5,7 @@ import unittest
 from stock_analyze.research.classical_specs import (
     a_share_h3_specs,
     a_share_h20_specs,
+    qdii_h5_specs,
     qdii_h10_specs,
 )
 
@@ -31,6 +32,17 @@ class ResearchClassicalSpecsTest(unittest.TestCase):
         self.assertTrue({item.spec_hash for item in hk}.isdisjoint(
             {item.spec_hash for item in us}
         ))
+
+    def test_qdii_h5_specs_match_the_live_iteration_horizon(self) -> None:
+        specs = qdii_h5_specs("us_exposure")
+
+        self.assertEqual(len(specs), 4)
+        self.assertEqual({item.horizon for item in specs}, {5})
+        self.assertEqual({item.account_scope for item in specs}, {"us_exposure"})
+        self.assertEqual(
+            {item.estimator for item in specs},
+            {"ridge", "elastic_net", "hgbr", "fixed_blend"},
+        )
 
     def test_a_share_h20_specs_define_one_cross_sectional_candidate(self) -> None:
         specs = a_share_h20_specs("hs300")

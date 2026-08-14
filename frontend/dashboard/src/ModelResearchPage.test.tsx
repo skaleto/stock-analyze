@@ -297,6 +297,75 @@ describe("ModelResearchPage", () => {
     );
   });
 
+  it("shows formal rules and candidate models in one historical window", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({
+        ...payload,
+        historicalComparison: {
+          status: "complete",
+          evidenceType: "historical_diagnostic",
+          asOf: "20260813",
+          horizon: 20,
+          scopes: [{
+            accountScope: "hs300",
+            finalWindow: ["20260105", "20260731"],
+            evaluationDateCount: 140,
+            winner: {
+              participantId: "model:a20-v1",
+              name: "A20",
+              netExcessReturn: 0.03,
+            },
+            participants: [
+              {
+                participantId: "rule:defensive",
+                participantType: "formal_rule",
+                name: "稳健防守",
+                status: "historical_replay",
+                metrics: {
+                  netReturn: 0.04,
+                  benchmarkReturn: 0.02,
+                  netExcessReturn: 0.02,
+                  maxDrawdown: 0.03,
+                  informationRatio: 0.4,
+                  annualTurnover: 2,
+                },
+              },
+              {
+                participantId: "model:a20-v1",
+                participantType: "candidate_model",
+                name: "A20",
+                status: "research",
+                metrics: {
+                  netReturn: 0.05,
+                  benchmarkReturn: 0.02,
+                  netExcessReturn: 0.03,
+                  maxDrawdown: 0.02,
+                  informationRatio: 0.6,
+                  annualTurnover: 1,
+                },
+              },
+            ],
+          }],
+        },
+      })),
+    );
+    const user = userEvent.setup();
+    render(<ModelResearchPage market="a_share" refreshToken={0} />);
+
+    await screen.findByText("0 / 4 通过");
+    await user.click(screen.getByRole("button", { name: /测试验收/ }));
+    const comparison = within(
+      screen.getByRole("region", { name: "测试验收详情" }),
+    ).getByRole("region", { name: "同窗历史对比" });
+
+    expect(within(comparison).getByText("稳健防守")).toBeInTheDocument();
+    expect(within(comparison).getByText("A20 · 当前最佳")).toBeInTheDocument();
+    expect(within(comparison).getByText("正式规则")).toBeInTheDocument();
+    expect(within(comparison).getByText("候选模型")).toBeInTheDocument();
+    expect(within(comparison).getAllByText("2.00%")).toHaveLength(4);
+  });
+
   it("shows the best tabular candidate without implying formal adoption", async () => {
     const tabularResearch = {
       status: "available",
