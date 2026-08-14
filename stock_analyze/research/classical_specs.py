@@ -154,17 +154,21 @@ _A_SHARE_H20_QUALITY_LOWVOL = (
 def a_share_h20_specs(account_scope: str) -> tuple[ClassicalModelSpec, ...]:
     return (
         ClassicalModelSpec(
-            spec_id="h20_momentum_anchor_quality_residual_ridge_v2",
+            spec_id="h20_balanced_anchor_residual_ridge_v4",
             market="a_share",
             account_scope=str(account_scope),
             horizon=20,
             estimator="ridge",
             feature_profile="a_share_h20_momentum_anchor_residual_v2",
-            parameters=_parameters(alpha=25.0, ranking_linear_weight=1.0),
-            hypothesis_id="momentum_anchor_quality_residual",
+            parameters=_parameters(
+                alpha=25.0,
+                ranking_linear_weight=1.0,
+                residual_tilt_weight=0.15,
+            ),
+            hypothesis_id="balanced_momentum_lowvol_anchor_residual",
             feature_allowlist=_A_SHARE_H20_QUALITY_LOWVOL,
             rebalance_frequency="monthly",
-            ranking_target="momentum_anchor_residual_v1",
+            ranking_target="momentum_lowvol_anchor_residual_v1",
             feature_selection_mode="fixed_profile_v1",
         ),
     )

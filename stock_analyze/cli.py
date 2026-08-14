@@ -1522,6 +1522,7 @@ def _command_research_workflow(args: argparse.Namespace) -> int:
             result = pipeline.run_classical_tournament(
                 account_scope=args.account_scope,
                 horizon=args.horizon,
+                force=bool(args.force),
             )
         elif args.command == "run-unified-model-arena":
             result = pipeline.run_unified_model_arena(

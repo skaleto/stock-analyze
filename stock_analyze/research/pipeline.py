@@ -1933,6 +1933,7 @@ class ResearchPipeline:
         *,
         account_scope: str | None = None,
         horizon: int | None = None,
+        force: bool = False,
     ) -> dict[str, Any]:
         target_horizon = int(
             horizon if horizon is not None
@@ -1961,6 +1962,7 @@ class ResearchPipeline:
                 self.run_classical_tournament(
                     account_scope=scope,
                     horizon=target_horizon,
+                    force=force,
                 )
                 for scope in scopes
             ]
@@ -2044,6 +2046,7 @@ class ResearchPipeline:
             feature_columns=feature_columns,
             portfolio_contract=self._research_portfolio_contract(normalized_scope),
             specs=declared_specs,
+            force=force,
         )
 
     def run_unified_model_arena(

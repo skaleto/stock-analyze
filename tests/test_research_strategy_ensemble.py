@@ -232,7 +232,7 @@ class ResearchStrategyEnsembleTest(unittest.TestCase):
             result = attach_active_predictions(self.candidates, predictions, profile="trend")
             pd.testing.assert_series_equal(result["score"], self.candidates["score"], check_names=False)
 
-    def test_weight_optimizer_falls_back_to_current_top_n(self):
+    def test_weight_optimizer_keeps_constraints_without_risk_inputs(self):
         weights = risk_adjusted_target_weights(
             self.candidates.assign(
                 expected_excess_return=[None, None],
@@ -242,7 +242,7 @@ class ResearchStrategyEnsembleTest(unittest.TestCase):
             top_n=2,
             max_single_weight=0.6,
         )
-        self.assertEqual(weights, {"000001": 0.5, "000002": 0.5})
+        self.assertEqual(weights, {"000001": 0.6, "000002": 0.4})
 
     def test_weight_optimizer_uses_bounded_active_model_tilt(self):
         candidates = pd.DataFrame([
@@ -444,6 +444,50 @@ class ResearchStrategyEnsembleTest(unittest.TestCase):
             weights.get("000001", 0.0) + weights.get("000002", 0.0),
             0.35 + 1e-8,
         )
+
+    def test_missing_risk_inputs_still_honor_liquidity_caps(self):
+        candidates = pd.DataFrame([
+            {"code": "000001", "score": 1.0, "liquidity_cap": 0.10},
+            {"code": "000002", "score": 0.9, "liquidity_cap": 0.10},
+        ])
+        diagnostics: dict[str, object] = {}
+
+        weights = risk_adjusted_target_weights(
+            candidates,
+            top_n=2,
+            max_single_weight=0.50,
+            gross_exposure=0.40,
+            diagnostics=diagnostics,
+        )
+
+        self.assertTrue(all(weight <= 0.10 + 1e-8 for weight in weights.values()))
+        self.assertLessEqual(sum(weights.values()), 0.20 + 1e-8)
+        self.assertGreater(diagnostics["gross_exposure_shortfall"], 0.0)
+
+    def test_missing_risk_inputs_still_honor_turnover_limit(self):
+        candidates = pd.DataFrame([
+            {"code": "000003", "score": 1.0},
+            {"code": "000004", "score": 0.9},
+            {"code": "000001", "score": 0.2},
+            {"code": "000002", "score": 0.1},
+        ])
+        current = {"000001": 0.40, "000002": 0.40}
+
+        weights = risk_adjusted_target_weights(
+            candidates,
+            top_n=2,
+            max_single_weight=0.50,
+            current_weights=current,
+            gross_exposure=0.80,
+            max_turnover=0.10,
+        )
+
+        codes = set(weights).union(current)
+        one_way_turnover = 0.5 * sum(
+            abs(weights.get(code, 0.0) - current.get(code, 0.0))
+            for code in codes
+        )
+        self.assertLessEqual(one_way_turnover, 0.10 + 1e-8)
 
     def test_optimizer_honors_overlapping_underlying_company_caps(self):
         candidates = pd.DataFrame([

@@ -36,7 +36,7 @@ from .trial_ledger import DEFAULT_CLASSICAL_TRIAL_SPECS
 
 
 CLASS_ORDER = ("down", "flat", "up")
-TRAINING_PROTOCOL_VERSION = "purged_walk_forward_v5_isotonic_edge"
+TRAINING_PROTOCOL_VERSION = "purged_walk_forward_v7_balanced_anchor"
 
 
 @dataclass(frozen=True)
@@ -149,6 +149,7 @@ class ModelBundle:
     account_scope: str = ""
     edge_calibrator: EdgeCalibrator | None = None
     ranking_target: str = "raw_excess_return"
+    ranking_residual_weight: float = 1.0
 
     def _matrix(self, frame: pd.DataFrame) -> np.ndarray:
         numeric = _clip_numeric(
@@ -195,8 +196,21 @@ class ModelBundle:
         ranking_target = str(
             getattr(self, "ranking_target", "raw_excess_return")
         )
-        linear = _apply_ranking_anchor(linear, frame, ranking_target)
-        boosting = _apply_ranking_anchor(boosting, frame, ranking_target)
+        residual_weight = float(
+            getattr(self, "ranking_residual_weight", 1.0)
+        )
+        linear = _apply_ranking_anchor(
+            linear,
+            frame,
+            ranking_target,
+            residual_weight=residual_weight,
+        )
+        boosting = _apply_ranking_anchor(
+            boosting,
+            frame,
+            ranking_target,
+            residual_weight=residual_weight,
+        )
         return linear, np.asarray(boosting, dtype=float)
 
     def _raw_excess_return(self, frame: pd.DataFrame) -> np.ndarray:
@@ -608,6 +622,7 @@ def _ranking_target_values(
     if normalized not in {
         "daily_cross_sectional_percentile_v1",
         "momentum_anchor_residual_v1",
+        "momentum_lowvol_anchor_residual_v1",
     }:
         raise ValueError(f"ranking_target_unknown:{normalized}")
     groupers = [frame[column].astype(str) for column in _cross_section_columns(frame)]
@@ -618,6 +633,8 @@ def _ranking_target_values(
     cross_sectional_target = (ranked - 0.5).fillna(0.0).to_numpy(dtype=float)
     if normalized == "momentum_anchor_residual_v1":
         return cross_sectional_target - _momentum_anchor_values(frame)
+    if normalized == "momentum_lowvol_anchor_residual_v1":
+        return cross_sectional_target - _balanced_anchor_values(frame)
     return cross_sectional_target
 
 
@@ -645,15 +662,44 @@ def _momentum_anchor_values(frame: pd.DataFrame) -> np.ndarray:
     )
 
 
+def _balanced_anchor_values(frame: pd.DataFrame) -> np.ndarray:
+    """Blend momentum and low-volatility ranks without a fitted regime switch."""
+
+    groupers = [frame[column].astype(str) for column in _cross_section_columns(frame)]
+    momentum = _momentum_anchor_values(frame)
+    if "realized_volatility_20" not in frame.columns:
+        raise ValueError("ranking_anchor_low_volatility_missing")
+    volatility = pd.to_numeric(
+        frame["realized_volatility_20"],
+        errors="coerce",
+    )
+    volatility_rank = volatility.groupby(groupers, sort=False).rank(
+        pct=True,
+        method="average",
+    )
+    low_volatility = (0.5 - volatility_rank).fillna(0.0).to_numpy(dtype=float)
+    return 0.5 * momentum + 0.5 * low_volatility
+
+
 def _apply_ranking_anchor(
     predictions: np.ndarray,
     frame: pd.DataFrame,
     contract: str,
+    *,
+    residual_weight: float = 1.0,
 ) -> np.ndarray:
     values = np.asarray(predictions, dtype=float)
-    if str(contract).strip().lower() != "momentum_anchor_residual_v1":
+    normalized = str(contract).strip().lower()
+    if normalized == "momentum_anchor_residual_v1":
+        anchor = _momentum_anchor_values(frame)
+    elif normalized == "momentum_lowvol_anchor_residual_v1":
+        anchor = _balanced_anchor_values(frame)
+    else:
         return values
-    return values + _momentum_anchor_values(frame)
+    weight = float(residual_weight)
+    if not 0.0 <= weight <= 1.0:
+        raise ValueError("ranking_residual_weight_out_of_range")
+    return anchor + weight * values
 
 
 def _select_training_features(
@@ -1189,6 +1235,7 @@ class _FittedComponents:
     calibration_diagnostics: dict[str, Any]
     edge_calibrator: EdgeCalibrator | None
     ranking_target: str
+    ranking_residual_weight: float
 
     def probabilities(self, frame: pd.DataFrame, columns: tuple[str, ...]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         matrix, _ = _impute(frame, columns, self.imputation_values, self.clip_bounds)
@@ -1210,13 +1257,21 @@ class _FittedComponents:
             dtype=float,
         )
         seeds = np.column_stack([model.predict(matrix) for model in self.boosting_ranking])
-        anchor = (
-            _momentum_anchor_values(frame)
-            if self.ranking_target == "momentum_anchor_residual_v1"
-            else np.zeros(len(frame), dtype=float)
+        linear = _apply_ranking_anchor(
+            linear,
+            frame,
+            self.ranking_target,
+            residual_weight=self.ranking_residual_weight,
         )
-        linear = linear + anchor
-        seeds = seeds + anchor[:, None]
+        seeds = np.column_stack([
+            _apply_ranking_anchor(
+                seeds[:, index],
+                frame,
+                self.ranking_target,
+                residual_weight=self.ranking_residual_weight,
+            )
+            for index in range(seeds.shape[1])
+        ])
         boosting = np.mean(seeds, axis=1)
         ensemble = (
             self.ranking_ensemble_linear_weight * linear
@@ -1260,6 +1315,11 @@ def _fit_components(
     )
     boosting.fit(train_x, train_y, sample_weight=train_weights)
     spec_parameters = model_spec.parameter_map if model_spec is not None else {}
+    ranking_residual_weight = float(
+        spec_parameters.get("residual_tilt_weight", 1.0)
+    )
+    if not 0.0 <= ranking_residual_weight <= 1.0:
+        raise ValueError("ranking_residual_weight_out_of_range")
     if model_spec is not None and model_spec.estimator == "elastic_net":
         linear_ranking = ElasticNet(
             alpha=float(spec_parameters.get("alpha", 0.0005)),
@@ -1313,10 +1373,21 @@ def _fit_components(
     boosting_seed_selection = np.column_stack([
         model.predict(selection_x) for model in boosting_ranking
     ])
-    if ranking_target == "momentum_anchor_residual_v1":
-        selection_anchor = _momentum_anchor_values(calibration_selection)
-        linear_selection = linear_selection + selection_anchor
-        boosting_seed_selection = boosting_seed_selection + selection_anchor[:, None]
+    linear_selection = _apply_ranking_anchor(
+        linear_selection,
+        calibration_selection,
+        ranking_target,
+        residual_weight=ranking_residual_weight,
+    )
+    boosting_seed_selection = np.column_stack([
+        _apply_ranking_anchor(
+            boosting_seed_selection[:, index],
+            calibration_selection,
+            ranking_target,
+            residual_weight=ranking_residual_weight,
+        )
+        for index in range(boosting_seed_selection.shape[1])
+    ])
     boosting_ranking_selection = np.mean(boosting_seed_selection, axis=1)
     if model_spec is not None:
         ranking_weight = float(spec_parameters.get("ranking_linear_weight", 0.5))
@@ -1337,10 +1408,18 @@ def _fit_components(
         np.column_stack([model.predict(calibration_x) for model in boosting_ranking]),
         axis=1,
     )
-    if ranking_target == "momentum_anchor_residual_v1":
-        calibration_anchor = _momentum_anchor_values(calibration)
-        calibration_linear = calibration_linear + calibration_anchor
-        calibration_boosting = calibration_boosting + calibration_anchor
+    calibration_linear = _apply_ranking_anchor(
+        calibration_linear,
+        calibration,
+        ranking_target,
+        residual_weight=ranking_residual_weight,
+    )
+    calibration_boosting = _apply_ranking_anchor(
+        calibration_boosting,
+        calibration,
+        ranking_target,
+        residual_weight=ranking_residual_weight,
+    )
     calibration_ranking = (
         ranking_weight * calibration_linear
         + (1.0 - ranking_weight) * calibration_boosting
@@ -1438,6 +1517,7 @@ def _fit_components(
         },
         edge_calibrator=edge_calibrator,
         ranking_target=ranking_target,
+        ranking_residual_weight=ranking_residual_weight,
     )
 
 
@@ -1726,9 +1806,17 @@ def train_model_bundle(
         index=return_source.index,
         dtype=float,
     )
-    if deployment.ranking_target == "momentum_anchor_residual_v1":
-        ranking_reference = ranking_reference + pd.Series(
-            _momentum_anchor_values(return_source),
+    if deployment.ranking_target in {
+        "momentum_anchor_residual_v1",
+        "momentum_lowvol_anchor_residual_v1",
+    }:
+        ranking_reference = pd.Series(
+            _apply_ranking_anchor(
+                ranking_reference.to_numpy(dtype=float),
+                return_source,
+                deployment.ranking_target,
+                residual_weight=deployment.ranking_residual_weight,
+            ),
             index=return_source.index,
             dtype=float,
         )
@@ -1838,6 +1926,7 @@ def train_model_bundle(
         "model_spec_id": model_spec.spec_id if model_spec is not None else "legacy_ensemble",
         "model_spec_hash": model_spec.spec_hash if model_spec is not None else "",
         "ranking_target": deployment.ranking_target,
+        "ranking_residual_weight": deployment.ranking_residual_weight,
         "scope_universe_hash": scope_universe_hash,
         "scope_benchmark": scope_benchmark,
         "feature_schema_hash": feature_schema_hash,
@@ -1886,6 +1975,7 @@ def train_model_bundle(
                 model_spec.ranking_target
                 if model_spec is not None else "raw_excess_return"
             ),
+            "ranking_residual_weight": deployment.ranking_residual_weight,
             "feature_selection_mode": (
                 model_spec.feature_selection_mode
                 if model_spec is not None else "stability_filter_v1"
@@ -1979,6 +2069,7 @@ def train_model_bundle(
         account_scope=normalized_scope,
         edge_calibrator=deployment.edge_calibrator,
         ranking_target=deployment.ranking_target,
+        ranking_residual_weight=deployment.ranking_residual_weight,
     )
 
 
@@ -2030,6 +2121,9 @@ def save_model_bundle(bundle: ModelBundle, path: str | Path) -> Path:
         ),
         "training_seed_count": len(tuple(getattr(bundle, "boosting_ranking_models", ()) or ())),
         "ranking_target": str(getattr(bundle, "ranking_target", "raw_excess_return")),
+        "ranking_residual_weight": float(
+            getattr(bundle, "ranking_residual_weight", 1.0)
+        ),
         "sample_support": bundle.sample_support,
         "metrics": bundle.metrics,
         "split_dates": bundle.split_dates,

@@ -31,7 +31,11 @@ from .governance import (
     deflated_sharpe_probability,
     probability_of_backtest_overfit,
 )
-from .models import save_model_bundle, train_model_bundle
+from .models import (
+    TRAINING_PROTOCOL_VERSION,
+    save_model_bundle,
+    train_model_bundle,
+)
 from .portfolio_replay import (
     annualized_relative_wealth_excess,
     cumulative_relative_wealth,
@@ -355,6 +359,7 @@ def run_classical_tournament(
     feature_columns: Iterable[str],
     portfolio_contract: dict[str, Any],
     specs: Iterable[ClassicalModelSpec],
+    force: bool = False,
 ) -> dict[str, Any]:
     """Train a sealed family and evaluate its final chronological slice once."""
 
@@ -366,36 +371,18 @@ def run_classical_tournament(
     )
     tournament_root = model_root / "tournaments" / run_key
     report_path = tournament_root / "report.json"
-    if report_path.exists():
-        try:
-            existing = json.loads(report_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            existing = None
-        if (
-            isinstance(existing, dict)
-            and existing.get("protocol") == TOURNAMENT_PROTOCOL_VERSION
-        ):
-            _write_tournament_summary(tournament_root, existing)
-            return existing
-        if isinstance(existing, dict):
-            retired_protocol = str(existing.get("protocol") or "unknown")
-            safe_protocol = "".join(
-                character if character.isalnum() or character in {"-", "_"}
-                else "-"
-                for character in retired_protocol
-            )[:80]
-            archive_root = tournament_root.parent / "_archive"
-            archive_root.mkdir(parents=True, exist_ok=True)
-            destination = archive_root / f"{run_key}-{safe_protocol}"
-            suffix = 1
-            while destination.exists():
-                destination = archive_root / f"{run_key}-{safe_protocol}-{suffix}"
-                suffix += 1
-            shutil.move(str(tournament_root), str(destination))
-
     declared_specs = tuple(specs)
     if not declared_specs:
         raise ValueError("tournament_declared_family_empty")
+    expected_spec_hashes = {spec.spec_hash for spec in declared_specs}
+    existing: dict[str, Any] | None = None
+    if report_path.exists():
+        try:
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+            existing = payload if isinstance(payload, dict) else None
+        except json.JSONDecodeError:
+            existing = None
+
     for spec in declared_specs:
         if (
             spec.market != market
@@ -465,8 +452,41 @@ def run_classical_tournament(
     contract_hash = hashlib.sha256(
         json.dumps(effective_portfolio_contract, sort_keys=True).encode("utf-8")
     ).hexdigest()[:16]
+    cache_matches = bool(
+        not force
+        and existing is not None
+        and existing.get("protocol") == TOURNAMENT_PROTOCOL_VERSION
+        and existing.get("training_protocol_version")
+        == TRAINING_PROTOCOL_VERSION
+        and set(existing.get("spec_hashes") or ()) == expected_spec_hashes
+        and existing.get("data_fingerprint") == data_fingerprint
+        and existing.get("portfolio_contract_hash") == contract_hash
+        and set(existing.get("selected_features") or ())
+        == set(selected_features)
+    )
+    if cache_matches and existing is not None:
+        _write_tournament_summary(tournament_root, existing)
+        return existing
+    if tournament_root.exists():
+        retired_protocol = str(
+            (existing or {}).get("protocol") or "incomplete"
+        )
+        safe_protocol = "".join(
+            character if character.isalnum() or character in {"-", "_"}
+            else "-"
+            for character in retired_protocol
+        )[:80]
+        archive_root = tournament_root.parent / "_archive"
+        archive_root.mkdir(parents=True, exist_ok=True)
+        destination = archive_root / f"{run_key}-{safe_protocol}"
+        suffix = 1
+        while destination.exists():
+            destination = archive_root / f"{run_key}-{safe_protocol}-{suffix}"
+            suffix += 1
+        shutil.move(str(tournament_root), str(destination))
     manifest_payload = {
         "protocol": TOURNAMENT_PROTOCOL_VERSION,
+        "training_protocol_version": TRAINING_PROTOCOL_VERSION,
         "market": market,
         "account_scope": account_scope,
         "horizon": int(horizon),
@@ -840,12 +860,15 @@ def run_classical_tournament(
         "schema_version": 1,
         "evidence_contract_version": "windowed-evidence-v1",
         "protocol": TOURNAMENT_PROTOCOL_VERSION,
+        "training_protocol_version": TRAINING_PROTOCOL_VERSION,
         "status": "shadow_available" if shadow_candidates else "no_pass",
         "market": market,
         "account_scope": account_scope,
         "horizon": int(horizon),
         "as_of": str(as_of),
         "data_fingerprint": data_fingerprint,
+        "portfolio_contract_hash": contract_hash,
+        "spec_hashes": sorted(expected_spec_hashes),
         "manifest_path": str(manifest_path),
         "report_path": str(report_path),
         "final_gate_open_count": 1,

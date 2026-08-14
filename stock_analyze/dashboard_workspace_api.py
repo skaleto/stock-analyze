@@ -27,6 +27,7 @@ from .dashboard_runtime import read_dashboard_runtime
 from .overlay_guard import AVAILABLE_FACTORS_BY_MARKET, SENTIMENT_FACTORS
 from .research.classical_specs import mainline_horizon, mainline_specs
 from .research.feature_registry import DEFAULT_REGISTRY, INTELLIGENCE_FEATURES
+from .research.models import TRAINING_PROTOCOL_VERSION
 
 
 MAX_TABLE_ROWS = 20
@@ -124,6 +125,7 @@ MODEL_METRIC_KEYS = (
     "gross_exposure_shortfall",
     "model_spec_id",
     "model_spec_hash",
+    "training_protocol_version",
 )
 TABULAR_RESEARCH_METRICS = {
     "rank_ic": "rankIc",
@@ -696,6 +698,16 @@ def _model_rows(
                     or metrics.get("model_spec_id"),
                     limit=256,
                 ),
+                "specHash": _text(
+                    raw.get("spec_hash")
+                    or registry_record.get("spec_hash")
+                    or metrics.get("model_spec_hash"),
+                    limit=128,
+                ),
+                "trainingProtocol": _text(
+                    metrics.get("training_protocol_version"),
+                    limit=128,
+                ),
                 "accountScope": account_scope,
                 "horizon": horizon,
                 "algorithmFamily": _algorithm_family(raw),
@@ -800,6 +812,7 @@ def _mainline_model_projection(
     for scope in sorted({str(row.get("accountScope") or "") for row in rows}):
         expected_specs = mainline_specs(market, scope)
         expected_spec_id = expected_specs[0].spec_id if len(expected_specs) == 1 else ""
+        expected_spec_hash = expected_specs[0].spec_hash if len(expected_specs) == 1 else ""
         horizon_rows = [
             row
             for row in rows
@@ -809,9 +822,18 @@ def _mainline_model_projection(
         exact = [
             row for row in horizon_rows
             if str(row.get("specId") or "") == expected_spec_id
+            and (
+                not scope
+                or (
+                    str(row.get("specHash") or "") == expected_spec_hash
+                    and str(row.get("trainingProtocol") or "")
+                    == TRAINING_PROTOCOL_VERSION
+                )
+            )
         ]
         candidates = exact or [
-            row for row in horizon_rows if not str(row.get("specId") or "")
+            row for row in horizon_rows
+            if not scope and not str(row.get("specId") or "")
         ]
         if not candidates:
             continue

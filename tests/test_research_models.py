@@ -10,6 +10,8 @@ import pandas as pd
 from stock_analyze.research.models import (
     MultiClassCalibrator,
     _activation_metrics,
+    _apply_ranking_anchor,
+    _balanced_anchor_values,
     _bounded_cross_section_sample,
     _momentum_anchor_values,
     _portfolio_oos_metrics,
@@ -95,6 +97,60 @@ class ResearchModelsTest(unittest.TestCase):
             ),
         )
         np.testing.assert_allclose(residual, np.zeros(4), atol=1e-12)
+
+    def test_balanced_anchor_blends_momentum_and_low_volatility(self):
+        frame = pd.DataFrame({
+            "trade_date": ["20260102"] * 4 + ["20260105"] * 4,
+            "account_id": ["hs300"] * 8,
+            "momentum_20": [0.1, 0.2, 0.3, 0.4, -0.4, -0.3, -0.2, -0.1],
+            "momentum_60": [0.2, 0.3, 0.4, 0.5, -0.5, -0.4, -0.3, -0.2],
+            "realized_volatility_20": [0.4, 0.3, 0.2, 0.1] * 2,
+            "excess_return": [0.01, 0.02, 0.03, 0.04, 0.04, 0.03, 0.02, 0.01],
+        })
+
+        anchor = _balanced_anchor_values(frame)
+        residual = _ranking_target_values(
+            frame,
+            "momentum_lowvol_anchor_residual_v1",
+        )
+
+        np.testing.assert_allclose(
+            anchor[:4],
+            np.array([-0.375, -0.125, 0.125, 0.375]),
+        )
+        np.testing.assert_allclose(
+            anchor[4:],
+            np.array([-0.375, -0.125, 0.125, 0.375]),
+        )
+        np.testing.assert_allclose(
+            residual + anchor,
+            _ranking_target_values(
+                frame,
+                "daily_cross_sectional_percentile_v1",
+            ),
+        )
+
+    def test_balanced_anchor_applies_only_bounded_residual_tilt(self):
+        frame = pd.DataFrame({
+            "trade_date": ["20260102"] * 4,
+            "account_id": ["hs300"] * 4,
+            "momentum_20": [0.1, 0.2, 0.3, 0.4],
+            "momentum_60": [0.2, 0.3, 0.4, 0.5],
+            "realized_volatility_20": [0.4, 0.3, 0.2, 0.1],
+        })
+        residual = np.array([0.4, -0.4, 0.2, -0.2])
+
+        reconstructed = _apply_ranking_anchor(
+            residual,
+            frame,
+            "momentum_lowvol_anchor_residual_v1",
+            residual_weight=0.15,
+        )
+
+        np.testing.assert_allclose(
+            reconstructed,
+            _balanced_anchor_values(frame) + 0.15 * residual,
+        )
 
     def test_development_rank_ic_uses_raw_ranking_not_calibrated_edge(self):
         self.assertIn(
@@ -364,7 +420,7 @@ class ResearchModelsTest(unittest.TestCase):
         self.assertEqual(first.metrics["walk_forward_splits"], 3)
         self.assertEqual(
             first.metrics["training_protocol_version"],
-            "purged_walk_forward_v5_isotonic_edge",
+            "purged_walk_forward_v7_balanced_anchor",
         )
         self.assertIsNotNone(first.edge_calibrator)
         self.assertEqual(
@@ -511,7 +567,10 @@ class ResearchModelsTest(unittest.TestCase):
         self.assertEqual(bundle.metrics["simulator_version"], "paper-parity-daily-v1")
         self.assertGreater(bundle.metrics["decision_count"], 0)
         self.assertEqual(bundle.metrics["replay_contract"], "model")
-        self.assertEqual(bundle.metrics["diagnostic_replay_contract"], "rule")
+        self.assertEqual(
+            bundle.metrics["diagnostic_replay_contract"],
+            "diagnostic_fixed_topn",
+        )
         self.assertGreater(bundle.metrics["diagnostic_trade_count"], 0)
         self.assertGreater(bundle.metrics["diagnostic_capital_utilization"], 0.0)
         if not bundle.metrics["edge_calibration_available"]:
@@ -566,6 +625,7 @@ class ResearchModelsTest(unittest.TestCase):
             bundle.ranking_target,
             "momentum_anchor_residual_v1",
         )
+        self.assertEqual(bundle.ranking_residual_weight, 1.0)
         self.assertEqual(
             bundle.metrics["feature_selection_mode"],
             "fixed_profile_v1",
@@ -601,7 +661,7 @@ class ResearchModelsTest(unittest.TestCase):
         self.assertIn("ranking_ensemble_linear_weight", bundle.metrics)
         self.assertEqual(
             bundle.metrics["training_protocol_version"],
-            "purged_walk_forward_v5_isotonic_edge",
+            "purged_walk_forward_v7_balanced_anchor",
         )
 
     def test_training_reference_detects_out_of_distribution_values(self):
