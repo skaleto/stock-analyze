@@ -12,6 +12,7 @@ import tempfile
 import time
 import unicodedata
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -31,10 +32,11 @@ from .contracts import (
 )
 from .document_ir import (
     DOCUMENT_IR_VERSION,
+    DocumentIRProjector,
     DocumentIRPreflightError,
     ir_nodes_by_id,
+    preflight_document_ir,
     preflight_evidence_packet,
-    project_document_ir,
 )
 from .execution_contract import (
     EXECUTION_CONTRACT_VERSION,
@@ -61,7 +63,11 @@ from .provider import (
     SemanticInputBundle,
     SemanticProviderIdentity,
 )
-from .router import title_event_categories
+from .router import (
+    SEMANTIC_ROUTER_VERSION,
+    classify_document_kind,
+    title_event_categories,
+)
 from .taxonomy import EventTaxonomy, FactRequirement
 from .validation import (
     CandidateValidationError,
@@ -75,12 +81,23 @@ OUTPUT_CONTRACT_VERSION = "semantic-extraction-output-v1"
 DEFAULT_PROFILE_ID = "a-share-announcement-mentions-v1"
 DEFAULT_LIMIT = 50
 DEFAULT_MAX_INPUT_CHARACTERS = 40_000
+CODING_PLAN_SHARD_SIZE = 25
+CODING_PLAN_MAX_VALIDATION_ATTEMPTS = 2
+DETERMINISTIC_ROUTER_PROVIDER = "deterministic-router"
+DETERMINISTIC_ROUTE_CONTRACT_VERSION = "semantic-deterministic-route-v1"
 PAYLOAD_CONTRACT_VERSION = "semantic-payload-v3"
 MAX_JOB_FILE_BYTES = 64 * 1024 * 1024
 MAX_JOB_LINE_BYTES = 2 * 1024 * 1024
+# Full Document IR is a local, immutable job asset rather than provider output.
+# Its per-document row may legitimately exceed the bounded exchange-row limit,
+# while the existing whole-file cap still bounds memory use.
+MAX_DOCUMENT_IR_LINE_BYTES = MAX_JOB_FILE_BYTES
 _PROFILE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
 _TERMINAL_STATUSES = frozenset(
     {"succeeded", "no_event", "failed_terminal"}
+)
+_SEMANTIC_EVIDENCE_PROJECTION_SECTIONS = frozenset(
+    {"table_cell", "semantic_segment", "document_metadata"}
 )
 
 # Provider-neutral no_event review gate. When an executor returns no_event for
@@ -174,7 +191,8 @@ _V21_EVENT_RETRIEVAL_TERMS: dict[str, tuple[str, ...]] = {
         "发行价格",
     ),
     "guarantee": (
-        "担保", "被担保", "担保金额", "担保余额",
+        "担保", "被担保", "担保金额", "担保余额", "本次对外担保",
+        "连带责任保证", "流动资金贷款", "贷款", "保证",
     ),
     "pledge_freeze": (
         "质押", "解质押", "冻结", "占其所持",
@@ -198,6 +216,23 @@ _V21_EVENT_RETRIEVAL_TERMS: dict[str, tuple[str, ...]] = {
 _V21_STATUS_RETRIEVAL_TERMS = (
     "审议通过", "签订", "完成", "实施", "修订", "取消", "终止", "立案",
     "尚需", "尚待", "已披露", "发布", "公告",
+)
+_V21_REVISION_BOUNDARY_TERMS = (
+    "更正说明",
+    "更正后",
+    "修订后",
+    "修改后",
+    "调整后",
+    "现更正",
+    "现修改",
+    "现补充为",
+    "原来披露",
+    "原披露",
+    "原公告内容",
+    "更正前",
+    "修订前",
+    "修改前",
+    "调整前",
 )
 
 
@@ -295,6 +330,95 @@ def _no_event_review_signal(
     return None
 
 
+def _requires_no_event_review(payload: Mapping[str, object]) -> bool:
+    """Keep the strict no-event guard on primary event filings only.
+
+    Old payloads without route metadata retain the previous fail-closed
+    behavior. Supporting legal/research documents may validly mention event
+    terms while concluding that no new current event occurred.
+    """
+
+    repair_context = payload.get("repair_context")
+    if isinstance(repair_context, Mapping):
+        validation_error = repair_context.get("validation_error")
+        if isinstance(validation_error, Mapping):
+            detail = str(validation_error.get("detail") or "")
+            if str(validation_error.get("code") or "") == "no_event_review_required":
+                return False
+            if (
+                str(validation_error.get("code") or "")
+                == "semantic_mentions_all_rejected"
+                and any(
+                    code in detail
+                    for code in (
+                        "mention_revision_uses_superseded_value",
+                        "mention_revision_no_changed_fact",
+                    )
+                )
+            ):
+                return False
+    route_context = payload.get("route_context")
+    if not isinstance(route_context, Mapping):
+        return True
+    if str(route_context.get("extraction_purpose") or "") != "canonical_event":
+        return False
+    if "legal_current_event" in {
+        str(value)
+        for value in route_context.get("reason_codes", [])
+        if str(value)
+    }:
+        return True
+    return str(route_context.get("document_kind") or "") in {
+        "event_announcement",
+        "meeting_resolution",
+    }
+
+
+def _revision_rejection_can_be_no_event(error: SemanticContractError) -> bool:
+    if error.code != "semantic_mentions_all_rejected":
+        return False
+    rejection_rows = [
+        row.strip() for row in str(error.detail or "").split(";") if row.strip()
+    ]
+    if not rejection_rows:
+        return False
+    for row in rejection_rows:
+        _, separator, raw_codes = row.partition(":")
+        codes = {
+            code.strip() for code in raw_codes.split(",") if code.strip()
+        }
+        if not separator or codes != {"mention_revision_no_changed_fact"}:
+            return False
+    return True
+
+
+def _context_repair_can_be_no_event(
+    error: SemanticContractError,
+    bundle: SemanticInputBundle,
+) -> bool:
+    if error.code not in {
+        "semantic_context_current_transition_missing",
+        "semantic_mentions_all_rejected",
+    }:
+        return False
+    route_context = bundle.payload.get("route_context")
+    if not isinstance(route_context, Mapping):
+        return False
+    if str(route_context.get("document_kind") or "") not in {
+        "legal_opinion",
+        "supplemental_report",
+    }:
+        return False
+    reason_codes = {
+        str(value)
+        for value in route_context.get("reason_codes", [])
+        if str(value)
+    }
+    return not bool(
+        reason_codes & {"legal_current_event", "revision_context_present"}
+    )
+
+
 class SemanticExchangeError(ValueError):
     """A job exchange rejection with a stable machine-readable code."""
 
@@ -340,6 +464,7 @@ def prepare_job(
     _document_ids: Sequence[int] | None = None,
     _repair_reason: str = "",
     _allow_terminal_retry: bool = True,
+    _auto_finalize_routes: bool = True,
 ) -> dict[str, object]:
     """Write one immutable bounded job without requiring provider credentials."""
 
@@ -406,10 +531,11 @@ def prepare_job(
         schema_version=schema_version,
         document_ir_version=document_ir_version,
         retriever_version=retriever_version,
-        audit_sample_rate=0.05,
+        audit_sample_rate=float(profile.get("audit_sample_rate", 0.05)),
     )
     profile_payload = json.loads(profile_path.read_text(encoding="utf-8"))
     profile_hash = canonical_json_hash(profile_payload)
+    deterministic_router_model = _deterministic_router_model(profile_hash)
     prompt_hash = _text_hash(prompt)
     schema_hash = canonical_json_hash(schema)
     taxonomy_hash = _file_hash(taxonomy_path)
@@ -441,6 +567,7 @@ def prepare_job(
     )
     repair_reason = str(_repair_reason).strip()
     repair_id = ""
+    route_finalization: dict[str, object] | None = None
     if explicit_ids:
         if any(document_id <= 0 for document_id in explicit_ids):
             raise SemanticExchangeError("semantic_repair_document_id_invalid")
@@ -459,15 +586,25 @@ def prepare_job(
             raise SemanticExchangeError(
                 "semantic_repair_explicit_documents_required"
             )
+        coding_plan_terminal_failures = (
+            _coding_plan_terminal_failure_items(
+                root,
+                semantic_contract_hash=semantic_contract_hash,
+            )
+            if uses_v21_contract
+            else ()
+        )
         candidate_ids = _exchange_candidate_ids(
             store,
             profile=profile,
             prompt_version=prompt_version,
             schema_version=schema_version,
             taxonomy_version=taxonomy.taxonomy_version,
-            limit=max(bounded_limit * 20, 2_000),
+            limit=max(bounded_limit * 5, 500),
             priority_codes=priority_codes,
             allow_terminal_retry=_allow_terminal_retry,
+            coding_plan_terminal_failures=coding_plan_terminal_failures,
+            deterministic_router_model=deterministic_router_model,
         )
     for document_id in candidate_ids:
         if len(inputs) >= bounded_limit:
@@ -488,6 +625,7 @@ def prepare_job(
             taxonomy_version=taxonomy.taxonomy_version,
             parser_version=bundle.parser_version,
             allow_terminal_retry=_allow_terminal_retry,
+            deterministic_router_model=deterministic_router_model,
         ):
             continue
         extraction_payload = dict(bundle.payload)
@@ -621,6 +759,27 @@ def prepare_job(
             )
         items.append(item)
 
+    if not inputs and not explicit_ids and _auto_finalize_routes:
+        route_finalization = finalize_deterministic_routes(
+            root,
+            profile_id=profile_id,
+            limit=max(bounded_limit * 5, 500),
+        )
+        retried = prepare_job(
+            root,
+            profile_id=profile_id,
+            limit=bounded_limit,
+            max_input_characters=character_budget,
+            executor_mode=executor_mode,
+            executor_provider=executor_provider,
+            executor_model=executor_model,
+            executor_client_version=executor_client_version,
+            _allow_terminal_retry=_allow_terminal_retry,
+            _auto_finalize_routes=False,
+        )
+        retried["route_finalization"] = route_finalization
+        return retried
+
     contract = {
         "contract_version": JOB_CONTRACT_VERSION,
         "profile_id": str(profile["profile_id"]),
@@ -704,7 +863,10 @@ def prepare_job(
                     manifest=existing,
                     inputs=inputs,
                 )
-            return _prepare_summary(existing, job_dir, reused=True)
+            summary = _prepare_summary(existing, job_dir, reused=True)
+            if route_finalization is not None:
+                summary["route_finalization"] = route_finalization
+            return summary
         temporary = Path(
             tempfile.mkdtemp(
                 prefix=f".{job_id}.",
@@ -735,13 +897,792 @@ def prepare_job(
                     temporary / "evidence_packets.jsonl",
                     evidence_packet_rows,
                 )
+                if binding is not None and binding.executor_mode == "coding_plan":
+                    _write_coding_plan_execution_view(
+                        temporary,
+                        manifest=manifest,
+                        inputs=inputs,
+                        document_ir_rows=document_ir_rows,
+                        evidence_packet_rows=evidence_packet_rows,
+                    )
             os.replace(temporary, job_dir)
         finally:
             if temporary.exists():
                 shutil.rmtree(temporary)
     if uses_v21_contract:
         _register_v21_lineage(store, manifest=manifest, inputs=inputs)
-    return _prepare_summary(manifest, job_dir, reused=False)
+    summary = _prepare_summary(manifest, job_dir, reused=False)
+    if route_finalization is not None:
+        summary["route_finalization"] = route_finalization
+    return summary
+
+
+def finalize_deterministic_routes(
+    repo_root: str | Path,
+    *,
+    profile_id: str = DEFAULT_PROFILE_ID,
+    limit: int = 5_000,
+) -> dict[str, object]:
+    """Persist version-bound terminal routes that do not require an executor."""
+
+    root = Path(repo_root).resolve()
+    bounded_limit = max(1, min(int(limit), 100_000))
+    profile, profile_path = _load_profile(root, profile_id)
+    taxonomy_path = _rooted_path(root, str(profile["taxonomy_path"]))
+    taxonomy = EventTaxonomy.load(taxonomy_path)
+    if taxonomy.taxonomy_version != str(profile["taxonomy_version"]):
+        raise SemanticExchangeError("semantic_profile_taxonomy_version_mismatch")
+    prompt_version = str(profile["prompt_version"])
+    prompt = load_semantic_prompt(root, prompt_version)
+    schema_version = str(profile["schema_version"])
+    if schema_version == LITE_SCHEMA_VERSION:
+        schema = announcement_event_lite_schema(taxonomy)
+    elif schema_version == MENTION_SCHEMA_VERSION:
+        schema = announcement_mention_lite_schema()
+    else:
+        raise SemanticExchangeError("semantic_profile_schema_version_mismatch")
+    profile_payload = json.loads(profile_path.read_text(encoding="utf-8"))
+    profile_hash = canonical_json_hash(profile_payload)
+    router_model = _deterministic_router_model(profile_hash)
+    document_ir_version = str(profile.get("document_ir_version") or "")
+    retriever_version = str(profile.get("retriever_version") or "")
+    character_budget = int(profile.get("max_evidence_packet_chars") or 0)
+    semantic_contract_hash = canonical_json_hash(
+        {
+            "execution_contract_version": EXECUTION_CONTRACT_VERSION,
+            "profile_hash": profile_hash,
+            "prompt_hash": _text_hash(prompt),
+            "schema_hash": canonical_json_hash(schema),
+            "taxonomy_hash": _file_hash(taxonomy_path),
+            "document_ir_version": document_ir_version,
+            "retriever_version": retriever_version,
+            "compiler_version": str(profile.get("compiler_version") or ""),
+            "max_evidence_packet_chars": (
+                character_budget if document_ir_version else None
+            ),
+        }
+    )
+    store = IntelligenceStore(root / "data" / "shared" / "intelligence")
+    route_output_store = LocalBlobStore(
+        root / "data" / "shared" / "intelligence" / "artifacts",
+        key_prefix="announcements",
+    )
+    pipeline = SemanticPipeline(
+        store=store,
+        blob_store=_BundleOnlyBlobStore(),
+        provider=_BundleOnlyProvider(),
+        taxonomy=taxonomy,
+        prompt_version=prompt_version,
+        schema_version=schema_version,
+        document_ir_version=document_ir_version,
+        retriever_version=retriever_version,
+        audit_sample_rate=float(profile.get("audit_sample_rate", 0.05)),
+    )
+    terminal_failures = (
+        _coding_plan_terminal_failure_items(
+            root,
+            semantic_contract_hash=semantic_contract_hash,
+        )
+        if document_ir_version
+        else ()
+    )
+    candidate_ids = _exchange_candidate_ids(
+        store,
+        profile=profile,
+        prompt_version=prompt_version,
+        schema_version=schema_version,
+        taxonomy_version=taxonomy.taxonomy_version,
+        limit=bounded_limit,
+        priority_codes=_latest_research_universe(
+            root,
+            market=str(profile.get("market") or ""),
+        ),
+        allow_terminal_retry=True,
+        coding_plan_terminal_failures=terminal_failures,
+        deterministic_router_model=router_model,
+    )
+    finalized = 0
+    reused = 0
+    deep_extraction = 0
+    blocked = 0
+    by_decision: dict[str, int] = {}
+    by_reason: dict[str, int] = {}
+    for document_id in candidate_ids:
+        snapshot = store.semantic_document_snapshot(document_id)
+        if not _profile_allows_snapshot(profile, snapshot):
+            continue
+        route = pipeline.route(document_id)
+        by_decision[route.decision] = by_decision.get(route.decision, 0) + 1
+        for reason in route.reason_codes:
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+        if route.requires_deep_extraction:
+            deep_extraction += 1
+            continue
+        if route.decision == "blocked_artifact":
+            blocked += 1
+            continue
+        if route.decision not in {"no_event", "context_only"}:
+            continue
+        artifact = _mapping(
+            snapshot.get("artifact"),
+            "semantic_deterministic_route_artifact_missing",
+        )
+        artifact_hash = str(artifact.get("content_hash") or "")
+        parser_version = str(artifact.get("parser_version") or "")
+        route_payload = {
+            "contract_version": DETERMINISTIC_ROUTE_CONTRACT_VERSION,
+            "document_id": int(document_id),
+            "artifact_hash": artifact_hash,
+            "parser_version": parser_version,
+            "profile_id": profile_id,
+            "profile_hash": profile_hash,
+            "router_version": SEMANTIC_ROUTER_VERSION,
+            "decision": route.decision,
+            "reason_codes": list(route.reason_codes),
+            "document_kind": route.document_kind,
+        }
+        input_hash = canonical_json_hash(route_payload)
+        claim = store.claim_semantic_run(
+            document_id=int(document_id),
+            artifact_hash=artifact_hash,
+            provider=DETERMINISTIC_ROUTER_PROVIDER,
+            model=router_model,
+            prompt_version=prompt_version,
+            schema_version=schema_version,
+            taxonomy_version=taxonomy.taxonomy_version,
+            parser_version=parser_version,
+            input_hash=input_hash,
+        )
+        if bool(claim["claimed"]):
+            raw_output = (_canonical_json(route_payload) + "\n").encode("utf-8")
+            output_hash = hashlib.sha256(raw_output).hexdigest()
+            output_uri = route_output_store.put_if_absent(
+                (
+                    "announcements/semantic-routing/"
+                    f"{output_hash[:2]}/{output_hash}.json"
+                ),
+                raw_output,
+                "application/json",
+            )
+            store.finish_semantic_run(
+                str(claim["run_id"]),
+                status="no_event",
+                output_hash=output_hash,
+                output_uri=output_uri,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=0,
+                cost_microunits=0,
+                error=(
+                    f"deterministic_route:{route.decision}:"
+                    f"{':'.join(route.reason_codes)}"
+                ),
+            )
+            finalized += 1
+            continue
+        if str(claim.get("status") or "") != "no_event":
+            raise SemanticExchangeError(
+                "semantic_deterministic_route_claim_conflict",
+                detail=f"document_id={document_id};status={claim.get('status')}",
+            )
+        reused += 1
+    return {
+        "status": "complete",
+        "profile_id": profile_id,
+        "profile_hash": profile_hash,
+        "router_version": SEMANTIC_ROUTER_VERSION,
+        "router_model": router_model,
+        "scanned": len(candidate_ids),
+        "finalized": finalized,
+        "reused": reused,
+        "deep_extraction": deep_extraction,
+        "blocked": blocked,
+        "by_decision": dict(sorted(by_decision.items())),
+        "by_reason": dict(sorted(by_reason.items())),
+    }
+
+
+def _write_coding_plan_execution_view(
+    job_dir: Path,
+    *,
+    manifest: Mapping[str, object],
+    inputs: Sequence[Mapping[str, object]],
+    document_ir_rows: Sequence[Mapping[str, object]],
+    evidence_packet_rows: Sequence[Mapping[str, object]],
+) -> None:
+    coding_plan_dir = job_dir / "coding_plan"
+    input_dir = coding_plan_dir / "input_parts"
+    ir_dir = coding_plan_dir / "document_ir_parts"
+    packet_dir = coding_plan_dir / "evidence_packet_parts"
+    output_dir = coding_plan_dir / "output_parts"
+    for path in (input_dir, ir_dir, packet_dir, output_dir):
+        path.mkdir(parents=True, exist_ok=True)
+
+    shards: list[dict[str, object]] = []
+    for offset in range(0, len(inputs), CODING_PLAN_SHARD_SIZE):
+        part_number = offset // CODING_PLAN_SHARD_SIZE + 1
+        part_name = f"part-{part_number:04d}.jsonl"
+        input_part = list(inputs[offset : offset + CODING_PLAN_SHARD_SIZE])
+        ir_part = list(
+            document_ir_rows[offset : offset + CODING_PLAN_SHARD_SIZE]
+        )
+        packet_part = list(
+            evidence_packet_rows[offset : offset + CODING_PLAN_SHARD_SIZE]
+        )
+        _write_jsonl(input_dir / part_name, input_part)
+        _write_jsonl(ir_dir / part_name, ir_part)
+        _write_jsonl(packet_dir / part_name, packet_part)
+        shards.append(
+            {
+                "part": part_number,
+                "input_file": f"coding_plan/input_parts/{part_name}",
+                "document_ir_file": (
+                    f"coding_plan/document_ir_parts/{part_name}"
+                ),
+                "evidence_packet_file": (
+                    f"coding_plan/evidence_packet_parts/{part_name}"
+                ),
+                "output_file": f"coding_plan/output_parts/{part_name}",
+                "documents": len(input_part),
+                "document_ids": [
+                    _positive_int(row.get("document_id")) for row in input_part
+                ],
+                "input_hash": canonical_json_hash(input_part),
+                "document_ir_hash": canonical_json_hash(ir_part),
+                "evidence_packet_hash": canonical_json_hash(packet_part),
+            }
+        )
+    shard_manifest = {
+        "contract_version": "semantic-coding-plan-shards-v1",
+        "job_id": str(manifest.get("job_id") or ""),
+        "shard_size": CODING_PLAN_SHARD_SIZE,
+        "total_documents": len(inputs),
+        "shards": shards,
+    }
+    _write_json(coding_plan_dir / "shards.json", shard_manifest)
+    write_text_atomic(
+        job_dir / "CODING_PLAN.md",
+        _render_coding_plan_handoff(manifest, shard_manifest),
+        encoding="utf-8",
+    )
+
+
+def _render_coding_plan_handoff(
+    manifest: Mapping[str, object],
+    shard_manifest: Mapping[str, object],
+) -> str:
+    binding = _mapping(
+        manifest.get("executor_binding"),
+        "semantic_executor_binding_invalid",
+    )
+    return f"""# Claude 历史公告语义抽取任务
+
+任务 ID：`{manifest.get('job_id')}`
+文档数：{shard_manifest.get('total_documents')}
+分片数：{len(_sequence(shard_manifest.get('shards'), 'semantic_coding_plan_shards_invalid'))}
+固定执行身份：`{binding.get('provider')}` / `{binding.get('model')}` / `{binding.get('client_version')}`
+
+## 执行合同
+
+1. 逐个处理 `coding_plan/input_parts/part-*.jsonl`；每个分片最多 {CODING_PLAN_SHARD_SIZE} 篇。
+2. `prompt.md` 是唯一语义规则；`schema.json`、`taxonomy.json` 是唯一输出结构与事件字典。
+3. `document_ir_parts` 只用于核对完整原文；不得把未出现在输入证据包中的内容伪造成引用。
+4. 每个输入必须恰好输出一行，写入对应的 `coding_plan/output_parts/part-*.jsonl`。
+5. 输出必须是 `semantic-extraction-output-v1` envelope，保留所有输入身份字段；`result` 使用 `schema.json`。
+6. `executor.kind` 固定为 `coding-plan`，provider/model/client_version 必须与上面的身份一致。
+7. 不读取 Gold、历史模型答案、canonical 事件、数据库或其他批次输出；不导入、不改生产数据。
+8. 先写 `.tmp` 文件，完成 JSONL 解析和 document_id 去重检查后再原子替换正式 part 文件。
+9. 本地验收最多允许一次纠错；不要反复改写同一批次来迎合校验器。
+
+完成全部分片后停止，只报告产物路径、成功行数和你发现的歧义，不运行 import。
+"""
+
+
+def _verify_coding_plan_execution_view(
+    job_dir: Path,
+    *,
+    manifest: Mapping[str, object],
+    inputs: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    shard_manifest = _read_json(job_dir / "coding_plan" / "shards.json")
+    if shard_manifest.get("contract_version") != "semantic-coding-plan-shards-v1":
+        raise SemanticExchangeError("semantic_coding_plan_shards_invalid")
+    if str(shard_manifest.get("job_id") or "") != str(manifest.get("job_id") or ""):
+        raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+    if int(shard_manifest.get("shard_size") or 0) != CODING_PLAN_SHARD_SIZE:
+        raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+    raw_shards = _sequence(
+        shard_manifest.get("shards"),
+        "semantic_coding_plan_shards_invalid",
+    )
+    collected: list[dict[str, object]] = []
+    collected_ir: list[dict[str, object]] = []
+    collected_packets: list[dict[str, object]] = []
+    for expected_part, raw_shard in enumerate(raw_shards, start=1):
+        shard = _mapping(raw_shard, "semantic_coding_plan_shards_invalid")
+        if int(shard.get("part") or 0) != expected_part:
+            raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+        input_path = job_dir / str(shard.get("input_file") or "")
+        if not input_path.resolve().is_relative_to(job_dir.resolve()):
+            raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+        part_rows = _read_jsonl(input_path, max_rows=CODING_PLAN_SHARD_SIZE)
+        if canonical_json_hash(part_rows) != str(shard.get("input_hash") or ""):
+            raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+        for path_key, hash_key, max_line_bytes in (
+            ("document_ir_file", "document_ir_hash", MAX_DOCUMENT_IR_LINE_BYTES),
+            ("evidence_packet_file", "evidence_packet_hash", MAX_JOB_LINE_BYTES),
+        ):
+            asset_path = job_dir / str(shard.get(path_key) or "")
+            if not asset_path.resolve().is_relative_to(job_dir.resolve()):
+                raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+            asset_rows = _read_jsonl(
+                asset_path,
+                max_rows=CODING_PLAN_SHARD_SIZE,
+                max_line_bytes=max_line_bytes,
+            )
+            if canonical_json_hash(asset_rows) != str(shard.get(hash_key) or ""):
+                raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+            if path_key == "document_ir_file":
+                collected_ir.extend(asset_rows)
+            else:
+                collected_packets.extend(asset_rows)
+        if [
+            _positive_int(row.get("document_id")) for row in part_rows
+        ] != [
+            _positive_int(value)
+            for value in _sequence(
+                shard.get("document_ids"),
+                "semantic_coding_plan_shards_invalid",
+            )
+        ]:
+            raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+        collected.extend(part_rows)
+    if list(collected) != list(inputs):
+        raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+    if collected_ir != _read_jsonl(
+        job_dir / "document_ir.jsonl",
+        max_rows=len(inputs),
+        max_line_bytes=MAX_DOCUMENT_IR_LINE_BYTES,
+    ):
+        raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+    if collected_packets != _read_jsonl(
+        job_dir / "evidence_packets.jsonl",
+        max_rows=len(inputs),
+    ):
+        raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+    if int(shard_manifest.get("total_documents") or 0) != len(inputs):
+        raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+    return shard_manifest
+
+
+def collect_coding_plan_outputs(
+    repo_root: str | Path,
+    job_path: str | Path,
+) -> dict[str, object]:
+    """Validate Coding Plan output without persisting semantic runs/events."""
+
+    root = Path(repo_root).resolve()
+    job_dir = _resolve_job_dir(root, job_path)
+    manifest = _read_json(job_dir / "job.json")
+    _verify_manifest(manifest, job_dir=job_dir)
+    inputs = _verified_inputs(job_dir, manifest)
+    try:
+        binding = ExecutorBinding.from_mapping(
+            _mapping(
+                manifest.get("executor_binding"),
+                "semantic_executor_binding_invalid",
+            )
+        )
+    except SemanticExecutionContractError as exc:
+        raise SemanticExchangeError(exc.code, detail=exc.detail) from exc
+    if binding.executor_mode != "coding_plan":
+        raise SemanticExchangeError("semantic_coding_plan_job_required")
+    shard_manifest = _verify_coding_plan_execution_view(
+        job_dir,
+        manifest=manifest,
+        inputs=inputs,
+    )
+    output_dir = job_dir / "coding_plan" / "output_parts"
+    raw_outputs: list[dict[str, object]] = []
+    expected_output_paths = [
+        job_dir / str(
+            _mapping(value, "semantic_coding_plan_shards_invalid").get(
+                "output_file"
+            )
+            or ""
+        )
+        for value in _sequence(
+            shard_manifest.get("shards"),
+            "semantic_coding_plan_shards_invalid",
+        )
+    ]
+    unexpected_outputs = set(output_dir.glob("part-*.jsonl")) - set(
+        expected_output_paths
+    )
+    if unexpected_outputs:
+        raise SemanticExchangeError("semantic_coding_plan_output_part_unexpected")
+    for output_path in expected_output_paths:
+        if not output_path.exists():
+            continue
+        raw_outputs.extend(
+            _read_jsonl(output_path, max_rows=CODING_PLAN_SHARD_SIZE)
+        )
+    raw_outputs = _apply_coding_plan_repair_overlay(
+        job_dir,
+        manifest=manifest,
+        base_outputs=raw_outputs,
+    )
+    output_hash = canonical_json_hash(raw_outputs)
+    history_path = job_dir / "coding_plan" / "validation_history.jsonl"
+    history = _read_jsonl(history_path) if history_path.exists() else []
+    previous_hashes = [str(row.get("output_hash") or "") for row in history]
+
+    item_by_id = {
+        _positive_int(item.get("document_id")): item
+        for item in (
+            _mapping(value, "semantic_job_item_invalid")
+            for value in manifest["items"]
+        )
+    }
+    input_by_id = {
+        _positive_int(row.get("document_id")): row for row in inputs
+    }
+    full_ir_by_task = _job_document_ir_by_task(job_dir, manifest)
+    profile, _ = _load_profile(root, str(manifest["profile_id"]))
+    taxonomy = EventTaxonomy.load(
+        _rooted_path(root, str(profile["taxonomy_path"]))
+    )
+    store = IntelligenceStore(root / "data" / "shared" / "intelligence")
+    normalized_outputs: list[dict[str, object]] = []
+    quarantined: list[dict[str, object]] = []
+    errors: list[dict[str, object]] = []
+    seen: set[int] = set()
+    for envelope in raw_outputs:
+        document_id = _positive_int(envelope.get("document_id"))
+        try:
+            if document_id in seen:
+                raise SemanticExchangeError("semantic_job_duplicate_output")
+            seen.add(document_id)
+            item = item_by_id.get(document_id)
+            if item is None:
+                raise SemanticExchangeError("semantic_job_unexpected_output")
+            _verify_output_identity(envelope, item)
+            executor = _mapping(
+                envelope.get("executor"),
+                "semantic_job_executor_invalid",
+            )
+            if str(executor.get("kind") or "") != "coding-plan":
+                raise SemanticExchangeError("semantic_job_executor_invalid")
+            try:
+                verify_executor_identity(binding, executor)
+            except SemanticExecutionContractError as exc:
+                raise SemanticExchangeError(exc.code, detail=exc.detail) from exc
+            result = _mapping(
+                envelope.get("result"),
+                "semantic_job_result_invalid",
+            )
+            input_row = input_by_id[document_id]
+            bundle = SemanticInputBundle(
+                document_id=document_id,
+                artifact_hash=str(input_row["artifact_hash"]),
+                parser_version=str(input_row["parser_version"]),
+                prompt_version=str(input_row["prompt_version"]),
+                schema_version=str(input_row["schema_version"]),
+                taxonomy_version=str(input_row["taxonomy_version"]),
+                payload=_mapping(
+                    input_row.get("payload"),
+                    "semantic_job_payload_invalid",
+                ),
+                input_token_estimate=max(
+                    1,
+                    (len(_canonical_json(input_row.get("payload"))) + 3) // 4,
+                ),
+            )
+            normalized, _, _ = _validate_provider_result(
+                result,
+                taxonomy=taxonomy,
+                bundle=bundle,
+                store=store,
+                full_document_ir=full_ir_by_task.get(
+                    str(input_row.get("semantic_task_id") or "")
+                ),
+            )
+            missing_types = _missing_routed_event_types(normalized, bundle)
+            if missing_types:
+                raise SemanticContractError(
+                    "semantic_candidate_family_unreviewed",
+                    detail=",".join(missing_types),
+                )
+            normalized_outputs.append(
+                {
+                    **dict(envelope),
+                    "executor": {
+                        **executor,
+                        "identity_trust": "runner-configured",
+                    },
+                    "result": normalized,
+                }
+            )
+        except (SemanticExchangeError, SemanticContractError) as exc:
+            error = {
+                "document_id": document_id,
+                "error": getattr(exc, "code", str(exc)),
+                "detail": str(getattr(exc, "detail", "") or ""),
+            }
+            errors.append(error)
+            quarantined.append({"error": error, "output": dict(envelope)})
+
+    expected_ids = set(item_by_id)
+    awaiting_ids = sorted(expected_ids - seen)
+    complete_submission = bool(raw_outputs) and not awaiting_ids
+    if complete_submission and output_hash not in previous_hashes:
+        if len(set(previous_hashes)) >= CODING_PLAN_MAX_VALIDATION_ATTEMPTS:
+            raise SemanticExchangeError(
+                "semantic_coding_plan_repair_limit_exceeded"
+            )
+        validation_attempt = len(set(previous_hashes)) + 1
+    elif complete_submission:
+        validation_attempt = previous_hashes.index(output_hash) + 1
+    else:
+        validation_attempt = len(set(previous_hashes))
+    if not raw_outputs:
+        status = "awaiting_executor"
+    elif errors or awaiting_ids:
+        status = "partial"
+    else:
+        status = "ready_to_import"
+    report = {
+        "status": status,
+        "job_id": str(manifest["job_id"]),
+        "expected": len(expected_ids),
+        "outputs": len(raw_outputs),
+        "valid": len(normalized_outputs),
+        "failed": len(errors),
+        "awaiting": len(awaiting_ids),
+        "awaiting_document_ids": awaiting_ids,
+        "validation_attempt": validation_attempt,
+        "errors": errors,
+        "executor": {
+            "kind": "coding-plan",
+            "provider": binding.provider,
+            "model": binding.model,
+            "client_version": binding.client_version,
+        },
+    }
+    _write_jsonl(job_dir / "coding_plan" / "provider_output.jsonl", raw_outputs)
+    _write_jsonl(job_dir / "output.jsonl", normalized_outputs)
+    _write_jsonl(job_dir / "validation_quarantine.jsonl", quarantined)
+    _write_json(job_dir / "validation_report.json", report)
+    _write_json(job_dir / "run_report.json", report)
+    if complete_submission and output_hash not in previous_hashes:
+        history.append(
+            {
+                "attempt": validation_attempt,
+                "validated_at": datetime.now(timezone.utc).isoformat(),
+                "output_hash": output_hash,
+                "status": status,
+                "valid": len(normalized_outputs),
+                "failed": len(errors),
+                "awaiting": len(awaiting_ids),
+            }
+        )
+        _write_jsonl(history_path, history)
+    if (
+        complete_submission
+        and validation_attempt == 1
+        and errors
+    ):
+        _write_coding_plan_repair_view(
+            job_dir,
+            manifest=manifest,
+            inputs=inputs,
+            base_outputs=raw_outputs,
+            output_hash=output_hash,
+            errors=errors,
+        )
+    return report
+
+
+def _apply_coding_plan_repair_overlay(
+    job_dir: Path,
+    *,
+    manifest: Mapping[str, object],
+    base_outputs: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    repair_dir = job_dir / "coding_plan" / "repair-1"
+    repair_manifest_path = repair_dir / "manifest.json"
+    repair_output_path = repair_dir / "output.jsonl"
+    normalized_base = [dict(row) for row in base_outputs]
+    if not repair_manifest_path.exists() or not repair_output_path.exists():
+        return normalized_base
+    repair_manifest = _read_json(repair_manifest_path)
+    if (
+        repair_manifest.get("contract_version")
+        != "semantic-coding-plan-repair-v1"
+        or str(repair_manifest.get("job_id") or "")
+        != str(manifest.get("job_id") or "")
+        or str(repair_manifest.get("source_output_hash") or "")
+        != canonical_json_hash(normalized_base)
+    ):
+        raise SemanticExchangeError("semantic_coding_plan_repair_tampered")
+    expected_ids = {
+        _positive_int(value)
+        for value in _sequence(
+            repair_manifest.get("failed_document_ids"),
+            "semantic_coding_plan_repair_invalid",
+        )
+    }
+    repair_outputs = _read_jsonl(
+        repair_output_path,
+        max_rows=len(expected_ids),
+    )
+    repair_by_id: dict[int, dict[str, object]] = {}
+    for row in repair_outputs:
+        document_id = _positive_int(row.get("document_id"))
+        if document_id in repair_by_id:
+            raise SemanticExchangeError(
+                "semantic_coding_plan_repair_duplicate_output"
+            )
+        repair_by_id[document_id] = row
+    supplied_ids = set(repair_by_id)
+    if supplied_ids != expected_ids:
+        detail = _canonical_json(
+            {
+                "missing": sorted(expected_ids - supplied_ids),
+                "unexpected": sorted(supplied_ids - expected_ids),
+            }
+        )
+        raise SemanticExchangeError(
+            "semantic_coding_plan_repair_output_incomplete",
+            detail=detail,
+        )
+    base_ids = {
+        _positive_int(row.get("document_id")) for row in normalized_base
+    }
+    if not expected_ids.issubset(base_ids):
+        raise SemanticExchangeError("semantic_coding_plan_repair_tampered")
+    return [
+        repair_by_id.get(_positive_int(row.get("document_id")), dict(row))
+        for row in normalized_base
+    ]
+
+
+def _write_coding_plan_repair_view(
+    job_dir: Path,
+    *,
+    manifest: Mapping[str, object],
+    inputs: Sequence[Mapping[str, object]],
+    base_outputs: Sequence[Mapping[str, object]],
+    output_hash: str,
+    errors: Sequence[Mapping[str, object]],
+) -> None:
+    repair_dir = job_dir / "coding_plan" / "repair-1"
+    repair_manifest_path = repair_dir / "manifest.json"
+    failed_ids = sorted(
+        {_positive_int(error.get("document_id")) for error in errors}
+    )
+    expected_manifest = {
+        "contract_version": "semantic-coding-plan-repair-v1",
+        "job_id": str(manifest.get("job_id") or ""),
+        "source_output_hash": output_hash,
+        "failed_document_ids": failed_ids,
+        "executor_binding": dict(
+            _mapping(
+                manifest.get("executor_binding"),
+                "semantic_executor_binding_invalid",
+            )
+        ),
+        "maximum_repair_rounds": 1,
+        "output_file": "coding_plan/repair-1/output.jsonl",
+    }
+    if repair_manifest_path.exists():
+        if _read_json(repair_manifest_path) != expected_manifest:
+            raise SemanticExchangeError("semantic_coding_plan_repair_tampered")
+        return
+    repair_dir.mkdir(parents=True, exist_ok=True)
+    failed_set = set(failed_ids)
+    input_rows = [
+        dict(row)
+        for row in inputs
+        if _positive_int(row.get("document_id")) in failed_set
+    ]
+    document_ir_rows = [
+        row
+        for row in _read_jsonl(
+            job_dir / "document_ir.jsonl",
+            max_rows=len(inputs),
+            max_line_bytes=MAX_DOCUMENT_IR_LINE_BYTES,
+        )
+        if _positive_int(row.get("document_id")) in failed_set
+    ]
+    evidence_packet_rows = [
+        row
+        for row in _read_jsonl(
+            job_dir / "evidence_packets.jsonl",
+            max_rows=len(inputs),
+        )
+        if _positive_int(row.get("document_id")) in failed_set
+    ]
+    previous_outputs = [
+        dict(row)
+        for row in base_outputs
+        if _positive_int(row.get("document_id")) in failed_set
+    ]
+    ordered_errors = sorted(
+        (dict(error) for error in errors),
+        key=lambda value: _positive_int(value.get("document_id")),
+    )
+    _write_json(repair_manifest_path, expected_manifest)
+    _write_jsonl(repair_dir / "input.jsonl", input_rows)
+    _write_jsonl(repair_dir / "document_ir.jsonl", document_ir_rows)
+    _write_jsonl(repair_dir / "evidence_packets.jsonl", evidence_packet_rows)
+    _write_jsonl(repair_dir / "previous_output.jsonl", previous_outputs)
+    _write_jsonl(repair_dir / "validation_errors.jsonl", ordered_errors)
+    write_text_atomic(
+        repair_dir / "REPAIR.md",
+        _render_coding_plan_repair_handoff(
+            manifest,
+            failed_documents=len(failed_ids),
+        ),
+        encoding="utf-8",
+    )
+
+
+def _render_coding_plan_repair_handoff(
+    manifest: Mapping[str, object],
+    *,
+    failed_documents: int,
+) -> str:
+    binding = _mapping(
+        manifest.get("executor_binding"),
+        "semantic_executor_binding_invalid",
+    )
+    return f"""# Claude 公告语义抽取唯一修复轮
+
+任务 ID：`{manifest.get('job_id')}`
+只修复：{failed_documents} 篇
+执行身份：`{binding.get('provider')}` / `{binding.get('model')}` / `{binding.get('client_version')}`
+
+## 输入
+
+- `input.jsonl`：只含首轮失败文档；
+- `document_ir.jsonl` 与 `evidence_packets.jsonl`：对应冻结原文和证据；
+- `previous_output.jsonl`：首轮失败输出，仅用于定位问题；
+- `validation_errors.jsonl`：本地确定性错误码；
+- `../../prompt.md`、`../../schema.json`、`../../taxonomy.json`：规则仍保持不变。
+
+## 修复要求
+
+1. 每个失败文档输出一个完整 envelope 到 `output.jsonl.tmp`，不得返回字段补丁。
+2. 只处理本目录列出的 document_id，不改首轮已通过文档，不改任何输入或验证文件。
+3. `no_event_review_required`：重新检查标题对应的当前事件及正文证据，不能用泛化 no_event 回避高信号事件。
+4. `table_semantic_label_mismatch/raw_value_mismatch`：从对应表格单元格逐字引用标签和值，不把跨行或跨列内容拼接为一个事实。
+5. `mention_candidate_required_fact_missing`：补齐 taxonomy 要求且原文明确存在的事实；原文不支持时不要臆造。
+6. `semantic_candidate_family_unreviewed`：逐一复核缺失事件族；存在则输出独立 mention，不把不同事件拼接。
+7. 其他错误按稳定错误码、`prompt.md` 和 Schema 修复，quote 必须逐字存在。
+8. 自检行数和 document_id 集合与 `manifest.json.failed_document_ids` 完全一致后，原子替换为 `output.jsonl`。
+9. 不运行 collect/import，不连接 ECS；这是唯一一次修复，完成后停止。
+"""
 
 
 def prepare_repair_job(
@@ -822,6 +1763,110 @@ def rollback_repair(
     return {"status": "rolled_back", **result}
 
 
+def _job_document_ir_by_task(
+    job_dir: Path,
+    manifest: Mapping[str, object],
+) -> dict[str, Mapping[str, object]]:
+    if manifest.get("execution_contract_version") is None:
+        return {}
+    items = _sequence(
+        manifest.get("items"),
+        "semantic_job_items_invalid",
+    )
+    rows = _read_jsonl(
+        job_dir / "document_ir.jsonl",
+        max_rows=len(items),
+        max_line_bytes=MAX_DOCUMENT_IR_LINE_BYTES,
+    )
+    by_task: dict[str, Mapping[str, object]] = {}
+    for row in rows:
+        task_id = str(row.get("semantic_task_id") or "")
+        if not task_id or task_id in by_task:
+            raise SemanticExchangeError(
+                "semantic_document_ir_identity_invalid"
+            )
+        document_ir = _mapping(
+            row.get("document_ir"),
+            "semantic_document_ir_invalid",
+        )
+        try:
+            preflight_document_ir(document_ir)
+        except DocumentIRPreflightError as exc:
+            raise SemanticExchangeError(
+                "semantic_document_ir_invalid",
+                detail=exc.code,
+            ) from exc
+        by_task[task_id] = document_ir
+    expected = {
+        str(item.get("semantic_task_id") or "")
+        for item in items
+        if isinstance(item, Mapping)
+    }
+    if set(by_task) != expected:
+        raise SemanticExchangeError(
+            "semantic_document_ir_identity_invalid"
+        )
+    return by_task
+
+
+def _materializable_evidence_chunks(
+    input_payload: Mapping[str, object],
+    *,
+    full_document_ir: Mapping[str, object] | None,
+    referenced_chunk_ids: set[str],
+) -> tuple[Mapping[str, object], ...]:
+    rows: dict[str, Mapping[str, object]] = {}
+    for row in _sequence(
+        input_payload.get("chunks"),
+        "semantic_job_chunks_invalid",
+    ):
+        if not isinstance(row, Mapping):
+            continue
+        chunk_id = str(row.get("chunk_id") or "")
+        if (
+            chunk_id in referenced_chunk_ids
+            and str(row.get("section") or "")
+            in _SEMANTIC_EVIDENCE_PROJECTION_SECTIONS
+        ):
+            rows[chunk_id] = row
+    if full_document_ir is None:
+        return tuple(rows.values())
+    try:
+        ir_nodes = ir_nodes_by_id(full_document_ir)
+    except DocumentIRPreflightError as exc:
+        raise SemanticExchangeError(
+            "semantic_document_ir_invalid",
+            detail=exc.code,
+        ) from exc
+    for chunk_id in sorted(referenced_chunk_ids):
+        if chunk_id in rows:
+            continue
+        node = ir_nodes.get(chunk_id)
+        if node is None:
+            continue
+        node_type = str(node.get("node_type") or "")
+        original_section = str(node.get("section") or "")
+        if node_type == "table_cell":
+            section = "table_cell"
+        elif original_section in _SEMANTIC_EVIDENCE_PROJECTION_SECTIONS:
+            section = original_section
+        else:
+            # Ordinary body nodes are parser chunks that already exist in the
+            # store. They are added to the validation map but need no projection.
+            continue
+        text = str(node.get("text") or node.get("raw_value") or "")
+        if not text:
+            continue
+        rows[chunk_id] = {
+            "chunk_id": chunk_id,
+            "page_number": int(node.get("page_number") or 0),
+            "section": section,
+            "bbox": list(node.get("bbox") or []),
+            "text": text,
+        }
+    return tuple(rows[key] for key in sorted(rows))
+
+
 def import_job(
     repo_root: str | Path,
     job_path: str | Path,
@@ -835,6 +1880,10 @@ def import_job(
     manifest = _read_json(job_dir / "job.json")
     _verify_manifest(manifest, job_dir=job_dir)
     verified_inputs = _verified_inputs(job_dir, manifest)
+    full_document_ir_by_task = _job_document_ir_by_task(
+        job_dir,
+        manifest,
+    )
     input_by_id = {
         _positive_int(row.get("document_id")): row
         for row in verified_inputs
@@ -1038,6 +2087,29 @@ def import_job(
                 )
                 if isinstance(row, Mapping)
             }
+            full_document_ir = full_document_ir_by_task.get(
+                str(input_by_id[document_id].get("semantic_task_id") or "")
+            )
+            if full_document_ir is not None:
+                try:
+                    for node_id, node in ir_nodes_by_id(
+                        full_document_ir
+                    ).items():
+                        text = str(
+                            node.get("text") or node.get("raw_value") or ""
+                        )
+                        if text and node_id not in chunks:
+                            chunks[node_id] = {
+                                "page_number": int(
+                                    node.get("page_number") or 0
+                                ),
+                                "text": text,
+                            }
+                except DocumentIRPreflightError as exc:
+                    raise SemanticExchangeError(
+                        "semantic_document_ir_invalid",
+                        detail=exc.code,
+                    ) from exc
             try:
                 parsed = parse_lite_semantic_document_result(
                     dict(result_payload),
@@ -1071,7 +2143,7 @@ def import_job(
                 envelope.get("usage") or {},
                 "semantic_job_usage_invalid",
             )
-            if status == "no_event":
+            if status == "no_event" and _requires_no_event_review(input_payload):
                 review_event_type = _no_event_review_signal(
                     str(input_payload.get("document", {}).get("title") or ""),
                     chunks,
@@ -1116,6 +2188,35 @@ def import_job(
                         }
                     )
                     continue
+            if status == "succeeded":
+                referenced_chunk_ids = {
+                    evidence.chunk_id
+                    for evidence in parsed.evidence
+                }
+                try:
+                    store.ensure_semantic_evidence_chunks(
+                        document_id=document_id,
+                        artifact_id=str(artifact["artifact_id"]),
+                        parser_version=str(item["parser_version"]),
+                        chunks=_materializable_evidence_chunks(
+                            input_payload,
+                            full_document_ir=full_document_ir,
+                            referenced_chunk_ids=referenced_chunk_ids,
+                        ),
+                    )
+                except (TypeError, ValueError) as exc:
+                    if bool(claim["claimed"]):
+                        store.finish_semantic_run(
+                            run_id,
+                            status="failed_terminal",
+                            output_hash=output_hash,
+                            output_uri=output_uri,
+                            error="semantic_evidence_materialization_failed",
+                        )
+                    raise SemanticExchangeError(
+                        "semantic_evidence_materialization_failed",
+                        detail=str(exc),
+                    ) from exc
             if bool(claim["claimed"]):
                 store.finish_semantic_run(
                     run_id,
@@ -1145,26 +2246,6 @@ def import_job(
                 )
                 no_event += 1
                 continue
-            referenced_chunk_ids = {
-                evidence.chunk_id
-                for evidence in parsed.evidence
-            }
-            store.ensure_semantic_evidence_chunks(
-                document_id=document_id,
-                artifact_id=str(artifact["artifact_id"]),
-                parser_version=str(item["parser_version"]),
-                chunks=(
-                    row
-                    for row in _sequence(
-                        input_payload.get("chunks"),
-                        "semantic_job_chunks_invalid",
-                    )
-                    if isinstance(row, Mapping)
-                    and str(row.get("section") or "") == "table_cell"
-                    and str(row.get("chunk_id") or "")
-                    in referenced_chunk_ids
-                ),
-            )
             outcomes = canonicalizer.canonicalize(
                 run_id,
                 parsed,
@@ -1327,6 +2408,10 @@ def run_job(
     manifest = _read_json(job_dir / "job.json")
     _verify_manifest(manifest, job_dir=job_dir)
     inputs = _verified_inputs(job_dir, manifest)
+    full_document_ir_by_task = _job_document_ir_by_task(
+        job_dir,
+        manifest,
+    )
     schema = _read_json(job_dir / "schema.json")
     taxonomy = EventTaxonomy.load(job_dir / "taxonomy.json")
     semantic_provider = provider or _load_executor(
@@ -1447,6 +2532,7 @@ def run_job(
             response = semantic_provider.extract(bundle, response_schema=schema)
             responses.append(response)
             provider_responses.append(response)
+            provider_result = response.parsed_output
             if bound_binding is not None:
                 validation_store.transition_semantic_execution_job(
                     bound_execution_id,
@@ -1459,11 +2545,23 @@ def run_job(
                     output_hash=response.output_hash,
                 )
             validated_result, pruned, compilation = _validate_provider_result(
-                response.parsed_output,
+                provider_result,
                 taxonomy=taxonomy,
                 bundle=bundle,
                 store=validation_store,
+                full_document_ir=full_document_ir_by_task.get(
+                    str(input_row.get("semantic_task_id") or "")
+                ),
             )
+            missing_event_types = _missing_routed_event_types(
+                validated_result,
+                bundle,
+            )
+            if missing_event_types:
+                raise SemanticContractError(
+                    "semantic_candidate_family_unreviewed",
+                    detail=",".join(missing_event_types),
+                )
             deterministic_optional_fact_prunes += pruned
             compiled_mentions_accepted += int(compilation.get("accepted", 0))
             compiled_mentions_rejected += int(compilation.get("rejected", 0))
@@ -1478,7 +2576,7 @@ def run_job(
                 )
             repair_bundle = _grounding_repair_bundle(
                 bundle,
-                previous_result=response.parsed_output,
+                previous_result=provider_result,
                 error=exc,
             )
             try:
@@ -1494,52 +2592,107 @@ def run_job(
                         to_status="validating",
                         output_hash=response.output_hash,
                     )
+                if exc.code == "semantic_candidate_family_unreviewed":
+                    provider_result = _merge_family_repair_result(
+                        provider_result,
+                        response.parsed_output,
+                        target_event_types=_family_repair_targets(exc),
+                    )
+                    validation_bundle = bundle
+                else:
+                    provider_result = response.parsed_output
+                    validation_bundle = repair_bundle
                 validated_result, pruned, compilation = _validate_provider_result(
-                    response.parsed_output,
+                    provider_result,
                     taxonomy=taxonomy,
-                    bundle=bundle,
+                    bundle=validation_bundle,
                     store=validation_store,
+                    full_document_ir=full_document_ir_by_task.get(
+                        str(input_row.get("semantic_task_id") or "")
+                    ),
                 )
+                missing_event_types = _missing_routed_event_types(
+                    validated_result,
+                    bundle,
+                )
+                if missing_event_types:
+                    raise SemanticContractError(
+                        "semantic_candidate_family_unreviewed",
+                        detail=",".join(missing_event_types),
+                    )
                 deterministic_optional_fact_prunes += pruned
                 compiled_mentions_accepted += int(compilation.get("accepted", 0))
                 compiled_mentions_rejected += int(compilation.get("rejected", 0))
                 compiled_mention_items_dropped += int(compilation.get("dropped", 0))
             except SemanticContractError as repair_exc:
-                validation_repair_failures += 1
-                if bound_binding is not None:
-                    validation_store.transition_semantic_execution_job(
-                        bound_execution_id,
-                        to_status="quarantined",
-                        output_hash=response.output_hash,
-                        error=repair_exc.code,
+                deterministic_no_event = (
+                    _revision_rejection_can_be_no_event(repair_exc)
+                    or _context_repair_can_be_no_event(repair_exc, bundle)
+                )
+                if deterministic_no_event:
+                    provider_result = {
+                        "document_id": document_id,
+                        "schema_version": bundle.schema_version,
+                        "mentions": [],
+                        "no_event_reason": (
+                            "deterministic: no current event survived validation"
+                        ),
+                    }
+                    validated_result, pruned, compilation = _validate_provider_result(
+                        provider_result,
+                        taxonomy=taxonomy,
+                        bundle=repair_bundle,
+                        store=validation_store,
+                        full_document_ir=full_document_ir_by_task.get(
+                            str(input_row.get("semantic_task_id") or "")
+                        ),
                     )
-                if not bundle.payload.get("repair_context"):
-                    _record_terminal_validation_failure(
-                        validation_store,
-                        bundle=bundle,
-                        input_hash=str(input_row["input_hash"]),
+                    deterministic_optional_fact_prunes += pruned
+                    compiled_mentions_accepted += int(
+                        compilation.get("accepted", 0)
+                    )
+                    compiled_mentions_rejected += int(
+                        compilation.get("rejected", 0)
+                    )
+                    compiled_mention_items_dropped += int(
+                        compilation.get("dropped", 0)
+                    )
+                else:
+                    validation_repair_failures += 1
+                    if bound_binding is not None:
+                        validation_store.transition_semantic_execution_job(
+                            bound_execution_id,
+                            to_status="quarantined",
+                            output_hash=response.output_hash,
+                            error=repair_exc.code,
+                        )
+                    if not bundle.payload.get("repair_context"):
+                        _record_terminal_validation_failure(
+                            validation_store,
+                            bundle=bundle,
+                            input_hash=str(input_row["input_hash"]),
+                            response=response,
+                            responses=responses,
+                            error=repair_exc,
+                        )
+                    _write_validation_quarantine(
+                        quarantine_path,
+                        input_row=input_row,
                         response=response,
                         responses=responses,
                         error=repair_exc,
                     )
-                _write_validation_quarantine(
-                    quarantine_path,
-                    input_row=input_row,
-                    response=response,
-                    responses=responses,
-                    error=repair_exc,
-                )
-                errors.append(
-                    {
-                        "document_id": document_id,
-                        "error": repair_exc.code,
-                        "detail": repair_exc.detail,
-                        "retryable": False,
-                        "terminal": True,
-                        "validation_repair_attempted": True,
-                    }
-                )
-                continue
+                    errors.append(
+                        {
+                            "document_id": document_id,
+                            "error": repair_exc.code,
+                            "detail": repair_exc.detail,
+                            "retryable": False,
+                            "terminal": True,
+                            "validation_repair_attempted": True,
+                        }
+                    )
+                    continue
             except Exception as repair_exc:
                 validation_repair_failures += 1
                 retryable = bool(getattr(repair_exc, "retryable", False))
@@ -1646,6 +2799,8 @@ def run_job(
                 job_dir / "mention_output.jsonl",
                 input_row=input_row,
                 response=response,
+                responses=responses,
+                result=provider_result,
                 compilation=compilation,
             )
         output_by_id[document_id] = envelope
@@ -1788,6 +2943,8 @@ def _write_mention_source_output(
     *,
     input_row: Mapping[str, object],
     response,
+    responses: Sequence[object],
+    result: Mapping[str, object],
     compilation: Mapping[str, object],
 ) -> None:
     existing = _read_jsonl(path) if path.exists() else []
@@ -1808,7 +2965,15 @@ def _write_mention_source_output(
             "endpoint_host": response.identity.endpoint_host,
         },
         "compilation": dict(compilation),
-        "result": response.parsed_output,
+        "provider_attempts": [
+            {
+                "request_id": str(item.request_id or ""),
+                "output_hash": str(item.output_hash or ""),
+                "result": deepcopy(item.parsed_output),
+            }
+            for item in responses
+        ],
+        "result": deepcopy(result),
     }
     _write_jsonl(path, [by_document[key] for key in sorted(by_document)])
 
@@ -1819,7 +2984,8 @@ def _validate_provider_result(
     taxonomy: EventTaxonomy,
     bundle: SemanticInputBundle,
     store: IntelligenceStore,
-) -> tuple[dict[str, object], int, dict[str, int]]:
+    full_document_ir: Mapping[str, object] | None = None,
+) -> tuple[dict[str, object], int, dict[str, object]]:
     chunks = {
         str(row["chunk_id"]): {
             "page_number": int(row["page_number"]),
@@ -1831,11 +2997,19 @@ def _validate_provider_result(
         )
         if isinstance(row, Mapping)
     }
-    document_ir = (
+    packet_document_ir = (
         bundle.payload.get("document_ir")
         if isinstance(bundle.payload.get("document_ir"), Mapping)
         else None
     )
+    try:
+        visible_chunk_ids = _packet_visible_evidence_ids(bundle.payload)
+    except DocumentIRPreflightError as exc:
+        raise SemanticContractError(
+            "semantic_document_ir_invalid",
+            detail=exc.code,
+        ) from exc
+    document_ir = full_document_ir or packet_document_ir
     if isinstance(document_ir, Mapping):
         try:
             for node_id, node in ir_nodes_by_id(document_ir).items():
@@ -1855,11 +3029,16 @@ def _validate_provider_result(
             mentions = parse_mention_document_result(result)
         except MentionContractError as exc:
             raise SemanticContractError(exc.code, detail=exc.detail) from exc
+        if full_document_ir is not None:
+            mentions = _filter_mentions_to_packet(
+                mentions,
+                visible_chunk_ids,
+            )
         document = _mapping(
             bundle.payload.get("document"),
             "semantic_job_document_invalid",
         )
-        if not mentions.mentions:
+        if not mentions.mentions and _requires_no_event_review(bundle.payload):
             review_event_type = _no_event_review_signal(
                 str(document.get("title") or ""),
                 chunks,
@@ -1890,15 +3069,6 @@ def _validate_provider_result(
             ),
             document_ir=document_ir,
         )
-        if compilation.rejected_mentions:
-            reasons = [
-                f"{item.mention_id}:{','.join(item.reason_codes)}"
-                for item in compilation.rejected_mentions
-            ]
-            raise SemanticContractError(
-                "semantic_mentions_lossy_compilation",
-                detail=";".join(reasons),
-            )
         if mentions.mentions and not compilation.accepted_mentions:
             detail = ";".join(
                 f"{item.mention_id}:{','.join(item.reason_codes)}"
@@ -1914,6 +3084,13 @@ def _validate_provider_result(
             "accepted": compilation.accepted_mentions,
             "rejected": len(compilation.rejected_mentions),
             "dropped": compilation.dropped_items,
+            "rejected_mentions": [
+                {
+                    "mention_id": item.mention_id,
+                    "reason_codes": list(item.reason_codes),
+                }
+                for item in compilation.rejected_mentions
+            ],
         }
     else:
         normalized, pruned = _prune_ungrounded_optional_facts(
@@ -1921,7 +3098,21 @@ def _validate_provider_result(
             taxonomy=taxonomy,
             chunks={chunk_id: str(chunk["text"]) for chunk_id, chunk in chunks.items()},
         )
-        compilation_report = {"accepted": 0, "rejected": 0, "dropped": 0}
+        compilation_report = {
+            "accepted": 0,
+            "rejected": 0,
+            "dropped": 0,
+            "rejected_mentions": [],
+        }
+    missing_current_transition = _context_events_missing_current_transition(
+        normalized,
+        bundle,
+    )
+    if missing_current_transition:
+        raise SemanticContractError(
+            "semantic_context_current_transition_missing",
+            detail=",".join(missing_current_transition),
+        )
     parsed = parse_lite_semantic_document_result(
         normalized,
         taxonomy,
@@ -1976,6 +3167,83 @@ def _validate_provider_result(
             detail=";".join(failures),
         )
     return normalized, pruned, compilation_report
+
+
+def _packet_visible_evidence_ids(
+    payload: Mapping[str, object],
+) -> frozenset[str]:
+    visible = {
+        str(row.get("chunk_id") or "")
+        for row in payload.get("chunks", [])
+        if isinstance(row, Mapping) and str(row.get("chunk_id") or "")
+    }
+    packet_document_ir = payload.get("document_ir")
+    if isinstance(packet_document_ir, Mapping):
+        visible.update(ir_nodes_by_id(packet_document_ir))
+    return frozenset(visible)
+
+
+def _filter_mentions_to_packet(document_result, visible_chunk_ids):
+    def visible(evidence) -> bool:
+        chunk_id = str(evidence.chunk_id)
+        if chunk_id in visible_chunk_ids:
+            return True
+        return sum(
+            candidate.startswith(f"{chunk_id}-")
+            for candidate in visible_chunk_ids
+        ) == 1
+
+    mentions = []
+    for mention in document_result.mentions:
+        subjects = tuple(
+            replace(
+                subject,
+                evidence=tuple(
+                    item for item in subject.evidence if visible(item)
+                ),
+            )
+            for subject in mention.subjects
+        )
+        facts = tuple(
+            replace(
+                fact,
+                evidence=tuple(
+                    item for item in fact.evidence if visible(item)
+                ),
+            )
+            for fact in mention.facts
+        )
+        dates = tuple(
+            replace(
+                date_item,
+                evidence=tuple(
+                    item for item in date_item.evidence if visible(item)
+                ),
+            )
+            for date_item in mention.dates
+        )
+        status = (
+            replace(
+                mention.status,
+                evidence=tuple(
+                    item
+                    for item in mention.status.evidence
+                    if visible(item)
+                ),
+            )
+            if mention.status is not None
+            else None
+        )
+        mentions.append(
+            replace(
+                mention,
+                subjects=subjects,
+                facts=facts,
+                dates=dates,
+                status=status,
+            )
+        )
+    return replace(document_result, mentions=tuple(mentions))
 
 
 def _prune_ungrounded_optional_facts(
@@ -2200,6 +3468,55 @@ def _grounding_repair_bundle(
             "instead of retaining it. Preserve all source parentheses in a "
             "required text fact."
         )
+        if "mention_revision_uses_superseded_value" in str(error.detail):
+            instruction += (
+                " This is a correction or revision filing. Values under "
+                "headings such as 原来披露, 原披露, 更正前, or 修改前 "
+                "are superseded and must not be emitted. Locate the current "
+                "section labelled 更正后, 更正说明, 修改后, or equivalent, "
+                "and 只输出更正后的值 with uniquely locating verbatim "
+                "quotes. If the filing changes no event fact, return no_event."
+            )
+    elif error.code == "no_event_review_required":
+        instruction += (
+            " The primary event filing has a deterministic review signal for "
+            f"{error.detail or 'the routed event family'}. Re-check whether the "
+            "current filing announces, completes, revises, cancels, or corrects "
+            "that event. For a correction, emit only the exact corrected delta; "
+            "it may be the sole fact in a revised mention. Return no_event only "
+            "when the cited source truly contains no current transition or "
+            "corrected event fact."
+        )
+        route_context = bundle.payload.get("route_context")
+        if isinstance(route_context, Mapping) and "legal_current_event" in {
+            str(value)
+            for value in route_context.get("reason_codes", [])
+            if str(value)
+        }:
+            instruction += (
+                " The supporting document title carries an explicit "
+                "current-action signal. A newly disclosed implementation "
+                "step, application for cancellation or transfer, expected "
+                "completion date, or implementation result is a current "
+                "event and does not require a new program or transaction."
+            )
+    elif error.code == "semantic_candidate_family_unreviewed":
+        instruction += (
+            " Review every routed taxonomy candidate, especially: "
+            f"{error.detail}. Emit each independently grounded current event "
+            "that is present, even when another family was already emitted. "
+            "Do not fabricate a missing family: omit it when the source only "
+            "contains historical or background text for that candidate."
+        )
+    elif error.code == "semantic_context_current_transition_missing":
+        instruction += (
+            " This supporting legal or supplemental document only yielded a "
+            "generic event label. Find a current transition such as approval, "
+            "completion, cancellation, implementation, or a revised economic "
+            "fact, and cite that transition separately. Historical transaction "
+            "descriptions and cover-page titles are background. If the document "
+            "does not disclose a new current transition, return no_event."
+        )
     repair_context: dict[str, object] = {
         "attempt": 1,
         "repair_scope": "complete_event_candidate",
@@ -2246,6 +3563,152 @@ def _grounding_repair_bundle(
     )
 
 
+def _family_repair_targets(
+    error: SemanticContractError,
+) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                value.strip()
+                for value in str(error.detail or "").split(",")
+                if value.strip()
+            }
+        )
+    )
+
+
+def _context_events_missing_current_transition(
+    result: Mapping[str, object],
+    bundle: SemanticInputBundle,
+) -> tuple[str, ...]:
+    route_context = bundle.payload.get("route_context")
+    if not isinstance(route_context, Mapping):
+        return ()
+    if str(route_context.get("document_kind") or "") not in {
+        "legal_opinion",
+        "supplemental_report",
+    }:
+        return ()
+    reason_codes = {
+        str(value)
+        for value in route_context.get("reason_codes", [])
+        if str(value)
+    }
+    explicit_current_route = bool(
+        reason_codes & {"legal_current_event", "revision_context_present"}
+    )
+    missing: set[str] = set()
+    for event in result.get("events", []):
+        if not isinstance(event, Mapping):
+            continue
+        event_type = str(event.get("event_type") or "")
+        lifecycle = str(event.get("lifecycle") or "")
+        if explicit_current_route or lifecycle in {"revised", "cancelled"}:
+            continue
+        if event_type:
+            missing.add(event_type)
+    return tuple(sorted(missing))
+
+
+def _merge_family_repair_result(
+    previous_result: Mapping[str, object],
+    repair_result: Mapping[str, object],
+    *,
+    target_event_types: Sequence[str],
+) -> dict[str, object]:
+    targets = {
+        str(event_type).strip()
+        for event_type in target_event_types
+        if str(event_type).strip()
+    }
+    if not targets:
+        raise SemanticContractError("semantic_family_repair_targets_missing")
+    for field in ("document_id", "schema_version"):
+        if previous_result.get(field) != repair_result.get(field):
+            raise SemanticContractError(
+                "semantic_family_repair_contract_mismatch",
+                detail=field,
+            )
+    previous_mentions = previous_result.get("mentions")
+    repair_mentions = repair_result.get("mentions")
+    if not isinstance(previous_mentions, list) or not isinstance(
+        repair_mentions,
+        list,
+    ):
+        raise SemanticContractError(
+            "semantic_family_repair_contract_mismatch",
+            detail="mentions",
+        )
+    retained = [
+        deepcopy(mention)
+        for mention in previous_mentions
+        if isinstance(mention, Mapping)
+        and str(mention.get("event_type") or "") not in targets
+    ]
+    additions = [
+        deepcopy(mention)
+        for mention in repair_mentions
+        if isinstance(mention, Mapping)
+        and str(mention.get("event_type") or "") in targets
+    ]
+    used_ids = {
+        str(mention.get("mention_id") or "")
+        for mention in retained
+        if str(mention.get("mention_id") or "")
+    }
+    for index, mention in enumerate(additions, start=1):
+        mention_id = str(mention.get("mention_id") or "").strip()
+        if not mention_id or mention_id in used_ids:
+            base = mention_id or "mention"
+            candidate = f"{base}-repair-{index}"
+            suffix = index
+            while candidate in used_ids:
+                suffix += 1
+                candidate = f"{base}-repair-{suffix}"
+            mention["mention_id"] = candidate
+            mention_id = candidate
+        used_ids.add(mention_id)
+    merged = deepcopy(dict(previous_result))
+    merged["mentions"] = retained + additions
+    merged["no_event_reason"] = None if merged["mentions"] else (
+        repair_result.get("no_event_reason")
+        or previous_result.get("no_event_reason")
+    )
+    return merged
+
+
+def _missing_routed_event_types(
+    result: Mapping[str, object],
+    bundle: SemanticInputBundle,
+) -> tuple[str, ...]:
+    route_context = bundle.payload.get("route_context")
+    if not isinstance(route_context, Mapping):
+        return ()
+    if str(route_context.get("extraction_purpose") or "") != "canonical_event":
+        return ()
+    candidates = tuple(
+        sorted(
+            {
+                str(value).strip()
+                for value in bundle.payload.get("taxonomy_candidates", [])
+                if str(value).strip()
+            }
+        )
+    )
+    if not 2 <= len(candidates) <= 4:
+        return ()
+    observed = {
+        str(event.get("event_type") or "")
+        for event in result.get("events", [])
+        if isinstance(event, Mapping)
+    }
+    return tuple(
+        event_type
+        for event_type in candidates
+        if event_type not in observed
+    )
+
+
 def _sum_optional_usage(values) -> int | None:
     supplied = [int(value) for value in values if value is not None]
     return sum(supplied) if supplied else None
@@ -2277,11 +3740,27 @@ def run_daily(
             state = job_status(root, path)
             if state["status"] == "ready_to_import":
                 imported_existing.append(import_job(root, path))
+    profile, _ = _load_profile(root, profile_id)
+    executor_identity: SemanticProviderIdentity | None = None
+    if str(profile.get("document_ir_version") or ""):
+        executor_identity = _executor_identity_from_config(executor_config)
     prepared = prepare_job(
         root,
         profile_id=profile_id,
         limit=limit,
         max_input_characters=max_input_characters,
+        executor_mode=("api" if executor_identity is not None else None),
+        executor_provider=(
+            executor_identity.provider if executor_identity is not None else None
+        ),
+        executor_model=(
+            executor_identity.model if executor_identity is not None else None
+        ),
+        executor_client_version=(
+            executor_identity.client_version
+            if executor_identity is not None
+            else None
+        ),
         _allow_terminal_retry=False,
     )
     execution = "empty"
@@ -2324,9 +3803,19 @@ def run_daily(
             run_report.get("reused") or 0
         )
         failed = int(run_report.get("failed") or 0)
+        compilation = run_report.get("mention_compilation")
+        rejected_mentions = (
+            int(compilation.get("rejected") or 0)
+            if isinstance(compilation, Mapping)
+            else 0
+        )
         if failed and completed == 0:
             quality_status = "degraded"
-        elif failed:
+        elif (
+            failed
+            or rejected_mentions
+            or str(run_report.get("status") or "") == "partial"
+        ):
             quality_status = "partial"
         else:
             quality_status = "healthy"
@@ -2482,24 +3971,9 @@ def _load_executor(
     *,
     executor_config: str | Path | None,
 ) -> SemanticExtractionProvider:
-    if executor_config is None or not str(executor_config).strip():
-        raise SemanticExchangeError("semantic_executor_config_required")
     from .provider import OpenAICompatibleSemanticProvider
 
-    config_value = str(executor_config).strip()
-    supplied_path = Path(config_value).expanduser()
-    if not supplied_path.is_file():
-        raise SemanticExchangeError("semantic_executor_config_invalid")
-    config_path = supplied_path.resolve()
-    try:
-        import yaml
-
-        payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise SemanticExchangeError(
-            "semantic_executor_config_invalid"
-        ) from exc
-    config = _mapping(payload, "semantic_executor_config_invalid")
+    config = _read_executor_config(executor_config)
     prompt = (job_dir / "prompt.md").read_text(encoding="utf-8")
     try:
         return OpenAICompatibleSemanticProvider.from_executor_config(
@@ -2513,8 +3987,51 @@ def _load_executor(
         ) from exc
 
 
+def _executor_identity_from_config(
+    executor_config: str | Path | None,
+) -> SemanticProviderIdentity:
+    from .provider import OpenAICompatibleSemanticProvider
+
+    config = _read_executor_config(executor_config)
+    try:
+        provider = OpenAICompatibleSemanticProvider.from_executor_config(
+            config,
+            system_prompt="executor identity binding",
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SemanticExchangeError(
+            "semantic_executor_config_invalid"
+        ) from exc
+    return provider.identity
+
+
+def _read_executor_config(
+    executor_config: str | Path | None,
+) -> dict[str, object]:
+    if executor_config is None or not str(executor_config).strip():
+        raise SemanticExchangeError("semantic_executor_config_required")
+    supplied_path = Path(str(executor_config).strip()).expanduser()
+    if not supplied_path.is_file():
+        raise SemanticExchangeError("semantic_executor_config_invalid")
+    try:
+        import yaml
+
+        payload = yaml.safe_load(
+            supplied_path.resolve().read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise SemanticExchangeError(
+            "semantic_executor_config_invalid"
+        ) from exc
+    return dict(_mapping(payload, "semantic_executor_config_invalid"))
+
+
 def canonical_json_hash(value: object) -> str:
     return _text_hash(_canonical_json(value))
+
+
+def _deterministic_router_model(profile_hash: str) -> str:
+    return f"{SEMANTIC_ROUTER_VERSION}:{str(profile_hash)[:16]}"
 
 
 def _load_profile(
@@ -2613,6 +4130,10 @@ def _exchange_candidate_ids(
     limit: int,
     priority_codes: Sequence[str] = (),
     allow_terminal_retry: bool = True,
+    coding_plan_terminal_failures: Sequence[
+        tuple[int, str, str]
+    ] = (),
+    deterministic_router_model: str = "",
 ) -> list[int]:
     suffixes = [
         str(value).upper()
@@ -2643,6 +4164,9 @@ def _exchange_candidate_ids(
         str(prompt_version),
         str(schema_version),
         str(taxonomy_version),
+        DETERMINISTIC_ROUTER_PROVIDER,
+        str(deterministic_router_model),
+        str(deterministic_router_model),
         max(1, min(int(limit), 100_000)),
     ]
     normalized_priority = sorted(
@@ -2659,7 +4183,36 @@ def _exchange_candidate_ids(
         if allow_terminal_retry
         else "s.status='failed_terminal'"
     )
+    coding_plan_terminal_sql = "1=1"
     with store.connect() as connection:
+        if coding_plan_terminal_failures:
+            connection.execute(
+                """
+                CREATE TEMP TABLE semantic_coding_plan_terminal_failures(
+                    document_id INTEGER NOT NULL,
+                    artifact_hash TEXT NOT NULL,
+                    parser_version TEXT NOT NULL,
+                    PRIMARY KEY(document_id, artifact_hash, parser_version)
+                ) WITHOUT ROWID
+                """
+            )
+            connection.executemany(
+                """
+                INSERT INTO semantic_coding_plan_terminal_failures(
+                    document_id, artifact_hash, parser_version
+                ) VALUES(?,?,?)
+                """,
+                coding_plan_terminal_failures,
+            )
+            coding_plan_terminal_sql = """
+                NOT EXISTS (
+                    SELECT 1
+                    FROM semantic_coding_plan_terminal_failures terminal
+                    WHERE terminal.document_id=d.id
+                      AND terminal.artifact_hash=a.content_hash
+                      AND terminal.parser_version=a.parser_version
+                )
+            """
         if normalized_priority:
             connection.execute(
                 """
@@ -2693,7 +4246,7 @@ def _exchange_candidate_ids(
             """
         rows = connection.execute(
             f"""
-            SELECT d.id
+            SELECT d.id, d.title, ({priority_sql}) AS priority_rank
             FROM documents d
             JOIN document_artifacts a
               ON a.artifact_id=(
@@ -2721,7 +4274,13 @@ def _exchange_candidate_ids(
                   AND s.taxonomy_version=?
                   AND s.parser_version=a.parser_version
                   AND (
-                    s.status='no_event'
+                    (
+                      s.status='no_event'
+                      AND (
+                        s.provider<>?
+                        OR (?<>'' AND s.model=?)
+                      )
+                    )
                     OR ({terminal_failure_sql})
                     OR (
                       s.status='succeeded'
@@ -2740,7 +4299,8 @@ def _exchange_candidate_ids(
                     )
                   )
               )
-            ORDER BY ({priority_sql}) DESC,
+              AND {coding_plan_terminal_sql}
+            ORDER BY priority_rank DESC,
                      d.live_observed DESC,
                      d.published_at DESC,
                      d.queue_priority DESC,
@@ -2749,7 +4309,85 @@ def _exchange_candidate_ids(
             """,
             parameters,
         ).fetchall()
-    return [int(row["id"]) for row in rows]
+    ordered_rows = []
+    priority_ranks = sorted(
+        {int(row["priority_rank"] or 0) for row in rows},
+        reverse=True,
+    )
+    for priority_rank in priority_ranks:
+        group = [
+            row
+            for row in rows
+            if int(row["priority_rank"] or 0) == priority_rank
+        ]
+        title_signals = [
+            row
+            for row in group
+            if title_event_categories(str(row["title"] or ""))
+            or classify_document_kind(str(row["title"] or ""))
+            == "meeting_resolution"
+        ]
+        title_signal_ids = {int(row["id"]) for row in title_signals}
+        ordered_rows.extend(title_signals)
+        ordered_rows.extend(
+            row for row in group if int(row["id"]) not in title_signal_ids
+        )
+    return [int(row["id"]) for row in ordered_rows]
+
+
+def _coding_plan_terminal_failure_items(
+    root: Path,
+    *,
+    semantic_contract_hash: str,
+) -> tuple[tuple[int, str, str], ...]:
+    """Return twice-rejected Coding Plan inputs for the same contract."""
+
+    jobs_root = root / "data" / "shared" / "intelligence" / "extraction_jobs"
+    failures: set[tuple[int, str, str]] = set()
+    if not jobs_root.exists():
+        return ()
+    for job_dir in sorted(jobs_root.glob("sj-*")):
+        manifest_path = job_dir / "job.json"
+        report_path = job_dir / "validation_report.json"
+        if not manifest_path.is_file() or not report_path.is_file():
+            continue
+        manifest = _read_json(manifest_path)
+        if str(manifest.get("semantic_contract_hash") or "") != str(
+            semantic_contract_hash
+        ):
+            continue
+        report = _read_json(report_path)
+        if int(report.get("validation_attempt") or 0) < (
+            CODING_PLAN_MAX_VALIDATION_ATTEMPTS
+        ):
+            continue
+        failed_ids = {
+            _positive_int(
+                _mapping(value, "semantic_job_error_invalid").get(
+                    "document_id"
+                )
+            )
+            for value in _sequence(
+                report.get("errors"),
+                "semantic_job_errors_invalid",
+            )
+        }
+        for raw_item in _sequence(
+            manifest.get("items"),
+            "semantic_job_items_invalid",
+        ):
+            item = _mapping(raw_item, "semantic_job_item_invalid")
+            document_id = _positive_int(item.get("document_id"))
+            if document_id not in failed_ids:
+                continue
+            failures.add(
+                (
+                    document_id,
+                    str(item.get("artifact_hash") or ""),
+                    str(item.get("parser_version") or ""),
+                )
+            )
+    return tuple(sorted(failures))
 
 
 def _latest_research_universe(
@@ -2790,6 +4428,7 @@ def _already_terminal(
     taxonomy_version: str,
     parser_version: str,
     allow_terminal_retry: bool = True,
+    deterministic_router_model: str = "",
 ) -> bool:
     terminal_failure_sql = (
         "(s.status='failed_terminal' "
@@ -2806,7 +4445,13 @@ def _already_terminal(
               AND s.prompt_version=? AND s.schema_version=?
               AND s.taxonomy_version=? AND s.parser_version=?
               AND (
-                s.status='no_event'
+                (
+                  s.status='no_event'
+                  AND (
+                    s.provider<>?
+                    OR (?<>'' AND s.model=?)
+                  )
+                )
                 OR ({terminal_failure_sql})
                 OR (
                   s.status='succeeded'
@@ -2833,6 +4478,9 @@ def _already_terminal(
                 str(schema_version),
                 str(taxonomy_version),
                 str(parser_version),
+                DETERMINISTIC_ROUTER_PROVIDER,
+                str(deterministic_router_model),
+                str(deterministic_router_model),
             ),
         ).fetchone()
     return row is not None
@@ -2913,8 +4561,9 @@ def _bound_v21_payload(
         "semantic_document_ir_invalid",
     )
     try:
-        ir_nodes = ir_nodes_by_id(raw_ir)
-        empty_ir = project_document_ir(raw_ir, [])
+        projector = DocumentIRProjector(raw_ir)
+        ir_nodes = projector.nodes
+        empty_ir = projector.project([])
     except DocumentIRPreflightError as exc:
         raise SemanticExchangeError(exc.code, detail=exc.detail) from exc
     raw_chunks = _sequence(
@@ -2957,6 +4606,7 @@ def _bound_v21_payload(
         _v21_lexical_score(str(chunk.get("text") or ""), retrieval_terms)
         for chunk in chunks
     ]
+    superseded_body_ids = _v21_superseded_body_ids(chunks)
 
     body_ordinal = 0
     prioritized: list[tuple[int, int, int, dict[str, object]]] = []
@@ -2967,8 +4617,11 @@ def _bound_v21_payload(
         if section == "document_metadata":
             priority = 0
             score = 0
-        elif section != "table_cell":
+        elif _v21_revision_boundary_chunk(str(chunk.get("text") or "")):
             priority = 1
+            score = lexical_scores[ordinal]
+        elif section != "table_cell":
+            priority = 2
             score = lexical_scores[ordinal]
             if score == 0 and any(
                 lexical_scores[index] > 0
@@ -2980,10 +4633,19 @@ def _bound_v21_payload(
                 score += 20
             body_ordinal += 1
         elif _usable_ir_value_node(node):
-            priority = 1
-            score = 80 + lexical_scores[ordinal]
+            priority = 2
+            score = (
+                80
+                + lexical_scores[ordinal]
+                + _v21_lexical_score(
+                    _v21_ir_context_text(node, ir_nodes),
+                    retrieval_terms,
+                )
+            )
+            if _v21_zero_numeric_value(str(node.get("raw_value") or "")):
+                score -= 250
         else:
-            priority = 1
+            priority = 2
             score = lexical_scores[ordinal]
         prioritized.append((priority, -score, ordinal, chunk))
 
@@ -2992,6 +4654,8 @@ def _bound_v21_payload(
     selected_value_ids: set[str] = set()
     for _, _, _, chunk in sorted(prioritized, key=lambda value: value[:3]):
         chunk_id = str(chunk.get("chunk_id") or "")
+        if chunk_id in superseded_body_ids:
+            continue
         node = ir_nodes.get(chunk_id)
         if (
             isinstance(node, Mapping)
@@ -3004,7 +4668,7 @@ def _bound_v21_payload(
         if chunk_id in ir_nodes:
             trial_ids.add(chunk_id)
         try:
-            projected = project_document_ir(raw_ir, sorted(trial_ids))
+            projected = projector.project(sorted(trial_ids))
         except DocumentIRPreflightError as exc:
             raise SemanticExchangeError(exc.code, detail=exc.detail) from exc
         trial = {
@@ -3035,6 +4699,85 @@ def _bound_v21_payload(
     if len(_canonical_json(bounded)) > max_input_characters:
         raise SemanticExchangeError("semantic_evidence_packet_contract_oversized")
     return bounded
+
+
+def _v21_revision_boundary_chunk(text: str) -> bool:
+    normalized = str(text).casefold()
+    return any(term.casefold() in normalized for term in _V21_REVISION_BOUNDARY_TERMS)
+
+
+def _v21_superseded_body_ids(
+    chunks: Sequence[Mapping[str, object]],
+) -> set[str]:
+    state = "neutral"
+    superseded: set[str] = set()
+    current_terms = tuple(
+        term.casefold()
+        for term in _V21_REVISION_BOUNDARY_TERMS[:8]
+    )
+    old_terms = tuple(
+        term.casefold()
+        for term in _V21_REVISION_BOUNDARY_TERMS[8:]
+    )
+    indexed_chunks = list(enumerate(chunks))
+
+    def document_order(item):
+        index, chunk = item
+        bbox = chunk.get("bbox")
+        top = (
+            float(bbox[1])
+            if isinstance(bbox, list) and len(bbox) == 4
+            else float(index + 10_000)
+        )
+        return (int(chunk.get("page_number") or 0), top, index)
+
+    for _, chunk in sorted(indexed_chunks, key=document_order):
+        section = str(chunk.get("section") or "")
+        chunk_id = str(chunk.get("chunk_id") or "")
+        if section == "document_metadata":
+            continue
+        text = str(chunk.get("text") or "").casefold()
+        current_position = max(
+            (text.rfind(term) for term in current_terms),
+            default=-1,
+        )
+        old_position = max(
+            (text.rfind(term) for term in old_terms),
+            default=-1,
+        )
+        if current_position >= 0 or old_position >= 0:
+            state = (
+                "current"
+                if current_position > old_position
+                else "superseded"
+            )
+            continue
+        if state == "superseded" and chunk_id:
+            superseded.add(chunk_id)
+    return superseded
+
+
+def _v21_ir_context_text(
+    node: Mapping[str, object],
+    nodes: Mapping[str, Mapping[str, object]],
+) -> str:
+    values: list[str] = []
+    for path_name in ("row_header_path", "column_header_path"):
+        path = node.get(path_name)
+        if not isinstance(path, list):
+            continue
+        for item in path:
+            if not isinstance(item, Mapping):
+                continue
+            related = nodes.get(str(item.get("node_id") or ""))
+            if related is not None:
+                values.append(str(related.get("text") or ""))
+    return " ".join(values)
+
+
+def _v21_zero_numeric_value(raw_value: str) -> bool:
+    normalized = re.sub(r"[,%％，\s]", "", str(raw_value))
+    return bool(re.fullmatch(r"[-+]?0+(?:\.0+)?", normalized))
 
 
 def _v21_lexical_score(text: str, retrieval_terms: Sequence[str]) -> int:
@@ -3297,6 +5040,7 @@ def _verify_manifest(
         document_ir_rows = _read_jsonl(
             job_dir / "document_ir.jsonl",
             max_rows=len(items),
+            max_line_bytes=MAX_DOCUMENT_IR_LINE_BYTES,
         )
         evidence_packet_rows = _read_jsonl(
             job_dir / "evidence_packets.jsonl",
@@ -3503,6 +5247,7 @@ def _read_jsonl(
     path: Path,
     *,
     max_rows: int | None = None,
+    max_line_bytes: int = MAX_JOB_LINE_BYTES,
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     try:
@@ -3515,7 +5260,7 @@ def _read_jsonl(
     for ordinal, line in enumerate(lines, 1):
         if not line.strip():
             continue
-        if len(line.encode("utf-8")) > MAX_JOB_LINE_BYTES:
+        if len(line.encode("utf-8")) > max(0, int(max_line_bytes)):
             raise SemanticExchangeError(
                 "semantic_job_jsonl_line_too_large",
                 detail=str(ordinal),
@@ -3586,6 +5331,8 @@ __all__ = [
     "OUTPUT_CONTRACT_VERSION",
     "SemanticExchangeError",
     "canonical_json_hash",
+    "collect_coding_plan_outputs",
+    "finalize_deterministic_routes",
     "import_job",
     "job_status",
     "prepare_job",

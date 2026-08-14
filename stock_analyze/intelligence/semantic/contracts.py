@@ -48,6 +48,7 @@ _PROMPT_FILES = {
     "semantic-mentions-v14": "semantic_mentions_v14.md",
     "semantic-mentions-v15": "semantic_mentions_v15.md",
     "semantic-mentions-v16": "semantic_mentions_v16.md",
+    "semantic-mentions-v17": "semantic_mentions_v17.md",
 }
 JsonScalar: TypeAlias = str | int | float | bool | None
 

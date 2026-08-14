@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
+
+import stock_analyze.intelligence.semantic.document_ir as document_ir_module
 
 from stock_analyze.intelligence.semantic.document_ir import (
     DOCUMENT_IR_VERSION,
+    DocumentIRProjector,
     DocumentIRPreflightError,
     build_document_ir,
     ir_nodes_by_id,
@@ -79,6 +83,28 @@ def _ir(*, tables: list[dict[str, object]] | None = None) -> dict[str, object]:
 
 
 class DocumentIRTest(unittest.TestCase):
+    def test_multiline_grouped_number_is_a_value_cell(self) -> None:
+        table = _table(
+            cells=[
+                _cell(0, 0, "股东名称"),
+                _cell(0, 1, "本次质押数量（股）"),
+                _cell(1, 0, "测试股东"),
+                _cell(1, 1, "6,000,\n000"),
+            ]
+        )
+
+        document_ir = build_document_ir(
+            document={"id": 1, "title": "股份质押公告", "name": "测试股份"},
+            chunks=[],
+            tables=[table],
+            parser_version="test-v1",
+        )
+        value = ir_nodes_by_id(document_ir)["table-1-r1-c1"]
+
+        self.assertEqual(value["semantic_role"], "value")
+        self.assertEqual(value["unit_resolution"]["value"], "股")
+        self.assertTrue(value["row_header_path"])
+
     def test_builds_complete_multilevel_table_semantics_deterministically(self) -> None:
         first = _ir()
         second = _ir()
@@ -196,6 +222,27 @@ class DocumentIRTest(unittest.TestCase):
         self.assertIn("body-footnote", nodes)
         preflight_document_ir(projected)
         preflight_evidence_packet(projected, ["table-1-r2-c1"])
+
+    def test_projector_preflights_the_full_source_only_once(self) -> None:
+        source = _ir()
+
+        with mock.patch.object(
+            document_ir_module,
+            "preflight_document_ir",
+            wraps=preflight_document_ir,
+        ) as preflight:
+            projector = DocumentIRProjector(source)
+            first = projector.project(["table-1-r2-c1"])
+            second = projector.project(["table-1-r2-c2"])
+
+        source_preflights = [
+            call
+            for call in preflight.call_args_list
+            if call.args and call.args[0] is source
+        ]
+        self.assertEqual(len(source_preflights), 1)
+        preflight_document_ir(first)
+        preflight_document_ir(second)
 
 
 if __name__ == "__main__":

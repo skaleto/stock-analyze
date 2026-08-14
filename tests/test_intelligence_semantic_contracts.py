@@ -1125,6 +1125,62 @@ class SemanticPromptTest(unittest.TestCase):
         self.assertEqual(profile["compiler_version"], "mention-compiler-v3-ir")
         self.assertEqual(profile["decision_use"], "research_feature_only")
 
+    def test_mentions_v17_separates_current_disclosure_from_background(self) -> None:
+        prompt = semantic_contracts.load_semantic_prompt(
+            ROOT,
+            "semantic-mentions-v17",
+        )
+        for requirement in (
+            "current disclosure",
+            "historical background",
+            "hypothetical",
+            "denial",
+            "provided taxonomy candidates",
+            "Review every taxonomy candidate",
+            "verbatim",
+            "uniquely locating",
+            "原来披露",
+            "one consolidated mention",
+            "Do not normalize",
+            "Do not emit confidence",
+            "returns, or recommendations",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, prompt)
+
+        profile = json.loads(
+            (
+                ROOT
+                / "configs"
+                / "intelligence_extraction_profiles"
+                / "a_share_announcement_mentions_v24.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(profile["prompt_version"], "semantic-mentions-v17")
+        self.assertEqual(profile["taxonomy_version"], "cn-announcement-taxonomy-v11")
+        self.assertEqual(profile["compiler_version"], "mention-compiler-v3-ir")
+        self.assertEqual(profile["audit_sample_rate"], 0)
+        self.assertEqual(profile["decision_use"], "research_feature_only")
+
+        current_profile = json.loads(
+            (
+                ROOT
+                / "configs"
+                / "intelligence_extraction_profiles"
+                / "a_share_announcement_mentions_v27.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(current_profile["profile_version"], 27)
+        self.assertEqual(current_profile["prompt_version"], "semantic-mentions-v17")
+        self.assertEqual(
+            current_profile["taxonomy_version"],
+            "cn-announcement-taxonomy-v12",
+        )
+        self.assertEqual(
+            current_profile["retriever_version"],
+            "deterministic-evidence-v3-current-facts",
+        )
+
     def test_taxonomy_v9_accepts_explicit_no_consideration_word_order(self) -> None:
         taxonomy = EventTaxonomy.load(
             ROOT / "configs" / "intelligence_event_taxonomy_v9.json"

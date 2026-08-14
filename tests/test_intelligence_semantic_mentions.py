@@ -46,6 +46,17 @@ class MentionDateNormalizationTest(unittest.TestCase):
             "completed",
         )
 
+    def test_cited_modified_plan_maps_to_revised_lifecycle(self) -> None:
+        self.assertEqual(
+            _infer_lifecycle(
+                "merger_restructuring",
+                title="补充法律意见书",
+                status="修改后的本次方案",
+                require_cited_status=True,
+            ),
+            "revised",
+        )
+
 
 def valid_mention_payload() -> dict:
     return {
@@ -240,6 +251,220 @@ class MentionCompilerTest(unittest.TestCase):
             Decimal("0.04"),
         )
 
+    def test_dividend_plan_uses_exact_source_quote_when_model_paraphrases(self) -> None:
+        payload = valid_mention_payload()
+        payload["mentions"][0]["facts"][0] = {
+            "name": "distribution_plan",
+            "raw_value": "每10股派发现金红利1.50元且不送转",
+            "evidence": [{
+                "chunk_id": "plan",
+                "quote": "向全体股东每10 股派发现金红利人民币1.50 元(含税)，本次利润分配不送股且不进行资本公积金转增股本。",
+            }],
+        }
+        payload["mentions"][0]["facts"].append({
+            "name": "distribution_period",
+            "raw_value": "2026年半年度",
+            "evidence": [{"chunk_id": "period", "quote": "2026年半年度"}],
+        })
+        payload["mentions"][0]["status"] = None
+        chunks = {
+            "doc203906-p1-c1": {
+                "page_number": 1,
+                "text": "泸州老窖股份有限公司",
+            },
+            "plan": {
+                "page_number": 2,
+                "text": "向全体股东每10 股派发现金红利人民币1.50 元(含税)，本次利润分配不送股且不进行资本公积金转增股本。",
+            },
+            "period": {"page_number": 2, "text": "2026年半年度"},
+            "doc203906-p1-c11": {
+                "page_number": 2,
+                "text": "股权登记日为2006年7月6日",
+            },
+        }
+
+        compiled = self._compile(payload, chunks)
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        plan = compiled.result["events"][0]["facts"][0]
+        self.assertEqual(plan["name"], "distribution_plan")
+        self.assertEqual(plan["raw_value"], chunks["plan"]["text"])
+
+    def test_required_text_fact_uses_exact_quote_when_model_paraphrases(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v11.json"
+        )
+        payload = {
+            "document_id": 394586,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "merger-1",
+                "event_type": "merger_restructuring",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "中钨高新",
+                    "evidence": [{"chunk_id": "issuer", "quote": "中钨高新"}],
+                }],
+                "facts": [{
+                    "name": "transaction_type",
+                    "raw_value": "协议收购",
+                    "evidence": [{"chunk_id": "action", "quote": "以协议方式收购"}],
+                }],
+                "dates": [],
+                "status": None,
+            }],
+            "no_event_reason": None,
+        }
+        chunks = {
+            "issuer": {"page_number": 1, "text": "中钨高新"},
+            "action": {"page_number": 1, "text": "湖南有色以协议方式收购公司股份"},
+        }
+
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document={
+                "id": 394586,
+                "title": "关于增持股份的法律意见书",
+                "ts_code": "000657.SZ",
+                "name": "中钨高新",
+                "published_at": "2026-08-11T00:00:00+00:00",
+            },
+            entity_whitelist=[{
+                "entity_id": "000657.SZ",
+                "name": "中钨高新",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["merger_restructuring"],
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        fact = compiled.result["events"][0]["facts"][0]
+        self.assertEqual(fact["raw_value"], "以协议方式收购")
+
+    def test_cross_chunk_recovery_uses_chunk_ordinal_not_mapping_order(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v11.json"
+        )
+        payload = {
+            "document_id": 49171,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "investigation-1",
+                "event_type": "investigation_penalty",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "测试股份",
+                    "evidence": [{"chunk_id": "issuer", "quote": "测试股份"}],
+                }, {
+                    "role": "authority",
+                    "name": "中国证监会",
+                    "evidence": [{"chunk_id": "authority", "quote": "中国证监会"}],
+                }],
+                "facts": [
+                    {
+                        "name": "action_type",
+                        "raw_value": "立案调查",
+                        "evidence": [{
+                            "chunk_id": "doc49171-p1-c13-a",
+                            "quote": "公司已被中国证监会立案调查",
+                        }],
+                    },
+                    {
+                        "name": "document_number",
+                        "raw_value": "2025-053",
+                        "evidence": [{"chunk_id": "number", "quote": "2025-053"}],
+                    },
+                ],
+                "dates": [],
+                "status": None,
+            }],
+            "no_event_reason": None,
+        }
+        chunks = {
+            "issuer": {"page_number": 1, "text": "测试股份"},
+            "authority": {"page_number": 1, "text": "中国证监会"},
+            "number": {"page_number": 1, "text": "公告编号：2025-053"},
+            "doc49171-p1-c13-a": {
+                "page_number": 1,
+                "text": "公司已被中国证监会",
+            },
+            "doc49171-p1-c90-a": {"page_number": 1, "text": "无关一"},
+            "doc49171-p1-c91-a": {"page_number": 1, "text": "无关二"},
+            "doc49171-p1-c92-a": {"page_number": 1, "text": "无关三"},
+            "doc49171-p1-c93-a": {"page_number": 1, "text": "无关四"},
+            "doc49171-p1-c14-a": {
+                "page_number": 1,
+                "text": "立案调查，调查尚在进行。",
+            },
+        }
+
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document={
+                "id": 49171,
+                "title": "关于立案调查进展的公告",
+                "ts_code": "000001.SZ",
+                "name": "测试股份",
+                "published_at": "2026-07-25T00:00:00+00:00",
+            },
+            entity_whitelist=[{
+                "entity_id": "000001.SZ",
+                "name": "测试股份",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["investigation_penalty"],
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+
+    def test_issuer_evidence_is_canonicalized_to_listed_company(self) -> None:
+        payload = valid_mention_payload()
+        payload["mentions"][0]["subjects"][0] = {
+            "role": "issuer",
+            "name": "子公司甲",
+            "evidence": [{"chunk_id": "subsidiary", "quote": "子公司甲"}],
+        }
+        payload["mentions"][0]["facts"].append({
+            "name": "distribution_period",
+            "raw_value": "2005年度",
+            "evidence": [{"chunk_id": "period", "quote": "2005年度"}],
+        })
+        payload["mentions"][0]["status"] = None
+        chunks = {
+            "doc203906-p1-c1": {
+                "page_number": 1,
+                "text": "泸州老窖股份有限公司",
+            },
+            "subsidiary": {"page_number": 1, "text": "子公司甲签署合同"},
+            "doc203906-p1-c8": {
+                "page_number": 1,
+                "text": "每10股派0.40元人民币现金",
+            },
+            "period": {"page_number": 1, "text": "2005年度"},
+            "doc203906-p1-c11": {
+                "page_number": 1,
+                "text": "股权登记日为2006年7月6日",
+            },
+        }
+
+        compiled = self._compile(payload, chunks)
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        subject_evidence_id = compiled.result["events"][0]["subjects"][0][
+            "evidence_ids"
+        ][0]
+        evidence = {
+            row["evidence_id"]: row
+            for row in compiled.result["evidence"]
+        }
+        self.assertEqual(
+            evidence[subject_evidence_id]["quote"],
+            "泸州老窖股份有限公司",
+        )
     def test_unique_truncated_chunk_id_is_restored_before_grounding(self) -> None:
         payload = valid_mention_payload()
         payload["mentions"][0]["facts"].append(
@@ -435,7 +660,14 @@ class MentionCompilerTest(unittest.TestCase):
                     "平安银行股份有限公司董事会于2026年8月8日审议通过回购方案，"
                     "回购金额不超过1亿元，回购价格不超过10元/股。"
                 ),
-            }
+            },
+            {
+                "chunk_id": "revision",
+                "page_number": 1,
+                "section": "body",
+                "bbox": [],
+                "text": "董事会审议通过回购方案调整并签订补充协议。",
+            },
         ]
         chunks = {
             row["chunk_id"]: {
@@ -486,6 +718,22 @@ class MentionCompilerTest(unittest.TestCase):
             document_ir=ir,
             **common,
         )
+        translated_status = copy.deepcopy(payload)
+        translated_status["mentions"][0]["status"] = {
+            "raw_value": "revised",
+            "evidence": [{
+                "chunk_id": "revision",
+                "quote": "回购方案调整并签订补充协议",
+            }],
+        }
+        production_taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v12.json"
+        )
+        strict_with_translated_status = compile_mentions(
+            parse_mention_document_result(translated_status),
+            document_ir=ir,
+            **{**common, "taxonomy": production_taxonomy},
+        )
 
         self.assertEqual(legacy.accepted_mentions, 1, legacy)
         self.assertEqual(strict.accepted_mentions, 1, strict)
@@ -495,6 +743,10 @@ class MentionCompilerTest(unittest.TestCase):
         self.assertEqual(
             strict_with_status.result["events"][0]["lifecycle"],
             "approved",
+        )
+        self.assertEqual(
+            strict_with_translated_status.result["events"][0]["lifecycle"],
+            "revised",
         )
         self.assertTrue(
             any(
@@ -690,6 +942,95 @@ class MentionCompilerTest(unittest.TestCase):
         self.assertEqual(facts["case_amount"]["raw_value"], "10,200 万元")
         self.assertEqual(facts["case_stage"]["raw_value"], "判决")
         self.assertEqual(facts["issuer_role"]["raw_value"], "偿还")
+
+    def test_litigation_prefers_explicit_case_amount_label(self) -> None:
+        payload = {
+            "document_id": 72840,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "litigation-amount",
+                "event_type": "litigation_arbitration",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "泸州老窖股份有限公司",
+                    "evidence": [{"chunk_id": "issuer", "quote": "泸州老窖股份有限公司"}],
+                }, {
+                    "role": "counterparty",
+                    "name": "原告公司",
+                    "evidence": [{"chunk_id": "counterparty", "quote": "原告公司"}],
+                }],
+                "facts": [
+                    {"name": "case_stage", "raw_value": "一审判决", "evidence": [{"chunk_id": "stage", "quote": "一审判决"}]},
+                    {"name": "case_amount", "raw_value": "117,804,981.89 元", "evidence": [{"chunk_id": "claim-total", "quote": "调整为117,804,981.89 元"}]},
+                    {"name": "issuer_role", "raw_value": "被告", "evidence": [{"chunk_id": "role", "quote": "被告"}]},
+                ],
+                "dates": [],
+                "status": {"raw_value": "一审判决", "evidence": [{"chunk_id": "stage", "quote": "一审判决"}]},
+            }],
+            "no_event_reason": None,
+        }
+        chunks = {
+            "issuer": {"page_number": 1, "text": "泸州老窖股份有限公司"},
+            "counterparty": {"page_number": 1, "text": "原告公司"},
+            "role": {"page_number": 1, "text": "公司所处的当事人地位：被告"},
+            "case-amount": {"page_number": 1, "text": "涉案的金额：47,121,992.76 元。"},
+            "claim-total": {"page_number": 2, "text": "原告诉请合计金额调整为117,804,981.89 元"},
+            "stage": {"page_number": 3, "text": "本次诉讼的一审判决情况"},
+            "judgment": {"page_number": 3, "text": "驳回原告的全部诉讼请求。"},
+        }
+
+        compiled = self._compile(payload, chunks)
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        facts = {row["name"]: row for row in compiled.result["events"][0]["facts"]}
+        self.assertEqual(facts["case_amount"]["raw_value"], "47,121,992.76元")
+
+    def test_guarantee_separates_current_amount_from_cumulative_balance(self) -> None:
+        payload = {
+            "document_id": 136848,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "guarantee-summary",
+                "event_type": "guarantee",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "泸州老窖股份有限公司",
+                    "evidence": [{"chunk_id": "issuer", "quote": "泸州老窖股份有限公司"}],
+                }, {
+                    "role": "beneficiary",
+                    "name": "被担保公司",
+                    "evidence": [{"chunk_id": "beneficiary", "quote": "被担保公司"}],
+                }],
+                "facts": [{
+                    "name": "guarantee_amount",
+                    "raw_value": "30760 万元",
+                    "evidence": [{"chunk_id": "balance", "quote": "截止至公告日止，本公司已披露对外担保总额为30760 万元"}],
+                }],
+                "dates": [{
+                    "kind": "guarantee_date",
+                    "raw_value": "2004年9月23日",
+                    "evidence": [{"chunk_id": "date", "quote": "2004年9月23日"}],
+                }],
+                "status": None,
+            }],
+            "no_event_reason": None,
+        }
+        chunks = {
+            "issuer": {"page_number": 1, "text": "泸州老窖股份有限公司"},
+            "beneficiary": {"page_number": 1, "text": "被担保公司"},
+            "date": {"page_number": 1, "text": "2004年9月23日"},
+            "current": {"page_number": 2, "text": "本次公告涉及的25600 万元担保事项没有履行正常的审议程序"},
+            "balance": {"page_number": 3, "text": "截止至公告日止，本公司已披露对外担保总额为30760 万元"},
+            "ratio": {"page_number": 3, "text": "占公司经审计净资产的129%"},
+        }
+
+        compiled = self._compile(payload, chunks)
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        facts = {row["name"]: row for row in compiled.result["events"][0]["facts"]}
+        self.assertEqual(facts["guarantee_amount"]["raw_value"], "25600万元")
+        self.assertEqual(facts["guarantee_balance"]["raw_value"], "30760 万元")
+        self.assertEqual(facts["net_asset_ratio"]["raw_value"], "129%")
 
     def test_multichunk_text_drops_model_inserted_separator(self) -> None:
         payload = {
@@ -1305,6 +1646,1674 @@ class MentionCompilerTest(unittest.TestCase):
         with self.assertRaises(MentionContractError) as raised:
             parse_mention_document_result(payload)
         self.assertEqual(raised.exception.code, "mention_schema_invalid")
+
+
+class CoreEventTaxonomyV11Test(unittest.TestCase):
+    def test_grounded_absence_word_is_a_valid_zero_numeric_disclosure(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v11.json"
+        )
+        payload = {
+            "document_id": 183831,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "guarantee-zero",
+                "event_type": "guarantee",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "青岛碱业股份有限公司",
+                    "evidence": [{
+                        "chunk_id": "issuer",
+                        "quote": "青岛碱业股份有限公司",
+                    }],
+                }],
+                "facts": [{
+                    "name": "guarantee_balance",
+                    "raw_value": "无",
+                    "evidence": [{
+                        "chunk_id": "doc183831-p1-c8-current",
+                        "quote": "对外担保逾期的累计数量：无",
+                    }],
+                }],
+                "dates": [],
+                "status": None,
+            }],
+            "no_event_reason": None,
+        }
+        chunks = {
+            "issuer": {"page_number": 1, "text": "青岛碱业股份有限公司"},
+            "doc183831-p1-c7-heading": {
+                "page_number": 1,
+                "text": "担保逾期累计数量1.5亿元人民币错误，现更正为：",
+            },
+            "doc183831-p1-c8-current": {
+                "page_number": 1,
+                "text": "对外担保逾期的累计数量：无",
+            },
+        }
+
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document={
+                "id": 183831,
+                "title": "关于对外担保公告的更正公告",
+                "ts_code": "600229.SH",
+                "name": "青岛碱业股份有限公司",
+                "published_at": "2006-05-25T16:00:00+00:00",
+            },
+            entity_whitelist=[{
+                "entity_id": "600229.SH",
+                "name": "青岛碱业股份有限公司",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["guarantee"],
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        balance = compiled.result["events"][0]["facts"][0]
+        self.assertEqual(balance["raw_value"], "无")
+        self.assertIsNone(balance["unit"])
+
+    def test_schema_share_unit_does_not_require_an_ambiguous_single_character_quote(
+        self,
+    ) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v11.json"
+        )
+        payload = {
+            "document_id": 178732,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "share-change",
+                "event_type": "shareholder_change",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "三九宜工生化股份有限公司",
+                    "evidence": [{
+                        "chunk_id": "issuer",
+                        "quote": "三九宜工生化股份有限公司",
+                    }],
+                }],
+                "facts": [{
+                    "name": "action",
+                    "raw_value": "减少",
+                    "evidence": [{
+                        "chunk_id": "action",
+                        "quote": "股份变动性质：（控制股份）减少",
+                    }],
+                }, {
+                    "name": "share_count",
+                    "raw_value": "80,682,000",
+                    "evidence": [{
+                        "chunk_id": "count",
+                        "quote": "80,682,000",
+                    }],
+                }],
+                "dates": [],
+                "status": None,
+            }],
+            "no_event_reason": None,
+        }
+        chunks = {
+            "issuer": {"page_number": 1, "text": "三九宜工生化股份有限公司"},
+            "action": {"page_number": 1, "text": "股份变动性质：（控制股份）减少"},
+            "count": {
+                "page_number": 6,
+                "text": "本公司持有三九宜工生化股份有限公司80,682,000 股的国有法人股",
+            },
+        }
+
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document={
+                "id": 178732,
+                "title": "股东持股变动报告书的补充公告",
+                "ts_code": "000403.SZ",
+                "name": "三九宜工生化股份有限公司",
+                "published_at": "2006-03-10T16:00:00+00:00",
+            },
+            entity_whitelist=[{
+                "entity_id": "000403.SZ",
+                "name": "三九宜工生化股份有限公司",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["shareholder_change"],
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        share_count = next(
+            fact
+            for fact in compiled.result["events"][0]["facts"]
+            if fact["name"] == "share_count"
+        )
+        self.assertEqual(share_count["unit"], "股")
+
+    def test_revision_with_only_repeated_event_facts_is_not_a_new_event(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v11.json"
+        )
+        payload = {
+            "document_id": 429014,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "unchanged-reduction",
+                "event_type": "shareholder_change",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "阳光新业地产股份有限公司",
+                    "evidence": [{"chunk_id": "issuer", "quote": "阳光新业地产股份有限公司"}],
+                }],
+                "facts": [
+                    {"name": "action", "raw_value": "减持", "evidence": [{"chunk_id": "doc429014-p2-c4-current", "quote": "减持"}]},
+                    {"name": "share_count", "raw_value": "495万股", "evidence": [{"chunk_id": "doc429014-p2-c4-current", "quote": "495万股"}]},
+                    {"name": "share_ratio", "raw_value": "1.03%", "evidence": [{"chunk_id": "doc429014-p2-c4-current", "quote": "1.03%"}]},
+                ],
+                "dates": [],
+                "status": {
+                    "raw_value": "现补充为",
+                    "evidence": [{"chunk_id": "doc429014-p2-c3-current-heading", "quote": "现补充为"}],
+                },
+            }],
+            "no_event_reason": None,
+        }
+        chunks = {
+            "issuer": {"page_number": 1, "text": "阳光新业地产股份有限公司"},
+            "doc429014-p1-c1-old-heading": {"page_number": 1, "text": "原公告内容："},
+            "doc429014-p1-c2-old": {"page_number": 1, "text": "股东减持495万股，占总股本1.03%"},
+            "doc429014-p2-c3-current-heading": {"page_number": 2, "text": "现补充为："},
+            "doc429014-p2-c4-current": {"page_number": 2, "text": "股东减持495万股，占总股本1.03%"},
+        }
+
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document={
+                "id": 429014,
+                "title": "关于股东减持股份公告的补充及更正公告",
+                "ts_code": "000608.SZ",
+                "name": "阳光新业地产股份有限公司",
+                "published_at": "2009-05-15T16:00:00+00:00",
+            },
+            entity_whitelist=[{
+                "entity_id": "000608.SZ",
+                "name": "阳光新业地产股份有限公司",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["shareholder_change"],
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 0, compiled)
+        self.assertEqual(
+            compiled.rejected_mentions[0].reason_codes,
+            ("mention_revision_no_changed_fact",),
+        )
+
+    def test_guarantee_rows_collapse_uses_unique_body_total_for_generic_table_label(
+        self,
+    ) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v11.json"
+        )
+        document = {
+            "id": 136848,
+            "title": "为他人提供担保的补充公告",
+            "ts_code": "000430.SZ",
+            "name": "测试旅游股份有限公司",
+            "published_at": "2004-09-24T16:00:00+00:00",
+        }
+        source_chunks = [{
+            "chunk_id": "issuer",
+            "page_number": 1,
+            "section": "body",
+            "bbox": [],
+            "text": "测试旅游股份有限公司",
+        }, {
+            "chunk_id": "unit",
+            "page_number": 1,
+            "section": "body",
+            "bbox": [],
+            "text": "未披露担保事项（单位：万元）",
+        }, {
+            "chunk_id": "row-1-text",
+            "page_number": 1,
+            "section": "body",
+            "bbox": [],
+            "text": "公司甲 3500",
+        }, {
+            "chunk_id": "row-2-text",
+            "page_number": 1,
+            "section": "body",
+            "bbox": [],
+            "text": "公司乙 500",
+        }, {
+            "chunk_id": "total-text",
+            "page_number": 1,
+            "section": "body",
+            "bbox": [],
+            "text": "合计\n5000",
+        }]
+        table = {
+            "table_id": "guarantee-table",
+            "page_number": 1,
+            "bbox": [],
+            "cells": [
+                {"row_index": 0, "column_index": 0, "bbox": [], "text": "序号"},
+                {"row_index": 0, "column_index": 1, "bbox": [], "text": "被担保方"},
+                {"row_index": 0, "column_index": 2, "bbox": [], "text": "贷款金额"},
+                {"row_index": 1, "column_index": 0, "bbox": [], "text": "1"},
+                {"row_index": 1, "column_index": 1, "bbox": [], "text": "公司甲"},
+                {"row_index": 1, "column_index": 2, "bbox": [], "text": "3500"},
+                {"row_index": 2, "column_index": 0, "bbox": [], "text": "2"},
+                {"row_index": 2, "column_index": 1, "bbox": [], "text": "公司乙"},
+                {"row_index": 2, "column_index": 2, "bbox": [], "text": "500"},
+                {"row_index": 3, "column_index": 0, "bbox": [], "text": "3"},
+                {"row_index": 3, "column_index": 1, "bbox": [], "text": "公司丙"},
+                {"row_index": 3, "column_index": 2, "bbox": [], "text": "1000"},
+                {"row_index": 4, "column_index": 0, "bbox": [], "text": "合计"},
+                {"row_index": 4, "column_index": 1, "bbox": [], "text": ""},
+                {"row_index": 4, "column_index": 2, "bbox": [], "text": "5000"},
+            ],
+        }
+        ir = build_document_ir(
+            document=document,
+            chunks=source_chunks,
+            tables=[table],
+            parser_version="test-v1",
+        )
+        chunks = {
+            item["chunk_id"]: {
+                "page_number": item["page_number"],
+                "text": item["text"],
+            }
+            for item in source_chunks
+        }
+        chunks.update({
+            f"guarantee-table-r{cell['row_index']}-c{cell['column_index']}": {
+                "page_number": 1,
+                "text": cell["text"],
+            }
+            for cell in table["cells"]
+        })
+
+        def guarantee(mention_id: str, row: int, beneficiary: str) -> dict:
+            return {
+                "mention_id": mention_id,
+                "event_type": "guarantee",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "测试旅游股份有限公司",
+                    "evidence": [{"chunk_id": "issuer", "quote": "测试旅游股份有限公司"}],
+                }, {
+                    "role": "beneficiary",
+                    "name": beneficiary,
+                    "evidence": [{
+                        "chunk_id": f"guarantee-table-r{row}-c1",
+                        "quote": beneficiary,
+                    }],
+                }],
+                "facts": [{
+                    "name": "guarantee_amount",
+                    "raw_value": "3500" if row == 1 else "500",
+                    "evidence": [{
+                        "chunk_id": f"row-{row}-text",
+                        "quote": "3500" if row == 1 else "500",
+                    }],
+                }],
+                "dates": [],
+                "status": None,
+            }
+
+        payload = {
+            "document_id": 136848,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [
+                guarantee("g1", 1, "公司甲"),
+                guarantee("g2", 2, "公司乙"),
+            ],
+            "no_event_reason": None,
+        }
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document=document,
+            entity_whitelist=[{
+                "entity_id": "000430.SZ",
+                "name": "测试旅游股份有限公司",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["guarantee"],
+            document_ir=ir,
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        event = compiled.result["events"][0]
+        self.assertEqual(
+            [(item["entity_id"], item["role"]) for item in event["subjects"]],
+            [("000430.SZ", "issuer")],
+        )
+        amount = next(
+            item for item in event["facts"]
+            if item["name"] == "guarantee_amount"
+        )
+        self.assertEqual(amount["raw_value"], "5000")
+        self.assertEqual(amount["unit"], "万元")
+        self.assertIsNone(amount["period"])
+        cited_chunks = {
+            item["chunk_id"]
+            for item in compiled.result["evidence"]
+            if item["evidence_id"] in amount["evidence_ids"]
+        }
+        self.assertIn("total-text", cited_chunks)
+
+    def test_revision_facts_from_explicit_original_section_are_rejected(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v11.json"
+        )
+        payload = {
+            "document_id": 322230,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "flash-old-values",
+                "event_type": "earnings_flash",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "上海氯碱化工股份有限公司",
+                    "evidence": [{
+                        "chunk_id": "doc322230-meta-issuer",
+                        "quote": "上海氯碱化工股份有限公司",
+                    }],
+                }],
+                "facts": [
+                    {
+                        "name": "period",
+                        "raw_value": "2007年度",
+                        "evidence": [{
+                            "chunk_id": "doc322230-p2-c4-old",
+                            "quote": "2007年度",
+                        }],
+                    },
+                    {
+                        "name": "revenue",
+                        "raw_value": "519450.00万元",
+                        "evidence": [{
+                            "chunk_id": "doc322230-p2-c4-old",
+                            "quote": "519450.00万元",
+                        }],
+                    },
+                    {
+                        "name": "net_profit",
+                        "raw_value": "6803.29万元",
+                        "evidence": [{
+                            "chunk_id": "doc322230-p2-c4-old",
+                            "quote": "6803.29万元",
+                        }],
+                    },
+                ],
+                "dates": [],
+                "status": {
+                    "raw_value": "更正",
+                    "evidence": [{
+                        "chunk_id": "doc322230-meta-title",
+                        "quote": "更正",
+                    }],
+                },
+            }],
+            "no_event_reason": None,
+        }
+        chunks = {
+            "doc322230-meta-issuer": {
+                "page_number": 1,
+                "text": "上海氯碱化工股份有限公司",
+            },
+            "doc322230-meta-title": {
+                "page_number": 1,
+                "text": "2007年度业绩快报更正公告",
+            },
+            "doc322230-p1-c1-current-heading": {
+                "page_number": 1,
+                "text": "业绩更正说明：主要会计数据和指标如下：",
+            },
+            "doc322230-p1-c2-current": {
+                "page_number": 1,
+                "text": "2007年度 营业收入509656.51万元 净利润5628.35万元",
+            },
+            "doc322230-p1-c3-old-heading": {
+                "page_number": 1,
+                "text": "二、原来披露的主要会计数据和指标",
+            },
+            "doc322230-p2-c4-old": {
+                "page_number": 2,
+                "text": "2007年度 营业收入519450.00万元 净利润6803.29万元",
+            },
+        }
+
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document={
+                "id": 322230,
+                "title": "2007年度业绩快报更正公告",
+                "ts_code": "600618.SH",
+                "name": "上海氯碱化工股份有限公司",
+                "published_at": "2008-02-27T16:00:00+00:00",
+            },
+            entity_whitelist=[{
+                "entity_id": "600618.SH",
+                "name": "上海氯碱化工股份有限公司",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["earnings_flash"],
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 0, compiled)
+        self.assertEqual(
+            compiled.rejected_mentions[0].reason_codes,
+            ("mention_revision_uses_superseded_value",),
+        )
+
+    def test_revision_current_values_are_not_duplicated_into_old_section_by_ir_cells(
+        self,
+    ) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v11.json"
+        )
+        payload = {
+            "document_id": 322230,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "flash-current-values",
+                "event_type": "earnings_flash",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "上海氯碱化工股份有限公司",
+                    "evidence": [{
+                        "chunk_id": "doc322230-meta-issuer",
+                        "quote": "上海氯碱化工股份有限公司",
+                    }],
+                }],
+                "facts": [{
+                    "name": "period",
+                    "raw_value": "2007年度",
+                    "evidence": [{
+                        "chunk_id": "doc322230-p1-c2-current",
+                        "quote": "2007年度",
+                    }],
+                }, {
+                    "name": "revenue",
+                    "raw_value": "509656.51万元",
+                    "evidence": [{
+                        "chunk_id": "doc322230-p1-c2-current",
+                        "quote": "509656.51万元",
+                    }],
+                }, {
+                    "name": "net_profit",
+                    "raw_value": "5628.35万元",
+                    "evidence": [{
+                        "chunk_id": "doc322230-p1-c2-current",
+                        "quote": "5628.35万元",
+                    }],
+                }],
+                "dates": [],
+                "status": None,
+            }],
+            "no_event_reason": None,
+        }
+        chunks = {
+            "doc322230-meta-issuer": {
+                "page_number": 1,
+                "text": "上海氯碱化工股份有限公司",
+            },
+            "doc322230-p1-c1-current-heading": {
+                "page_number": 1,
+                "text": "业绩更正说明：主要会计数据和指标如下：",
+            },
+            "doc322230-p1-c2-current": {
+                "page_number": 1,
+                "text": "2007年度 营业收入509656.51万元 净利润5628.35万元",
+            },
+            "doc322230-p1-c3-old-heading": {
+                "page_number": 1,
+                "text": "二、原来披露的主要会计数据和指标",
+            },
+            "doc322230-p2-c4-old": {
+                "page_number": 2,
+                "text": "2007年度 营业收入519450.00万元 净利润6803.29万元",
+            },
+            "doc322230-p1-t1-r1-c1": {
+                "page_number": 1,
+                "text": "509656.51万元",
+            },
+            "doc322230-p1-t1-r2-c1": {
+                "page_number": 1,
+                "text": "5628.35万元",
+            },
+        }
+
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document={
+                "id": 322230,
+                "title": "2007年度业绩快报更正公告",
+                "ts_code": "600618.SH",
+                "name": "上海氯碱化工股份有限公司",
+                "published_at": "2008-02-27T16:00:00+00:00",
+            },
+            entity_whitelist=[{
+                "entity_id": "600618.SH",
+                "name": "上海氯碱化工股份有限公司",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["earnings_flash"],
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        facts = {
+            fact["name"]: fact["raw_value"]
+            for fact in compiled.result["events"][0]["facts"]
+        }
+        self.assertEqual(facts["revenue"], "509656.51万元")
+        self.assertEqual(facts["net_profit"], "5628.35万元")
+
+    def test_document_declared_unit_repairs_grounded_numeric_fact(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v11.json"
+        )
+        payload = {
+            "document_id": 260415,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "guarantee-1",
+                "event_type": "guarantee",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "测试股份",
+                    "evidence": [{"chunk_id": "issuer", "quote": "测试股份"}],
+                }],
+                "facts": [{
+                    "name": "guarantee_amount",
+                    "raw_value": "1348.42",
+                    "evidence": [{"chunk_id": "amount", "quote": "1348.42"}],
+                }],
+                "dates": [],
+                "status": None,
+            }],
+            "no_event_reason": None,
+        }
+        chunks = {
+            "issuer": {"page_number": 1, "text": "测试股份"},
+            "unit": {"page_number": 2, "text": "单位：万元"},
+            "amount": {"page_number": 2, "text": "本次担保金额 1348.42"},
+        }
+
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document={
+                "id": 260415,
+                "title": "关于对外担保的公告",
+                "ts_code": "000002.SZ",
+                "name": "测试股份",
+                "published_at": "2026-08-11T00:00:00+00:00",
+            },
+            entity_whitelist=[{
+                "entity_id": "000002.SZ",
+                "name": "测试股份",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["guarantee"],
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        fact = compiled.result["events"][0]["facts"][0]
+        self.assertEqual(fact["unit"], "万元")
+        unit_evidence = {
+            item["chunk_id"]
+            for item in compiled.result["evidence"]
+            if item["evidence_id"] in fact["evidence_ids"]
+        }
+        self.assertIn("unit", unit_evidence)
+
+    def test_pledge_header_citations_recover_unique_holder_table_row(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v11.json"
+        )
+        table = {
+            "table_id": "pledge-table",
+            "page_number": 1,
+            "bbox": [],
+            "cells": [
+                {"row_index": 0, "column_index": 0, "bbox": [], "text": "股东名称"},
+                {"row_index": 0, "column_index": 1, "bbox": [], "text": "本次质押股数"},
+                {"row_index": 0, "column_index": 2, "bbox": [], "text": "质押起始日"},
+                {"row_index": 1, "column_index": 0, "bbox": [], "text": "张顼"},
+                {"row_index": 1, "column_index": 1, "bbox": [], "text": "6,000,000"},
+                {"row_index": 1, "column_index": 2, "bbox": [], "text": "2026年7月21日"},
+            ],
+        }
+        document = {
+            "id": 1998,
+            "title": "关于控股股东部分股份补充质押的公告",
+            "ts_code": "688556.SH",
+            "name": "高测股份",
+            "published_at": "2026-07-22T00:00:00+00:00",
+        }
+        source_chunks = [
+            {"chunk_id": "issuer", "page_number": 1, "section": "body", "bbox": [], "text": "高测股份"},
+            {"chunk_id": "holder", "page_number": 1, "section": "body", "bbox": [], "text": "控股股东、实际控制人张顼先生"},
+            {"chunk_id": "action", "page_number": 1, "section": "body", "bbox": [], "text": "部分股份被补充质押"},
+        ]
+        ir = build_document_ir(
+            document=document,
+            chunks=source_chunks,
+            tables=[table],
+            parser_version="test-v1",
+        )
+        chunks = {
+            item["chunk_id"]: {
+                "page_number": item["page_number"],
+                "text": item["text"],
+            }
+            for item in source_chunks
+        }
+        chunks.update({
+            f"pledge-table-r{cell['row_index']}-c{cell['column_index']}": {
+                "page_number": 1,
+                "text": cell["text"],
+            }
+            for cell in table["cells"]
+        })
+        payload = {
+            "document_id": 1998,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "pledge-1",
+                "event_type": "pledge_freeze",
+                "subjects": [
+                    {"role": "issuer", "name": "高测股份", "evidence": [{"chunk_id": "issuer", "quote": "高测股份"}]},
+                    {"role": "holder", "name": "张顼", "evidence": [{"chunk_id": "holder", "quote": "张顼"}]},
+                ],
+                "facts": [
+                    {"name": "action", "raw_value": "补充质押", "evidence": [{"chunk_id": "action", "quote": "补充质押"}]},
+                    {"name": "share_count", "raw_value": "本次质押股数", "evidence": [{"chunk_id": "pledge-table-r0-c1", "quote": "本次质押股数"}]},
+                ],
+                "dates": [{
+                    "kind": "start_date",
+                    "raw_value": "质押起始日",
+                    "evidence": [{"chunk_id": "pledge-table-r0-c2", "quote": "质押起始日"}],
+                }],
+                "status": None,
+            }],
+            "no_event_reason": None,
+        }
+
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document=document,
+            entity_whitelist=[{
+                "entity_id": "688556.SH",
+                "name": "高测股份",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["pledge_freeze"],
+            document_ir=ir,
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        facts = {
+            item["name"]: item
+            for item in compiled.result["events"][0]["facts"]
+        }
+        self.assertEqual(facts["share_count"]["raw_value"], "6,000,000")
+        self.assertEqual(facts["share_count"]["unit"], "股")
+        self.assertEqual(
+            compiled.result["events"][0]["effective_dates"][0]["value"],
+            "2026-07-21",
+        )
+
+    def test_pledge_boolean_cell_recovers_action_from_column_header(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v12.json"
+        )
+        document = {
+            "id": 1998,
+            "title": "关于控股股东部分股份补充质押的公告",
+            "ts_code": "688556.SH",
+            "name": "高测股份",
+            "published_at": "2026-07-22T00:00:00+00:00",
+        }
+        source_chunks = [{
+            "chunk_id": "issuer",
+            "page_number": 1,
+            "section": "body",
+            "bbox": [],
+            "text": "高测股份",
+        }]
+        table = {
+            "table_id": "pledge-bool-table",
+            "page_number": 1,
+            "bbox": [],
+            "cells": [
+                {"row_index": 0, "column_index": 0, "bbox": [], "text": "出质人"},
+                {"row_index": 0, "column_index": 1, "bbox": [], "text": "本次质押股数（股）"},
+                {"row_index": 0, "column_index": 2, "bbox": [], "text": "是否补充质押"},
+                {"row_index": 0, "column_index": 3, "bbox": [], "text": "质押起始日"},
+                {"row_index": 1, "column_index": 0, "bbox": [], "text": "张顼"},
+                {"row_index": 1, "column_index": 1, "bbox": [], "text": "16,200,000"},
+                {"row_index": 1, "column_index": 2, "bbox": [], "text": "是"},
+                {"row_index": 1, "column_index": 3, "bbox": [], "text": "2026-07-22"},
+            ],
+        }
+        ir = build_document_ir(
+            document=document,
+            chunks=source_chunks,
+            tables=[table],
+            parser_version="test-v1",
+        )
+        chunks = {
+            "issuer": {"page_number": 1, "text": "高测股份"},
+            **{
+                f"pledge-bool-table-r{cell['row_index']}-c{cell['column_index']}": {
+                    "page_number": 1,
+                    "text": cell["text"],
+                }
+                for cell in table["cells"]
+            },
+        }
+        payload = {
+            "document_id": 1998,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "pledge-1",
+                "event_type": "pledge_freeze",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "高测股份",
+                    "evidence": [{"chunk_id": "issuer", "quote": "高测股份"}],
+                }],
+                "facts": [{
+                    "name": "action",
+                    "raw_value": "补充质押",
+                    "evidence": [{
+                        "chunk_id": "pledge-bool-table-r1-c2",
+                        "quote": "是",
+                    }],
+                }, {
+                    "name": "share_count",
+                    "raw_value": "16,200,000",
+                    "evidence": [{
+                        "chunk_id": "pledge-bool-table-r1-c1",
+                        "quote": "16,200,000",
+                    }],
+                }],
+                "dates": [{
+                    "kind": "pledge_start_date",
+                    "raw_value": "2026-07-22",
+                    "evidence": [{
+                        "chunk_id": "pledge-bool-table-r1-c3",
+                        "quote": "2026-07-22",
+                    }],
+                }],
+                "status": None,
+            }],
+            "no_event_reason": None,
+        }
+
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document=document,
+            entity_whitelist=[{
+                "entity_id": "688556.SH",
+                "name": "高测股份",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["pledge_freeze"],
+            document_ir=ir,
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        action = next(
+            fact
+            for fact in compiled.result["events"][0]["facts"]
+            if fact["name"] == "action"
+        )
+        self.assertEqual(action["raw_value"], "补充质押")
+        cited_quotes = {
+            row["quote"]
+            for row in compiled.result["evidence"]
+            if row["evidence_id"] in action["evidence_ids"]
+        }
+        self.assertIn("是否补充质押", cited_quotes)
+        self.assertEqual(
+            compiled.result["events"][0]["effective_dates"],
+            [{
+                "kind": "start_date",
+                "value": "2026-07-22",
+                "evidence_ids": compiled.result["events"][0]["effective_dates"][0]["evidence_ids"],
+            }],
+        )
+
+    def test_pledge_text_table_value_keeps_column_semantics(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v11.json"
+        )
+        table = {
+            "table_id": "pledge-table",
+            "page_number": 1,
+            "bbox": [],
+            "cells": [
+                {"row_index": 0, "column_index": 0, "bbox": [], "text": "股东名称"},
+                {"row_index": 0, "column_index": 1, "bbox": [], "text": "本次质押数量（股）"},
+                {"row_index": 0, "column_index": 2, "bbox": [], "text": "质押用途"},
+                {"row_index": 0, "column_index": 3, "bbox": [], "text": "质押起始日"},
+                {"row_index": 1, "column_index": 0, "bbox": [], "text": "测试股东"},
+                {"row_index": 1, "column_index": 1, "bbox": [], "text": "1,250,000"},
+                {"row_index": 1, "column_index": 2, "bbox": [], "text": "补充质押"},
+                {"row_index": 1, "column_index": 3, "bbox": [], "text": "2026年7月21日"},
+            ],
+        }
+        document = {
+            "id": 2,
+            "title": "关于股东股份补充质押的公告",
+            "ts_code": "000002.SZ",
+            "name": "测试股份",
+            "published_at": "2026-08-11T00:00:00+00:00",
+        }
+        source_chunks = [
+            {"chunk_id": "issuer", "page_number": 1, "section": "body", "bbox": [], "text": "测试股份"},
+            {"chunk_id": "action", "page_number": 1, "section": "body", "bbox": [], "text": "控股股东测试股东办理了补充质押手续"},
+        ]
+        ir = build_document_ir(
+            document=document,
+            chunks=source_chunks,
+            tables=[table],
+            parser_version="test-v1",
+        )
+        chunks = {
+            item["chunk_id"]: {
+                "page_number": item["page_number"],
+                "text": item["text"],
+            }
+            for item in source_chunks
+        }
+        chunks.update(
+            {
+                f"pledge-table-r{cell['row_index']}-c{cell['column_index']}": {
+                    "page_number": 1,
+                    "text": cell["text"],
+                }
+                for cell in table["cells"]
+            }
+        )
+        payload = {
+            "document_id": 2,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "pledge-1",
+                "event_type": "pledge_freeze",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "测试股份",
+                    "evidence": [{"chunk_id": "issuer", "quote": "测试股份"}],
+                }, {
+                    "role": "holder",
+                    "name": "测试股东",
+                    "evidence": [{
+                        "chunk_id": "action",
+                        "quote": "控股股东测试股东办理了补充质押手续",
+                    }],
+                }],
+                "facts": [
+                    {
+                        "name": "action",
+                        "raw_value": "补充质押",
+                        "evidence": [{"chunk_id": "action", "quote": "补充质押"}],
+                    },
+                    {
+                        "name": "purpose",
+                        "raw_value": "补充质押",
+                        "evidence": [{"chunk_id": "pledge-table-r1-c2", "quote": "补充质押"}],
+                    },
+                ],
+                "dates": [],
+                "status": None,
+            }],
+            "no_event_reason": None,
+        }
+
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document=document,
+            entity_whitelist=[{
+                "entity_id": "000002.SZ",
+                "name": "测试股份",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["pledge_freeze"],
+            document_ir=ir,
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        facts = {
+            item["name"]: item
+            for item in compiled.result["events"][0]["facts"]
+        }
+        self.assertEqual(facts["share_count"]["unit"], "股")
+        self.assertIsNone(facts["purpose"]["unit"])
+        self.assertEqual(
+            compiled.result["events"][0]["effective_dates"][0]["value"],
+            "2026-07-21",
+        )
+
+    def test_pledge_ratio_uses_holder_ratio_not_total_capital_ratio(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v12.json"
+        )
+        table = {
+            "table_id": "pledge-ratio-table",
+            "page_number": 1,
+            "bbox": [],
+            "cells": [
+                {"row_index": 0, "column_index": 0, "bbox": [], "text": "出质人"},
+                {"row_index": 0, "column_index": 1, "bbox": [], "text": "本次质押股数"},
+                {"row_index": 0, "column_index": 2, "bbox": [], "text": "占其所\n持股份\n比例"},
+                {"row_index": 0, "column_index": 3, "bbox": [], "text": "占公司\n总股本\n比例"},
+                {"row_index": 1, "column_index": 0, "bbox": [], "text": "张顼"},
+                {"row_index": 1, "column_index": 1, "bbox": [], "text": "16,200,000"},
+                {"row_index": 1, "column_index": 2, "bbox": [], "text": "10.00%"},
+                {"row_index": 1, "column_index": 3, "bbox": [], "text": "1.95%"},
+            ],
+        }
+        cumulative_table = {
+            "table_id": "pledge-cumulative-table",
+            "page_number": 2,
+            "bbox": [],
+            "cells": [
+                {"row_index": 0, "column_index": 0, "bbox": [], "text": "股东名称"},
+                {"row_index": 0, "column_index": 1, "bbox": [], "text": "累计质押数量（股）"},
+                {"row_index": 0, "column_index": 2, "bbox": [], "text": "占其所持股份比例"},
+                {"row_index": 0, "column_index": 3, "bbox": [], "text": "占公司总股本比例"},
+                {"row_index": 1, "column_index": 0, "bbox": [], "text": "张顼"},
+                {"row_index": 1, "column_index": 1, "bbox": [], "text": "64,790,000"},
+                {"row_index": 1, "column_index": 2, "bbox": [], "text": "40.00%"},
+                {"row_index": 1, "column_index": 3, "bbox": [], "text": "7.80%"},
+            ],
+        }
+        document = {
+            "id": 1998,
+            "title": "关于控股股东部分股份补充质押的公告",
+            "ts_code": "688556.SH",
+            "name": "高测股份",
+            "published_at": "2026-07-22T00:00:00+00:00",
+        }
+        source_chunks = [
+            {"chunk_id": "issuer", "page_number": 1, "section": "body", "bbox": [], "text": "高测股份"},
+            {"chunk_id": "action", "page_number": 1, "section": "body", "bbox": [], "text": "张顼办理补充质押"},
+        ]
+        ir = build_document_ir(
+            document=document,
+            chunks=source_chunks,
+            tables=[table, cumulative_table],
+            parser_version="test-v1",
+        )
+        chunks = {
+            item["chunk_id"]: {
+                "page_number": item["page_number"],
+                "text": item["text"],
+            }
+            for item in source_chunks
+        }
+        chunks.update({
+            f"pledge-ratio-table-r{cell['row_index']}-c{cell['column_index']}": {
+                "page_number": 1,
+                "text": cell["text"],
+            }
+            for cell in table["cells"]
+        })
+        chunks.update({
+            f"pledge-cumulative-table-r{cell['row_index']}-c{cell['column_index']}": {
+                "page_number": 2,
+                "text": cell["text"],
+            }
+            for cell in cumulative_table["cells"]
+        })
+        payload = {
+            "document_id": 1998,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "pledge-ratio-1",
+                "event_type": "pledge_freeze",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "高测股份",
+                    "evidence": [{"chunk_id": "issuer", "quote": "高测股份"}],
+                }],
+                "facts": [{
+                    "name": "action",
+                    "raw_value": "补充质押",
+                    "evidence": [{"chunk_id": "action", "quote": "补充质押"}],
+                }, {
+                    "name": "share_count",
+                    "raw_value": "16,200,000",
+                    "evidence": [{
+                        "chunk_id": "pledge-ratio-table-r1-c1",
+                        "quote": "16,200,000",
+                    }],
+                }, {
+                    "name": "share_ratio",
+                    "raw_value": "1.95%",
+                    "evidence": [{
+                        "chunk_id": "pledge-ratio-table-r1-c3",
+                        "quote": "1.95%",
+                    }],
+                }, {
+                    "name": "cumulative_share_count",
+                    "raw_value": "64,790,000",
+                    "evidence": [{
+                        "chunk_id": "pledge-cumulative-table-r1-c1",
+                        "quote": "64,790,000",
+                    }],
+                }],
+                "dates": [],
+                "status": None,
+            }],
+            "no_event_reason": None,
+        }
+
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document=document,
+            entity_whitelist=[{
+                "entity_id": "688556.SH",
+                "name": "高测股份",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["pledge_freeze"],
+            document_ir=ir,
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        facts = {
+            item["name"]: item
+            for item in compiled.result["events"][0]["facts"]
+        }
+        self.assertEqual(facts["share_ratio"]["raw_value"], "10.00%")
+
+    def test_capacity_core_survives_without_enrichment_fields(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v11.json"
+        )
+        payload = {
+            "document_id": 1,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [
+                {
+                    "mention_id": "capacity-1",
+                    "event_type": "capacity_project",
+                    "subjects": [{
+                        "role": "issuer",
+                        "name": "测试公司",
+                        "evidence": [{"chunk_id": "c1", "quote": "测试公司"}],
+                    }],
+                    "facts": [
+                        {
+                            "name": "project_type",
+                            "raw_value": "光伏生产基地项目",
+                            "evidence": [{"chunk_id": "c1", "quote": "光伏生产基地项目"}],
+                        },
+                        {
+                            "name": "capex",
+                            "raw_value": "人民币3.9亿元",
+                            "evidence": [{"chunk_id": "c1", "quote": "人民币3.9亿元"}],
+                        },
+                    ],
+                    "dates": [],
+                    "status": {
+                        "raw_value": "拟投资建设",
+                        "evidence": [{"chunk_id": "c1", "quote": "拟投资建设"}],
+                    },
+                }
+            ],
+            "no_event_reason": None,
+        }
+        chunks = {"c1": {
+            "page_number": 1,
+            "text": "测试公司拟投资建设光伏生产基地项目，总投资人民币3.9亿元。",
+        }}
+
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document={
+                "id": 1,
+                "title": "关于投资建设光伏生产基地项目的公告",
+                "ts_code": "000001.SZ",
+                "name": "测试公司",
+                "published_at": "2026-08-11T00:00:00+00:00",
+            },
+            entity_whitelist=[{
+                "entity_id": "000001.SZ",
+                "name": "测试公司",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["capacity_project"],
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        self.assertEqual(compiled.rejected_mentions, ())
+
+    def test_major_contract_atomic_rows_collapse_to_unique_authoritative_total(
+        self,
+    ) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v12.json"
+        )
+        document = {
+            "id": 1637,
+            "title": "关于项目中标的公告",
+            "ts_code": "000001.SZ",
+            "name": "测试股份有限公司",
+            "published_at": "2026-08-11T00:00:00+00:00",
+        }
+        chunks = {
+            "doc1637-p1-c1": {"page_number": 1, "text": "测试股份有限公司"},
+            "doc1637-p1-c2": {"page_number": 1, "text": "项目甲中标金额1,000万元"},
+            "doc1637-p1-c3": {"page_number": 1, "text": "项目乙中标金额1,128.49万元"},
+            "doc1637-p1-c4": {
+                "page_number": 1,
+                "text": "上述项目中标金额合计约为人民币15,705.39万元。",
+            },
+        }
+
+        def contract(mention_id: str, chunk_id: str, amount: str) -> dict:
+            return {
+                "mention_id": mention_id,
+                "event_type": "major_contract",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "测试股份有限公司",
+                    "evidence": [{"chunk_id": "doc1637-p1-c1", "quote": "测试股份有限公司"}],
+                }],
+                "facts": [{
+                    "name": "contract_amount",
+                    "raw_value": amount,
+                    "evidence": [{"chunk_id": chunk_id, "quote": amount}],
+                }],
+                "dates": [],
+                "status": None,
+            }
+
+        payload = {
+            "document_id": 1637,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [
+                contract("contract-1", "doc1637-p1-c2", "1,000万元"),
+                contract("contract-2", "doc1637-p1-c3", "1,128.49万元"),
+            ],
+            "no_event_reason": None,
+        }
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document=document,
+            entity_whitelist=[{
+                "entity_id": "000001.SZ",
+                "name": "测试股份有限公司",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["major_contract"],
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        amount = next(
+            fact
+            for fact in compiled.result["events"][0]["facts"]
+            if fact["name"] == "contract_amount"
+        )
+        self.assertEqual(amount["raw_value"], "15,705.39万元")
+        self.assertEqual(amount["unit"], "万元")
+
+    def test_equity_financing_allocation_uses_explicit_total_share_count(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v12.json"
+        )
+        chunks = {
+            "issuer": {"page_number": 1, "text": "测试股份有限公司"},
+            "method": {"page_number": 1, "text": "非公开发行A股股份购买资产"},
+            "allocation": {
+                "page_number": 2,
+                "text": "公司向股东甲非公开发行股份4,618.12万股",
+            },
+            "total": {
+                "page_number": 2,
+                "text": "④ 发行股票数量：9,428.66万股（其中股东甲4,618.12万股）",
+            },
+            "status": {"page_number": 2, "text": "修改后的发行方案"},
+        }
+        payload = {
+            "document_id": 241921,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "financing-1",
+                "event_type": "equity_financing",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "测试股份有限公司",
+                    "evidence": [{"chunk_id": "issuer", "quote": "测试股份有限公司"}],
+                }],
+                "facts": [{
+                    "name": "financing_method",
+                    "raw_value": "非公开发行A股股份",
+                    "evidence": [{"chunk_id": "method", "quote": "非公开发行A股股份"}],
+                }, {
+                    "name": "share_count",
+                    "raw_value": "4,618.12万股",
+                    "evidence": [{"chunk_id": "allocation", "quote": "4,618.12万股"}],
+                }],
+                "dates": [],
+                "status": {
+                    "raw_value": "修改后的发行方案",
+                    "evidence": [{"chunk_id": "status", "quote": "修改后的发行方案"}],
+                },
+            }],
+            "no_event_reason": None,
+        }
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document={
+                "id": 241921,
+                "title": "非公开发行股份购买资产之补充法律意见书",
+                "ts_code": "000950.SZ",
+                "name": "测试股份有限公司",
+                "published_at": "2026-08-11T00:00:00+00:00",
+            },
+            entity_whitelist=[{
+                "entity_id": "000950.SZ",
+                "name": "测试股份有限公司",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["equity_financing"],
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        share_count = next(
+            fact
+            for fact in compiled.result["events"][0]["facts"]
+            if fact["name"] == "share_count"
+        )
+        self.assertEqual(share_count["raw_value"], "9,428.66万股")
+
+    def test_dismissed_all_litigation_claims_compile_as_zero_judgment(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v12.json"
+        )
+        payload = {
+            "document_id": 72840,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "litigation-1",
+                "event_type": "litigation_arbitration",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "测试股份有限公司",
+                    "evidence": [{"chunk_id": "issuer", "quote": "测试股份有限公司"}],
+                }],
+                "facts": [{
+                    "name": "claim",
+                    "raw_value": "驳回原告的全部诉讼请求",
+                    "evidence": [{"chunk_id": "decision", "quote": "驳回原告的全部诉讼请求"}],
+                }, {
+                    "name": "judgment_amount",
+                    "raw_value": "630,824.91元",
+                    "evidence": [{"chunk_id": "fee", "quote": "案件受理费630,824.91元"}],
+                }],
+                "dates": [],
+                "status": {
+                    "raw_value": "判决",
+                    "evidence": [{"chunk_id": "decision", "quote": "判决"}],
+                },
+            }],
+            "no_event_reason": None,
+        }
+        chunks = {
+            "issuer": {"page_number": 1, "text": "测试股份有限公司"},
+            "decision": {"page_number": 1, "text": "法院判决驳回原告的全部诉讼请求。"},
+            "fee": {"page_number": 1, "text": "案件受理费630,824.91元由原告承担。"},
+        }
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document={
+                "id": 72840,
+                "title": "重大诉讼判决公告",
+                "ts_code": "000001.SZ",
+                "name": "测试股份有限公司",
+                "published_at": "2026-08-11T00:00:00+00:00",
+            },
+            entity_whitelist=[{
+                "entity_id": "000001.SZ",
+                "name": "测试股份有限公司",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["litigation_arbitration"],
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        facts = {
+            fact["name"]: fact
+            for fact in compiled.result["events"][0]["facts"]
+        }
+        self.assertEqual(
+            facts["judgment_amount"]["raw_value"],
+            "驳回原告的全部诉讼请求",
+        )
+        self.assertIsNone(facts["judgment_amount"]["unit"])
+
+    def test_capacity_capex_prefers_unique_issuer_cash_contribution(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v12.json"
+        )
+        chunks = {
+            "doc183113-p1-c1": {"page_number": 1, "text": "深圳华侨城控股股份有限公司董事会"},
+            "doc183113-p1-c2": {"page_number": 1, "text": "项目公司注册资本为40,000万元。"},
+            "doc183113-p1-c3": {
+                "page_number": 1,
+                "text": "深圳华侨城控股股份有限公司以人民币现金出资16,000",
+            },
+            "doc183113-p1-c4": {"page_number": 1, "text": "万元，占公司注册资本的40%。"},
+            "doc183113-p1-c5": {
+                "page_number": 1,
+                "text": "深圳华侨城房地产有限公司以人民币现金出资14,000",
+            },
+            "doc183113-p1-c6": {"page_number": 1, "text": "万元，占公司注册资本的35%。"},
+            "doc183113-p1-c7": {"page_number": 1, "text": "开发建设文旅综合项目"},
+        }
+        payload = {
+            "document_id": 183113,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "capacity-1",
+                "event_type": "capacity_project",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "深圳华侨城控股股份有限公司",
+                    "evidence": [{"chunk_id": "doc183113-p1-c1", "quote": "深圳华侨城控股股份有限公司"}],
+                }],
+                "facts": [{
+                    "name": "project_type",
+                    "raw_value": "文旅综合项目",
+                    "evidence": [{"chunk_id": "doc183113-p1-c7", "quote": "文旅综合项目"}],
+                }, {
+                    "name": "capex",
+                    "raw_value": "40,000万元",
+                    "evidence": [{"chunk_id": "doc183113-p1-c2", "quote": "40,000万元"}],
+                }],
+                "dates": [],
+                "status": None,
+            }],
+            "no_event_reason": None,
+        }
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document={
+                "id": 183113,
+                "title": "关于投资设立项目公司的公告",
+                "ts_code": "000069.SZ",
+                "name": "深圳华侨城控股股份有限公司",
+                "published_at": "2026-08-11T00:00:00+00:00",
+            },
+            entity_whitelist=[{
+                "entity_id": "000069.SZ",
+                "name": "深圳华侨城控股股份有限公司",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["capacity_project"],
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        facts = {
+            fact["name"]: fact
+            for fact in compiled.result["events"][0]["facts"]
+        }
+        self.assertEqual(facts["capex"]["raw_value"], "16,000万元")
+
+    def test_buyback_price_cap_prefers_explicit_upper_bound(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v12.json"
+        )
+        chunks = {
+            "doc202712-p1-c1": {"page_number": 1, "text": "测试股份有限公司"},
+            "doc202712-p1-c2": {"page_number": 1, "text": "回购价格不高于股份估值机构"},
+            "doc202712-p1-c3": {
+                "page_number": 1,
+                "text": "测算的2.81元/股，且不低于1.88元/股。",
+            },
+        }
+        payload = {
+            "document_id": 202712,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "buyback-1",
+                "event_type": "buyback",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "测试股份有限公司",
+                    "evidence": [{"chunk_id": "doc202712-p1-c1", "quote": "测试股份有限公司"}],
+                }],
+                "facts": [{
+                    "name": "price_cap",
+                    "raw_value": "1.88元/股",
+                    "evidence": [{"chunk_id": "doc202712-p1-c3", "quote": "1.88元/股"}],
+                }],
+                "dates": [],
+                "status": None,
+            }],
+            "no_event_reason": None,
+        }
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document={
+                "id": 202712,
+                "title": "关于股份回购的公告",
+                "ts_code": "000001.SZ",
+                "name": "测试股份有限公司",
+                "published_at": "2026-08-11T00:00:00+00:00",
+            },
+            entity_whitelist=[{
+                "entity_id": "000001.SZ",
+                "name": "测试股份有限公司",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["buyback"],
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        price_cap = next(
+            fact
+            for fact in compiled.result["events"][0]["facts"]
+            if fact["name"] == "price_cap"
+        )
+        self.assertEqual(price_cap["raw_value"], "2.81元/股")
+
+    def test_earnings_flash_prefers_attributable_net_profit_row(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v12.json"
+        )
+        document = {
+            "id": 338899,
+            "title": "2007年度业绩快报",
+            "ts_code": "000001.SZ",
+            "name": "测试股份有限公司",
+            "published_at": "2026-08-11T00:00:00+00:00",
+        }
+        source_chunks = [{
+            "chunk_id": "issuer",
+            "page_number": 1,
+            "section": "body",
+            "bbox": [],
+            "text": "测试股份有限公司",
+        }, {
+            "chunk_id": "period",
+            "page_number": 1,
+            "section": "body",
+            "bbox": [],
+            "text": "2007年度业绩快报",
+        }]
+        table = {
+            "table_id": "earnings-table",
+            "page_number": 1,
+            "bbox": [],
+            "cells": [
+                {"row_index": 0, "column_index": 0, "bbox": [], "text": "项目"},
+                {"row_index": 0, "column_index": 1, "bbox": [], "text": "2007年度（万元）"},
+                {"row_index": 1, "column_index": 0, "bbox": [], "text": "净利润"},
+                {"row_index": 1, "column_index": 1, "bbox": [], "text": "1,390.01"},
+                {"row_index": 2, "column_index": 0, "bbox": [], "text": "归属于本公司股东的净利润"},
+                {"row_index": 2, "column_index": 1, "bbox": [], "text": "1,411.03"},
+            ],
+        }
+        ir = build_document_ir(
+            document=document,
+            chunks=source_chunks,
+            tables=[table],
+            parser_version="test-v1",
+        )
+        chunks = {
+            item["chunk_id"]: {
+                "page_number": item["page_number"],
+                "text": item["text"],
+            }
+            for item in source_chunks
+        }
+        chunks.update({
+            f"earnings-table-r{cell['row_index']}-c{cell['column_index']}": {
+                "page_number": 1,
+                "text": cell["text"],
+            }
+            for cell in table["cells"]
+        })
+        payload = {
+            "document_id": 338899,
+            "schema_version": MENTION_SCHEMA_VERSION,
+            "mentions": [{
+                "mention_id": "flash-1",
+                "event_type": "earnings_flash",
+                "subjects": [{
+                    "role": "issuer",
+                    "name": "测试股份有限公司",
+                    "evidence": [{"chunk_id": "issuer", "quote": "测试股份有限公司"}],
+                }],
+                "facts": [{
+                    "name": "period",
+                    "raw_value": "2007年度",
+                    "evidence": [{"chunk_id": "period", "quote": "2007年度"}],
+                }, {
+                    "name": "net_profit",
+                    "raw_value": "1,390.01",
+                    "evidence": [{
+                        "chunk_id": "earnings-table-r1-c1",
+                        "quote": "1,390.01",
+                    }],
+                }],
+                "dates": [],
+                "status": None,
+            }],
+            "no_event_reason": None,
+        }
+        compiled = compile_mentions(
+            parse_mention_document_result(payload),
+            taxonomy=taxonomy,
+            chunks=chunks,
+            document=document,
+            entity_whitelist=[{
+                "entity_id": "000001.SZ",
+                "name": "测试股份有限公司",
+                "allowed_roles": ["issuer"],
+            }],
+            taxonomy_candidates=["earnings_flash"],
+            document_ir=ir,
+        )
+
+        self.assertEqual(compiled.accepted_mentions, 1, compiled)
+        net_profit = next(
+            fact
+            for fact in compiled.result["events"][0]["facts"]
+            if fact["name"] == "net_profit"
+        )
+        self.assertEqual(net_profit["raw_value"], "1,411.03")
+
+    def test_v11_defines_small_core_not_full_enrichment_as_required(self) -> None:
+        taxonomy = EventTaxonomy.load(
+            ROOT / "configs" / "intelligence_event_taxonomy_v11.json"
+        )
+
+        self.assertEqual(
+            taxonomy.event("capacity_project").default_requirements.all_of,
+            (),
+        )
+        self.assertEqual(
+            taxonomy.event("capacity_project").default_requirements.one_of_sets,
+            (("project_type",), ("capex",), ("capacity",)),
+        )
+        self.assertEqual(
+            taxonomy.event("earnings_forecast").default_requirements.all_of,
+            ("period",),
+        )
+        self.assertIn(
+            ("forecast_reason",),
+            taxonomy.event("earnings_forecast").default_requirements.one_of_sets,
+        )
+        self.assertEqual(
+            taxonomy.event("major_contract").default_requirements.one_of_sets,
+            (("contract_amount",), ("contract_subject",)),
+        )
+        self.assertEqual(
+            taxonomy.event("risk_warning_delisting").dedupe_fields,
+            ("subject:issuer", "fact:risk_type"),
+        )
+        self.assertEqual(
+            taxonomy.event("shareholder_change").required_subject_roles,
+            ("issuer",),
+        )
+        self.assertEqual(
+            taxonomy.event("major_contract").dedupe_fields,
+            ("subject:issuer",),
+        )
+        revised = dict(
+            taxonomy.event("equity_financing").lifecycle_requirements
+        )["revised"]
+        self.assertEqual(revised.inherit_prior, "never")
+        self.assertEqual(revised.unmatched_fallback, "not_applicable")
+        completed_litigation = dict(
+            taxonomy.event("litigation_arbitration").lifecycle_requirements
+        )["completed"]
+        self.assertEqual(completed_litigation.all_of, ("case_stage",))
 
 if __name__ == "__main__":
     unittest.main()

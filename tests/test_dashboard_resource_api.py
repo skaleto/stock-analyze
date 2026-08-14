@@ -1560,6 +1560,47 @@ class DashboardResourceApiTests(unittest.TestCase):
         self.assertNotIn("董事会审议通过股份回购方案，回购金额", encoded)
         self.assertNotIn("raw_path", encoded)
 
+    def test_intelligence_contract_follows_the_production_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _seed_repo(root)
+            _seed_intelligence(root)
+            (root / "configs" / "intelligence_semantic.yaml").write_text(
+                "production_extraction_profile: a-share-announcement-mentions-v27\n",
+                encoding="utf-8",
+            )
+            profile_dir = root / "configs" / "intelligence_extraction_profiles"
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            (profile_dir / "a_share_announcement_mentions_v27.json").write_text(
+                json.dumps(
+                    {
+                        "profile_id": "a-share-announcement-mentions-v27",
+                        "prompt_version": "semantic-mentions-v17",
+                        "schema_version": "announcement-mentions-v1-lite",
+                        "taxonomy_version": "cn-announcement-taxonomy-v12",
+                        "evidence_contract": "document-ir-v1-verbatim-core-event",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = build_dashboard_intelligence_data(
+                repo_root=root,
+                market="a_share",
+                agent="codex",
+            )
+
+        self.assertEqual(
+            payload["extraction"]["contract"],
+            {
+                "profileId": "a-share-announcement-mentions-v27",
+                "promptVersion": "semantic-mentions-v17",
+                "schemaVersion": "announcement-mentions-v1-lite",
+                "taxonomyVersion": "cn-announcement-taxonomy-v12",
+                "evidenceContract": "document-ir-v1-verbatim-core-event",
+            },
+        )
+
     def test_intelligence_summary_exposes_local_artifact_worker_progress(
         self,
     ) -> None:

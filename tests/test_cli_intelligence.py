@@ -39,6 +39,220 @@ class FakeAdapter:
 
 
 class IntelligenceCliTest(unittest.TestCase):
+    def test_semantic_quality_evaluate_is_read_only(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "stock_analyze.intelligence.semantic.quality.evaluate_files",
+                return_value={
+                    "schema_version": 1,
+                    "documents": 80,
+                    "event_precision": {"value": 0.9},
+                },
+            ) as evaluate,
+            redirect_stdout(output),
+        ):
+            exit_code = main([
+                "intelligence-semantic-quality-evaluate",
+                "--reference", "/tmp/reference.jsonl",
+                "--predictions", "/tmp/predictions.jsonl",
+                "--output", "/tmp/quality.json",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        evaluate.assert_called_once_with(
+            Path("/tmp/reference.jsonl"),
+            Path("/tmp/predictions.jsonl"),
+            Path("/tmp/quality.json"),
+        )
+        self.assertEqual(json.loads(output.getvalue())["documents"], 80)
+
+    def test_semantic_frozen_run_is_explicitly_non_production(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "stock_analyze.intelligence.semantic.benchmark_runner."
+                "run_frozen_benchmark",
+                return_value={
+                    "status": "complete",
+                    "documents": 2,
+                    "production_import": False,
+                },
+            ) as run,
+            redirect_stdout(output),
+        ):
+            exit_code = main([
+                "intelligence-semantic-frozen-run",
+                "--repo-root", "/tmp/repo",
+                "--workbench", "/tmp/workbench",
+                "--profile", "a-share-announcement-mentions-v24",
+                "--predictions", "/tmp/predictions.jsonl",
+                "--report", "/tmp/run.json",
+                "--executor-config", "/tmp/executor.yaml",
+                "--limit", "2",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        run.assert_called_once_with(
+            Path("/tmp/repo"),
+            Path("/tmp/workbench"),
+            profile_id="a-share-announcement-mentions-v24",
+            predictions_path=Path("/tmp/predictions.jsonl"),
+            report_path=Path("/tmp/run.json"),
+            executor_config=Path("/tmp/executor.yaml"),
+            limit=2,
+            document_ids=None,
+        )
+        self.assertFalse(json.loads(output.getvalue())["production_import"])
+
+    def test_semantic_frozen_prepare_exports_coding_plan_job(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "stock_analyze.intelligence.semantic.benchmark_runner."
+                "prepare_frozen_coding_plan_job",
+                return_value={
+                    "status": "prepared",
+                    "documents": 80,
+                    "production_import": False,
+                },
+            ) as prepare,
+            redirect_stdout(output),
+        ):
+            exit_code = main([
+                "intelligence-semantic-frozen-prepare",
+                "--repo-root", "/tmp/repo",
+                "--workbench", "/tmp/workbench",
+                "--profile", "a-share-announcement-mentions-v27",
+                "--job", "/tmp/job",
+                "--provider", "codex",
+                "--model", "gpt-5.6",
+                "--client-version", "coding-plan-v1",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        prepare.assert_called_once_with(
+            Path("/tmp/repo"),
+            Path("/tmp/workbench"),
+            profile_id="a-share-announcement-mentions-v27",
+            job_dir=Path("/tmp/job"),
+            provider="codex",
+            model="gpt-5.6",
+            client_version="coding-plan-v1",
+            limit=None,
+            document_ids=None,
+        )
+        self.assertFalse(json.loads(output.getvalue())["production_import"])
+
+    def test_semantic_frozen_collect_is_explicitly_non_production(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "stock_analyze.intelligence.semantic.benchmark_runner."
+                "collect_frozen_coding_plan_job",
+                return_value={
+                    "status": "complete",
+                    "documents": 80,
+                    "production_import": False,
+                },
+            ) as collect,
+            redirect_stdout(output),
+        ):
+            exit_code = main([
+                "intelligence-semantic-frozen-collect",
+                "--repo-root", "/tmp/repo",
+                "--workbench", "/tmp/workbench",
+                "--job", "/tmp/job",
+                "--predictions", "/tmp/predictions.jsonl",
+                "--report", "/tmp/report.json",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        collect.assert_called_once_with(
+            Path("/tmp/repo"),
+            Path("/tmp/workbench"),
+            job_dir=Path("/tmp/job"),
+            predictions_path=Path("/tmp/predictions.jsonl"),
+            report_path=Path("/tmp/report.json"),
+        )
+        self.assertFalse(json.loads(output.getvalue())["production_import"])
+
+    def test_semantic_frozen_repair_prepare_is_bounded_and_non_production(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "stock_analyze.intelligence.semantic.benchmark_runner."
+                "prepare_frozen_coding_plan_repair_job",
+                return_value={
+                    "status": "prepared",
+                    "documents": 12,
+                    "repair_attempt": 1,
+                    "production_import": False,
+                },
+            ) as prepare,
+            redirect_stdout(output),
+        ):
+            exit_code = main([
+                "intelligence-semantic-frozen-repair-prepare",
+                "--repo-root", "/tmp/repo",
+                "--workbench", "/tmp/workbench",
+                "--source-job", "/tmp/source-job",
+                "--source-predictions", "/tmp/source-predictions.jsonl",
+                "--repair-job", "/tmp/repair-job",
+                "--provider", "claude",
+                "--model", "claude-fable-5",
+                "--client-version", "claude-code-2.1.215",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        prepare.assert_called_once_with(
+            Path("/tmp/repo"),
+            Path("/tmp/workbench"),
+            source_job_dir=Path("/tmp/source-job"),
+            source_predictions_path=Path("/tmp/source-predictions.jsonl"),
+            repair_job_dir=Path("/tmp/repair-job"),
+            provider="claude",
+            model="claude-fable-5",
+            client_version="claude-code-2.1.215",
+        )
+
+    def test_semantic_frozen_repair_collect_is_non_production(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "stock_analyze.intelligence.semantic.benchmark_runner."
+                "collect_frozen_coding_plan_repair_job",
+                return_value={
+                    "status": "complete",
+                    "repaired": 12,
+                    "failed": 0,
+                    "production_import": False,
+                },
+            ) as collect,
+            redirect_stdout(output),
+        ):
+            exit_code = main([
+                "intelligence-semantic-frozen-repair-collect",
+                "--repo-root", "/tmp/repo",
+                "--workbench", "/tmp/workbench",
+                "--source-job", "/tmp/source-job",
+                "--source-predictions", "/tmp/source-predictions.jsonl",
+                "--repair-job", "/tmp/repair-job",
+                "--predictions", "/tmp/predictions.jsonl",
+                "--report", "/tmp/report.json",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        collect.assert_called_once_with(
+            Path("/tmp/repo"),
+            Path("/tmp/workbench"),
+            source_job_dir=Path("/tmp/source-job"),
+            source_predictions_path=Path("/tmp/source-predictions.jsonl"),
+            repair_job_dir=Path("/tmp/repair-job"),
+            predictions_path=Path("/tmp/predictions.jsonl"),
+            report_path=Path("/tmp/report.json"),
+        )
+
     def test_semantic_repair_commands_are_explicit_and_auditable(self) -> None:
         output = io.StringIO()
         with (
@@ -120,6 +334,36 @@ class IntelligenceCliTest(unittest.TestCase):
         )
         self.assertEqual(json.loads(output.getvalue())["job_id"], "sj-test")
 
+    def test_semantic_route_finalize_is_bounded_and_provider_free(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "stock_analyze.intelligence.semantic.exchange."
+                "finalize_deterministic_routes",
+                return_value={
+                    "status": "complete",
+                    "scanned": 5000,
+                    "finalized": 4600,
+                    "deep_extraction": 400,
+                },
+            ) as finalize,
+            redirect_stdout(output),
+        ):
+            exit_code = main([
+                "intelligence-semantic-route-finalize",
+                "--repo-root", "/tmp/repo",
+                "--profile", "a-share-announcement-mentions-v27",
+                "--limit", "5000",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        finalize.assert_called_once_with(
+            Path("/tmp/repo"),
+            profile_id="a-share-announcement-mentions-v27",
+            limit=5000,
+        )
+        self.assertEqual(json.loads(output.getvalue())["finalized"], 4600)
+
     def test_semantic_run_accepts_executor_config_path(self) -> None:
         output = io.StringIO()
         with (
@@ -145,6 +389,33 @@ class IntelligenceCliTest(unittest.TestCase):
             Path("/tmp/repo"),
             "sj-test",
             executor_config="/etc/stock-analyze/executor.yaml",
+        )
+
+    def test_semantic_coding_plan_collect_is_read_only(self) -> None:
+        output = io.StringIO()
+        with (
+            patch(
+                "stock_analyze.intelligence.semantic.exchange."
+                "collect_coding_plan_outputs",
+                return_value={
+                    "status": "ready_to_import",
+                    "valid": 100,
+                    "failed": 0,
+                },
+            ) as collect,
+            redirect_stdout(output),
+        ):
+            exit_code = main([
+                "intelligence-semantic-coding-plan-collect",
+                "--repo-root", "/tmp/repo",
+                "--job", "sj-history",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        collect.assert_called_once_with(Path("/tmp/repo"), "sj-history")
+        self.assertEqual(
+            json.loads(output.getvalue())["status"],
+            "ready_to_import",
         )
 
     def test_semantic_prepare_accepts_an_immutable_executor_binding(self) -> None:

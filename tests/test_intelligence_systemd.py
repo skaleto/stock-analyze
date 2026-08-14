@@ -215,7 +215,7 @@ class IntelligenceSystemdTests(unittest.TestCase):
         self.assertIn("/run/stock-analyze-intelligence-reconcile.lock", service)
         self.assertIn("MemoryMax=1250M", service)
         self.assertIn(
-            "--profile a-share-announcement-mentions-v1",
+            "--profile a-share-announcement-mentions-v27",
             service,
         )
         self.assertIn(

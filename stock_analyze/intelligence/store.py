@@ -5523,7 +5523,13 @@ class IntelligenceStore:
         parser_version: str,
         chunks: Iterable[Mapping[str, object]],
     ) -> int:
-        """Materialize deterministic table cells only when evidence cites them."""
+        """Materialize immutable source-derived chunks only when cited.
+
+        Parser chunks remain the primary artifact. Table cells, bounded text
+        segments, and document metadata are deterministic projections used by
+        the semantic contract and must exist durably before ``event_evidence``
+        can reference them.
+        """
 
         values = tuple(chunks)
         if not values:
@@ -5545,7 +5551,16 @@ class IntelligenceStore:
                 chunk_id = str(value.get("chunk_id") or "").strip()
                 text = str(value.get("text") or "")
                 section = str(value.get("section") or "")
-                if not chunk_id or not text or section != "table_cell":
+                if (
+                    not chunk_id
+                    or not text
+                    or section
+                    not in {
+                        "table_cell",
+                        "semantic_segment",
+                        "document_metadata",
+                    }
+                ):
                     raise ValueError("semantic_evidence_chunk_invalid")
                 page_number = int(value.get("page_number") or 0)
                 bbox = value.get("bbox")

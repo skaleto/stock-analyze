@@ -277,7 +277,7 @@ class IntelligenceSemanticConfigTest(unittest.TestCase):
         self.assertNotIn("benchmark", config)
         self.assertEqual(
             config["production_extraction_profile"],
-            "a-share-announcement-mentions-v1",
+            "a-share-announcement-mentions-v27",
         )
         serialized = SEMANTIC_CONFIG.read_text(encoding="utf-8").casefold()
         for retired in ("candidate-a", "candidate-b", "champion", "gold"):
