@@ -289,6 +289,36 @@ describe("ModelResearchPage", () => {
     expect(onFocusMarket).toHaveBeenCalledWith("a_share");
   });
 
+  it("distinguishes a completed rejection from unavailable runtime data", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    fetchSystemOverview.mockResolvedValue({
+      generated_at: "2026-08-14T09:30:00+08:00",
+      markets: [],
+      models: [
+        {
+          market: "a_share",
+          market_label: "A股",
+          iteration: {
+            status: "no_candidate",
+            candidate: null,
+            champion: null,
+          },
+        },
+      ],
+      strategy_model_usage: [],
+      intelligence: {},
+      errors: [],
+    });
+
+    render(<ModelResearchPage refreshToken={0} />);
+
+    expect(
+      await screen.findByText("本轮无合格候选"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("最新主线未通过验收")).toBeInTheDocument();
+    expect(screen.queryByText("状态不可用")).not.toBeInTheDocument();
+  });
+
   it("drills into translated gate failures and requests the selected market", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(payload));
     vi.stubGlobal("fetch", fetchMock);

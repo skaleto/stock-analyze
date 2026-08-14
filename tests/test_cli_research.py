@@ -112,12 +112,12 @@ class CLIResearchTest(unittest.TestCase):
                 [
                     "--market", "cn_qdii_etf", "--agent", "codex",
                     "--as-of", "2026-08-13", "run-unified-model-arena",
-                    "--offline", "--repo-root", tmp,
+                    "--offline", "--force", "--repo-root", tmp,
                 ]
             )
 
         self.assertEqual(code, 0)
-        arena.assert_called_once_with(horizon=None)
+        arena.assert_called_once_with(horizon=None, force=True)
 
     def test_cli_dispatches_rule_core_diagnostic(self):
         with tempfile.TemporaryDirectory() as tmp, patch(
@@ -164,7 +164,11 @@ class CLIResearchTest(unittest.TestCase):
             )
 
         self.assertEqual(code, 0)
-        tournament.assert_called_once_with(account_scope="hs300", horizon=3)
+        tournament.assert_called_once_with(
+            account_scope="hs300",
+            horizon=3,
+            force=False,
+        )
 
     def test_cli_dispatches_development_only_cross_sectional_repair(self):
         with tempfile.TemporaryDirectory() as tmp, patch(

@@ -2053,6 +2053,7 @@ class ResearchPipeline:
         self,
         *,
         horizon: int | None = None,
+        force: bool = False,
     ) -> dict[str, Any]:
         target_horizon = int(
             horizon
@@ -2108,6 +2109,7 @@ class ResearchPipeline:
         tournament = self.run_classical_tournament(
             account_scope=None,
             horizon=target_horizon,
+            force=force,
         )
         reports = list(tournament.get("results") or [tournament])
         config_suffix = (
