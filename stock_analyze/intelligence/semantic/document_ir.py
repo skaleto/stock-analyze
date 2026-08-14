@@ -304,14 +304,37 @@ def ir_nodes_by_id(value: Mapping[str, object]) -> dict[str, Mapping[str, object
     }
 
 
+class DocumentIRProjector:
+    """Reuse one validated source IR across multiple evidence projections."""
+
+    def __init__(self, value: Mapping[str, object]) -> None:
+        preflight_document_ir(value)
+        self._value = value
+        self.nodes = ir_nodes_by_id(value)
+
+    def project(self, node_ids: Sequence[str]) -> dict[str, object]:
+        return _project_document_ir(
+            self._value,
+            node_ids,
+            nodes=self.nodes,
+        )
+
+
 def project_document_ir(
     value: Mapping[str, object],
     node_ids: Sequence[str],
 ) -> dict[str, object]:
     """Return a hash-stable evidence projection with every relation closed."""
 
-    preflight_document_ir(value)
-    nodes = ir_nodes_by_id(value)
+    return DocumentIRProjector(value).project(node_ids)
+
+
+def _project_document_ir(
+    value: Mapping[str, object],
+    node_ids: Sequence[str],
+    *,
+    nodes: Mapping[str, Mapping[str, object]],
+) -> dict[str, object]:
     selected = {str(node_id) for node_id in node_ids}
     if any(node_id not in nodes for node_id in selected):
         raise DocumentIRPreflightError("document_ir_projection_node_missing")
@@ -589,7 +612,11 @@ def _unit_from_context(value: str) -> str | None:
     label = _UNIT_LABEL.search(value)
     if label:
         return _normalize_unit(label.group(2))
-    matches = list(_UNIT_TOKEN.finditer(value))
+    # Financial row labels frequently contain lexical uses such as ``股东``
+    # and ``股份``. Those are not share-unit declarations and must not conflict
+    # with an explicit currency unit from the column header.
+    normalized = re.sub(r"股东|股份|股本|股票|股权|每股", "", value)
+    matches = list(_UNIT_TOKEN.finditer(normalized))
     return _normalize_unit(matches[-1].group(1)) if matches else None
 
 
@@ -598,7 +625,7 @@ def _normalize_unit(value: str) -> str:
 
 
 def _looks_numeric(value: str) -> bool:
-    normalized = str(value).strip().replace(" ", "")
+    normalized = re.sub(r"\s+", "", str(value))
     if normalized.startswith("(") and normalized.endswith(")"):
         normalized = f"-{normalized[1:-1]}"
     match = _UNIT_TOKEN.search(normalized)
@@ -649,9 +676,11 @@ def _canonical_hash(value: object) -> str:
 
 __all__ = (
     "DOCUMENT_IR_VERSION",
+    "DocumentIRProjector",
     "DocumentIRPreflightError",
     "build_document_ir",
     "ir_nodes_by_id",
     "preflight_document_ir",
     "preflight_evidence_packet",
+    "project_document_ir",
 )

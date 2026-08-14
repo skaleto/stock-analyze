@@ -293,7 +293,10 @@ def relocate_evidence_offsets(
 def parse_cn_number(raw_value: str) -> Decimal:
     """Parse a Chinese disclosure number into its base-unit Decimal value."""
 
-    text = normalize_grounding_text(raw_value).strip().replace(",", "")
+    text = normalize_grounding_text(raw_value).strip()
+    text = re.sub(r"(?<=[\d,.])\s+(?=[\d,.])", "", text).replace(",", "")
+    if numeric_raw_value_is_explicit_zero(text):
+        return Decimal("0")
     multiplier = Decimal("1")
     multiplier_match = re.search(r"(万亿|亿|万|千)(?:元|股|个|人|项)?", text)
     if multiplier_match:
@@ -735,7 +738,10 @@ def _validate_fact(
             raise CandidateValidationError("fact_unit_incompatible")
         observed_unit_kind = explicit_unit_kind or raw_unit_kind
         if spec.value_type in {"number", "ratio"}:
-            if observed_unit_kind not in spec.allowed_unit_kinds:
+            if (
+                observed_unit_kind not in spec.allowed_unit_kinds
+                and not numeric_raw_value_is_explicit_zero(raw_value or "")
+            ):
                 raise CandidateValidationError("fact_unit_incompatible")
         elif fact.unit is not None:
             raise CandidateValidationError("fact_type_incompatible")
@@ -1175,6 +1181,12 @@ def _normalize_period(value: str | None) -> str | None:
     )
     if half_year_match:
         return f"{half_year_match.group(1)}H1"
+    month_span_match = re.fullmatch(
+        r"(\d{4})年1(?:月)?(?:至|[-–—~～]+)6月",
+        compact,
+    )
+    if month_span_match:
+        return f"{month_span_match.group(1)}H1"
     chinese_match = re.fullmatch(
         r"(\d{4})年(?:度)?(?:第)?([一二三四1234])季度",
         compact,
@@ -1188,8 +1200,25 @@ def _normalize_period(value: str | None) -> str | None:
     annual_match = re.fullmatch(r"(\d{4})年(?:度)?", compact)
     if annual_match:
         return annual_match.group(1)
+    year_to_date_match = re.fullmatch(
+        r"(\d{4})年1月1日(?:至|[-–—~～]+)"
+        r"(?:(\d{4})年)?(3|6|9|12)月(30|31)日",
+        compact,
+    )
+    if year_to_date_match:
+        start_year = year_to_date_match.group(1)
+        end_year = year_to_date_match.group(2) or start_year
+        end_month = int(year_to_date_match.group(3))
+        end_day = int(year_to_date_match.group(4))
+        expected_day = {3: 31, 6: 30, 9: 30, 12: 31}[end_month]
+        if start_year == end_year and end_day == expected_day:
+            if end_month == 6:
+                return f"{start_year}H1"
+            if end_month == 12:
+                return start_year
+            return f"{start_year}Q1-Q{end_month // 3}"
     date_range_match = re.fullmatch(
-        r"(\d{4})年(\d{1,2})月(\d{1,2})日(?:至|[-–—~～])"
+        r"(\d{4})年(\d{1,2})月(\d{1,2})日(?:至|[-–—~～]+)"
         r"(\d{4})年(\d{1,2})月(\d{1,2})日",
         compact,
     )
@@ -1264,6 +1293,7 @@ def _parse_cash_per_share(
 
 
 def _numeric_tokens(value: str) -> tuple[Decimal, ...]:
+    value = re.sub(r"(?<=\d),\s+(?=\d)", ",", value)
     tokens: list[Decimal] = []
     for match in re.finditer(r"[-+]?(?:\d[\d,]*(?:\.\d+)?|\.\d+)", value):
         try:
@@ -1285,6 +1315,17 @@ def numeric_raw_value_is_ambiguous(raw_value: str, fact_name: str) -> bool:
     ):
         return False
     return len(_numeric_tokens(raw_value)) > 1
+
+
+def numeric_raw_value_is_explicit_zero(raw_value: str) -> bool:
+    compact = re.sub(
+        r"[\s：:。；;，,]",
+        "",
+        normalize_grounding_text(str(raw_value)),
+    )
+    return compact in {"无", "没有", "不存在", "零", "〇", "0", "0.0", "0.00"} or bool(
+        re.search(r"驳回.{0,96}(?:全部|所有).{0,24}请求", compact)
+    )
 
 
 def _parse_chinese_number(value: str) -> Decimal:
@@ -1361,6 +1402,7 @@ __all__ = [
     "ValidatedFact",
     "normalize_grounding_text",
     "numeric_raw_value_is_ambiguous",
+    "numeric_raw_value_is_explicit_zero",
     "parse_cn_number",
     "parse_cn_percent",
     "relocate_evidence_offsets",

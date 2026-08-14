@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +10,82 @@ from stock_analyze.intelligence import IntelligenceStore, MarketEvent, SourceDoc
 
 
 class IntelligenceStoreTest(unittest.TestCase):
+    def test_semantic_derived_evidence_chunks_are_durable_and_idempotent(self) -> None:
+        document_id, _ = self.store.insert_document(self.document())
+        artifact_id = f"parsed-{document_id}"
+        parser_version = "announcement-layout-v1"
+        with self.store.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO document_artifacts(
+                    artifact_id, document_id, artifact_type, content_hash,
+                    storage_uri, mime_type, byte_size, parser_version,
+                    status, error, created_at, updated_at
+                ) VALUES(?, ?, 'parsed', ?, ?, 'application/json', 1, ?,
+                         'parsed', '', ?, ?)
+                """,
+                (
+                    artifact_id,
+                    document_id,
+                    hashlib.sha256(b"parsed").hexdigest(),
+                    "localblob://parsed/test",
+                    parser_version,
+                    "2026-08-11T00:00:00+00:00",
+                    "2026-08-11T00:00:00+00:00",
+                ),
+            )
+        chunks = [
+            {
+                "chunk_id": "table-1-r1-c1",
+                "page_number": 1,
+                "section": "table_cell",
+                "bbox": [],
+                "text": "1,000万元",
+            },
+            {
+                "chunk_id": "body-1-part0001",
+                "page_number": 1,
+                "section": "semantic_segment",
+                "bbox": [],
+                "text": "公司拟回购股份",
+            },
+            {
+                "chunk_id": f"doc{document_id}-meta-title",
+                "page_number": 1,
+                "section": "document_metadata",
+                "bbox": [],
+                "text": "Company buyback",
+            },
+        ]
+
+        inserted = self.store.ensure_semantic_evidence_chunks(
+            document_id=document_id,
+            artifact_id=artifact_id,
+            parser_version=parser_version,
+            chunks=chunks,
+        )
+        repeated = self.store.ensure_semantic_evidence_chunks(
+            document_id=document_id,
+            artifact_id=artifact_id,
+            parser_version=parser_version,
+            chunks=chunks,
+        )
+
+        self.assertEqual(inserted, 3)
+        self.assertEqual(repeated, 0)
+        with self.store.connect() as connection:
+            rows = connection.execute(
+                "SELECT chunk_id, section FROM document_chunks ORDER BY sequence_no"
+            ).fetchall()
+        self.assertEqual(
+            [tuple(row) for row in rows],
+            [
+                ("table-1-r1-c1", "table_cell"),
+                ("body-1-part0001", "semantic_segment"),
+                (f"doc{document_id}-meta-title", "document_metadata"),
+            ],
+        )
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.store = IntelligenceStore(Path(self.tmp.name))

@@ -320,6 +320,22 @@ class SemanticEventCanonicalizer:
                 abs(scores.direction) * scores.certainty,
             )
         )
+        taxonomy_event = self.taxonomy.event(validated.event_type)
+        extracted_fact_names = {fact.name for fact in validated.facts}
+        declared_fact_names = set(taxonomy_event.declared_facts)
+        enrichment_fact_names = set(taxonomy_event.optional_facts)
+        extracted_enrichment = extracted_fact_names & enrichment_fact_names
+        fact_coverage = (
+            len(extracted_fact_names & declared_fact_names)
+            / len(declared_fact_names)
+            if declared_fact_names
+            else 1.0
+        )
+        enrichment_completeness = (
+            len(extracted_enrichment) / len(enrichment_fact_names)
+            if enrichment_fact_names
+            else 1.0
+        )
         metadata = {
             "canonical_key": validated.canonical_key,
             "decision_use": "research_feature_only",
@@ -339,6 +355,16 @@ class SemanticEventCanonicalizer:
             "source_class": _source_profile(source, {})[0],
             "source_credibility": float(scores.source_credibility),
             "tradable": False,
+            "core_complete": True,
+            "extracted_fact_count": len(extracted_fact_names),
+            "declared_fact_count": len(declared_fact_names),
+            "fact_coverage": round(fact_coverage, 6),
+            "enrichment_fact_count": len(extracted_enrichment),
+            "enrichment_fact_total": len(enrichment_fact_names),
+            "enrichment_completeness": round(
+                enrichment_completeness,
+                6,
+            ),
         }
         market_event = MarketEvent(
             event_id=event_id,

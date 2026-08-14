@@ -24,6 +24,11 @@ from .router import SemanticRoute, route_document
 from .taxonomy import EventTaxonomy
 
 
+_SEMANTIC_DERIVED_SECTIONS = frozenset(
+    {"table_cell", "semantic_segment", "document_metadata"}
+)
+
+
 @dataclass(frozen=True)
 class SemanticPipelineResult:
     document_id: int
@@ -111,19 +116,21 @@ class SemanticPipeline:
             or ""
         ).strip()
 
-        chunks = [
-            {
-                "chunk_id": str(chunk.get("chunk_id") or ""),
-                "page_number": int(chunk.get("page_number") or 0),
-                "section": str(chunk.get("section") or ""),
-                "bbox": _json_value(chunk.get("bbox_json"), fallback=[]),
-                "text": str(chunk.get("text") or ""),
-            }
-            for chunk in (
-                _mapping(item)
-                for item in _sequence(snapshot.get("chunks"))
+        chunks = []
+        for item in _sequence(snapshot.get("chunks")):
+            chunk = _mapping(item)
+            section = str(chunk.get("section") or "")
+            if section in _SEMANTIC_DERIVED_SECTIONS:
+                continue
+            chunks.append(
+                {
+                    "chunk_id": str(chunk.get("chunk_id") or ""),
+                    "page_number": int(chunk.get("page_number") or 0),
+                    "section": section,
+                    "bbox": _json_value(chunk.get("bbox_json"), fallback=[]),
+                    "text": str(chunk.get("text") or ""),
+                }
             )
-        ]
         metadata_chunks = (
             (f"doc{document_id}-meta-title", str(document.get("title") or "")),
             (f"doc{document_id}-meta-issuer", name),
@@ -242,6 +249,12 @@ class SemanticPipeline:
             "chunks": chunks,
             "tables": tables,
             "revision_context": revision_context,
+            "route_context": {
+                "document_kind": selected_route.document_kind,
+                "extraction_purpose": selected_route.extraction_purpose,
+                "difficulty_tags": list(selected_route.difficulty_tags),
+                "reason_codes": list(selected_route.reason_codes),
+            },
         }
         if document_ir is not None:
             payload["document_ir"] = document_ir
@@ -416,6 +429,8 @@ class SemanticPipeline:
             chunks=tuple(
                 _mapping(item)
                 for item in _sequence(snapshot.get("chunks"))
+                if str(_mapping(item).get("section") or "")
+                not in _SEMANTIC_DERIVED_SECTIONS
             ),
             tables=tuple(
                 _mapping(item)
@@ -529,6 +544,10 @@ def _segment_evidence_chunks(
                 {
                     **chunk,
                     "chunk_id": f"{chunk_id}-part{part_index:04d}",
+                    "section": "semantic_segment",
+                    "source_chunk_id": chunk_id,
+                    "source_start": start,
+                    "source_end": min(len(text), start + max_characters),
                     "text": text[start : start + max_characters],
                 }
             )
