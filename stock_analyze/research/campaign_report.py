@@ -50,6 +50,105 @@ def _selected_trial(scope: Mapping[str, Any]) -> Mapping[str, Any]:
     return {}
 
 
+def _best_diagnostic_trial(scope: Mapping[str, Any]) -> Mapping[str, Any]:
+    trials = [
+        *list(scope.get("incremental_trials") or []),
+        *list(scope.get("trials") or []),
+    ]
+    if not trials:
+        return {}
+
+    def sort_key(trial: Mapping[str, Any]) -> tuple[float, float, str]:
+        metrics = trial.get("metrics") or {}
+        return (
+            float(metrics.get("net_excess_return") or 0.0),
+            float(metrics.get("net_return") or 0.0),
+            str(trial.get("spec_id") or ""),
+        )
+
+    return max(trials, key=sort_key)
+
+
+def _display_trial(scope: Mapping[str, Any]) -> tuple[Mapping[str, Any], bool]:
+    selected = _selected_trial(scope)
+    if selected:
+        return selected, False
+    diagnostic_id = str(scope.get("best_diagnostic_spec_id") or "")
+    diagnostic = _best_diagnostic_trial(scope)
+    if diagnostic_id:
+        for trial in [
+            *list(scope.get("incremental_trials") or []),
+            *list(scope.get("trials") or []),
+        ]:
+            if str(trial.get("spec_id") or "") == diagnostic_id:
+                return trial, True
+    return diagnostic, bool(diagnostic)
+
+
+def _normalize_scope(scope: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(scope)
+    selected = _selected_trial(normalized)
+    diagnostic = {} if selected else _best_diagnostic_trial(normalized)
+    normalized["best_diagnostic_spec_id"] = (
+        str(diagnostic.get("spec_id") or "") or None
+    )
+    normalized["diagnostic_only"] = bool(diagnostic)
+    return normalized
+
+
+def _percent(value: Any) -> str:
+    try:
+        return f"{float(value):.2%}"
+    except (TypeError, ValueError):
+        return "未提供"
+
+
+def _number(value: Any, *, digits: int = 3) -> str:
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return "未提供"
+
+
+def _gate_reasons(trial: Mapping[str, Any], key: str) -> str:
+    reasons = [str(item) for item in (trial.get(key) or {}).get("reasons") or []]
+    return ", ".join(reasons) if reasons else "无"
+
+
+def _fold_summary(trial: Mapping[str, Any]) -> str:
+    folds = sorted(
+        list(trial.get("folds") or []),
+        key=lambda item: int(item.get("fold") or 0),
+    )
+    return " / ".join(
+        _percent(item.get("net_excess_return")) for item in folds
+    ) or "未提供"
+
+
+def _regime_summary(trial: Mapping[str, Any]) -> str:
+    regimes = trial.get("regimes") or {}
+    return " / ".join([
+        f"牛市 {_percent((regimes.get('bull') or {}).get('cumulative_active_return'))}",
+        f"震荡 {_percent((regimes.get('range') or {}).get('cumulative_active_return'))}",
+        f"下行 {_percent((regimes.get('down') or {}).get('cumulative_active_return'))}",
+    ])
+
+
+def _attribution_summary(trial: Mapping[str, Any]) -> str:
+    components = (trial.get("attribution") or {}).get("components") or {}
+    labels = (
+        ("selection", "选股"),
+        ("timing", "择时"),
+        ("beta", "Beta"),
+        ("active_cash", "主动现金"),
+        ("fees", "费用"),
+        ("unfilled", "未成交"),
+    )
+    return " / ".join(
+        f"{label} {_percent(components.get(key))}" for key, label in labels
+    )
+
+
 def _scope_explanation(scope: Mapping[str, Any]) -> str:
     status = str(scope.get("status") or "")
     reasons = [str(item) for item in scope.get("reasons") or []]
@@ -78,18 +177,34 @@ def _markdown(payload: Mapping[str, Any]) -> str:
         "",
     ]
     for scope in payload["scopes"]:
-        selected = _selected_trial(scope)
-        metrics = selected.get("metrics") or {}
-        attribution = selected.get("attribution") or {}
+        displayed, diagnostic_only = _display_trial(scope)
+        metrics = displayed.get("metrics") or {}
+        attribution = displayed.get("attribution") or {}
+        gate_two = displayed.get("gate_two") or {}
+        governance = gate_two.get("governance") or {}
+        displayed_id = str(displayed.get("spec_id") or "")
         lines.extend([
             f"### {scope['market']} / {scope['account_scope']}",
             "",
             f"- 终态：`{scope['status']}`",
-            f"- 选中版本：`{scope.get('selected_incremental_spec_id') or scope.get('selected_spec_id') or '无'}`",
-            f"- 净收益：{float(metrics.get('net_return') or 0.0):.2%}",
-            f"- 净超额：{float(metrics.get('net_excess_return') or 0.0):.2%}",
-            f"- Sharpe：{float(metrics.get('portfolio_sharpe') or 0.0):.3f}",
-            f"- 最大回撤：{float(metrics.get('max_drawdown') or 0.0):.2%}",
+            (
+                f"- 最佳诊断候选：`{displayed_id}`（仅用于解释失败，不代表选中）"
+                if diagnostic_only
+                else f"- 研究选中版本：`{displayed_id or '无'}`"
+            ),
+            f"- 基准收益：{_percent(metrics.get('benchmark_return'))}",
+            f"- 净收益：{_percent(metrics.get('net_return'))}",
+            f"- 净超额：{_percent(metrics.get('net_excess_return'))}",
+            f"- Sharpe：{_number(metrics.get('portfolio_sharpe'))}",
+            f"- 最大回撤：{_percent(metrics.get('max_drawdown'))}",
+            f"- 2x 成本净超额：{_percent((displayed.get('cost_stress') or {}).get('net_excess_return'))}",
+            f"- 目标成交率：{_percent(metrics.get('target_fill_ratio'))}；策略风险仓位：{_percent(metrics.get('strategic_risky_exposure'))}；年换手：{_number(metrics.get('annual_turnover'), digits=2)}x",
+            f"- 三折净超额：{_fold_summary(displayed)}",
+            f"- 市场状态净超额：{_regime_summary(displayed)}",
+            f"- 稳健性：DSR {_number(governance.get('deflated_sharpe_probability'))} / PBO {_number(governance.get('probability_of_backtest_overfit'))} / bootstrap {_number(displayed.get('bootstrap_probability'))}",
+            f"- Gate 1 失败：`{_gate_reasons(displayed, 'gate_one_pre_family')}`",
+            f"- Gate 2 失败：`{_gate_reasons(displayed, 'gate_two')}`",
+            f"- 收益归因：{_attribution_summary(displayed)}",
             f"- 归因状态：`{attribution.get('status') or metrics.get('attribution_status') or 'unavailable'}`",
             f"- 解释：{_scope_explanation(scope)}",
             "",
@@ -111,7 +226,7 @@ def write_final_campaign_report(
     scopes: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     _validate_scope_set(scopes)
-    normalized = [dict(item) for item in scopes]
+    normalized = [_normalize_scope(item) for item in scopes]
     invalid = sorted({
         str(item.get("status") or "")
         for item in normalized
@@ -160,7 +275,7 @@ def write_transparent_campaign_report(
         "manifest_hash": str(manifest_hash),
         "completed_at": now_iso(),
         "formal_strategy_activated": False,
-        "scopes": sorted([dict(item) for item in scopes], key=_scope_identity),
+        "scopes": sorted([_normalize_scope(item) for item in scopes], key=_scope_identity),
     }
     reports = Path(repo_root) / "reports" / "research"
     json_path = reports / f"{campaign_id}-transparent.json"

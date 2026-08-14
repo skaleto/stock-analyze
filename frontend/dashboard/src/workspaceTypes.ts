@@ -308,6 +308,8 @@ export type ModelResearchStrategyCampaign = {
     status: string;
     selectedRuleSpecId: string | null;
     selectedIncrementalSpecId: string | null;
+    bestDiagnosticSpecId: string | null;
+    diagnosticOnly: boolean;
     reasons: string[];
     transparentTrialCount: number;
     incrementalTrialCount: number;
