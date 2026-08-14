@@ -154,24 +154,40 @@ _A_SHARE_H20_QUALITY_LOWVOL = (
 def a_share_h20_specs(account_scope: str) -> tuple[ClassicalModelSpec, ...]:
     return (
         ClassicalModelSpec(
-            spec_id="h20_balanced_anchor_residual_ridge_v4",
+            spec_id="h20_momentum_baseline_residual_ridge_v1",
             market="a_share",
             account_scope=str(account_scope),
             horizon=20,
             estimator="ridge",
-            feature_profile="a_share_h20_momentum_anchor_residual_v2",
+            feature_profile="a_share_h20_momentum_baseline_residual_v1",
             parameters=_parameters(
                 alpha=25.0,
                 ranking_linear_weight=1.0,
-                residual_tilt_weight=0.15,
+                residual_tilt_weight=0.10,
             ),
-            hypothesis_id="balanced_momentum_lowvol_anchor_residual",
+            hypothesis_id="momentum_baseline_residual",
             feature_allowlist=_A_SHARE_H20_QUALITY_LOWVOL,
             rebalance_frequency="monthly",
-            ranking_target="momentum_lowvol_anchor_residual_v1",
+            ranking_target="momentum_anchor_residual_v1",
             feature_selection_mode="fixed_profile_v1",
         ),
     )
+
+
+_QDII_H10_TREND_FEATURES = (
+    "nav_momentum_20",
+    "account_residual_momentum_20",
+    "account_residual_momentum_60",
+    "sma_distance_20",
+    "natr_14",
+    "discount_premium",
+    "premium_persistence_20",
+    "tracking_difference_20",
+    "tracking_error_20",
+    "account_low_volatility_percentile",
+    "account_liquidity_percentile",
+    "global_index_momentum",
+)
 
 
 def qdii_h10_specs(account_scope: str) -> tuple[ClassicalModelSpec, ...]:
@@ -182,6 +198,21 @@ def qdii_h10_specs(account_scope: str) -> tuple[ClassicalModelSpec, ...]:
         "feature_profile": "qdii_nav_tracking_compact_v1",
     }
     return (
+        ClassicalModelSpec(
+            spec_id="h10_trend_baseline_residual_ridge_v1",
+            estimator="ridge",
+            parameters=_parameters(
+                alpha=35.0,
+                ranking_linear_weight=1.0,
+                residual_tilt_weight=0.10,
+            ),
+            hypothesis_id="qdii_absolute_trend_baseline_residual",
+            feature_allowlist=_QDII_H10_TREND_FEATURES,
+            rebalance_frequency="weekly",
+            ranking_target="qdii_trend_anchor_residual_v1",
+            feature_selection_mode="fixed_profile_v1",
+            **common,
+        ),
         ClassicalModelSpec(
             spec_id="ridge_nav_tracking",
             estimator="ridge",
@@ -303,7 +334,7 @@ def mainline_specs(
         return tuple(
             spec
             for spec in qdii_h10_specs(account_scope)
-            if spec.spec_id == "hgbr_bounded_nav_tracking"
+            if spec.spec_id == "h10_trend_baseline_residual_ridge_v1"
         )
     raise ValueError(f"classical_mainline_market:{normalized}")
 

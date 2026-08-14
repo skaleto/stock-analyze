@@ -105,7 +105,13 @@ function jsonResponse(value: unknown): Response {
   });
 }
 
+let systemOverviewFixture: unknown;
+let modelResearchFixture: unknown;
+
 async function currentBuilderPayload(): Promise<unknown> {
+  if (systemOverviewFixture !== undefined) {
+    return structuredClone(systemOverviewFixture);
+  }
   // Node types are intentionally not a production dashboard dependency.
   // @ts-expect-error Vitest executes this integration fixture in Node.
   const { execFileSync } = await import("node:child_process");
@@ -121,10 +127,14 @@ async function currentBuilderPayload(): Promise<unknown> {
     encoding: "utf-8",
     maxBuffer: 1_000_000,
   });
-  return JSON.parse(output);
+  systemOverviewFixture = JSON.parse(output);
+  return structuredClone(systemOverviewFixture);
 }
 
 async function currentModelResearchBuilderPayload(): Promise<unknown> {
+  if (modelResearchFixture !== undefined) {
+    return structuredClone(modelResearchFixture);
+  }
   // Node types are intentionally not a production dashboard dependency.
   // @ts-expect-error Vitest executes this integration fixture in Node.
   const { execFileSync } = await import("node:child_process");
@@ -140,7 +150,8 @@ async function currentModelResearchBuilderPayload(): Promise<unknown> {
     encoding: "utf-8",
     maxBuffer: 1_000_000,
   });
-  return JSON.parse(output);
+  modelResearchFixture = JSON.parse(output);
+  return structuredClone(modelResearchFixture);
 }
 
 function validResearchModel(index: number) {
@@ -177,7 +188,7 @@ describe("fetchSystemOverview", () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(payload))));
 
     await expect(fetchSystemOverview()).resolves.toEqual(payload);
-  });
+  }, 15_000);
 
   it("accepts a model impact report awaiting sufficient event support", async () => {
     const payload = validSystemOverview();
@@ -313,7 +324,7 @@ describe("fetchModelResearch", () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(jsonResponse(payload))));
 
     await expect(fetchModelResearch("a_share")).resolves.toEqual(payload);
-  });
+  }, 15_000);
 
   it("accepts the same model version and horizon in different account scopes", async () => {
     const payload = await currentModelResearchBuilderPayload() as any;

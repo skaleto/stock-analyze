@@ -36,7 +36,7 @@ from .trial_ledger import DEFAULT_CLASSICAL_TRIAL_SPECS
 
 
 CLASS_ORDER = ("down", "flat", "up")
-TRAINING_PROTOCOL_VERSION = "purged_walk_forward_v7_balanced_anchor"
+TRAINING_PROTOCOL_VERSION = "purged_walk_forward_v8_baseline_first"
 
 
 @dataclass(frozen=True)
@@ -623,6 +623,7 @@ def _ranking_target_values(
         "daily_cross_sectional_percentile_v1",
         "momentum_anchor_residual_v1",
         "momentum_lowvol_anchor_residual_v1",
+        "qdii_trend_anchor_residual_v1",
     }:
         raise ValueError(f"ranking_target_unknown:{normalized}")
     groupers = [frame[column].astype(str) for column in _cross_section_columns(frame)]
@@ -635,6 +636,8 @@ def _ranking_target_values(
         return cross_sectional_target - _momentum_anchor_values(frame)
     if normalized == "momentum_lowvol_anchor_residual_v1":
         return cross_sectional_target - _balanced_anchor_values(frame)
+    if normalized == "qdii_trend_anchor_residual_v1":
+        return cross_sectional_target - _qdii_trend_anchor_values(frame)
     return cross_sectional_target
 
 
@@ -681,6 +684,43 @@ def _balanced_anchor_values(frame: pd.DataFrame) -> np.ndarray:
     return 0.5 * momentum + 0.5 * low_volatility
 
 
+def _qdii_trend_anchor_values(frame: pd.DataFrame) -> np.ndarray:
+    """Build a bounded absolute trend score with observable ETF frictions."""
+
+    trend_scales = {
+        "nav_momentum_20": 0.10,
+        "account_residual_momentum_20": 0.10,
+        "account_residual_momentum_60": 0.20,
+        "sma_distance_20": 0.10,
+    }
+    trend_components: list[pd.Series] = []
+    for column, scale in trend_scales.items():
+        if column not in frame.columns:
+            continue
+        values = pd.to_numeric(frame[column], errors="coerce")
+        if not values.notna().any():
+            continue
+        trend_components.append(pd.Series(
+            np.tanh(values.to_numpy(dtype=float) / scale),
+            index=frame.index,
+            dtype=float,
+        ))
+    if not trend_components:
+        raise ValueError("ranking_anchor_qdii_trend_missing")
+    trend = pd.concat(trend_components, axis=1).mean(axis=1, skipna=True).fillna(0.0)
+    penalty = pd.Series(0.0, index=frame.index, dtype=float)
+    for column, scale, weight in (
+        ("natr_14", 0.10, 0.08),
+        ("discount_premium", 0.05, 0.05),
+        ("tracking_error_20", 0.10, 0.05),
+    ):
+        if column not in frame.columns:
+            continue
+        values = pd.to_numeric(frame[column], errors="coerce").abs().fillna(0.0)
+        penalty += weight * np.tanh(values / scale)
+    return (0.5 * trend - penalty).to_numpy(dtype=float)
+
+
 def _apply_ranking_anchor(
     predictions: np.ndarray,
     frame: pd.DataFrame,
@@ -694,6 +734,8 @@ def _apply_ranking_anchor(
         anchor = _momentum_anchor_values(frame)
     elif normalized == "momentum_lowvol_anchor_residual_v1":
         anchor = _balanced_anchor_values(frame)
+    elif normalized == "qdii_trend_anchor_residual_v1":
+        anchor = _qdii_trend_anchor_values(frame)
     else:
         return values
     weight = float(residual_weight)
@@ -1809,6 +1851,7 @@ def train_model_bundle(
     if deployment.ranking_target in {
         "momentum_anchor_residual_v1",
         "momentum_lowvol_anchor_residual_v1",
+        "qdii_trend_anchor_residual_v1",
     }:
         ranking_reference = pd.Series(
             _apply_ranking_anchor(

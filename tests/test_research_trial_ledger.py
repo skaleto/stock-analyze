@@ -9,6 +9,21 @@ from stock_analyze.research.trial_ledger import (
 
 
 class ResearchTrialLedgerTest(unittest.TestCase):
+    def test_bounded_declaration_refuses_a_fourth_trial(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = TrialLedger(Path(tmp) / "trial_ledger.json")
+
+            with self.assertRaisesRegex(ValueError, "trial_ledger_spec_budget:3"):
+                ledger.declare(
+                    family_id="baseline-first-v1",
+                    objective="candidate_incremental_net_return",
+                    specs=[
+                        {"spec_id": f"trial-{index}", "family": "fixture"}
+                        for index in range(4)
+                    ],
+                    max_specs=3,
+                )
+
     def test_declaration_is_idempotent_and_monthly_retrain_does_not_add_specs(self):
         with tempfile.TemporaryDirectory() as tmp:
             ledger = TrialLedger(Path(tmp) / "trial_ledger.json")

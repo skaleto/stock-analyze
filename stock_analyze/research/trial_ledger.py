@@ -55,8 +55,11 @@ class TrialLedger:
         family_id: str,
         specs: Iterable[Mapping[str, Any]],
         objective: str,
+        max_specs: int | None = None,
     ) -> dict[str, Any]:
         normalized = _normalized_specs(specs)
+        if max_specs is not None and len(normalized) > int(max_specs):
+            raise ValueError(f"trial_ledger_spec_budget:{int(max_specs)}")
         payload = {
             "family_id": str(family_id),
             "objective": str(objective),

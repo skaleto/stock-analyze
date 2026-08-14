@@ -107,6 +107,23 @@ def export_training_bundle(
     ):
         if optional.exists():
             sources.append(optional)
+    baseline_root = repo / "data" / "research" / "baseline_first" / str(market)
+    sources.extend(sorted(baseline_root.glob("*/window_manifest.json")))
+    model_root = repo / "data" / "research" / "models" / str(market)
+    if model_root.exists():
+        for account_root in sorted(path for path in model_root.iterdir() if path.is_dir()):
+            for horizon_root in sorted(
+                path for path in account_root.iterdir()
+                if path.is_dir() and path.name.isdigit()
+            ):
+                legacy = sorted(
+                    (horizon_root / "tournaments").glob(
+                        "*/evaluation_manifest.json"
+                    )
+                )
+                if legacy:
+                    sources.append(legacy[-1])
+    sources = list(dict.fromkeys(sources))
     files: list[dict[str, Any]] = []
     for source in sources:
         if not source.is_file():

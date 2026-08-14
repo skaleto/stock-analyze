@@ -214,7 +214,7 @@ A 股继续使用共享行情缓存和触发器。工作日 daily worker 负责�
 - `stock-analyze-{claude,codex}-{daily,weekly}.service`
 - `stock-analyze-research.service`：共享行情成功后离线生成特征、事件、状态和预测，再启动 A 股与跨境 ETF 的四个 daily worker。
 - `stock-analyze-model-iteration.service`：仅在四个正式 daily 账本全部成功后启动，避免候选模型与正式账户争抢内存；自身失败独立告警。
-- `stock-analyze-model-training.timer`：每月 1 日 02:30 训练 challenger 并自动评估研究门禁，不绕过门禁晋级。
+- `stock-analyze-model-training.timer`：每月 1 日 02:30 先按最新特征快照重建 `next-open-v2` 标签，再让透明基线与最多 10% 的机器学习残差在冻结开发窗口中同窗比较。只有净增量门禁通过才冻结为 Shadow，不会直接成为正式策略。
 
 QDII 两套策略都有独立定时器：
 

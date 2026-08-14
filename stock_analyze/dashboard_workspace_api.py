@@ -919,6 +919,108 @@ def _latest_tournament_health(root: Path, market: str) -> dict[str, Any]:
     }
 
 
+def _latest_baseline_first_health(root: Path, market: str) -> dict[str, Any]:
+    """Expose a baseline decision even when the residual produced no model."""
+
+    report_root = root / "reports" / "research"
+    if not report_root.exists():
+        return {"status": "unavailable", "models": []}
+    latest_by_scope: dict[str, dict[str, Any]] = {}
+    paths = sorted(
+        report_root.glob("baseline_first_*.json"),
+        reverse=True,
+    )[: MAX_TABLE_ROWS * 5]
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("baseline_first_report_invalid") from exc
+        if (
+            not isinstance(payload, dict)
+            or str(payload.get("market") or "") != market
+        ):
+            continue
+        scope = _text(payload.get("account_scope"), limit=128)
+        if not scope or scope in latest_by_scope:
+            continue
+        candidate = _mapping(payload.get("candidate"))
+        baseline = _mapping(payload.get("baseline"))
+        gate = _mapping(payload.get("incremental_gate"))
+        as_of = _text(payload.get("as_of"), limit=32)
+        trained_at = (
+            f"{as_of[:4]}-{as_of[4:6]}-{as_of[6:8]}"
+            if len(as_of) == 8 and as_of.isdigit()
+            else as_of
+        )
+        status = str(payload.get("status") or "insufficient_evidence")
+        latest_by_scope[scope] = {
+            "model_version": (
+                f"baseline-first-{as_of}-"
+                f"{str(payload.get('model_spec_hash') or '')[:8]}"
+            ),
+            "spec_id": str(payload.get("model_spec_id") or ""),
+            "spec_hash": str(payload.get("model_spec_hash") or ""),
+            "account_scope": scope,
+            "horizon": int(
+                payload.get("horizon") or mainline_horizon(market)
+            ),
+            "algorithm_family": "transparent_baseline_plus_ridge_residual",
+            "trained_at": trained_at,
+            "sample_support": int(candidate.get("oos_predictions") or 0),
+            "feature_columns": list(
+                candidate.get("selected_features") or []
+            ),
+            "status": (
+                "rejected"
+                if status == "baseline_wins"
+                else "shadow"
+                if status == "development_pass"
+                else "research"
+            ),
+            "gate_passed": gate.get("passed") is True,
+            "gate_reasons": list(gate.get("reasons") or []),
+            "metrics": {
+                **candidate,
+                "training_protocol_version": str(
+                    payload.get("training_protocol_version")
+                    or TRAINING_PROTOCOL_VERSION
+                ),
+                "candidate_feature_count": int(
+                    candidate.get("selected_feature_count") or 0
+                ),
+                "baseline_comparison": {
+                    "transparent_baseline": baseline,
+                    "candidate_increment": {
+                        key: gate.get(key)
+                        for key in (
+                            "net_excess_return_delta",
+                            "max_drawdown_delta",
+                            "annual_turnover_delta",
+                            "positive_fold_count",
+                            "eligible_fold_count",
+                        )
+                        if key in gate
+                    },
+                },
+            },
+            "research_evaluation": {
+                "contract": str(payload.get("evaluation_contract") or ""),
+                "status": status,
+                "decision": str(payload.get("decision") or status),
+                "improvement": _mapping(payload.get("improvement")),
+                "incremental_gate": gate,
+                "observed_final_status": str(
+                    payload.get("observed_final_status") or ""
+                ),
+            },
+            "is_champion": False,
+        }
+    return {
+        "status": "available" if latest_by_scope else "unavailable",
+        "models": [latest_by_scope[key] for key in sorted(latest_by_scope)],
+    }
+
+
 def _latest_unified_arena(root: Path, market: str) -> dict[str, Any]:
     arena_root = root / "data" / "research" / "unified_arena" / market
     reports = sorted(
@@ -2281,13 +2383,27 @@ def build_dashboard_model_research_data(
         )
     )
     tournament_model_rows = _model_rows(root, market, tournament_health)
+    baseline_first_health = _mapping(
+        _safe_workspace_read(
+            errors,
+            "baseline_first_evaluation",
+            {"status": "unavailable", "models": []},
+            _latest_baseline_first_health,
+            root,
+            market,
+        )
+    )
+    baseline_first_rows = _model_rows(root, market, baseline_first_health)
     latest_model_rows = _model_rows(
         root,
         market,
         {"models": health.get("latest_models") or health.get("models") or []},
     )
     evidence_rows = _deduplicate_model_rows(
-        all_models + latest_model_rows + tournament_model_rows
+        all_models
+        + latest_model_rows
+        + tournament_model_rows
+        + baseline_first_rows
     )
     displayed_model_rows, archived_model_rows = _mainline_model_projection(
         market,

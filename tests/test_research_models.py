@@ -15,6 +15,7 @@ from stock_analyze.research.models import (
     _bounded_cross_section_sample,
     _momentum_anchor_values,
     _portfolio_oos_metrics,
+    _qdii_trend_anchor_values,
     _ranking_target_values,
     _select_features,
     load_model_bundle,
@@ -150,6 +151,63 @@ class ResearchModelsTest(unittest.TestCase):
         np.testing.assert_allclose(
             reconstructed,
             _balanced_anchor_values(frame) + 0.15 * residual,
+        )
+
+    def test_qdii_trend_anchor_is_absolute_and_penalizes_execution_risk(self):
+        clean = pd.DataFrame({
+            "trade_date": ["20260102"] * 3,
+            "account_id": ["us_exposure"] * 3,
+            "nav_momentum_20": [0.08, 0.0, -0.08],
+            "account_residual_momentum_20": [0.06, 0.0, -0.06],
+            "account_residual_momentum_60": [0.12, 0.0, -0.12],
+            "sma_distance_20": [0.05, 0.0, -0.05],
+            "natr_14": [0.01, 0.01, 0.01],
+            "discount_premium": [0.0, 0.0, 0.0],
+            "tracking_error_20": [0.01, 0.01, 0.01],
+            "excess_return": [0.03, 0.0, -0.03],
+        })
+        risky = clean.copy()
+        risky.loc[0, ["natr_14", "discount_premium", "tracking_error_20"]] = [
+            0.12, 0.08, 0.15,
+        ]
+
+        clean_anchor = _qdii_trend_anchor_values(clean)
+        risky_anchor = _qdii_trend_anchor_values(risky)
+
+        self.assertGreater(clean_anchor[0], clean_anchor[1])
+        self.assertGreater(clean_anchor[1], clean_anchor[2])
+        self.assertLess(risky_anchor[0], clean_anchor[0])
+        residual = _ranking_target_values(
+            clean,
+            "qdii_trend_anchor_residual_v1",
+        )
+        np.testing.assert_allclose(
+            residual + clean_anchor,
+            _ranking_target_values(
+                clean,
+                "daily_cross_sectional_percentile_v1",
+            ),
+        )
+
+    def test_qdii_trend_anchor_applies_only_ten_percent_residual(self):
+        frame = pd.DataFrame({
+            "trade_date": ["20260102"] * 2,
+            "account_id": ["hk_exposure"] * 2,
+            "nav_momentum_20": [0.10, -0.10],
+            "account_residual_momentum_20": [0.08, -0.08],
+        })
+        residual = np.array([-0.5, 0.5])
+
+        reconstructed = _apply_ranking_anchor(
+            residual,
+            frame,
+            "qdii_trend_anchor_residual_v1",
+            residual_weight=0.10,
+        )
+
+        np.testing.assert_allclose(
+            reconstructed,
+            _qdii_trend_anchor_values(frame) + 0.10 * residual,
         )
 
     def test_development_rank_ic_uses_raw_ranking_not_calibrated_edge(self):
@@ -420,7 +478,7 @@ class ResearchModelsTest(unittest.TestCase):
         self.assertEqual(first.metrics["walk_forward_splits"], 3)
         self.assertEqual(
             first.metrics["training_protocol_version"],
-            "purged_walk_forward_v7_balanced_anchor",
+            "purged_walk_forward_v8_baseline_first",
         )
         self.assertIsNotNone(first.edge_calibrator)
         self.assertEqual(
@@ -661,7 +719,7 @@ class ResearchModelsTest(unittest.TestCase):
         self.assertIn("ranking_ensemble_linear_weight", bundle.metrics)
         self.assertEqual(
             bundle.metrics["training_protocol_version"],
-            "purged_walk_forward_v7_balanced_anchor",
+            "purged_walk_forward_v8_baseline_first",
         )
 
     def test_training_reference_detects_out_of_distribution_values(self):

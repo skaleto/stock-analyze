@@ -19,6 +19,7 @@ from stock_analyze.dashboard_workspace_api import (
     FORMAL_FACTOR_SOURCES,
     _bounded_resource,
     _bounded_intelligence_lane,
+    _latest_baseline_first_health,
     _latest_tournament_health,
     _latest_unified_arena,
     _operations_disk,
@@ -721,6 +722,65 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertEqual(
             metrics["edge_calibration_version"],
             "clustered-date-mean-se-v2",
+        )
+
+    def test_baseline_first_stop_report_is_visible_as_current_research_attempt(self) -> None:
+        expected_spec = mainline_specs("a_share", "hs300")[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_path = (
+                root / "reports/research/baseline_first_20260807_hs300.json"
+            )
+            report_path.parent.mkdir(parents=True)
+            report_path.write_text(json.dumps({
+                "market": "a_share",
+                "account_scope": "hs300",
+                "as_of": "20260807",
+                "status": "baseline_wins",
+                "model_spec_id": expected_spec.spec_id,
+                "model_spec_hash": expected_spec.spec_hash,
+                "baseline": {
+                    "net_excess_return": 0.03,
+                    "max_drawdown": 0.08,
+                    "annual_turnover": 3.0,
+                },
+                "candidate": {
+                    "rank_ic": 0.01,
+                    "net_excess_return": 0.02,
+                    "max_drawdown": 0.09,
+                    "annual_turnover": 3.2,
+                    "capital_utilization": 0.90,
+                    "oos_predictions": 300,
+                    "selected_features": ["momentum_20"],
+                },
+                "incremental_gate": {
+                    "passed": False,
+                    "reasons": ["positive_net_increment"],
+                    "net_excess_return_delta": -0.01,
+                    "positive_fold_count": 1,
+                    "eligible_fold_count": 3,
+                },
+            }), encoding="utf-8")
+
+            health = _latest_baseline_first_health(root, "a_share")
+            payload = self._build(
+                root,
+                models={"status": "available", "models": []},
+            )
+
+        self.assertEqual(health["status"], "available")
+        self.assertEqual(health["models"][0]["status"], "rejected")
+        self.assertEqual(
+            payload["training"]["models"][0]["specId"],
+            expected_spec.spec_id,
+        )
+        self.assertEqual(
+            payload["training"]["models"][0]["metrics"]["net_excess_return"],
+            0.02,
+        )
+        self.assertEqual(
+            payload["validation"]["models"][0]["gateReasons"],
+            ["positive_net_increment"],
         )
 
     def test_model_resource_shows_only_current_mainline_and_archives_legacy(self) -> None:

@@ -461,12 +461,14 @@ def _scheduled_rebalance_due(
     normalized = str(frequency or "daily").strip().lower()
     if normalized == "daily":
         return True
-    if normalized != "monthly":
+    if normalized not in {"weekly", "monthly"}:
         raise ValueError(f"portfolio_replay_rebalance_frequency:{normalized}")
     if index == 0:
         return True
     current = pd.to_datetime(signal_dates[index], errors="raise")
     previous = pd.to_datetime(signal_dates[index - 1], errors="raise")
+    if normalized == "weekly":
+        return current.to_period("W-SUN") != previous.to_period("W-SUN")
     return current.to_period("M") != previous.to_period("M")
 
 
@@ -1118,7 +1120,7 @@ def replay_executable_portfolio(
     if allocation_policy is not None and not isinstance(allocation_policy, Mapping):
         raise ValueError("portfolio_replay_allocation_policy")
     rebalance_frequency = str(contract.get("rebalance_frequency") or "daily").strip().lower()
-    if rebalance_frequency not in {"daily", "monthly"}:
+    if rebalance_frequency not in {"daily", "weekly", "monthly"}:
         raise ValueError(f"portfolio_replay_rebalance_frequency:{rebalance_frequency}")
     frame = evaluation.copy()
     frame["account_id"] = frame["account_id"].astype(str)

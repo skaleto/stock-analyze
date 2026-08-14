@@ -99,6 +99,10 @@ const payload = {
         netExcessReturn: 0.018,
         calibrationStatus: "available",
         capitalUtilization: 0.92,
+        baselineComparison: {
+          transparent_baseline: { net_excess_return: 0.025 },
+          candidate_increment: { net_excess_return_delta: -0.007 },
+        },
         metrics: { rank_ic: 0.021 },
       },
     ],
@@ -733,10 +737,18 @@ describe("ModelResearchPage", () => {
     expect(within(mainline).getByRole("columnheader", {
       name: "可部署组合 · 净超额",
     })).toBeInTheDocument();
+    expect(within(mainline).getByRole("columnheader", {
+      name: "透明基线 · 净超额",
+    })).toBeInTheDocument();
+    expect(within(mainline).getByRole("columnheader", {
+      name: "机器学习增量",
+    })).toBeInTheDocument();
     expect(within(mainline).getByRole("columnheader", { name: "校准状态" }))
       .toBeInTheDocument();
     expect(within(mainline).getByText("4.10%")).toBeInTheDocument();
     expect(within(mainline).getByText("1.80%")).toBeInTheDocument();
+    expect(within(mainline).getByText("2.50%")).toBeInTheDocument();
+    expect(within(mainline).getByText("-0.70%")).toBeInTheDocument();
     expect(within(mainline).getByText("校准可用")).toBeInTheDocument();
     expect(within(mainline).getByText("92.00%")).toBeInTheDocument();
   });

@@ -15,6 +15,8 @@ from ..utils import write_text_atomic
 from .account_features import date_balanced_sample_weights
 from .classical_specs import ClassicalModelSpec
 from .models import (
+    TRAINING_PROTOCOL_VERSION,
+    _apply_ranking_anchor,
     _bounded_cross_section_sample,
     _fit_clip_bounds,
     _impute,
@@ -23,9 +25,10 @@ from .models import (
     make_purged_walk_forward_splits,
 )
 from .portfolio_replay import replay_rule_portfolio
+from .trial_ledger import TrialLedger
 
 
-EVALUATION_CONTRACT = "cross-sectional-objective-ablation-v1"
+EVALUATION_CONTRACT = "baseline-first-incremental-v2"
 
 
 def _json_safe(value: Any) -> Any:
@@ -124,6 +127,7 @@ def evaluate_ridge_target(
     ridge_alpha: float,
     portfolio_contract: dict[str, Any],
     random_state: int = 20260810,
+    residual_weight: float = 1.0,
 ) -> dict[str, Any]:
     """Evaluate one fixed Ridge target with purged OOS predictions and exact costs."""
 
@@ -191,7 +195,12 @@ def evaluate_ridge_target(
             _ranking_target_values(fit_train, target_contract),
             sample_weight=weights,
         )
-        validation["score"] = model.predict(scaler.transform(validation_x))
+        validation["score"] = _apply_ranking_anchor(
+            model.predict(scaler.transform(validation_x)),
+            validation,
+            target_contract,
+            residual_weight=float(residual_weight),
+        )
         validation["fold"] = split_number
         validation_parts.append(validation)
         coefficient_parts.append(np.asarray(model.coef_, dtype=float))
@@ -228,6 +237,7 @@ def evaluate_ridge_target(
     return _json_safe({
         "evaluation_contract": EVALUATION_CONTRACT,
         "target_contract": str(target_contract),
+        "residual_weight": float(residual_weight),
         "evidence_scope": "development_only",
         "formal_order_source": False,
         "point_in_time_audit": bool(all(audit_results)),
@@ -262,34 +272,103 @@ def evaluate_ridge_target(
     })
 
 
-def _gate_metrics(metrics: dict[str, Any]) -> tuple[bool, list[str]]:
-    checks = {
-        "point_in_time_audit": metrics.get("point_in_time_audit") is True,
-        "rank_ic": float(metrics.get("rank_ic") or 0.0) > 0.02,
-        "icir": float(metrics.get("icir") or 0.0) >= 0.30,
-        "net_excess_return": float(metrics.get("net_excess_return") or 0.0) >= 0.02,
-        "max_drawdown": float(metrics.get("max_drawdown") or 1.0) <= 0.20,
-        "annual_turnover": float(metrics.get("annual_turnover") or 1e9) <= 8.0,
-        "capital_utilization": float(metrics.get("capital_utilization") or 0.0) >= 0.85,
-        "trade_count": int(metrics.get("trade_count") or 0) > 0,
+def _incremental_gate(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    baseline_return = float(baseline.get("net_excess_return") or 0.0)
+    candidate_return = float(candidate.get("net_excess_return") or 0.0)
+    return_delta = candidate_return - baseline_return
+    drawdown_delta = (
+        float(candidate.get("max_drawdown") or 0.0)
+        - float(baseline.get("max_drawdown") or 0.0)
+    )
+    baseline_turnover = float(baseline.get("annual_turnover") or 0.0)
+    candidate_turnover = float(candidate.get("annual_turnover") or 0.0)
+    baseline_folds = {
+        int(item.get("fold") or 0): float(item.get("net_excess_return") or 0.0)
+        for item in baseline.get("subperiods") or []
+    }
+    candidate_folds = {
+        int(item.get("fold") or 0): float(item.get("net_excess_return") or 0.0)
+        for item in candidate.get("subperiods") or []
+    }
+    common_folds = sorted(set(baseline_folds).intersection(candidate_folds))
+    fold_deltas = [
+        {
+            "fold": fold,
+            "baseline_net_excess_return": baseline_folds[fold],
+            "candidate_net_excess_return": candidate_folds[fold],
+            "delta": candidate_folds[fold] - baseline_folds[fold],
+        }
+        for fold in common_folds
+    ]
+    positive_fold_count = sum(item["delta"] > 0.0 for item in fold_deltas)
+    evidence_checks = {
+        "point_in_time_audit": (
+            baseline.get("point_in_time_audit") is True
+            and candidate.get("point_in_time_audit") is True
+        ),
         "simulator_version": (
-            metrics.get("simulator_version") == "paper-parity-daily-v1"
+            baseline.get("simulator_version") == "paper-parity-daily-v1"
+            and candidate.get("simulator_version") == "paper-parity-daily-v1"
+        ),
+        "eligible_folds": len(fold_deltas) >= 3,
+        "trade_activity": (
+            int(baseline.get("trade_count") or 0) > 0
+            and int(candidate.get("trade_count") or 0) > 0
+        ),
+        "capital_utilization": (
+            float(candidate.get("capital_utilization") or 0.0) >= 0.85
         ),
     }
-    reasons = [name for name, passed in checks.items() if not passed]
-    return not reasons, reasons
+    incremental_checks = {
+        "positive_rank_ic": float(candidate.get("rank_ic") or 0.0) > 0.0,
+        "positive_candidate_net_return": candidate_return > 0.0,
+        "positive_net_increment": return_delta > 0.0,
+        "positive_fold_majority": positive_fold_count >= 2,
+        "drawdown_delta": drawdown_delta <= 0.02,
+        "turnover_delta": (
+            candidate_turnover <= max(baseline_turnover * 1.25, baseline_turnover + 0.25)
+        ),
+        "absolute_turnover": candidate_turnover <= 8.0,
+    }
+    evidence_reasons = [
+        name for name, passed in evidence_checks.items() if not passed
+    ]
+    incremental_reasons = [
+        name for name, passed in incremental_checks.items() if not passed
+    ]
+    passed = not evidence_reasons and not incremental_reasons
+    status = (
+        "development_pass"
+        if passed else "baseline_wins" if incremental_reasons else "insufficient_evidence"
+    )
+    return _json_safe({
+        "passed": passed,
+        "status": status,
+        "reasons": [*evidence_reasons, *incremental_reasons],
+        "evidence_reasons": evidence_reasons,
+        "incremental_reasons": incremental_reasons,
+        "net_excess_return_delta": return_delta,
+        "max_drawdown_delta": drawdown_delta,
+        "annual_turnover_delta": candidate_turnover - baseline_turnover,
+        "eligible_fold_count": len(fold_deltas),
+        "positive_fold_count": positive_fold_count,
+        "fold_deltas": fold_deltas,
+    })
 
 
 def _markdown_report(result: dict[str, Any]) -> str:
-    raw = result["target_ablation"]["raw_excess_return"]
-    ranked = result["target_ablation"]["daily_cross_sectional_percentile_v1"]
-    gate = result["development_gate"]
+    baseline = result["baseline"]
+    candidate = result["candidate"]
+    gate = result["incremental_gate"]
 
     def percent(value: Any) -> str:
         return f"{float(value or 0.0):+.2%}"
 
     lines = [
-        "# 横截面选股目标纠偏实测",
+        "# 基线优先模型增量实测",
         "",
         f"- 市场/账户：`{result['market']}` / `{result['account_scope']}`",
         f"- 数据快照：`{result['as_of']}`",
@@ -297,75 +376,51 @@ def _markdown_report(result: dict[str, Any]) -> str:
         "- 旧最终窗：仅标记为已观察诊断，不参与本次晋升",
         "- 正式下单：否",
         "",
-        "| 目标 | RankIC | ICIR | 年化净超额 | 相对财富 | 最大回撤 | 年换手 | 资金利用率 | 成交 |",
+        "| 方案 | RankIC | ICIR | 年化净超额 | 相对财富 | 最大回撤 | 年换手 | 资金利用率 | 成交 |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         (
-            f"| 原始未来收益 | {float(raw.get('rank_ic') or 0):+.4f} | "
-            f"{float(raw.get('icir') or 0):+.3f} | {percent(raw.get('net_excess_return'))} | "
-            f"{percent(raw.get('cumulative_relative_wealth'))} | {percent(raw.get('max_drawdown'))} | "
-            f"{float(raw.get('annual_turnover') or 0):.2f}x | {percent(raw.get('capital_utilization'))} | "
-            f"{int(raw.get('trade_count') or 0)} |"
+            f"| 透明基线 | {float(baseline.get('rank_ic') or 0):+.4f} | "
+            f"{float(baseline.get('icir') or 0):+.3f} | {percent(baseline.get('net_excess_return'))} | "
+            f"{percent(baseline.get('cumulative_relative_wealth'))} | {percent(baseline.get('max_drawdown'))} | "
+            f"{float(baseline.get('annual_turnover') or 0):.2f}x | {percent(baseline.get('capital_utilization'))} | "
+            f"{int(baseline.get('trade_count') or 0)} |"
         ),
         (
-            f"| 每日横截面排名 | {float(ranked.get('rank_ic') or 0):+.4f} | "
-            f"{float(ranked.get('icir') or 0):+.3f} | {percent(ranked.get('net_excess_return'))} | "
-            f"{percent(ranked.get('cumulative_relative_wealth'))} | {percent(ranked.get('max_drawdown'))} | "
-            f"{float(ranked.get('annual_turnover') or 0):.2f}x | {percent(ranked.get('capital_utilization'))} | "
-            f"{int(ranked.get('trade_count') or 0)} |"
+            f"| 基线 + 模型残差 | {float(candidate.get('rank_ic') or 0):+.4f} | "
+            f"{float(candidate.get('icir') or 0):+.3f} | {percent(candidate.get('net_excess_return'))} | "
+            f"{percent(candidate.get('cumulative_relative_wealth'))} | {percent(candidate.get('max_drawdown'))} | "
+            f"{float(candidate.get('annual_turnover') or 0):.2f}x | {percent(candidate.get('capital_utilization'))} | "
+            f"{int(candidate.get('trade_count') or 0)} |"
         ),
         "",
-        "## 分阶段稳定性",
+        "## 同折增量",
         "",
     ]
-    subperiods = ranked.get("subperiods") or []
-    if subperiods:
+    fold_deltas = gate.get("fold_deltas") or []
+    if fold_deltas:
         lines.extend([
-            "| 折 | 区间 | RankIC | ICIR | 年化净超额 | 相对财富 | 最大回撤 |",
-            "| ---: | --- | ---: | ---: | ---: | ---: | ---: |",
+            "| 折 | 基线净超额 | 候选净超额 | 增量 |",
+            "| ---: | ---: | ---: | ---: |",
         ])
         lines.extend(
             (
                 f"| {int(period.get('fold') or 0) + 1} | "
-                f"{period.get('start', '')} 至 {period.get('end', '')} | "
-                f"{float(period.get('rank_ic') or 0):+.4f} | "
-                f"{float(period.get('icir') or 0):+.3f} | "
-                f"{percent(period.get('net_excess_return'))} | "
-                f"{percent(period.get('cumulative_relative_wealth'))} | "
-                f"{percent(period.get('max_drawdown'))} |"
+                f"{percent(period.get('baseline_net_excess_return'))} | "
+                f"{percent(period.get('candidate_net_excess_return'))} | "
+                f"{percent(period.get('delta'))} |"
             )
-            for period in subperiods
+            for period in fold_deltas
         )
     else:
         lines.append("暂无分阶段明细。")
     lines.extend([
         "",
-        "## 排名五档",
-        "",
-    ])
-    buckets = ranked.get("score_bucket_returns") or []
-    if buckets:
-        lines.extend([
-            "| 分数档位 | 平均未来超额 | 样本数 |",
-            "| ---: | ---: | ---: |",
-        ])
-        lines.extend(
-            (
-                f"| {int(bucket.get('bucket') or 0)} | "
-                f"{percent(bucket.get('mean_excess_return'))} | "
-                f"{int(bucket.get('observations') or 0)} |"
-            )
-            for bucket in buckets
-        )
-    else:
-        lines.append("暂无收益分档明细。")
-    lines.extend([
-        "",
         f"## 结论：{result['status']}",
         "",
         (
-            "开发门槛通过。下一步只能冻结版本并开始未来日期 Shadow，不能用旧最终窗回填。"
+            "候选在同折、同成本条件下赢过基线，可冻结版本进入未来 Shadow。"
             if gate["passed"]
-            else "开发门槛未通过，保持 Research；不得放松成本或校准门槛强行晋升。"
+            else "模型没有证明增量价值，保留透明基线并停止本轮模型迭代。"
         ),
         "",
         "未通过项：" + (", ".join(gate["reasons"]) if gate["reasons"] else "无"),
@@ -389,7 +444,7 @@ def evaluate_cross_sectional_candidate(
     observed_final_start: str,
     observed_final_end: str,
 ) -> dict[str, Any]:
-    """Run a two-target development ablation without mutating model registry."""
+    """Compare a transparent anchor with its bounded learned residual."""
 
     normalized = dataset.copy()
     normalized["trade_date"] = normalized["trade_date"].astype(str)
@@ -409,16 +464,10 @@ def evaluate_cross_sectional_candidate(
         "rebalance_frequency": str(model_spec.rebalance_frequency),
     }
     alpha = float(model_spec.parameter_map.get("alpha", 25.0))
-    raw = evaluate_ridge_target(
-        development,
-        feature_columns=feature_columns,
-        target_contract="raw_excess_return",
-        horizon=model_spec.horizon,
-        ridge_alpha=alpha,
-        portfolio_contract=effective_contract,
-        random_state=model_spec.random_state,
+    residual_weight = float(
+        model_spec.parameter_map.get("residual_tilt_weight", 0.10)
     )
-    ranked = evaluate_ridge_target(
+    baseline = evaluate_ridge_target(
         development,
         feature_columns=feature_columns,
         target_contract=model_spec.ranking_target,
@@ -426,22 +475,49 @@ def evaluate_cross_sectional_candidate(
         ridge_alpha=alpha,
         portfolio_contract=effective_contract,
         random_state=model_spec.random_state,
+        residual_weight=0.0,
     )
-    passed, reasons = _gate_metrics(ranked)
+    candidate = evaluate_ridge_target(
+        development,
+        feature_columns=feature_columns,
+        target_contract=model_spec.ranking_target,
+        horizon=model_spec.horizon,
+        ridge_alpha=alpha,
+        portfolio_contract=effective_contract,
+        random_state=model_spec.random_state,
+        residual_weight=residual_weight,
+    )
+    gate = _incremental_gate(baseline, candidate)
     safe_as_of = str(as_of).replace("-", "")
     safe_scope = str(account_scope).replace("/", "_")
     root = Path(repo_root)
     report_root = root / "reports" / "research"
     report_root.mkdir(parents=True, exist_ok=True)
-    json_path = report_root / f"cross_sectional_alpha_repair_{safe_as_of}_{safe_scope}.json"
-    report_path = report_root / f"cross_sectional_alpha_repair_{safe_as_of}_{safe_scope}.md"
+    json_path = report_root / f"baseline_first_{safe_as_of}_{safe_scope}.json"
+    report_path = report_root / f"baseline_first_{safe_as_of}_{safe_scope}.md"
+    ledger = TrialLedger(
+        root / "data" / "research" / "baseline_first" / str(market)
+        / safe_scope / "trial_ledger.json"
+    )
+    declaration = ledger.declare(
+        family_id=f"baseline-first-v1:{market}:{safe_scope}",
+        objective="candidate_incremental_net_return",
+        specs=(
+            {"spec_id": "transparent_baseline", "spec_hash": model_spec.spec_hash},
+            {"spec_id": "bounded_residual", "spec_hash": model_spec.spec_hash},
+        ),
+        max_specs=3,
+    )
     result = _json_safe({
         "schema_version": 1,
         "evaluation_contract": EVALUATION_CONTRACT,
-        "status": "development_pass" if passed else "research",
+        "status": gate["status"],
+        "decision": "candidate_wins" if gate["passed"] else gate["status"],
         "market": str(market),
         "account_scope": str(account_scope),
+        "horizon": int(model_spec.horizon),
         "as_of": safe_as_of,
+        "training_protocol_version": TRAINING_PROTOCOL_VERSION,
         "model_spec_id": model_spec.spec_id,
         "model_spec_hash": model_spec.spec_hash,
         "development_start": str(development_start),
@@ -451,23 +527,37 @@ def evaluate_cross_sectional_candidate(
         "observed_final_status": "diagnostic_only_already_observed",
         "formal_order_source": False,
         "registry_mutated": False,
+        "baseline": baseline,
+        "candidate": candidate,
         "target_ablation": {
-            "raw_excess_return": raw,
-            model_spec.ranking_target: ranked,
+            "transparent_baseline": baseline,
+            model_spec.ranking_target: candidate,
         },
         "improvement": {
-            "rank_ic": float(ranked.get("rank_ic") or 0.0)
-            - float(raw.get("rank_ic") or 0.0),
-            "net_excess_return": float(ranked.get("net_excess_return") or 0.0)
-            - float(raw.get("net_excess_return") or 0.0),
+            "rank_ic": float(candidate.get("rank_ic") or 0.0)
+            - float(baseline.get("rank_ic") or 0.0),
+            "net_excess_return": gate["net_excess_return_delta"],
             "cumulative_relative_wealth": float(
-                ranked.get("cumulative_relative_wealth") or 0.0
-            ) - float(raw.get("cumulative_relative_wealth") or 0.0),
+                candidate.get("cumulative_relative_wealth") or 0.0
+            ) - float(baseline.get("cumulative_relative_wealth") or 0.0),
         },
-        "development_gate": {"passed": passed, "reasons": reasons},
+        "incremental_gate": gate,
+        "development_gate": {
+            "passed": gate["passed"],
+            "reasons": gate["reasons"],
+        },
+        "trial_declaration_id": declaration["declaration_id"],
         "report_path": str(report_path),
         "json_path": str(json_path),
     })
+    ledger.finalize(
+        run_id=f"{safe_as_of}:{model_spec.spec_hash}",
+        declaration_id=str(declaration["declaration_id"]),
+        results=(
+            {"spec_id": "transparent_baseline", "net_excess_return": baseline.get("net_excess_return")},
+            {"spec_id": "bounded_residual", "net_excess_return": candidate.get("net_excess_return")},
+        ),
+    )
     write_text_atomic(
         json_path,
         json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True),
@@ -479,6 +569,7 @@ def evaluate_cross_sectional_candidate(
 
 __all__ = [
     "EVALUATION_CONTRACT",
+    "_incremental_gate",
     "evaluate_cross_sectional_candidate",
     "evaluate_ridge_target",
 ]

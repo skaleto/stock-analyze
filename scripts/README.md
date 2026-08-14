@@ -15,7 +15,7 @@ jobs and Claude CLI orchestration are retired.
 | Preview latest weekly status | `./scripts/weekly.sh` |
 | Preview previous-month status | `./scripts/monthly.sh` |
 | Warm Dashboard global and strategy first-screen caches | `python3 scripts/warm-dashboard-cache.py` |
-| Run checksummed classical-model training on this Mac | `./scripts/run-local-classical-tournament.sh a_share YYYY-MM-DD` |
+| Run checksummed baseline-first research on this Mac | `./scripts/run-local-baseline-first-research.sh a_share YYYY-MM-DD` |
 
 Set the remote explicitly; do not rely on an SSH alias:
 
@@ -25,11 +25,14 @@ export SA_ECS_SSH_OPTS='-i <key>'
 export RSYNC_RSH='ssh -i <key>'
 ```
 
-The local classical-model runner exports only immutable feature and label
-snapshots from ECS, verifies hashes before training, and sends back only
-`Research`, `Shadow`, or `Rejected` model artifacts. Its ECS import preserves
-all existing Champion pointers and rejects any Active model state. Limit CPU
-usage with `MODEL_TRAIN_CPU_COUNT=8`.
+The local baseline-first runner exports only immutable feature, label, and
+frozen-window manifests from ECS and verifies their hashes before training. A
+model is sent back only when its bounded residual beats the transparent
+baseline on the declared development folds; a losing candidate produces a
+local stop report and no model bundle. ECS import preserves all existing
+Champion pointers and rejects any Active model state. Limit CPU usage with
+`MODEL_TRAIN_CPU_COUNT=8`. The old
+`run-local-classical-tournament.sh` name remains a compatibility alias only.
 
 ## Daily And Weekly Runtime
 
@@ -41,7 +44,7 @@ usage with `MODEL_TRAIN_CPU_COUNT=8`.
 - A-share weekly workers: Sat 10:00.
 - QDII weekly workers: Sat 10:15.
 - One weekly status and review reminder: Sat 10:45.
-- Challenger model training: day 1 at 02:30.
+- Baseline-first label refresh and challenger evaluation: day 1 at 02:30.
 - Monthly review: day 1 at 09:00.
 - One monthly evolution reminder: day 1 at 09:30.
 

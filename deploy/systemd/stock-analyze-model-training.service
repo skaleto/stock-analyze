@@ -1,5 +1,5 @@
 [Unit]
-Description=Stock Analyze monthly calibrated challenger model training
+Description=Stock Analyze monthly baseline-first challenger research
 After=network-online.target
 Wants=network-online.target
 OnFailure=stock-analyze-pipeline-failure@%n.service
@@ -8,6 +8,10 @@ OnFailure=stock-analyze-pipeline-failure@%n.service
 Type=oneshot
 WorkingDirectory=/opt/stock-analyze/app
 Environment=TZ=Asia/Shanghai
-ExecStart=/usr/bin/flock --nonblock /run/stock-analyze-model-training.lock /bin/bash -lc 'set -euo pipefail; for market in a_share cn_qdii_etf; do /opt/stock-analyze/venv/bin/python -m stock_analyze.cli --market "$market" --agent codex run-classical-tournament --offline; done'
+Environment=OMP_NUM_THREADS=2
+Environment=MKL_NUM_THREADS=2
+Environment=OPENBLAS_NUM_THREADS=2
+Environment=LOKY_MAX_CPU_COUNT=2
+ExecStart=/usr/bin/flock --nonblock /run/stock-analyze-model-training.lock /bin/bash -lc 'set -euo pipefail; for market in a_share cn_qdii_etf; do /opt/stock-analyze/venv/bin/python -m stock_analyze.cli --market "$market" --agent codex refresh-research-labels --offline; /opt/stock-analyze/venv/bin/python -m stock_analyze.cli --market "$market" --agent codex run-baseline-first-research --offline; done'
 StandardOutput=append:/opt/stock-analyze/logs/model-training.log
 StandardError=append:/opt/stock-analyze/logs/model-training.err
