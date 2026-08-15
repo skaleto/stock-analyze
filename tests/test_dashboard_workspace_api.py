@@ -271,6 +271,65 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertEqual(campaign["scopes"][1]["transparentTrialCount"], 6)
         self.assertEqual(campaign["scopes"][1]["netExcessReturn"], -0.0035)
 
+    def test_newer_transparent_campaign_supersedes_older_final_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reports = root / "reports/research"
+            reports.mkdir(parents=True)
+            old_final = reports / "strategy-recovery-20260814-v1-final.json"
+            old_final.write_text(json.dumps({
+                "status": "complete",
+                "campaign_id": "strategy-recovery-20260814-v1",
+                "manifest_hash": "old-manifest",
+                "completed_at": "2026-08-14T18:00:00",
+                "formal_strategy_activated": False,
+                "scopes": [{
+                    "market": "a_share",
+                    "account_scope": "hs300",
+                    "status": "falsified",
+                    "best_diagnostic_spec_id": "A_MOM_01",
+                    "diagnostic_only": True,
+                    "trials": [{
+                        "spec_id": "A_MOM_01",
+                        "metrics": {"net_return": -0.01},
+                    }],
+                }],
+            }), encoding="utf-8")
+            new_transparent = (
+                reports / "strategy-recovery-20260815-v4-transparent.json"
+            )
+            new_transparent.write_text(json.dumps({
+                "status": "transparent_complete",
+                "campaign_id": "strategy-recovery-20260815-v4",
+                "manifest_hash": "new-manifest",
+                "completed_at": "2026-08-15T08:05:47",
+                "formal_strategy_activated": False,
+                "scopes": [{
+                    "market": "a_share",
+                    "account_scope": "hs300",
+                    "status": "shadow_ready",
+                    "selected_spec_id": "A_MOM_02",
+                    "trials": [{
+                        "spec_id": "A_MOM_02",
+                        "metrics": {"net_return": 0.10},
+                    }],
+                }],
+            }), encoding="utf-8")
+            old_final.touch()
+            new_transparent.touch()
+
+            payload = self._build(
+                root,
+                models={"status": "available", "models": []},
+            )
+
+        campaign = payload["strategyCampaign"]
+        self.assertEqual(campaign["campaignId"], "strategy-recovery-20260815-v4")
+        self.assertEqual(campaign["status"], "transparent_complete")
+        self.assertEqual(campaign["manifestHash"], "new-manifest")
+        self.assertEqual(campaign["scopes"][0]["status"], "shadow_ready")
+        self.assertEqual(campaign["scopes"][0]["selectedRuleSpecId"], "A_MOM_02")
+
     def test_latest_unified_arena_projects_bounded_comparison(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
