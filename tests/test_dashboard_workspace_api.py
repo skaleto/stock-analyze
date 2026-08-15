@@ -1681,6 +1681,11 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
                             "source_campaign": "campaign-v1",
                             "source_trial_id": "a-zz500-mom",
                             "participation_status": "shadow_running",
+                            "historical_net_return": 0.103,
+                            "historical_net_excess_return": -0.042,
+                            "historical_cost_stress_net_excess_return": -0.058,
+                            "historical_max_drawdown": 0.233,
+                            "historical_target_fill_ratio": 0.983,
                         },
                     ],
                     accounts=[
@@ -1711,6 +1716,20 @@ class DashboardWorkspaceApiTests(unittest.TestCase):
         self.assertEqual(by_account["zz500"]["candidateVersion"], "rule-a-mom-v1")
         self.assertEqual(by_account["zz500"]["candidateKind"], "transparent_rule")
         self.assertEqual(by_account["zz500"]["admissionGrade"], "exploratory")
+        self.assertEqual(by_account["zz500"]["historicalNetReturn"], 0.103)
+        self.assertEqual(
+            by_account["zz500"]["historicalNetExcessReturn"],
+            -0.042,
+        )
+        self.assertEqual(
+            by_account["zz500"]["historicalCostStressNetExcessReturn"],
+            -0.058,
+        )
+        self.assertEqual(by_account["zz500"]["historicalMaxDrawdown"], 0.233)
+        self.assertEqual(
+            by_account["zz500"]["historicalTargetFillRatio"],
+            0.983,
+        )
         self.assertEqual(by_account["zz500"]["rebalanceFrequency"], "monthly")
         self.assertTrue(by_account["zz500"]["rebalanceDue"])
         self.assertEqual(

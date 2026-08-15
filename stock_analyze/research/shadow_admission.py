@@ -572,6 +572,12 @@ def admit_campaign_shadows(
                     "historical_positive_excess_folds": selected[
                         "positive_excess_folds"
                     ],
+                    "historical_target_fill_ratio": selected[
+                        "target_fill_ratio"
+                    ],
+                    "historical_bootstrap_probability": selected[
+                        "bootstrap_probability"
+                    ],
                 },
             },
             admission={

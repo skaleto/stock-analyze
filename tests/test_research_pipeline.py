@@ -2393,6 +2393,60 @@ class ResearchPipelineTest(unittest.TestCase):
             any(call.kwargs.get("account_scope") == "hs300" for call in write_candidate.call_args_list)
         )
 
+    def test_unregistered_formal_model_is_unavailable_not_failed_when_rule_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="codex",
+                as_of="2026-07-10",
+                offline=True,
+            )
+            pipeline.store.write_feature_snapshot(
+                "a_share",
+                "2026-07-10",
+                pd.DataFrame([self._scoped_feature()]),
+            )
+
+            with (
+                patch.object(
+                    pipeline,
+                    "_resolve_model_roles_with_provenance",
+                    return_value=(
+                        root / "missing.joblib",
+                        {
+                            "classifier": "research",
+                            "ranker": "research",
+                            "portfolio": "research",
+                        },
+                        {
+                            "requested_scope": "hs300",
+                            "selected_scope": "hs300",
+                            "resolution": "missing",
+                            "fallback_reason": "registered_model_unavailable",
+                        },
+                    ),
+                ),
+                patch.object(
+                    pipeline,
+                    "_write_iteration_candidate_predictions",
+                    return_value={
+                        "model_version": "rule-a-mom",
+                        "status": "shadow",
+                        "shadow_cycles": 0,
+                        "prediction_path": "rule.parquet",
+                        "predictions": 1,
+                    },
+                ),
+            ):
+                result = pipeline.predict(horizon=20)
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["failures"], [])
+        self.assertEqual(result["unavailable_models"][0]["account_scope"], "hs300")
+        self.assertIn("hs300:20", result["iteration_candidates"])
+
     def test_pinned_iteration_candidate_runs_alongside_existing_champion(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

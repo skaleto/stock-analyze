@@ -415,17 +415,28 @@ describe("fetchModelResearch", () => {
       rebalanceFrequency: "monthly",
       rebalanceDue: true,
       targetRiskyExposure: 1,
+      historicalNetReturn: 0.103,
+      historicalNetExcessReturn: -0.042,
+      historicalCostStressNetExcessReturn: -0.058,
+      historicalMaxDrawdown: 0.233,
+      historicalTargetFillRatio: 0.983,
     }];
-    const invalid = structuredClone(valid);
-    invalid.simulation.accounts[0].admissionGrade = 42;
+    const invalidGrade = structuredClone(valid);
+    invalidGrade.simulation.accounts[0].admissionGrade = 42;
+    const invalidMetric = structuredClone(valid);
+    invalidMetric.simulation.accounts[0].historicalNetReturn = "bad";
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse(valid))
-      .mockResolvedValueOnce(jsonResponse(invalid));
+      .mockResolvedValueOnce(jsonResponse(invalidGrade))
+      .mockResolvedValueOnce(jsonResponse(invalidMetric));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(fetchModelResearch("a_share")).resolves.toEqual(valid);
     await expect(fetchModelResearch("a_share")).rejects.toThrow(
       "Invalid model research response: simulation.accounts[0].admissionGrade",
+    );
+    await expect(fetchModelResearch("a_share")).rejects.toThrow(
+      "Invalid model research response: simulation.accounts[0].historicalNetReturn",
     );
   });
 

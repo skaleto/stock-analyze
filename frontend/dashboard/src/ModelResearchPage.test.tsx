@@ -918,6 +918,11 @@ describe("ModelResearchPage", () => {
             participationStatus: "shadow_running",
             rebalanceFrequency: "monthly",
             rebalanceDue: true,
+            historicalNetReturn: 0.103029,
+            historicalNetExcessReturn: -0.042066,
+            historicalCostStressNetExcessReturn: -0.057848,
+            historicalMaxDrawdown: 0.233433,
+            historicalTargetFillRatio: 0.983333,
           },
         ],
         evaluation: {
@@ -1000,6 +1005,12 @@ describe("ModelResearchPage", () => {
     expect(within(simulation).getByText("A_MOM_02")).toBeInTheDocument();
     expect(within(simulation).getByText("探索型")).toBeInTheDocument();
     expect(within(simulation).getByText("Shadow 运行中")).toBeInTheDocument();
+    expect(within(simulation).getByText("净 10.30%")).toBeInTheDocument();
+    expect(
+      within(simulation).getByText("超额 -4.21% · 回撤 23.34%"),
+    ).toBeInTheDocument();
+    expect(within(simulation).getByText("压力 -5.78% · 成交 98.33%"))
+      .toBeInTheDocument();
     expect(within(simulation).getByText("每月 · 本期调仓")).toBeInTheDocument();
     expect(within(simulation).getByText("5.00%")).toBeInTheDocument();
     expect(within(simulation).getByText("8.50%")).toBeInTheDocument();

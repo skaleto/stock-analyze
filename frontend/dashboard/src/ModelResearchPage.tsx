@@ -1639,6 +1639,21 @@ function ModelResearchDetail({
                     render: (row) => shadowParticipationLabel(row.participationStatus),
                   },
                   {
+                    key: "historical-evidence",
+                    label: "历史证据",
+                    render: (row) => row.historicalNetReturn == null ? "-" : (
+                      <span className="shadow-history-evidence">
+                        <strong>净 {percent(row.historicalNetReturn)}</strong>
+                        <small>
+                          超额 {percent(row.historicalNetExcessReturn)} · 回撤 {percent(row.historicalMaxDrawdown)}
+                        </small>
+                        <small>
+                          压力 {percent(row.historicalCostStressNetExcessReturn)} · 成交 {percent(row.historicalTargetFillRatio)}
+                        </small>
+                      </span>
+                    ),
+                  },
+                  {
                     key: "rebalance",
                     label: "调仓状态",
                     render: (row) => rebalanceStateLabel(
