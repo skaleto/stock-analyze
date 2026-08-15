@@ -582,6 +582,20 @@ def admit_campaign_shadows(
                 "promotion_policy": RULE_PROMOTION_POLICY,
             },
         )
+        prior_rule_versions = [
+            candidate_version
+            for candidate_version, metadata in (state.get("models") or {}).items()
+            if candidate_version != version
+            and str((metadata or {}).get("candidate_kind") or "")
+            == "transparent_rule"
+            and str((metadata or {}).get("status") or "") == "shadow"
+        ]
+        for prior_version in prior_rule_versions:
+            state = registry.supersede_shadow(
+                prior_version,
+                successor_version=version,
+                event_id=f"shadow-superseded:{prior_version}:{version}",
+            )
         model = state["models"][version]
         admitted.append({
             "market": market,

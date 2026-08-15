@@ -239,6 +239,8 @@ class PersonalQuantShadowAdmissionTest(unittest.TestCase):
         self.assertIn("target_fill_ratio", failures["Q_TREND_01"])
 
     def test_admission_freezes_artifact_and_is_idempotent(self):
+        from stock_analyze.model_iteration import model_registry_path
+        from stock_analyze.research.activation import ModelRegistry
         from stock_analyze.research.classical_specs import transparent_strategy_specs
         from stock_analyze.research.shadow_admission import admit_campaign_shadows
 
@@ -328,6 +330,18 @@ class PersonalQuantShadowAdmissionTest(unittest.TestCase):
                 config.parent.mkdir(parents=True)
                 config.write_text(json.dumps({"accounts": accounts, "trading": trading}), encoding="utf-8")
 
+            old_registry_path = model_registry_path(
+                root,
+                "a_share",
+                20,
+                account_scope="zz500",
+            )
+            ModelRegistry(old_registry_path).admit_development_shadow(
+                "old-transparent-rule",
+                metadata={"candidate_kind": "transparent_rule"},
+                admission={"contract": "personal-quant-shadow-v1"},
+            )
+
             first = admit_campaign_shadows(root, report_path)
             second = admit_campaign_shadows(root, report_path)
 
@@ -344,7 +358,21 @@ class PersonalQuantShadowAdmissionTest(unittest.TestCase):
                 self.assertIsNone(registry["champion_model_version"])
                 self.assertEqual(model["candidate_kind"], "transparent_rule")
                 self.assertEqual(artifact["manifest_hash"], manifest_hash)
-                self.assertEqual(len(registry["lifecycle_events"]), 1)
+                event_ids = [event["event_id"] for event in registry["lifecycle_events"]]
+                self.assertEqual(len(event_ids), len(set(event_ids)))
+                active_rules = [
+                    candidate
+                    for candidate in registry["models"].values()
+                    if candidate.get("candidate_kind") == "transparent_rule"
+                    and candidate.get("status") == "shadow"
+                ]
+                self.assertEqual(len(active_rules), 1)
+
+            old_registry = json.loads(old_registry_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                old_registry["models"]["old-transparent-rule"]["status"],
+                "superseded",
+            )
 
 
 if __name__ == "__main__":

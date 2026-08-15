@@ -593,6 +593,48 @@ class ModelRegistry:
         self._write(state)
         return state
 
+    def supersede_shadow(
+        self,
+        model_version: str,
+        *,
+        successor_version: str,
+        event_id: str,
+    ) -> dict:
+        """Retire one Shadow when an audited successor owns the same account."""
+
+        state = self._read()
+        models = state.setdefault("models", {})
+        model = models.get(model_version)
+        if model is None:
+            raise ValueError("model_version_missing")
+        if successor_version not in models:
+            raise ValueError("successor_model_version_missing")
+        events = state.setdefault("lifecycle_events", [])
+        if any(str(event.get("event_id") or "") == str(event_id) for event in events):
+            return state
+        if str(model.get("status") or "") != "shadow":
+            return state
+        model["status"] = "superseded"
+        model["superseded_by"] = str(successor_version)
+        for role, status in list((model.get("role_status") or {}).items()):
+            if status in {"research", "shadow"}:
+                model["role_status"][role] = "superseded"
+        evaluated_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        model["shadow_evaluation"] = {
+            "evaluated_at": evaluated_at,
+            "status": "superseded",
+            "successor_version": str(successor_version),
+        }
+        events.append({
+            "event_id": str(event_id),
+            "event_type": "shadow_superseded",
+            "model_version": model_version,
+            "successor_version": str(successor_version),
+            "evaluated_at": evaluated_at,
+        })
+        self._write(state)
+        return state
+
     def record_gate(self, model_version: str, report: GateReport) -> dict:
         state = self._read()
         model = state.setdefault("models", {}).setdefault(
