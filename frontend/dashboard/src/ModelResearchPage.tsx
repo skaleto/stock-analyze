@@ -239,7 +239,12 @@ function baselineLabel(input: string): string {
 }
 
 function workspaceStatus(status: string | null | undefined): WorkspaceStatus {
-  if (status === "complete" || status === "active" || status === "passed") {
+  if (
+    status === "complete"
+    || status === "transparent_complete"
+    || status === "active"
+    || status === "passed"
+  ) {
     return "success";
   }
   if (status === "running" || status === "research" || status === "failed") {
