@@ -972,6 +972,19 @@ def score_transparent_strategy(
         else:
             raise ValueError(f"transparent_strategy_unknown:{spec.spec_id}")
 
+        max_risky_exposure = spec.parameter_map.get("max_risky_exposure")
+        if max_risky_exposure is not None:
+            exposure_cap = float(max_risky_exposure)
+            if not 0.0 <= exposure_cap <= 1.0:
+                raise ValueError(
+                    f"transparent_strategy_exposure_cap:{spec.spec_id}"
+                )
+            result["_target_risky_exposure"] = pd.to_numeric(
+                result["_target_risky_exposure"],
+                errors="coerce",
+            ).clip(upper=exposure_cap)
+            result["risk_budget_cap"] = exposure_cap
+
     if spec.spec_id in {"A_REGIME_01", "A_REGIME_02"}:
         if not {"benchmark_close", "benchmark_sma_200"}.issubset(result.columns):
             raise ValueError("transparent_strategy_benchmark_regime_missing")

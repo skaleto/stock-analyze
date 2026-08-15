@@ -234,6 +234,7 @@ def transparent_strategy_specs(
                 parameters=_parameters(
                     trend_windows=[120, 200],
                     exposure_by_positive_votes={"0": 0.0, "1": 0.5, "2": 1.0},
+                    max_risky_exposure=0.85,
                     rebalance_trading_days=5,
                 ),
                 hypothesis_id="qdii_slow_absolute_trend",
@@ -300,6 +301,7 @@ def transparent_strategy_specs(
                     product_quality_weight=0.20,
                     liquidity_weight=0.10,
                     trend_windows=[120, 200],
+                    max_risky_exposure=0.85,
                     rebalance_trading_days=5,
                 ),
                 hypothesis_id="qdii_slow_trend_product_quality",
