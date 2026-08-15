@@ -3536,6 +3536,8 @@ class ResearchPipeline:
             if resolved is None:
                 return None
             _, metadata = resolved
+            if str(metadata.get("candidate_kind") or "") == "transparent_rule":
+                return None
             fallback = str(metadata.get("status", "research"))
             statuses = {
                 role: str(
@@ -3738,6 +3740,7 @@ class ResearchPipeline:
             artifacts: dict[str, str] = {}
             statuses: dict[str, str] = {}
             failures: list[dict[str, Any]] = []
+            unavailable_models: list[dict[str, Any]] = []
             cycle_counts: dict[str, int] = {}
             iteration_candidates: dict[str, dict[str, Any]] = {}
             drift_assessments: dict[str, dict[str, Any]] = {}
@@ -3773,6 +3776,7 @@ class ResearchPipeline:
                         f"{account_scope}:{target_horizon}"
                         if account_scope else str(target_horizon)
                     )
+                    provenance: dict[str, str] = {}
                     try:
                         artifact, role_status, provenance = (
                             self._resolve_model_roles_with_provenance(
@@ -3884,12 +3888,22 @@ class ResearchPipeline:
                                 if candidate["model_version"] == bundle.model_version:
                                     statuses[key] = str(candidate["status"])
                     except Exception as exc:  # noqa: BLE001 - preserve successful scopes/horizons
-                        failures.append({
-                            "horizon": target_horizon,
-                            "account_scope": str(account_scope or ""),
-                            "stage": "formal_model_prediction",
-                            "error": str(exc)[:240],
-                        })
+                        if provenance.get("resolution") == "missing":
+                            unavailable_models.append({
+                                "horizon": target_horizon,
+                                "account_scope": str(account_scope or ""),
+                                "reason": str(
+                                    provenance.get("fallback_reason")
+                                    or "registered_model_unavailable"
+                                ),
+                            })
+                        else:
+                            failures.append({
+                                "horizon": target_horizon,
+                                "account_scope": str(account_scope or ""),
+                                "stage": "formal_model_prediction",
+                                "error": str(exc)[:240],
+                            })
                         if self.agent == "codex" and account_scope is not None:
                             try:
                                 candidate = self._write_iteration_candidate_predictions(
@@ -3976,6 +3990,7 @@ class ResearchPipeline:
                 "artifacts": artifacts,
                 "active_status": statuses,
                 "failures": failures,
+                "unavailable_models": unavailable_models,
                 "shadow_cycles": cycle_counts,
                 "iteration_candidates": iteration_candidates,
                 "model_resolution": model_resolution,

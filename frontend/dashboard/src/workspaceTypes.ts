@@ -394,6 +394,12 @@ export type ModelResearchData = {
       sourceTrialId?: string;
       participationStatus?: string;
       predictionStatus?: string;
+      historicalNetReturn?: number | null;
+      historicalNetExcessReturn?: number | null;
+      historicalCostStressNetExcessReturn?: number | null;
+      historicalMaxDrawdown?: number | null;
+      historicalTargetFillRatio?: number | null;
+      historicalBootstrapProbability?: number | null;
       rebalanceFrequency?: string;
       rebalanceDue?: boolean | null;
       lastRebalanceSignalDate?: string | null;

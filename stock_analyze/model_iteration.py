@@ -258,6 +258,9 @@ def model_version_summary(
     )
     model_cycles = (cycle_state.get("models") or {}).get(model_version) or {}
     cycle_count = usable_shadow_cycle_count(model_cycles)
+    metrics = metadata.get("metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
     return {
         "market": str(market),
         "account_scope": str(account_scope or metadata.get("account_scope") or ""),
@@ -279,6 +282,20 @@ def model_version_summary(
         "source_campaign": metadata.get("source_campaign"),
         "source_trial_id": metadata.get("source_trial_id"),
         "promotion_policy": metadata.get("promotion_policy"),
+        "historical_net_return": metrics.get("historical_net_return"),
+        "historical_net_excess_return": metrics.get(
+            "historical_net_excess_return"
+        ),
+        "historical_cost_stress_net_excess_return": metrics.get(
+            "historical_cost_stress_net_excess_return"
+        ),
+        "historical_max_drawdown": metrics.get("historical_max_drawdown"),
+        "historical_target_fill_ratio": metrics.get(
+            "historical_target_fill_ratio"
+        ),
+        "historical_bootstrap_probability": metrics.get(
+            "historical_bootstrap_probability"
+        ),
     }
 
 

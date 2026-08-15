@@ -3290,6 +3290,23 @@ a:hover { text-decoration: underline; }
   color: var(--text);
 }
 
+.shadow-history-evidence {
+  display: block;
+  min-width: 190px;
+}
+
+.shadow-history-evidence strong,
+.shadow-history-evidence small {
+  display: block;
+}
+
+.shadow-history-evidence small {
+  margin-top: 2px;
+  color: var(--faint);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
 .model-metrics-table .bounded-table {
   min-width: 1680px;
 }

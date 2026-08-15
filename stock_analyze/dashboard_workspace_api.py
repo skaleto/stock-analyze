@@ -1351,6 +1351,24 @@ def _simulation_accounts(iteration: dict[str, Any]) -> list[dict[str, Any]]:
                 limit=128,
             ),
             "predictionStatus": _text(candidate.get("prediction_status"), limit=128),
+            "historicalNetReturn": _finite_number(
+                candidate.get("historical_net_return")
+            ),
+            "historicalNetExcessReturn": _finite_number(
+                candidate.get("historical_net_excess_return")
+            ),
+            "historicalCostStressNetExcessReturn": _finite_number(
+                candidate.get("historical_cost_stress_net_excess_return")
+            ),
+            "historicalMaxDrawdown": _finite_number(
+                candidate.get("historical_max_drawdown")
+            ),
+            "historicalTargetFillRatio": _finite_number(
+                candidate.get("historical_target_fill_ratio")
+            ),
+            "historicalBootstrapProbability": _finite_number(
+                candidate.get("historical_bootstrap_probability")
+            ),
             "rebalanceFrequency": _text(
                 raw.get("rebalance_frequency"), limit=128
             ),

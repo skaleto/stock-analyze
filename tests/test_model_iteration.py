@@ -49,7 +49,17 @@ class ModelIterationLifecycleTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._write_registry(root, "a_share", 20, {
-                "models": {"candidate": {"status": "shadow"}},
+                "models": {"candidate": {
+                    "status": "shadow",
+                    "metrics": {
+                        "historical_net_return": 0.103,
+                        "historical_net_excess_return": -0.042,
+                        "historical_cost_stress_net_excess_return": -0.058,
+                        "historical_max_drawdown": 0.233,
+                        "historical_target_fill_ratio": 0.983,
+                        "historical_bootstrap_probability": 0.57,
+                    },
+                }},
             })
             cycles_path = (
                 root / "data/research/models/a_share/20/shadow_cycles.json"
@@ -72,6 +82,15 @@ class ModelIterationLifecycleTest(unittest.TestCase):
 
         self.assertEqual(summary["shadow_cycles"], 5)
         self.assertEqual(summary["shadow_cycles_remaining"], 7)
+        self.assertEqual(summary["historical_net_return"], 0.103)
+        self.assertEqual(summary["historical_net_excess_return"], -0.042)
+        self.assertEqual(
+            summary["historical_cost_stress_net_excess_return"],
+            -0.058,
+        )
+        self.assertEqual(summary["historical_max_drawdown"], 0.233)
+        self.assertEqual(summary["historical_target_fill_ratio"], 0.983)
+        self.assertEqual(summary["historical_bootstrap_probability"], 0.57)
 
     def test_research_candidate_rotates_when_newer_research_model_arrives(self):
         from stock_analyze.model_iteration import ensure_iteration_candidate, read_iteration_state

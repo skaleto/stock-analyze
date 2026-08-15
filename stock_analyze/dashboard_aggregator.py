@@ -661,6 +661,12 @@ def _public_account_candidates(value: Any) -> list[dict[str, Any]]:
         "promotion_policy",
         "shadow_cycles",
         "shadow_cycles_remaining",
+        "historical_net_return",
+        "historical_net_excess_return",
+        "historical_cost_stress_net_excess_return",
+        "historical_max_drawdown",
+        "historical_target_fill_ratio",
+        "historical_bootstrap_probability",
     )
     return [
         {key: row.get(key) for key in fields if key in row}

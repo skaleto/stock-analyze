@@ -394,11 +394,8 @@ function validateSystemModelVersion(
       "display_version",
       "status",
       "status_label",
-      "champion_model_version",
       "shadow_cycles",
       "shadow_cycles_remaining",
-      "registered_at",
-      "artifact",
     ],
     [
       "market",
@@ -421,6 +418,12 @@ function validateSystemModelVersion(
       "source_campaign",
       "source_trial_id",
       "promotion_policy",
+      "historical_net_return",
+      "historical_net_excess_return",
+      "historical_cost_stress_net_excess_return",
+      "historical_max_drawdown",
+      "historical_target_fill_ratio",
+      "historical_bootstrap_probability",
     ],
   );
   const market = systemString(version.market, `${path}.market`);
@@ -447,6 +450,14 @@ function validateSystemModelVersion(
     "source_trial_id",
     "promotion_policy",
   ].forEach((key) => systemOptionalString(version[key], `${path}.${key}`));
+  [
+    "historical_net_return",
+    "historical_net_excess_return",
+    "historical_cost_stress_net_excess_return",
+    "historical_max_drawdown",
+    "historical_target_fill_ratio",
+    "historical_bootstrap_probability",
+  ].forEach((key) => systemOptionalNumber(version[key], `${path}.${key}`));
   ["horizon", "shadow_cycles", "shadow_cycles_remaining"].forEach(
     (key) => systemInteger(version[key], `${path}.${key}`),
   );
@@ -1780,6 +1791,16 @@ function validateModelResearch(value: unknown): ModelResearchData {
         if (account.targetRiskyExposure != null) {
           numberAt(account.targetRiskyExposure, `${path}.targetRiskyExposure`);
         }
+        [
+          "historicalNetReturn",
+          "historicalNetExcessReturn",
+          "historicalCostStressNetExcessReturn",
+          "historicalMaxDrawdown",
+          "historicalTargetFillRatio",
+          "historicalBootstrapProbability",
+        ].forEach((key) => {
+          if (account[key] != null) numberAt(account[key], `${path}.${key}`);
+        });
         optionalString(account.date, `${path}.date`);
         ["cash", "marketValue", "totalValue", "benchmarkClose"].forEach(
           (key) => {
