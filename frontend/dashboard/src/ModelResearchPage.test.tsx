@@ -413,6 +413,52 @@ describe("ModelResearchPage", () => {
     expect(screen.getByText("未接入正式策略")).toBeInTheDocument();
   });
 
+  it("renders a completed transparent campaign as successful", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({
+      ...payload,
+      strategyCampaign: {
+        status: "transparent_complete",
+        campaignId: "strategy-recovery-20260815-v4",
+        manifestHash: "manifest-hash-v4",
+        completedAt: "2026-08-15T08:05:47",
+        formalStrategyActivated: false,
+        scopes: [{
+          accountScope: "hs300",
+          status: "falsified",
+          selectedRuleSpecId: null,
+          selectedIncrementalSpecId: null,
+          bestDiagnosticSpecId: "A_MOM_02",
+          diagnosticOnly: true,
+          reasons: ["no_transparent_candidate_passed_gates_1_2"],
+          transparentTrialCount: 6,
+          incrementalTrialCount: 0,
+          netReturn: 0.10,
+          benchmarkReturn: 0.15,
+          netExcessReturn: -0.04,
+          sharpe: 0.45,
+          maxDrawdown: 0.23,
+          targetFillRatio: 0.98,
+          costStressNetExcessReturn: -0.05,
+          deflatedSharpeProbability: 0.08,
+          probabilityOfBacktestOverfit: 0,
+          pairedBootstrapProbability: 0.35,
+          attribution: { status: "reconciled" },
+          folds: [],
+          regimes: {},
+        }],
+      },
+    })));
+
+    render(<ModelResearchPage market="a_share" refreshToken={0} />);
+
+    const campaign = await screen.findByRole("region", {
+      name: "封闭策略验证",
+    });
+    expect(within(campaign).getByText("成功")).toBeInTheDocument();
+    expect(within(campaign).getByText("透明策略验收完成")).toBeInTheDocument();
+    expect(within(campaign).queryByText("状态不可用")).not.toBeInTheDocument();
+  });
+
   it("shows formal rules and candidate models in one historical window", async () => {
     vi.stubGlobal(
       "fetch",
