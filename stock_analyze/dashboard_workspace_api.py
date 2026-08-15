@@ -2455,16 +2455,13 @@ def _read_tabular_research_evidence(root: Path, market: str) -> dict[str, Any]:
 def _read_strategy_campaign(root: Path, market: str) -> dict[str, Any]:
     reports = root / "reports" / "research"
     candidates = sorted(
-        reports.glob("*-final.json"),
+        [
+            *reports.glob("*-final.json"),
+            *reports.glob("*-transparent.json"),
+        ],
         key=lambda path: (path.stat().st_mtime_ns, path.name),
         reverse=True,
     )
-    if not candidates:
-        candidates = sorted(
-            reports.glob("*-transparent.json"),
-            key=lambda path: (path.stat().st_mtime_ns, path.name),
-            reverse=True,
-        )
     unavailable = {
         "status": "unavailable",
         "campaignId": None,
