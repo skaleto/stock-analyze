@@ -144,6 +144,8 @@ class ResearchClassicalSpecsTest(unittest.TestCase):
         self.assertEqual({item.rebalance_frequency for item in a_share}, {"monthly"})
         self.assertEqual({item.rebalance_frequency for item in qdii}, {"weekly"})
         self.assertEqual(len({item.spec_hash for item in (*a_share, *qdii)}), 12)
+        self.assertEqual(qdii[1].parameter_map["max_risky_exposure"], 0.85)
+        self.assertEqual(qdii[5].parameter_map["max_risky_exposure"], 0.85)
 
     def test_strategy_recovery_specs_are_scope_local_without_scope_tuning(self) -> None:
         hs300 = transparent_strategy_specs("a_share", "hs300")

@@ -128,6 +128,27 @@ class ResearchModelsTest(unittest.TestCase):
         self.assertEqual(trend["positive_trend_votes"].tolist(), [2, 2, 1])
         self.assertEqual(dual["_eligible_for_selection"].tolist(), [True, True, False])
 
+    def test_qdii_risk_controlled_variants_cap_account_exposure(self):
+        frame = pd.DataFrame({
+            "trade_date": ["20260102"] * 3,
+            "code": ["159920", "513500", "513100"],
+            "momentum_60": [0.10, 0.08, 0.06],
+            "momentum_120": [0.12, 0.09, 0.05],
+            "sma_distance_200": [0.10, 0.08, 0.04],
+            "account_liquidity_percentile": [0.8, 0.6, 0.4],
+            "discount_premium": [0.01, 0.02, 0.03],
+            "tracking_error_20": [0.01, 0.02, 0.03],
+        })
+        specs = transparent_strategy_specs("cn_qdii_etf", "hk_exposure")
+
+        fast = score_transparent_strategy(frame, specs[0])
+        slow_capped = score_transparent_strategy(frame, specs[1])
+        tracking_capped = score_transparent_strategy(frame, specs[5])
+
+        self.assertTrue(fast["_target_risky_exposure"].eq(1.0).all())
+        self.assertTrue(slow_capped["_target_risky_exposure"].eq(0.85).all())
+        self.assertTrue(tracking_capped["_target_risky_exposure"].eq(0.85).all())
+
     def test_transparent_score_rescales_available_factors_without_future_fill(self):
         frame = pd.DataFrame({
             "trade_date": ["20260102"] * 2,
