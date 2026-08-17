@@ -923,6 +923,10 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertTrue(labels["benchmark_return"].notna().all())
         self.assertFalse(np.allclose(labels["absolute_return"], labels["excess_return"]))
         self.assertTrue(labels["entry_date"].gt(labels["trade_date"]).all())
+        float_columns = labels.select_dtypes(include=["floating"]).columns
+        self.assertTrue(
+            all(labels[column].dtype.itemsize <= 4 for column in float_columns)
+        )
         self.assertEqual(set(labels["label_contract_version"]), {LABEL_CONTRACT_VERSION})
         self.assertEqual(set(labels["account_id"]), {"hs300"})
         self.assertEqual(len(feature_metadata["registry_hash"]), 16)

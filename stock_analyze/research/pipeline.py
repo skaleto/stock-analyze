@@ -1863,8 +1863,11 @@ class ResearchPipeline:
             ):
                 if column in account_features.columns:
                     part[column] = account_features[column].iloc[0]
+            part = self._compact_numeric_features(part, copy=False)
             label_parts.append(part)
             benchmark_coverages.append(float(coverage))
+            del account_features, label_prices, part, benchmark
+            gc.collect()
         if not label_parts:
             raise ValueError(f"research_label_scope_missing:{self.market}")
         labels = pd.concat(label_parts, ignore_index=True, sort=False)
