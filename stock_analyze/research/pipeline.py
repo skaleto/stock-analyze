@@ -643,6 +643,20 @@ class ResearchPipeline:
             raise ValueError("a_share_materialized_online_prepare_forbidden")
         destination = self.store.feature_snapshot_path(self.market, self.as_of)
         if destination.exists() and not force:
+            manifest = destination.with_suffix(".metadata.json")
+            if manifest.exists():
+                try:
+                    metadata = json.loads(manifest.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    metadata = {}
+                if metadata.get("registry_hash") == DEFAULT_REGISTRY_HASH:
+                    return {
+                        "status": "cached",
+                        "rows": pq.ParquetFile(destination).metadata.num_rows,
+                        "path": str(destination),
+                        "feature_registry_hash": DEFAULT_REGISTRY_HASH,
+                        "feature_manifest": str(manifest),
+                    }
             cached = self.store.read_feature_snapshot(self.market, self.as_of)
             manifest = self._write_feature_registry_manifest(cached, destination)
             return {
