@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import json
 import hashlib
+import os
 import re
 import tempfile
 from dataclasses import asdict, replace
@@ -15,6 +16,7 @@ from typing import Any, Iterable
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from .. import competition
@@ -1874,19 +1876,160 @@ class ResearchPipeline:
         benchmark_coverage = min(benchmark_coverages)
         return labels, benchmark_coverage
 
+    def _write_forward_label_snapshot(
+        self,
+        features: pd.DataFrame,
+        destination: Path,
+        *,
+        code_batch_size: int = 64,
+    ) -> tuple[int, float]:
+        """Build labels in bounded code batches and atomically stream Parquet."""
+
+        price_columns = [
+            column for column in (
+                "code", "trade_date", "open", "high", "low", "close",
+                "adjusted_open", "adjusted_high", "adjusted_low", "adjusted_close",
+            )
+            if column in features.columns
+        ]
+        scoped = (
+            "account_id" in features.columns
+            and not features["account_id"].eq("unscoped").all()
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            suffix=".parquet",
+        )
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        writer: pq.ParquetWriter | None = None
+        rows = 0
+        coverages: list[float] = []
+        try:
+            for account in self._baseline_accounts() if scoped else [None]:
+                account_features = (
+                    features.loc[
+                        features["account_id"].eq(str(account.get("id")))
+                    ].copy()
+                    if account is not None
+                    else features
+                )
+                if account_features.empty:
+                    continue
+                benchmark, coverage = self._benchmark_history(
+                    account_features, account=account
+                )
+                if coverage < 0.95:
+                    account_name = (
+                        str(account.get("id")) if account is not None else "composite"
+                    )
+                    raise ValueError(
+                        f"research_benchmark_coverage:{account_name}:{coverage:.4f}"
+                    )
+                codes = sorted(
+                    account_features["code"].dropna().astype(str).unique()
+                )
+                batch_size = max(1, int(code_batch_size))
+                for offset in range(0, len(codes), batch_size):
+                    batch_codes = set(codes[offset : offset + batch_size])
+                    batch_features = account_features.loc[
+                        account_features["code"].astype(str).isin(batch_codes)
+                    ].copy()
+                    label_prices = batch_features[price_columns]
+                    if self.market == "a_share":
+                        continuous = self._continuous_a_share_label_prices(
+                            batch_features
+                        )
+                        label_prices = continuous
+                    part = build_forward_labels(
+                        label_prices,
+                        benchmark=benchmark,
+                        require_benchmark=True,
+                    )
+                    if self.market == "a_share":
+                        membership = batch_features.loc[
+                            :, ["code", "trade_date"]
+                        ].drop_duplicates()
+                        part = part.merge(
+                            membership,
+                            on=["code", "trade_date"],
+                            how="inner",
+                            validate="many_to_one",
+                        )
+                    if account is not None:
+                        part["account_id"] = str(account.get("id"))
+                        part["research_scope"] = str(
+                            account.get("scope") or account.get("id")
+                        )
+                        part["benchmark_code"] = str(
+                            account.get("benchmark") or ""
+                        )
+                    for column in (
+                        "universe_quality", "unbiased_universe",
+                        "universe_contract_version", "membership_source",
+                    ):
+                        if column in batch_features.columns:
+                            part[column] = batch_features[column].iloc[0]
+                    if part.empty:
+                        continue
+                    part = self.store._normalize_identifiers(
+                        self._compact_numeric_features(part, copy=False)
+                    )
+                    table = pa.Table.from_pandas(part, preserve_index=False)
+                    if writer is None:
+                        writer = pq.ParquetWriter(
+                            temporary, table.schema, compression="snappy"
+                        )
+                    writer.write_table(table)
+                    rows += len(part)
+                    del part, table, batch_features, label_prices
+                    gc.collect()
+                coverages.append(float(coverage))
+                del account_features, benchmark
+                gc.collect()
+            if writer is None or not coverages:
+                raise ValueError(f"research_label_scope_missing:{self.market}")
+            writer.close()
+            writer = None
+            os.replace(temporary, destination)
+            return rows, min(coverages)
+        finally:
+            if writer is not None:
+                writer.close()
+            temporary.unlink(missing_ok=True)
+
     def refresh_labels(self) -> dict[str, Any]:
         snapshot_date = self.store.latest_feature_snapshot_date(
             self.market,
             as_of=self.as_of,
         )
-        features = self.store.read_feature_snapshot(self.market, snapshot_date)
-        labels, benchmark_coverage = self._build_forward_label_snapshot(features)
-        self._validate_current_label_contract(labels)
-        self.store.write_label_snapshot(self.market, snapshot_date, labels)
+        feature_path = self.store.feature_snapshot_path(self.market, snapshot_date)
+        schema = set(pq.read_schema(feature_path).names)
+        features = pd.read_parquet(
+            feature_path,
+            columns=[
+                column for column in self._RESEARCH_STAGE_FEATURE_COLUMNS
+                if column in schema
+            ],
+        )
+        if self.market == "a_share":
+            labels_rows, benchmark_coverage = self._write_forward_label_snapshot(
+                features,
+                self.store.label_snapshot_path(self.market, snapshot_date),
+            )
+        else:
+            labels, benchmark_coverage = self._build_forward_label_snapshot(
+                features
+            )
+            self._validate_current_label_contract(labels)
+            labels_rows = len(labels)
+            self.store.write_label_snapshot(self.market, snapshot_date, labels)
         return {
             "status": "complete",
             "snapshot_date": snapshot_date,
-            "labels_rows": int(len(labels)),
+            "labels_rows": int(labels_rows),
             "benchmark_coverage": round(float(benchmark_coverage), 4),
             "label_contract_version": LABEL_CONTRACT_VERSION,
         }
@@ -1902,10 +2045,18 @@ class ResearchPipeline:
             ],
         )
         features_rows = len(features)
-        labels, benchmark_coverage = self._build_forward_label_snapshot(features)
-        labels_rows = len(labels)
-        self.store.write_label_snapshot(self.market, self.as_of, labels)
-        del labels
+        if self.market == "a_share":
+            labels_rows, benchmark_coverage = self._write_forward_label_snapshot(
+                features,
+                self.store.label_snapshot_path(self.market, self.as_of),
+            )
+        else:
+            labels, benchmark_coverage = self._build_forward_label_snapshot(
+                features
+            )
+            labels_rows = len(labels)
+            self.store.write_label_snapshot(self.market, self.as_of, labels)
+            del labels
         gc.collect()
 
         market_daily = features.groupby("trade_date", as_index=False).agg(
