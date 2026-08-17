@@ -4357,6 +4357,160 @@ class SemanticExchangeTest(unittest.TestCase):
         self.assertEqual(report["failed"], 0, report)
         self.assertEqual(len(provider.calls), 1)
 
+    def test_coding_plan_splits_full_ir_before_aggregate_file_limit(self) -> None:
+        second_id = self._seed_document("000002.SZ", "a-share-second")
+        with self.store.connect() as connection:
+            for document_id, marker in (
+                (self.a_share_id, "甲"),
+                (second_id, "乙"),
+            ):
+                source_text = (
+                    "平安银行董事会于2026年7月28日审议通过回购方案，"
+                    "回购金额上限为1亿元，回购价格不超过10元/股。"
+                    + f"{marker}历史背景。" * 4_000
+                )
+                connection.execute(
+                    """
+                    UPDATE document_chunks
+                    SET text=?, text_hash=?
+                    WHERE document_id=? AND section='body'
+                    """,
+                    (
+                        source_text,
+                        hashlib.sha256(source_text.encode()).hexdigest(),
+                        document_id,
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE document_security_links
+                    SET name='平安银行'
+                    WHERE document_id=?
+                    """,
+                    (document_id,),
+                )
+
+        prepare_kwargs = {
+            "profile_id": "a-share-announcement-mentions-v24",
+            "limit": 2,
+            "max_input_characters": 24_000,
+            "executor_mode": "coding_plan",
+            "executor_provider": "codex",
+            "executor_model": "codex-test",
+            "executor_client_version": "semantic-provider-v1",
+        }
+        with mock.patch.object(
+            semantic_exchange,
+            "MAX_JOB_FILE_BYTES",
+            1024 * 1024,
+        ):
+            legacy = prepare_job(self.root, **prepare_kwargs)
+            legacy_dir = Path(legacy["job_dir"])
+            self.assertTrue((legacy_dir / "document_ir.jsonl").exists())
+            legacy_output = (
+                legacy_dir
+                / "coding_plan"
+                / "output_parts"
+                / "part-0001.jsonl"
+            )
+            legacy_output.write_text("{}\n", encoding="utf-8")
+
+        with mock.patch.object(
+            semantic_exchange,
+            "MAX_JOB_FILE_BYTES",
+            128 * 1024,
+        ):
+            prepared = prepare_job(self.root, **prepare_kwargs)
+            job_dir = Path(prepared["job_dir"])
+
+            status = job_status(self.root, job_dir)
+
+            self.assertEqual(status["expected"], 2, status)
+            self.assertTrue(prepared["reused"])
+            self.assertEqual(
+                (
+                    job_dir
+                    / "coding_plan"
+                    / "output_parts"
+                    / "part-0001.jsonl"
+                ).read_text(encoding="utf-8"),
+                "{}\n",
+            )
+            ir_parts = sorted(
+                (job_dir / "coding_plan" / "document_ir_parts").glob(
+                    "part-*.jsonl"
+                )
+            )
+            self.assertEqual(len(ir_parts), 2)
+            self.assertTrue(
+                all(path.stat().st_size <= 128 * 1024 for path in ir_parts)
+            )
+            manifest = json.loads(
+                (job_dir / "job.json").read_text(encoding="utf-8")
+            )
+            items = {
+                int(item["document_id"]): item for item in manifest["items"]
+            }
+            shard_manifest = json.loads(
+                (job_dir / "coding_plan" / "shards.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            provider = MentionProvider()
+            for shard in shard_manifest["shards"]:
+                input_rows = [
+                    json.loads(line)
+                    for line in (job_dir / shard["input_file"])
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                ]
+                output_rows = []
+                for input_row in input_rows:
+                    item = items[int(input_row["document_id"])]
+                    result = provider.extract(
+                        SemanticInputBundle(
+                            document_id=int(input_row["document_id"]),
+                            artifact_hash=str(input_row["artifact_hash"]),
+                            parser_version=str(input_row["parser_version"]),
+                            prompt_version=str(input_row["prompt_version"]),
+                            schema_version=str(input_row["schema_version"]),
+                            taxonomy_version=str(input_row["taxonomy_version"]),
+                            payload=input_row["payload"],
+                        ),
+                        response_schema={},
+                    ).parsed_output
+                    output_rows.append(
+                        {
+                            "contract_version": "semantic-extraction-output-v1",
+                            "document_id": item["document_id"],
+                            "artifact_hash": item["artifact_hash"],
+                            "input_hash": item["input_hash"],
+                            "semantic_task_id": item["semantic_task_id"],
+                            "execution_job_id": item["execution_job_id"],
+                            "binding_id": item["binding_id"],
+                            "executor": {
+                                "kind": "coding-plan",
+                                "provider": "codex",
+                                "model": "codex-test",
+                                "client_version": "semantic-provider-v1",
+                            },
+                            "usage": {},
+                            "result": result,
+                        }
+                    )
+                (job_dir / shard["output_file"]).write_text(
+                    "".join(
+                        json.dumps(row, ensure_ascii=False) + "\n"
+                        for row in output_rows
+                    ),
+                    encoding="utf-8",
+                )
+
+            collected = collect_coding_plan_outputs(self.root, job_dir)
+
+            self.assertEqual(collected["status"], "ready_to_import", collected)
+            self.assertEqual(collected["valid"], 2, collected)
+
     def test_invalid_quote_is_terminal_and_never_becomes_event(
         self,
     ) -> None:
