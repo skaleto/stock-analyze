@@ -17,6 +17,7 @@ from stock_analyze.research.pipeline import (
     _shadow_stop_reason,
 )
 from stock_analyze.research.classical_specs import mainline_specs
+from stock_analyze.research.feature_registry import DEFAULT_REGISTRY_HASH
 from stock_analyze.research.source_features import SourceCollection
 from stock_analyze.research.schemas import PredictionRecord
 from stock_analyze.research.labels import LABEL_CONTRACT_VERSION
@@ -926,6 +927,36 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(set(labels["account_id"]), {"hs300"})
         self.assertEqual(len(feature_metadata["registry_hash"]), 16)
         self.assertIn("high_value_add_proxy", feature_metadata["registered_features"])
+
+    def test_cached_prepare_uses_parquet_footer_when_manifest_is_current(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root, market="a_share", agent="codex",
+                as_of="2026-07-10", offline=True,
+            )
+            destination = pipeline.store.feature_snapshot_path(
+                "a_share", "2026-07-10"
+            )
+            destination.parent.mkdir(parents=True)
+            pd.DataFrame({
+                "code": ["000001", "000002"],
+                "trade_date": ["20260710", "20260710"],
+                "open": [10.0, 20.0],
+            }).to_parquet(destination, index=False)
+            destination.with_suffix(".metadata.json").write_text(
+                json.dumps({"registry_hash": DEFAULT_REGISTRY_HASH}),
+                encoding="utf-8",
+            )
+            with patch.object(
+                pipeline.store,
+                "read_feature_snapshot",
+                side_effect=AssertionError("wide parquet must not be loaded"),
+            ):
+                result = pipeline.prepare_data()
+
+        self.assertEqual(result["status"], "cached")
+        self.assertEqual(result["rows"], 2)
 
     def test_qdii_history_normalizes_tushare_amount_to_yuan_once(self):
         with tempfile.TemporaryDirectory() as tmp:
