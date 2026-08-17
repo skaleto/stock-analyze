@@ -90,6 +90,18 @@ class PredictionSystemdTest(unittest.TestCase):
             research,
         )
 
+    def test_optional_intelligence_evaluation_does_not_block_formal_services(self):
+        research = (UNIT_DIR / "stock-analyze-research.service").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "if ! /opt/stock-analyze/venv/bin/python -m stock_analyze.cli "
+            "intelligence-evaluate",
+            research,
+        )
+        self.assertIn("optional intelligence evaluation unavailable", research)
+
     def test_downstream_oneshots_do_not_restart_completed_upstream_stages(self):
         research = (UNIT_DIR / "stock-analyze-research.service").read_text(
             encoding="utf-8"
