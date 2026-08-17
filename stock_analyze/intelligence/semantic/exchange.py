@@ -852,11 +852,21 @@ def prepare_job(
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         if manifest_path.exists():
             existing = _read_json(manifest_path)
-            _verify_manifest(
-                existing,
-                job_dir=job_dir,
-                expected_job_id=job_id,
-            )
+            try:
+                _verify_manifest(
+                    existing,
+                    job_dir=job_dir,
+                    expected_job_id=job_id,
+                )
+            except SemanticExchangeError as exc:
+                if exc.code != "semantic_job_jsonl_too_large":
+                    raise
+                _migrate_oversized_coding_plan_job(job_dir, existing)
+                _verify_manifest(
+                    existing,
+                    job_dir=job_dir,
+                    expected_job_id=job_id,
+                )
             if uses_v21_contract:
                 _register_v21_lineage(
                     store,
@@ -889,10 +899,19 @@ def prepare_job(
             )
             _write_jsonl(temporary / "input.jsonl", inputs)
             if uses_v21_contract:
-                _write_jsonl(
-                    temporary / "document_ir.jsonl",
-                    document_ir_rows,
+                aggregate_ir_bytes = sum(
+                    len((_canonical_json(row) + "\n").encode("utf-8"))
+                    for row in document_ir_rows
                 )
+                if (
+                    binding is None
+                    or binding.executor_mode != "coding_plan"
+                    or aggregate_ir_bytes <= MAX_JOB_FILE_BYTES
+                ):
+                    _write_jsonl(
+                        temporary / "document_ir.jsonl",
+                        document_ir_rows,
+                    )
                 _write_jsonl(
                     temporary / "evidence_packets.jsonl",
                     evidence_packet_rows,
@@ -1119,16 +1138,19 @@ def _write_coding_plan_execution_view(
         path.mkdir(parents=True, exist_ok=True)
 
     shards: list[dict[str, object]] = []
-    for offset in range(0, len(inputs), CODING_PLAN_SHARD_SIZE):
-        part_number = offset // CODING_PLAN_SHARD_SIZE + 1
+    pending_inputs: list[Mapping[str, object]] = []
+    pending_ir: list[Mapping[str, object]] = []
+    pending_packets: list[Mapping[str, object]] = []
+    pending_bytes = [0, 0, 0]
+
+    def flush_part() -> None:
+        if not pending_inputs:
+            return
+        part_number = len(shards) + 1
         part_name = f"part-{part_number:04d}.jsonl"
-        input_part = list(inputs[offset : offset + CODING_PLAN_SHARD_SIZE])
-        ir_part = list(
-            document_ir_rows[offset : offset + CODING_PLAN_SHARD_SIZE]
-        )
-        packet_part = list(
-            evidence_packet_rows[offset : offset + CODING_PLAN_SHARD_SIZE]
-        )
+        input_part = list(pending_inputs)
+        ir_part = list(pending_ir)
+        packet_part = list(pending_packets)
         _write_jsonl(input_dir / part_name, input_part)
         _write_jsonl(ir_dir / part_name, ir_part)
         _write_jsonl(packet_dir / part_name, packet_part)
@@ -1152,6 +1174,54 @@ def _write_coding_plan_execution_view(
                 "evidence_packet_hash": canonical_json_hash(packet_part),
             }
         )
+        pending_inputs.clear()
+        pending_ir.clear()
+        pending_packets.clear()
+        pending_bytes[:] = [0, 0, 0]
+
+    if not (
+        len(inputs) == len(document_ir_rows) == len(evidence_packet_rows)
+    ):
+        raise SemanticExchangeError("semantic_coding_plan_shards_invalid")
+    for input_row, ir_row, packet_row in zip(
+        inputs,
+        document_ir_rows,
+        evidence_packet_rows,
+        strict=True,
+    ):
+        row_bytes = [
+            len((_canonical_json(row) + "\n").encode("utf-8"))
+            for row in (input_row, ir_row, packet_row)
+        ]
+        if any(size > MAX_JOB_FILE_BYTES for size in row_bytes):
+            raise SemanticExchangeError(
+                "semantic_coding_plan_shard_item_too_large",
+                detail=str(_positive_int(input_row.get("document_id"))),
+            )
+        if pending_inputs and (
+            len(pending_inputs) >= CODING_PLAN_SHARD_SIZE
+            or any(
+                current + addition > MAX_JOB_FILE_BYTES
+                for current, addition in zip(
+                    pending_bytes,
+                    row_bytes,
+                    strict=True,
+                )
+            )
+        ):
+            flush_part()
+        pending_inputs.append(input_row)
+        pending_ir.append(ir_row)
+        pending_packets.append(packet_row)
+        pending_bytes[:] = [
+            current + addition
+            for current, addition in zip(
+                pending_bytes,
+                row_bytes,
+                strict=True,
+            )
+        ]
+    flush_part()
     shard_manifest = {
         "contract_version": "semantic-coding-plan-shards-v1",
         "job_id": str(manifest.get("job_id") or ""),
@@ -1259,11 +1329,7 @@ def _verify_coding_plan_execution_view(
         collected.extend(part_rows)
     if list(collected) != list(inputs):
         raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
-    if collected_ir != _read_jsonl(
-        job_dir / "document_ir.jsonl",
-        max_rows=len(inputs),
-        max_line_bytes=MAX_DOCUMENT_IR_LINE_BYTES,
-    ):
+    if collected_ir != _job_document_ir_rows(job_dir, manifest):
         raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
     if collected_packets != _read_jsonl(
         job_dir / "evidence_packets.jsonl",
@@ -1608,11 +1674,7 @@ def _write_coding_plan_repair_view(
     ]
     document_ir_rows = [
         row
-        for row in _read_jsonl(
-            job_dir / "document_ir.jsonl",
-            max_rows=len(inputs),
-            max_line_bytes=MAX_DOCUMENT_IR_LINE_BYTES,
-        )
+        for row in _job_document_ir_rows(job_dir, manifest)
         if _positive_int(row.get("document_id")) in failed_set
     ]
     evidence_packet_rows = [
@@ -1773,11 +1835,7 @@ def _job_document_ir_by_task(
         manifest.get("items"),
         "semantic_job_items_invalid",
     )
-    rows = _read_jsonl(
-        job_dir / "document_ir.jsonl",
-        max_rows=len(items),
-        max_line_bytes=MAX_DOCUMENT_IR_LINE_BYTES,
-    )
+    rows = _job_document_ir_rows(job_dir, manifest)
     by_task: dict[str, Mapping[str, object]] = {}
     for row in rows:
         task_id = str(row.get("semantic_task_id") or "")
@@ -1807,6 +1865,227 @@ def _job_document_ir_by_task(
             "semantic_document_ir_identity_invalid"
         )
     return by_task
+
+
+def _job_document_ir_rows(
+    job_dir: Path,
+    manifest: Mapping[str, object],
+) -> list[dict[str, object]]:
+    items = _sequence(
+        manifest.get("items"),
+        "semantic_job_items_invalid",
+    )
+    aggregate_path = job_dir / "document_ir.jsonl"
+    if (
+        aggregate_path.exists()
+        and aggregate_path.stat().st_size <= MAX_JOB_FILE_BYTES
+    ):
+        return _read_jsonl(
+            aggregate_path,
+            max_rows=len(items),
+            max_line_bytes=MAX_DOCUMENT_IR_LINE_BYTES,
+        )
+
+    shard_manifest = _read_json(job_dir / "coding_plan" / "shards.json")
+    if (
+        shard_manifest.get("contract_version")
+        != "semantic-coding-plan-shards-v1"
+        or str(shard_manifest.get("job_id") or "")
+        != str(manifest.get("job_id") or "")
+        or int(shard_manifest.get("shard_size") or 0)
+        != CODING_PLAN_SHARD_SIZE
+    ):
+        raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+    raw_shards = _sequence(
+        shard_manifest.get("shards"),
+        "semantic_coding_plan_shards_invalid",
+    )
+    rows: list[dict[str, object]] = []
+    for expected_part, raw_shard in enumerate(raw_shards, start=1):
+        shard = _mapping(raw_shard, "semantic_coding_plan_shards_invalid")
+        if int(shard.get("part") or 0) != expected_part:
+            raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+        asset_path = job_dir / str(shard.get("document_ir_file") or "")
+        if not asset_path.resolve().is_relative_to(job_dir.resolve()):
+            raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+        part_rows = _read_jsonl(
+            asset_path,
+            max_rows=CODING_PLAN_SHARD_SIZE,
+            max_line_bytes=MAX_DOCUMENT_IR_LINE_BYTES,
+        )
+        if canonical_json_hash(part_rows) != str(
+            shard.get("document_ir_hash") or ""
+        ):
+            raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+        document_ids = [
+            _positive_int(value)
+            for value in _sequence(
+                shard.get("document_ids"),
+                "semantic_coding_plan_shards_invalid",
+            )
+        ]
+        if (
+            len(part_rows) != int(shard.get("documents") or 0)
+            or [
+                _positive_int(row.get("document_id")) for row in part_rows
+            ]
+            != document_ids
+        ):
+            raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+        rows.extend(part_rows)
+    if (
+        int(shard_manifest.get("total_documents") or 0) != len(items)
+        or len(rows) != len(items)
+        or [
+            _positive_int(row.get("document_id")) for row in rows
+        ]
+        != [
+            _positive_int(
+                _mapping(item, "semantic_job_item_invalid").get("document_id")
+            )
+            for item in items
+        ]
+    ):
+        raise SemanticExchangeError("semantic_coding_plan_shards_tampered")
+    return rows
+
+
+def _migrate_oversized_coding_plan_job(
+    job_dir: Path,
+    manifest: Mapping[str, object],
+) -> None:
+    try:
+        binding = ExecutorBinding.from_mapping(
+            _mapping(
+                manifest.get("executor_binding"),
+                "semantic_executor_binding_invalid",
+            )
+        )
+    except SemanticExecutionContractError as exc:
+        raise SemanticExchangeError(exc.code, detail=exc.detail) from exc
+    aggregate_path = job_dir / "document_ir.jsonl"
+    if (
+        binding.executor_mode != "coding_plan"
+        or not aggregate_path.exists()
+        or aggregate_path.stat().st_size <= MAX_JOB_FILE_BYTES
+    ):
+        raise SemanticExchangeError("semantic_job_jsonl_too_large")
+
+    items = _sequence(
+        manifest.get("items"),
+        "semantic_job_items_invalid",
+    )
+    document_ir_rows = _read_oversized_document_ir_jsonl(
+        aggregate_path,
+        max_rows=len(items),
+    )
+    if canonical_json_hash(document_ir_rows) != str(
+        manifest.get("document_ir_hash") or ""
+    ):
+        raise SemanticExchangeError("semantic_job_document_ir_tampered")
+    inputs = _verified_inputs(job_dir, manifest)
+    evidence_packet_rows = _read_jsonl(
+        job_dir / "evidence_packets.jsonl",
+        max_rows=len(items),
+    )
+
+    staging = Path(
+        tempfile.mkdtemp(
+            prefix=f".{job_dir.name}.byte-shards.",
+            dir=job_dir.parent,
+        )
+    )
+    coding_plan_dir = job_dir / "coding_plan"
+    backup_dir = job_dir / ".coding_plan.pre-byte-shards"
+    handoff_path = job_dir / "CODING_PLAN.md"
+    backup_handoff = job_dir / ".CODING_PLAN.pre-byte-shards.md"
+    if backup_dir.exists() or backup_handoff.exists():
+        shutil.rmtree(staging)
+        raise SemanticExchangeError("semantic_coding_plan_migration_incomplete")
+    try:
+        _write_coding_plan_execution_view(
+            staging,
+            manifest=manifest,
+            inputs=inputs,
+            document_ir_rows=document_ir_rows,
+            evidence_packet_rows=evidence_packet_rows,
+        )
+        old_outputs = coding_plan_dir / "output_parts"
+        staged_outputs = staging / "coding_plan" / "output_parts"
+        if old_outputs.exists():
+            shutil.rmtree(staged_outputs)
+            shutil.copytree(old_outputs, staged_outputs)
+        for name in ("repair-1", "validation_history.jsonl"):
+            source = coding_plan_dir / name
+            target = staging / "coding_plan" / name
+            if source.is_dir():
+                shutil.copytree(source, target)
+            elif source.is_file():
+                shutil.copy2(source, target)
+
+        os.replace(coding_plan_dir, backup_dir)
+        os.replace(staging / "coding_plan", coding_plan_dir)
+        if handoff_path.exists():
+            os.replace(handoff_path, backup_handoff)
+        os.replace(staging / "CODING_PLAN.md", handoff_path)
+        try:
+            migrated_rows = _job_document_ir_rows(job_dir, manifest)
+            if canonical_json_hash(migrated_rows) != str(
+                manifest.get("document_ir_hash") or ""
+            ):
+                raise SemanticExchangeError(
+                    "semantic_job_document_ir_tampered"
+                )
+        except Exception:
+            shutil.rmtree(coding_plan_dir, ignore_errors=True)
+            os.replace(backup_dir, coding_plan_dir)
+            if backup_handoff.exists():
+                if handoff_path.exists():
+                    handoff_path.unlink()
+                os.replace(backup_handoff, handoff_path)
+            raise
+        shutil.rmtree(backup_dir)
+        if backup_handoff.exists():
+            backup_handoff.unlink()
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+
+
+def _read_oversized_document_ir_jsonl(
+    path: Path,
+    *,
+    max_rows: int,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for ordinal, line in enumerate(handle, 1):
+                if not line.strip():
+                    continue
+                if len(line.encode("utf-8")) > MAX_DOCUMENT_IR_LINE_BYTES:
+                    raise SemanticExchangeError(
+                        "semantic_job_jsonl_line_too_large",
+                        detail=str(ordinal),
+                    )
+                if len(rows) >= max(0, int(max_rows)):
+                    raise SemanticExchangeError(
+                        "semantic_job_jsonl_row_limit",
+                        detail=str(ordinal),
+                    )
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise SemanticExchangeError(
+                        "semantic_job_jsonl_invalid",
+                        detail=str(ordinal),
+                    ) from exc
+                rows.append(
+                    _mapping(payload, "semantic_job_jsonl_invalid")
+                )
+    except (OSError, UnicodeError) as exc:
+        raise SemanticExchangeError("semantic_job_jsonl_unreadable") from exc
+    return rows
 
 
 def _materializable_evidence_chunks(
@@ -5037,11 +5316,7 @@ def _verify_manifest(
             raise SemanticExchangeError(exc.code, detail=exc.detail) from exc
         if binding.binding_id != str(manifest.get("binding_id") or ""):
             raise SemanticExchangeError("semantic_executor_binding_tampered")
-        document_ir_rows = _read_jsonl(
-            job_dir / "document_ir.jsonl",
-            max_rows=len(items),
-            max_line_bytes=MAX_DOCUMENT_IR_LINE_BYTES,
-        )
+        document_ir_rows = _job_document_ir_rows(job_dir, manifest)
         evidence_packet_rows = _read_jsonl(
             job_dir / "evidence_packets.jsonl",
             max_rows=len(items),
