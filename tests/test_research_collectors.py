@@ -57,6 +57,8 @@ class ResearchCollectorTest(unittest.TestCase):
         self.assertEqual(set(benchmark["source"]), {"tushare:benchmark_000300"})
         self.assertLessEqual(pro.kwargs_by_name["cn_pmi"][0]["start_m"], "202307")
         self.assertLessEqual(pro.kwargs_by_name["shibor"][0]["start_date"], "20230710")
+        self.assertEqual(pro.kwargs_by_name["index_daily"][0]["start_date"], "20180101")
+        self.assertEqual(pro.kwargs_by_name["index_daily"][1]["start_date"], "20180101")
 
     def test_qdii_collector_includes_fund_global_and_fx_sources(self):
         pro = FakePro()
