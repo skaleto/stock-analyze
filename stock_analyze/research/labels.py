@@ -11,7 +11,7 @@ import pandas as pd
 from .schemas import SUPPORTED_HORIZONS
 
 
-LABEL_CONTRACT_VERSION = "next-open-v2"
+LABEL_CONTRACT_VERSION = "next-open-v3-adjusted"
 
 
 def _date_key(value: object) -> str:
@@ -60,7 +60,10 @@ def build_forward_labels(
     available = prices.copy()
     available["code"] = available["code"].astype("string")
     available["trade_date"] = available["trade_date"].astype("string").map(_date_key)
-    for column in ("open", "high", "low", "close"):
+    for column in (
+        "open", "high", "low", "close",
+        "adjusted_open", "adjusted_high", "adjusted_low", "adjusted_close",
+    ):
         if column in available.columns:
             available[column] = pd.to_numeric(available[column], errors="coerce")
     if label_end is not None:
@@ -76,33 +79,60 @@ def build_forward_labels(
             )
         benchmark_frame = benchmark.copy()
         benchmark_frame["trade_date"] = benchmark_frame["trade_date"].astype("string").map(_date_key)
-        benchmark_frame["open"] = pd.to_numeric(benchmark_frame["open"], errors="coerce")
-        benchmark_frame["close"] = pd.to_numeric(benchmark_frame["close"], errors="coerce")
+        for column in ("open", "close", "adjusted_open", "adjusted_close"):
+            if column in benchmark_frame.columns:
+                benchmark_frame[column] = pd.to_numeric(
+                    benchmark_frame[column], errors="coerce"
+                )
+        benchmark_open_column = (
+            "adjusted_open" if "adjusted_open" in benchmark_frame.columns else "open"
+        )
+        benchmark_close_column = (
+            "adjusted_close" if "adjusted_close" in benchmark_frame.columns else "close"
+        )
+        benchmark_frame["return_open"] = benchmark_frame[benchmark_open_column].where(
+            benchmark_frame[benchmark_open_column].notna(), benchmark_frame["open"]
+        )
+        benchmark_frame["return_close"] = benchmark_frame[benchmark_close_column].where(
+            benchmark_frame[benchmark_close_column].notna(), benchmark_frame["close"]
+        )
         if label_end is not None:
             benchmark_frame = benchmark_frame.loc[benchmark_frame["trade_date"] <= _date_key(label_end)]
         benchmark_frame = (
-            benchmark_frame.dropna(subset=["trade_date", "open", "close"])
+            benchmark_frame.dropna(subset=["trade_date", "return_open", "return_close"])
             .sort_values("trade_date")
             .drop_duplicates("trade_date", keep="last")
         )
         benchmark_open_by_date = dict(zip(
             benchmark_frame["trade_date"].astype(str),
-            benchmark_frame["open"].astype(float),
+            benchmark_frame["return_open"].astype(float),
         ))
         benchmark_close_by_date = dict(zip(
             benchmark_frame["trade_date"].astype(str),
-            benchmark_frame["close"].astype(float),
+            benchmark_frame["return_close"].astype(float),
         ))
 
     parts: list[pd.DataFrame] = []
     for code, group in available.sort_values(["code", "trade_date"]).groupby("code", sort=False):
         group = group.reset_index(drop=True)
-        daily_returns = group["close"].pct_change(fill_method=None)
-        trailing_sigma = daily_returns.rolling(20, min_periods=5).std()
         open_price = group["open"]
         close = group["close"]
         high = group["high"] if "high" in group.columns else close
         low = group["low"] if "low" in group.columns else close
+        return_open = group.get("adjusted_open", open_price).where(
+            group.get("adjusted_open", open_price).notna(), open_price
+        )
+        return_close = group.get("adjusted_close", close).where(
+            group.get("adjusted_close", close).notna(), close
+        )
+        return_high = group.get("adjusted_high", high).where(
+            group.get("adjusted_high", high).notna(), high
+        )
+        return_low = group.get("adjusted_low", low).where(
+            group.get("adjusted_low", low).notna(), low
+        )
+        daily_returns = return_close.pct_change(fill_method=None)
+        trailing_sigma = daily_returns.rolling(20, min_periods=5).std()
         volume = (
             pd.to_numeric(group["volume"], errors="coerce")
             if "volume" in group.columns
@@ -127,8 +157,10 @@ def build_forward_labels(
             entry_limit_down = one_price_session & entry_return_from_prev_close.le(-0.095)
             entry_tradable = entry_price.gt(0.0) & entry_volume.fillna(0.0).gt(0.0)
             future_close = close.shift(-horizon)
+            return_entry_price = return_open.shift(-1)
+            future_return_close = return_close.shift(-horizon)
             future_date = dates.shift(-horizon)
-            absolute_return = future_close / entry_price - 1.0
+            absolute_return = future_return_close / return_entry_price - 1.0
             if benchmark is not None and not benchmark.empty:
                 benchmark_entry = entry_date.map(benchmark_open_by_date).astype(float)
                 benchmark_exit = future_date.map(benchmark_close_by_date).astype(float)
@@ -151,10 +183,10 @@ def build_forward_labels(
                 ["up", "down"],
                 default="flat",
             )
-            future_high = high.shift(-1).iloc[::-1].rolling(horizon, min_periods=horizon).max().iloc[::-1]
-            future_low = low.shift(-1).iloc[::-1].rolling(horizon, min_periods=horizon).min().iloc[::-1]
-            favorable = np.maximum(future_high / entry_price - 1.0, 0.0)
-            adverse = np.minimum(future_low / entry_price - 1.0, 0.0)
+            future_high = return_high.shift(-1).iloc[::-1].rolling(horizon, min_periods=horizon).max().iloc[::-1]
+            future_low = return_low.shift(-1).iloc[::-1].rolling(horizon, min_periods=horizon).min().iloc[::-1]
+            favorable = np.maximum(future_high / return_entry_price - 1.0, 0.0)
+            adverse = np.minimum(future_low / return_entry_price - 1.0, 0.0)
             part = pd.DataFrame(
                 {
                     "code": str(code),
@@ -190,6 +222,8 @@ def build_forward_labels(
                 & entry_price.gt(0.0)
                 & future_close.notna()
                 & future_close.gt(0.0)
+                & return_entry_price.gt(0.0)
+                & future_return_close.gt(0.0)
             )
             if benchmark is not None and not benchmark.empty:
                 eligible &= benchmark_return.notna()

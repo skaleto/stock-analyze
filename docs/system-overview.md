@@ -92,6 +92,8 @@ flowchart TD
 | **模型迭代** | 提升概率排序、校准和风险识别能力 | Champion、Challenger、版本审计、影子验证 | 研发通道本身不等于第三套正式策略 |
 
 模型按角色分别验收：Classifier 看概率校准、Brier、AUC 和命中提升；Ranker 看 Rank IC、ICIR、稳定性与统计抗过拟合证据；Portfolio 看成本后超额、回撤、换手、容量和压力损失。候选版本至少完成 12 个独立影子周期，并通过 Deflated Sharpe、PBO、时点和无幸存者偏差门禁，才可能成为 Active。模型迭代任务在四个正式账户全部完成后才启动；候选失败会单独告警，不会阻断规则策略继续运行。
+Shadow 使用 `evidence-first-shadow-v2` 准入：候选必须先通过冻结历史窗口中的完整透明质量门，才可进入前向观察。仅满足可执行性或安全约束、但净超额、成本压力、DSR/PBO 或 bootstrap 证据不足的候选继续保留在 Research，不计作 Shadow。
+
 
 ### 一次决策用了哪些证据
 

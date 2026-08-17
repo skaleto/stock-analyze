@@ -164,7 +164,7 @@ npm run build
 
 ## Baseline-First Classical Model Contract
 
-- CPU 密集的经典模型拟合只在受信任的本机执行。ECS 月度 timer 只刷新 `next-open-v2` 标签，并通过 `scripts/prepare-model-training-bundles.sh` 导出不可变特征、标签和冻结窗口清单；两个市场独立尝试，单市场失败不阻止另一个导出，最终仍返回失败用于告警。本机先校验大小与 SHA-256，并锁定输入包声明的精确快照和源指纹后再训练；模型回传包必须携带同一指纹，ECS 导入时用原输入包复核。只有在同窗、同成本下战胜透明基线，且冻结 bundle 的可部署回放仍有正净超额、真实成交、足够资金利用率并满足相同回撤/换手边界，才生成 Shadow 回传包。ECS 导入遇到任何已有同版本记录时只保留远端生命周期，绝不覆盖 Champion、Active 或 gate history。定时输入包每市场保留 8 份，本机和远端按需训练目录各保留 4 份。
+- CPU 密集的经典模型拟合只在受信任的本机执行。ECS 月度 timer 只刷新 `next-open-v3-adjusted` 标签，并通过 `scripts/prepare-model-training-bundles.sh` 导出不可变特征、标签和冻结窗口清单；两个市场独立尝试，单市场失败不阻止另一个导出，最终仍返回失败用于告警。本机先校验大小与 SHA-256，并锁定输入包声明的精确快照和源指纹后再训练；模型回传包必须携带同一指纹，ECS 导入时用原输入包复核。只有在同窗、同成本下战胜透明基线，且冻结 bundle 的可部署回放仍有正净超额、真实成交、足够资金利用率并满足相同回撤/换手边界，才生成 Shadow 回传包。ECS 导入遇到任何已有同版本记录时只保留远端生命周期，绝不覆盖 Champion、Active 或 gate history。定时输入包每市场保留 8 份，本机和远端按需训练目录各保留 4 份。
 - 没有经过校验的 ECS 输入包时，基线研究只能写报告，禁止拟合、冻结模型或修改 Registry。无论结果是 `baseline_wins`、`deployment_blocked` 还是进入 Shadow，本机都会回传只含验收报告和冻结窗口的轻量结果包；该包禁止携带模型注册表，线上 Dashboard 因而始终读取当前轮次。输入、模型和结果三类清单都拒绝空文件列表，并由清单内容重新计算源指纹。
 - 标准入口是 `MODEL_TRAIN_CPU_COUNT=8 ./scripts/run-local-baseline-first-research.sh <a_share|cn_qdii_etf> YYYY-MM-DD`。输入和输出都在 `.artifacts/local-model-training/` 留有清单；旧的 `run-local-classical-tournament.sh` 仅作兼容转发。正式策略配置、订单、持仓和净值不在交换包内。
 - A 股以 20/60 日动量为透明基线、月频回放；跨境 ETF 以绝对趋势为透明基线、周频回放。机器学习只提供最多 10% 的正则化残差修正，不能覆盖基线方向。
@@ -179,6 +179,19 @@ npm run build
 - 每轮基线比较写入 `reports/research/baseline_first_<date>_<scope>.{json,md}`。只有胜者会在 `tournaments/<run>-<protocol>-<spec>/` 生成可交换的模型与清单；页面和 API 不得加载完整逐日回测序列。
 - Dashboard 发布后必须用真实 ECS 响应验证 A 股和跨境 ETF 模型接口，并在桌面与 390px 手机视口检查：页面无错误横幅、无控制台错误、关键表格有行、宽表只在自身容器内横向滚动。
 - 未出现 Active Champion 时，正式策略保持 `rule_only`，模型重训和模型模拟不得修改正式订单、持仓或竞赛净值。
+- Shadow 准入合同是 `evidence-first-shadow-v2`。透明规则候选只有在封存 campaign 的 `passed_transparent_gates=true`，且本地可见的净超额、成本压力后净超额和正折叠证据一致时才可进入 Shadow；`exploratory` 只作 Research 诊断标签。
+- 既有 Shadow 先执行只读审计：
+
+```bash
+python3 -m stock_analyze audit-model-shadow-quality --repo-root .
+```
+
+  审阅 `flagged` 和逐项原因后，才可显式降级 legacy/未通过历史质量门的透明规则候选：
+
+```bash
+python3 -m stock_analyze audit-model-shadow-quality --repo-root . --apply
+```
+
 
 ## 7. ECS 检查
 

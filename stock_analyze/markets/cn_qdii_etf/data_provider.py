@@ -152,12 +152,16 @@ class CNQDIETFProvider:
         offline: bool = False,
         as_of: str | None = None,
         token: str | None = None,
+        history_start: str | None = None,
     ) -> None:
         self.cache_dir = Path(cache_dir) if cache_dir else None
         if self.cache_dir is not None:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.offline = offline
         self.as_of = as_of
+        self.history_start = _yyyymmdd(history_start) if history_start else None
+        if self.history_start and len(self.history_start) != 8:
+            raise ValueError("qdii_history_start")
         self._pro_client = pro_client
         self._token = token
         self._fund_daily_throttle_enabled = pro_client is None
@@ -190,7 +194,10 @@ class CNQDIETFProvider:
 
         as_of_key = _yyyymmdd(self.as_of)
         end = datetime.strptime(as_of_key, "%Y%m%d").date()
-        start_key = (end - timedelta(days=370)).strftime("%Y%m%d")
+        start_key = (
+            self.history_start
+            or (end - timedelta(days=370)).strftime("%Y%m%d")
+        )
         observed = observed_at or datetime.now().astimezone().isoformat(timespec="seconds")
         calls = {
             "fund_nav": [lambda code=code: self._fund_nav(self.resolve_ts_code(code), as_of_key) for code in codes],
@@ -913,6 +920,46 @@ class CNQDIETFProvider:
         self.record_health("fund_daily_liquidity", "ok", rows=len(normalized))
         return self._write_cache(cache_name, normalized)
 
+    def _fetch_fund_daily_history(
+        self,
+        *,
+        ts_code: str,
+        start_date: str,
+        end_date: str,
+    ) -> pd.DataFrame:
+        fields = "ts_code,trade_date,open,high,low,close,vol,amount"
+        if not self.history_start:
+            return self._call_fund_daily(
+                ts_code=ts_code,
+                start_date=start_date,
+                end_date=end_date,
+                fields=fields,
+            )
+
+        cursor = datetime.strptime(start_date, "%Y%m%d").date()
+        final = datetime.strptime(end_date, "%Y%m%d").date()
+        frames: list[pd.DataFrame] = []
+        while cursor <= final:
+            window_end = min(date(cursor.year, 12, 31), final)
+            frame = self._call_fund_daily(
+                ts_code=ts_code,
+                start_date=cursor.strftime("%Y%m%d"),
+                end_date=window_end.strftime("%Y%m%d"),
+                fields=fields,
+            )
+            if frame is not None and not frame.empty:
+                frames.append(frame)
+            cursor = window_end + timedelta(days=1)
+
+        if not frames:
+            return pd.DataFrame()
+        return (
+            pd.concat(frames, ignore_index=True)
+            .drop_duplicates(["ts_code", "trade_date"], keep="last")
+            .sort_values(["trade_date", "ts_code"], kind="stable")
+            .reset_index(drop=True)
+        )
+
     def _fund_daily(self, ts_code: str, as_of_key: str) -> pd.DataFrame:
         cache_name = self._cache_name("fund_daily", ts_code, as_of_key)
         _name, list_date = self._fund_metadata(ts_code)
@@ -958,11 +1005,10 @@ class CNQDIETFProvider:
             raise CacheMiss(method="fund_daily", cache_name=cache_name)
         self._daily_refresh_attempted.add(cache_name)
         try:
-            df = self._call_fund_daily(
+            df = self._fetch_fund_daily_history(
                 ts_code=ts_code,
                 start_date=start,
                 end_date=as_of_key,
-                fields="ts_code,trade_date,open,high,low,close,vol,amount",
             )
         except Exception as exc:
             self.record_health("fund_daily", "failed", str(exc))
@@ -980,14 +1026,16 @@ class CNQDIETFProvider:
         self._daily_cache[cache_name] = self._write_cache(cache_name, df)
         return self._daily_cache[cache_name]
 
-    @staticmethod
-    def _history_start_key(as_of_key: str, list_date: str | None) -> str:
-        end = datetime.strptime(as_of_key, "%Y%m%d").date()
-        try:
-            start_day = end.replace(year=end.year - INSTRUMENT_HISTORY_YEARS)
-        except ValueError:
-            start_day = end.replace(year=end.year - INSTRUMENT_HISTORY_YEARS, day=28)
-        start = start_day.strftime("%Y%m%d")
+    def _history_start_key(self, as_of_key: str, list_date: str | None) -> str:
+        if self.history_start:
+            start = self.history_start
+        else:
+            end = datetime.strptime(as_of_key, "%Y%m%d").date()
+            try:
+                start_day = end.replace(year=end.year - INSTRUMENT_HISTORY_YEARS)
+            except ValueError:
+                start_day = end.replace(year=end.year - INSTRUMENT_HISTORY_YEARS, day=28)
+            start = start_day.strftime("%Y%m%d")
         listed = _yyyymmdd(list_date) if list_date else ""
         return max(start, listed) if len(listed) == 8 and listed.isdigit() else start
 
@@ -1373,8 +1421,14 @@ def make_provider(
     cache_dir: Path | str | None = None,
     offline: bool = False,
     as_of: str | None = None,
+    history_start: str | None = None,
 ) -> CNQDIETFProvider:
-    return CNQDIETFProvider(cache_dir=cache_dir, offline=offline, as_of=as_of)
+    return CNQDIETFProvider(
+        cache_dir=cache_dir,
+        offline=offline,
+        as_of=as_of,
+        history_start=history_start,
+    )
 
 
 __all__ = [

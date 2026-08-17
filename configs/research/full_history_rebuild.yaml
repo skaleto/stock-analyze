@@ -1,0 +1,66 @@
+protocol: full-history-rebuild-v1
+source_start: "20180101"
+development_end: "20241231"
+historical_test_start: "20250101"
+inner_splits: 3
+minimum_feature_coverage: 0.70
+minimum_feature_stability: 0.75
+maximum_variants_per_family: 3
+outer_folds:
+  - train_start: "20180101"
+    train_end: "20201231"
+    validation_start: "20210101"
+    validation_end: "20211231"
+  - train_start: "20180101"
+    train_end: "20211231"
+    validation_start: "20220101"
+    validation_end: "20221231"
+  - train_start: "20180101"
+    train_end: "20221231"
+    validation_start: "20230101"
+    validation_end: "20231231"
+  - train_start: "20180101"
+    train_end: "20231231"
+    validation_start: "20240101"
+    validation_end: "20241231"
+scopes:
+  hs300:
+    market: a_share
+    horizon: 20
+    max_features: 12
+  zz500:
+    market: a_share
+    horizon: 20
+    max_features: 12
+  hk_exposure:
+    market: cn_qdii_etf
+    horizon: 10
+    max_features: 8
+  us_exposure:
+    market: cn_qdii_etf
+    horizon: 10
+    max_features: 8
+candidates:
+  a_share:
+    elastic_net:
+      - {alpha: 0.0005, l1_ratio: 0.10}
+      - {alpha: 0.0010, l1_ratio: 0.25}
+      - {alpha: 0.0020, l1_ratio: 0.50}
+    lightgbm_lambdarank:
+      - {learning_rate: 0.02, num_leaves: 15, max_depth: 4, min_child_samples: 200, reg_alpha: 1.0, reg_lambda: 8.0}
+      - {learning_rate: 0.03, num_leaves: 15, max_depth: 5, min_child_samples: 300, reg_alpha: 2.0, reg_lambda: 10.0}
+    catboost_ranker:
+      - {learning_rate: 0.02, depth: 4, iterations: 600, l2_leaf_reg: 10.0}
+      - {learning_rate: 0.03, depth: 5, iterations: 500, l2_leaf_reg: 15.0}
+    temporal_context_net:
+      - {hidden_size: 32, dropout: 0.20, weight_decay: 0.01}
+  cn_qdii_etf:
+    elastic_net:
+      - {alpha: 0.0010, l1_ratio: 0.10}
+      - {alpha: 0.0020, l1_ratio: 0.25}
+    catboost_ranker:
+      - {learning_rate: 0.02, depth: 3, iterations: 400, l2_leaf_reg: 15.0}
+      - {learning_rate: 0.03, depth: 4, iterations: 300, l2_leaf_reg: 20.0}
+    additive:
+      - {decay: 0.995, coefficient_bound: 0.35}
+      - {decay: 0.990, coefficient_bound: 0.25}

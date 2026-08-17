@@ -46,7 +46,7 @@ class ResearchLabelsTest(unittest.TestCase):
         self.assertEqual(row["entry_date"], self.prices.iloc[1]["trade_date"])
         self.assertEqual(row["label_end_date"], self.prices.iloc[5]["trade_date"])
         self.assertAlmostEqual(row["entry_price"], self.prices.iloc[1]["open"])
-        self.assertEqual(row["label_contract_version"], "next-open-v2")
+        self.assertEqual(row["label_contract_version"], "next-open-v3-adjusted")
         self.assertEqual(row["label"], "up")
 
     def test_overnight_gap_before_entry_is_not_counted_as_model_return(self):
@@ -138,6 +138,26 @@ class ResearchLabelsTest(unittest.TestCase):
         snapshot = observable_snapshot(frame, "2026-07-10")
 
         self.assertEqual(snapshot["code"].tolist(), ["000001"])
+
+    def test_adjusted_prices_remove_fund_split_from_forward_returns(self):
+        dates = pd.date_range("2022-01-10", periods=5, freq="B").strftime("%Y%m%d")
+        prices = pd.DataFrame({
+            "code": ["513100"] * 5,
+            "trade_date": dates,
+            "open": [5.0, 5.1, 1.02, 1.04, 1.05],
+            "close": [5.0, 5.1, 1.02, 1.04, 1.05],
+            "adjusted_open": [5.0, 5.1, 5.1, 5.2, 5.25],
+            "adjusted_close": [5.0, 5.1, 5.1, 5.2, 5.25],
+        })
+        benchmark = prices.drop(columns="code").copy()
+
+        labels = build_forward_labels(prices, benchmark=benchmark, horizons=(3,))
+
+        row = labels.loc[labels["trade_date"].eq(dates[0])].iloc[0]
+        self.assertAlmostEqual(row["entry_price"], 5.1)
+        self.assertAlmostEqual(row["absolute_return"], 5.2 / 5.1 - 1.0)
+        self.assertAlmostEqual(row["benchmark_return"], 5.2 / 5.1 - 1.0)
+        self.assertAlmostEqual(row["excess_return"], 0.0)
 
     def test_label_store_preserves_codes(self):
         labels = build_forward_labels(self.prices, benchmark=self.benchmark)

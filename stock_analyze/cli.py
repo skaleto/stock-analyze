@@ -730,6 +730,43 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Sealed transparent campaign report used as admission evidence.",
     )
+    shadow_quality_audit = sub.add_parser(
+        "audit-model-shadow-quality",
+        help="Report or reject Shadow candidates without strict historical evidence.",
+    )
+    shadow_quality_audit.add_argument("--repo-root", type=Path, default=Path("."))
+    shadow_quality_audit.add_argument(
+        "--apply",
+        action="store_true",
+        help="Reject flagged legacy Shadow candidates after the read-only preview.",
+    )
+    full_history_audit = sub.add_parser(
+        "audit-full-history-rebuild-data",
+        help="Audit one full-history feature snapshot before model fitting.",
+    )
+    full_history_audit.add_argument("--repo-root", type=Path, default=Path("."))
+    full_history_audit.add_argument("--market", choices=["a_share", "cn_qdii_etf"], required=True)
+    full_history_audit.add_argument("--snapshot", type=Path, required=True)
+    full_history_audit.add_argument("--required-start", required=True)
+    full_history_audit.add_argument("--required-end", required=True)
+    full_history_retire = sub.add_parser(
+        "retire-full-history-legacy-shadows",
+        help="Preview or retire transparent Shadow candidates superseded by the rebuild.",
+    )
+    full_history_retire.add_argument("--repo-root", type=Path, default=Path("."))
+    full_history_retire.add_argument("--apply", action="store_true")
+    full_history_run = sub.add_parser(
+        "run-full-history-model-rebuild",
+        help="Run the frozen full-history model rebuild campaign.",
+    )
+    full_history_run.add_argument("--repo-root", type=Path, default=Path("."))
+    full_history_run.add_argument("--snapshot-date", required=True)
+    full_history_run.add_argument(
+        "--scopes",
+        nargs="+",
+        choices=["hs300", "zz500", "hk_exposure", "us_exposure"],
+        default=None,
+    )
 
     intelligence_ingest = sub.add_parser(
         "intelligence-ingest",
@@ -1473,6 +1510,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "admit-personal-quant-shadow":
         ensure_dirs(args.logs_dir)
         return _command_admit_personal_quant_shadow(args)
+    if args.command == "audit-model-shadow-quality":
+        ensure_dirs(args.logs_dir)
+        return _command_audit_model_shadow_quality(args)
+    if args.command in {
+        "audit-full-history-rebuild-data",
+        "retire-full-history-legacy-shadows",
+        "run-full-history-model-rebuild",
+    }:
+        ensure_dirs(args.logs_dir)
+        return _command_full_history_rebuild_maintenance(args)
     if args.command in {
         "intelligence-ingest", "intelligence-backfill",
         "intelligence-extract", "intelligence-status", "intelligence-evaluate",
@@ -1985,6 +2032,56 @@ def _command_admit_personal_quant_shadow(args: argparse.Namespace) -> int:
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
+
+
+def _command_audit_model_shadow_quality(args: argparse.Namespace) -> int:
+    from .research.shadow_admission import audit_shadow_quality
+
+    try:
+        result = audit_shadow_quality(args.repo_root, apply=bool(args.apply))
+    except (OSError, ValueError) as exc:
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _command_full_history_rebuild_maintenance(args: argparse.Namespace) -> int:
+    from .research.full_history_rebuild import (
+        audit_full_history_dataset,
+        retire_legacy_rebuild_shadows,
+    )
+
+    try:
+        if args.command == "audit-full-history-rebuild-data":
+            import pandas as pd
+
+            frame = pd.read_parquet(args.snapshot)
+            result = audit_full_history_dataset(
+                frame,
+                market=args.market,
+                required_start=args.required_start,
+                required_end=args.required_end,
+            )
+        elif args.command == "retire-full-history-legacy-shadows":
+            result = retire_legacy_rebuild_shadows(
+                args.repo_root,
+                apply=bool(args.apply),
+            )
+        else:
+            from .research.full_history_rebuild import run_full_history_rebuild
+
+            result = run_full_history_rebuild(
+                args.repo_root,
+                snapshot_date=args.snapshot_date,
+                scopes=args.scopes,
+            )
+    except (OSError, ValueError) as exc:
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("passed", True) else 1
+
 
 
 def _command_intelligence(args: argparse.Namespace) -> int:
@@ -2958,6 +3055,7 @@ def _command_qdii_shadow_research(args: argparse.Namespace) -> int:
             cache_dir=args.cache_dir,
             offline=not args.refresh_data,
             as_of=end_date.isoformat(),
+            history_start=start_date.isoformat(),
         )
         basic = provider._fund_basic(refresh=bool(args.refresh_data), as_of_key=end_key)
         catalog = research_catalog.build_research_catalog(basic, as_of=end_date)
