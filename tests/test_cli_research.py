@@ -187,6 +187,24 @@ class CLIResearchTest(unittest.TestCase):
         self.assertEqual(args.command, "run-rule-core-diagnostic")
         self.assertEqual(args.as_of, "20260807")
 
+    def test_cli_dispatches_preregistered_earnings_drift_study(self):
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "stock_analyze.research.earnings_drift_study.run_earnings_drift_study",
+            return_value={
+                "status": "insufficient_data",
+                "model_training_allowed": False,
+            },
+        ) as study:
+            code = main([
+                "run-earnings-drift-study",
+                "--repo-root", tmp,
+                "--snapshot-date", "20260814",
+            ])
+
+        self.assertEqual(code, 0)
+        study.assert_called_once()
+        self.assertEqual(study.call_args.kwargs["snapshot_date"], "20260814")
+
     def test_cli_dispatches_account_scoped_classical_tournament(self):
         with tempfile.TemporaryDirectory() as tmp, patch(
             "stock_analyze.research.pipeline.ResearchPipeline.run_classical_tournament",

@@ -651,6 +651,21 @@ def build_parser() -> argparse.ArgumentParser:
     rule_core.add_argument("--repo-root", type=Path, default=Path("."))
     rule_core.add_argument("--output-root", type=Path, default=None)
 
+    earnings_drift = sub.add_parser(
+        "run-earnings-drift-study",
+        help="Run the preregistered model-free A-share earnings drift study.",
+    )
+    earnings_drift.add_argument("--repo-root", type=Path, default=Path("."))
+    earnings_drift.add_argument("--snapshot-date", required=True)
+    earnings_drift.add_argument(
+        "--contract",
+        type=Path,
+        default=Path("configs/research/earnings_drift_study.yaml"),
+    )
+    earnings_drift.add_argument(
+        "--output-root", type=Path, default=Path("reports/research")
+    )
+
     training_bundle_export = sub.add_parser(
         "research-training-bundle-export",
         help="Export checksummed research snapshots for local CPU training.",
@@ -1494,6 +1509,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run-rule-core-diagnostic":
         ensure_dirs(args.logs_dir)
         return _command_rule_core_diagnostic(args)
+    if args.command == "run-earnings-drift-study":
+        ensure_dirs(args.logs_dir)
+        return _command_earnings_drift_study(args)
     if args.command in {
         "research-training-bundle-export",
         "research-training-bundle-import",
@@ -1995,6 +2013,23 @@ def _command_rule_core_diagnostic(args: argparse.Namespace) -> int:
         offline=bool(args.offline),
         output_root=args.output_root,
     )
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def _command_earnings_drift_study(args: argparse.Namespace) -> int:
+    from .research.earnings_drift_study import run_earnings_drift_study
+
+    try:
+        result = run_earnings_drift_study(
+            args.repo_root,
+            snapshot_date=args.snapshot_date,
+            contract_path=args.contract,
+            output_root=args.output_root,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     return 0
 
