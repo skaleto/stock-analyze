@@ -958,6 +958,15 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(result["status"], "cached")
         self.assertEqual(result["rows"], 2)
 
+    def test_research_stage_projection_excludes_unrelated_wide_features(self):
+        columns = set(ResearchPipeline._RESEARCH_STAGE_FEATURE_COLUMNS)
+
+        self.assertIn("adjusted_open", columns)
+        self.assertIn("macd_hist", columns)
+        self.assertIn("industry_breadth", columns)
+        self.assertNotIn("earnings_stability", columns)
+        self.assertNotIn("event_materiality_positive_20d", columns)
+
     def test_qdii_history_normalizes_tushare_amount_to_yuan_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

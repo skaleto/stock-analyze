@@ -264,6 +264,18 @@ class ResearchPipeline:
         "benchmark_exit_price", "benchmark_return", "excess_return",
         "account_id", "research_scope", "benchmark_code",
     )
+    _RESEARCH_STAGE_FEATURE_COLUMNS = (
+        "code", "trade_date", "account_id", "research_scope",
+        "open", "high", "low", "close",
+        "adjusted_open", "adjusted_high", "adjusted_low", "adjusted_close",
+        "volume", "industry", "universe_quality", "unbiased_universe",
+        "universe_contract_version", "membership_source",
+        "momentum_20", "realized_volatility_20", "volume_ratio_5_20",
+        "macd_dif", "macd_dea", "macd_hist", "macd_cross",
+        "macd_hist_slope", "sma_5", "sma_20", "rsi_14", "adx_14",
+        "bollinger_upper", "bollinger_lower", "bollinger_width",
+        "flow_net_large", "industry_breadth",
+    )
 
     @staticmethod
     def _validate_current_label_contract(labels: pd.DataFrame) -> None:
@@ -1877,7 +1889,15 @@ class ResearchPipeline:
         }
 
     def run_research(self) -> dict[str, Any]:
-        features = self.store.read_feature_snapshot(self.market, self.as_of)
+        feature_path = self.store.feature_snapshot_path(self.market, self.as_of)
+        schema = set(pq.read_schema(feature_path).names)
+        features = pd.read_parquet(
+            feature_path,
+            columns=[
+                column for column in self._RESEARCH_STAGE_FEATURE_COLUMNS
+                if column in schema
+            ],
+        )
         features_rows = len(features)
         labels, benchmark_coverage = self._build_forward_label_snapshot(features)
         labels_rows = len(labels)
