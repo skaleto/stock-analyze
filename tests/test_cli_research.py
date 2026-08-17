@@ -397,6 +397,33 @@ class CLIResearchTest(unittest.TestCase):
         self.assertEqual(code, 0)
         prepare.assert_called_once_with(force=False)
 
+    def test_offline_research_resolves_latest_cached_market_date(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "data" / "shared" / "cache"
+            cache.mkdir(parents=True)
+            (cache / "spot_20260817.csv").write_text(
+                "code,name\n000001,test\n", encoding="utf-8"
+            )
+            with (
+                patch(
+                    "stock_analyze.research.pipeline.ResearchPipeline.prepare_data",
+                    return_value={"status": "cached", "rows": 1},
+                ) as prepare,
+                patch(
+                    "stock_analyze.research.pipeline.ResearchPipeline.__init__",
+                    return_value=None,
+                ) as init,
+            ):
+                code = main([
+                    "--market", "a_share", "--agent", "codex",
+                    "prepare-research-data", "--offline", "--repo-root", tmp,
+                ])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(init.call_args.kwargs["as_of"], "2026-08-17")
+        prepare.assert_called_once_with(force=False)
+
     def test_predict_fallback_returns_nonzero_for_systemd(self):
         with tempfile.TemporaryDirectory() as tmp, patch(
             "stock_analyze.research.pipeline.ResearchPipeline.predict",
