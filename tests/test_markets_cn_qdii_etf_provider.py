@@ -806,3 +806,32 @@ class ProviderSnapshotTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FullHistoryQDIIFetchTest(unittest.TestCase):
+    def test_explicit_history_start_overrides_three_year_window(self):
+        client = FakeTushareClient()
+        provider = CNQDIETFProvider(
+            pro_client=client,
+            cache_dir=None,
+            history_start="20180101",
+        )
+
+        provider.price_snapshot("513100.SH", as_of="2026-07-10")
+
+        self.assertEqual(client.daily_calls[0]["start_date"], "20180101")
+        self.assertGreater(len(client.daily_calls), 1)
+        self.assertLessEqual(client.daily_calls[0]["end_date"], "20181231")
+        self.assertEqual(client.daily_calls[-1]["end_date"], "20260710")
+
+    def test_explicit_history_start_does_not_predate_listing(self):
+        client = RecentListingClient()
+        provider = CNQDIETFProvider(
+            pro_client=client,
+            cache_dir=None,
+            history_start="20180101",
+        )
+
+        provider.price_snapshot("159999.SZ", as_of="2026-07-12")
+
+        self.assertEqual(client.daily_calls[0]["start_date"], "20250102")

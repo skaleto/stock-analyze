@@ -29,6 +29,7 @@ from .classical_specs import (
 )
 from .trial_ledger import CampaignLedger
 from .governance import evaluate_campaign_governance
+from .labels import LABEL_CONTRACT_VERSION
 from .models import (
     _bounded_cross_section_sample,
     _fit_clip_bounds,
@@ -1031,7 +1032,7 @@ def _load_scope_dataset(
     ].copy()
     if features.empty or labels.empty:
         raise ValueError(f"campaign_scope_data_missing:{market}:{account_scope}")
-    if set(labels["label_contract_version"].dropna().astype(str)) != {"next-open-v2"}:
+    if set(labels["label_contract_version"].dropna().astype(str)) != {LABEL_CONTRACT_VERSION}:
         raise ValueError("campaign_label_contract_invalid")
     if not labels["unbiased_universe"].fillna(False).astype(bool).all():
         raise ValueError("campaign_universe_not_point_in_time")
@@ -1103,7 +1104,7 @@ def _load_scope_dataset(
         "start": str(dataset["trade_date"].min()),
         "end": str(dataset["trade_date"].max()),
         "window_manifest": window,
-        "label_contract_version": "next-open-v2",
+        "label_contract_version": LABEL_CONTRACT_VERSION,
         "point_in_time_audit": True,
     }
     return dataset, contract, metadata

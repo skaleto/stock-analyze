@@ -241,11 +241,26 @@ class ModelIterationLifecycleTest(unittest.TestCase):
                         "spec_id": "A_MOM_02",
                         "spec_hash": "rule-hash",
                         "artifact": "data/rule-a-mom.json",
-                        "admission_grade": "exploratory",
+                        "admission_grade": "promising",
                         "source_campaign": "campaign-v1",
                         "promotion_policy": "strict-forward-review-v1",
                         "development_admission": {
-                            "contract": "personal-quant-shadow-v1",
+                            "contract": "evidence-first-shadow-v2",
+                            "active_evidence_passed": True,
+                        },
+                    },
+                    "unqualified-rule": {
+                        "status": "shadow",
+                        "registered_at": "2026-08-15T20:00:00+08:00",
+                        "candidate_kind": "transparent_rule",
+                        "runtime_contract": "transparent-rule-shadow-v1",
+                        "spec_id": "A_MOM_02",
+                        "spec_hash": "rule-hash",
+                        "artifact": "data/unqualified-rule.json",
+                        "admission_grade": "promising",
+                        "development_admission": {
+                            "contract": "evidence-first-shadow-v2",
+                            "active_evidence_passed": False,
                         },
                     },
                 },
@@ -261,7 +276,7 @@ class ModelIterationLifecycleTest(unittest.TestCase):
 
         self.assertEqual(candidate["model_version"], "rule-a-mom")
         self.assertEqual(candidate["candidate_kind"], "transparent_rule")
-        self.assertEqual(candidate["admission_grade"], "exploratory")
+        self.assertEqual(candidate["admission_grade"], "promising")
         self.assertEqual(candidate["source_campaign"], "campaign-v1")
         self.assertEqual(candidate["promotion_policy"], "strict-forward-review-v1")
 

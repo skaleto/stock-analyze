@@ -60,12 +60,15 @@ def evaluate_transparent_shadow_trial(trial: Mapping[str, Any]) -> dict[str, Any
     ]
     gate_zero = trial.get("gate_zero")
     gate_zero = gate_zero if isinstance(gate_zero, Mapping) else {}
+    expected_folds = int(_number(trial.get("expected_outer_folds"), 3.0))
+    if expected_folds < 2 or expected_folds > 10:
+        expected_folds = 3
     checks = {
         "point_in_time_audit": trial.get("point_in_time_audit") is True,
         "gate_zero": gate_zero.get("passed") is True,
-        "walk_forward_folds": len(folds) == 3,
+        "walk_forward_folds": len(folds) == expected_folds,
         "all_folds_traded": (
-            len(folds) == 3
+            len(folds) == expected_folds
             and all(int(_number(item.get("trade_count"), 0.0)) > 0 for item in folds)
         ),
         "attribution_status": str(metrics.get("attribution_status") or "") == "reconciled",
@@ -79,24 +82,55 @@ def evaluate_transparent_shadow_trial(trial: Mapping[str, Any]) -> dict[str, Any
             _number(metrics.get("impact_capped_notional_ratio"), 1.0) <= 0.10
         ),
     }
-    reasons = [name for name, passed in checks.items() if not passed]
+    safety_reasons = [name for name, passed in checks.items() if not passed]
+    active_evidence_passed = trial.get("passed_transparent_gates") is True
     positive_folds = sum(
         _number(item.get("net_excess_return"), -1.0) > 0.0
         for item in folds
     )
+    quality_checks = {
+        "quality_gate_not_passed": active_evidence_passed,
+        "positive_net_excess_return": (
+            _number(metrics.get("net_excess_return"), -1.0) > 0.0
+        ),
+        "cost_stress_net_excess_return": (
+            _number(stress.get("net_excess_return"), -1.0) >= 0.0
+        ),
+        "all_positive_excess_folds": (
+            len(folds) == expected_folds and positive_folds == len(folds)
+        ),
+        "bootstrap_probability": (
+            _number(trial.get("bootstrap_probability"), 0.0) >= 0.95
+        ),
+        "deflated_sharpe_probability": (
+            expected_folds < 4
+            or _number(trial.get("deflated_sharpe_probability"), 0.0) >= 0.95
+        ),
+        "probability_of_backtest_overfit": (
+            expected_folds < 4
+            or _number(trial.get("probability_of_backtest_overfit"), 1.0) <= 0.50
+        ),
+    }
+    quality_reasons = [name for name, passed in quality_checks.items() if not passed]
+    reasons = [*safety_reasons, *quality_reasons]
     promising = bool(
-        not reasons
+        not safety_reasons
         and _number(metrics.get("net_excess_return"), -1.0) > 0.0
         and _number(stress.get("net_excess_return"), -1.0) >= 0.0
         and positive_folds >= 2
     )
     return {
         "contract": SHADOW_ADMISSION_CONTRACT,
-        "passed": not reasons,
-        "grade": "promising" if promising else "exploratory" if not reasons else "rejected",
+        "passed": not safety_reasons and not quality_reasons,
+        "grade": (
+            "promising" if promising
+            else "exploratory" if not safety_reasons
+            else "rejected"
+        ),
         "reasons": reasons,
-        "checks": checks,
-        "active_evidence_passed": bool(trial.get("passed_transparent_gates")),
+        "checks": {**checks, **quality_checks},
+        "active_evidence_passed": active_evidence_passed,
+        "expected_outer_folds": int(expected_folds),
         "positive_excess_folds": int(positive_folds),
         "net_return": _number(metrics.get("net_return"), -1.0),
         "net_excess_return": _number(metrics.get("net_excess_return"), -1.0),
@@ -634,10 +668,82 @@ def admit_campaign_shadows(
     }
 
 
+def audit_shadow_quality(
+    repo_root: str | Path,
+    *,
+    apply: bool = False,
+) -> dict[str, Any]:
+    """Report or reject legacy transparent Shadow candidates."""
+
+    root = Path(repo_root).resolve()
+    entries: list[dict[str, Any]] = []
+    changed = 0
+    registry_paths = sorted(
+        root.glob("data/research/models/*/*/*/registry.json")
+    )
+    for registry_path in registry_paths:
+        try:
+            state = json.loads(registry_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"shadow_quality_registry:{_relative_to_root(registry_path, root)}"
+            ) from exc
+        models = state.get("models")
+        if not isinstance(models, Mapping):
+            continue
+        for model_version, raw_model in sorted(models.items()):
+            if not isinstance(raw_model, Mapping):
+                continue
+            if str(raw_model.get("status") or "") != "shadow":
+                continue
+            if str(raw_model.get("candidate_kind") or "") != "transparent_rule":
+                continue
+            admission = raw_model.get("development_admission")
+            admission = admission if isinstance(admission, Mapping) else {}
+            contract = str(admission.get("contract") or "")
+            active_evidence_passed = admission.get("active_evidence_passed") is True
+            reasons = []
+            if contract != SHADOW_ADMISSION_CONTRACT:
+                reasons.append("legacy_admission_contract")
+            if not active_evidence_passed:
+                reasons.append("historical_quality_gate_not_passed")
+            if not reasons:
+                continue
+            entry = {
+                "registry_path": _relative_to_root(registry_path, root),
+                "model_version": str(model_version),
+                "current_status": "shadow",
+                "candidate_kind": "transparent_rule",
+                "admission_contract": contract,
+                "active_evidence_passed": active_evidence_passed,
+                "reasons": reasons,
+                "action": "reject",
+                "applied": False,
+            }
+            if apply:
+                registry = ModelRegistry(registry_path)
+                registry.reject_shadow(
+                    str(model_version),
+                    reason="historical_quality_gate_not_passed",
+                    event_id=f"shadow-quality-audit:{model_version}:{contract or 'missing'}",
+                )
+                entry["applied"] = True
+                changed += 1
+            entries.append(entry)
+    return {
+        "status": "audit_required" if entries and not apply else "complete",
+        "contract": SHADOW_ADMISSION_CONTRACT,
+        "apply": bool(apply),
+        "flagged": len(entries),
+        "changed": changed,
+        "entries": entries,
+    }
+
 __all__ = [
     "RULE_PROMOTION_POLICY",
     "RULE_RUNTIME_CONTRACT",
     "SHADOW_ADMISSION_CONTRACT",
+    "audit_shadow_quality",
     "admit_campaign_shadows",
     "decide_account_shadow_trials",
     "evaluate_transparent_shadow_trial",

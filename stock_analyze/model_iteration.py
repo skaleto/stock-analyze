@@ -12,7 +12,7 @@ from .utils import now_iso, read_json, write_json
 
 
 REQUIRED_SHADOW_CYCLES = 12
-SHADOW_ADMISSION_CONTRACT = "personal-quant-shadow-v1"
+SHADOW_ADMISSION_CONTRACT = "evidence-first-shadow-v2"
 TRANSPARENT_RULE_RUNTIME_CONTRACT = "transparent-rule-shadow-v1"
 _MARKET_PREFIX = {
     "a_share": "A",
@@ -479,6 +479,11 @@ def _eligible_candidate_versions(
             or ""
         )
         == SHADOW_ADMISSION_CONTRACT
+        and (
+            ((metadata or {}).get("development_admission") or {}).get(
+                "active_evidence_passed"
+            ) is True
+        )
         and bool(str((metadata or {}).get("spec_id") or ""))
         and bool(str((metadata or {}).get("spec_hash") or ""))
     }

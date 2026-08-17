@@ -74,7 +74,7 @@ class ResearchPipelineTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError,
-            "research_label_contract_stale:required=next-open-v2:observed=next-open-v1",
+            "research_label_contract_stale:required=next-open-v3-adjusted:observed=next-open-v1",
         ):
             ResearchPipeline._validate_current_label_contract(labels)
 
@@ -86,7 +86,7 @@ class ResearchPipelineTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError,
-            "observed=next-open-v1,next-open-v2",
+            "observed=next-open-v1,next-open-v3-adjusted",
         ):
             ResearchPipeline._validate_current_label_contract(labels)
 
@@ -106,9 +106,97 @@ class ResearchPipelineTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             ValueError,
-            "observed=missing,next-open-v2",
+            "observed=missing,next-open-v3-adjusted",
         ):
             ResearchPipeline._validate_current_label_contract(labels)
+
+    def test_qdii_history_normalization_merges_latest_adjustment_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "data" / "cn_qdii_etf" / "shared" / "cache"
+            cache.mkdir(parents=True)
+            daily_path = cache / "fund_daily_513100_SH_20220117.csv"
+            pd.DataFrame({
+                "ts_code": ["513100.SH"] * 2,
+                "trade_date": ["20220111", "20220114"],
+                "open": [5.1, 1.02], "high": [5.2, 1.03],
+                "low": [5.0, 1.01], "close": [5.1, 1.02],
+                "vol": [1000.0, 1000.0], "amount": [5000.0, 1000.0],
+            }).to_csv(daily_path, index=False)
+            pd.DataFrame({
+                "ts_code": ["513100.SH"] * 2,
+                "trade_date": ["20220111", "20220114"],
+                "adj_factor": [1.0, 5.0],
+            }).to_csv(cache / "fund_adj_513100_SH_20220117.csv", index=False)
+            pipeline = ResearchPipeline(
+                root, market="cn_qdii_etf", agent="codex",
+                as_of="2022-01-17", offline=True,
+            )
+
+            normalized = pipeline._normalize_history(daily_path)
+
+        self.assertEqual(normalized["adj_factor"].tolist(), [1.0, 5.0])
+
+    def test_qdii_technical_history_preserves_adjusted_execution_prices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline = ResearchPipeline(
+                Path(tmp), market="cn_qdii_etf", agent="codex",
+                as_of="2022-01-14", offline=True,
+            )
+            history = pd.DataFrame({
+                "code": ["513100"] * 4,
+                "trade_date": ["20220110", "20220111", "20220114", "20220117"],
+                "open": [5.0, 5.1, 1.02, 1.04],
+                "high": [5.1, 5.2, 1.03, 1.05],
+                "low": [4.9, 5.0, 1.01, 1.03],
+                "close": [5.0, 5.1, 1.02, 1.04],
+                "volume": [1000.0] * 4,
+                "amount": [5000.0] * 4,
+                "adj_factor": [1.0, 1.0, 5.0, 5.0],
+            })
+
+            featured = pipeline._compute_technical_history(history)
+
+        self.assertIn("adjusted_close", featured.columns)
+        self.assertAlmostEqual(float(featured.iloc[1]["adjusted_close"]), 5.1)
+        self.assertAlmostEqual(float(featured.iloc[2]["adjusted_close"]), 5.1)
+        self.assertAlmostEqual(float(featured.iloc[2]["close"]), 1.02)
+
+    def test_qdii_benchmark_history_prefers_adjusted_feature_prices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline = ResearchPipeline(
+                Path(tmp), market="cn_qdii_etf", agent="codex",
+                as_of="2022-01-17", offline=True,
+            )
+            raw = pd.DataFrame({
+                "code": ["513100"] * 4,
+                "trade_date": ["20220110", "20220111", "20220114", "20220117"],
+                "open": [5.0, 5.1, 1.02, 1.04],
+                "high": [5.1, 5.2, 1.03, 1.05],
+                "low": [4.9, 5.0, 1.01, 1.03],
+                "close": [5.0, 5.1, 1.02, 1.04],
+                "volume": [1000.0] * 4,
+                "amount": [5000.0] * 4,
+                "adj_factor": [1.0, 1.0, 5.0, 5.0],
+            })
+            features = pipeline._compute_technical_history(raw)
+            features["account_id"] = "us_exposure"
+            with patch.object(
+                pipeline, "_load_persisted_source_frames",
+                return_value={"benchmark_513100": raw},
+            ):
+                benchmark, coverage = pipeline._benchmark_history(
+                    features,
+                    account={
+                        "id": "us_exposure", "scope": "us_exposure",
+                        "benchmark": "513100.SH", "cash": 500000,
+                    },
+                )
+
+        values = benchmark.set_index("trade_date")
+        self.assertEqual(coverage, 1.0)
+        self.assertAlmostEqual(float(values.loc["20220111", "close"]), 5.1 / 5.0)
+        self.assertAlmostEqual(float(values.loc["20220114", "close"]), 5.1 / 5.0)
 
     def test_refresh_labels_uses_latest_feature_snapshot_before_non_trading_day(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -147,6 +235,65 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(result["snapshot_date"], "20260807")
         self.assertEqual(result["label_contract_version"], LABEL_CONTRACT_VERSION)
         self.assertEqual(len(written), 1)
+
+    def test_a_share_labels_use_continuous_prices_across_membership_gap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pipeline = ResearchPipeline(
+                root,
+                market="a_share",
+                agent="codex",
+                as_of="2026-01-12",
+                offline=True,
+            )
+            dates = pd.date_range("2026-01-01", periods=8, freq="B")
+            prices = np.linspace(10.0, 10.7, len(dates))
+            history_path = root / "history_000001_20260112_8.csv"
+            pd.DataFrame({
+                "日期": dates.strftime("%Y-%m-%d"),
+                "开盘": prices,
+                "最高": prices + 0.1,
+                "最低": prices - 0.1,
+                "收盘": prices,
+                "成交量": 1_000_000,
+                "成交额": 10_000_000,
+            }).to_csv(history_path, index=False)
+            member_rows = [0, 1, 5, 6]
+            features = pd.DataFrame({
+                "code": ["000001"] * len(member_rows),
+                "trade_date": dates[member_rows].strftime("%Y%m%d"),
+                "open": prices[member_rows],
+                "high": prices[member_rows] + 0.1,
+                "low": prices[member_rows] - 0.1,
+                "close": prices[member_rows],
+                "account_id": ["hs300"] * len(member_rows),
+                "universe_quality": ["available"] * len(member_rows),
+                "unbiased_universe": [True] * len(member_rows),
+                "universe_contract_version": ["pit-universe-v1"] * len(member_rows),
+                "membership_source": ["materialized_index_weight"] * len(member_rows),
+            })
+            benchmark = pd.DataFrame({
+                "trade_date": dates.strftime("%Y%m%d"),
+                "open": np.linspace(100.0, 100.7, len(dates)),
+                "close": np.linspace(100.0, 100.7, len(dates)),
+            })
+            account = {
+                "id": "hs300",
+                "scope": "hs300",
+                "benchmark": "000300.SH",
+            }
+            with (
+                patch.object(pipeline, "_baseline_accounts", return_value=[account]),
+                patch.object(pipeline, "_benchmark_history", return_value=(benchmark, 1.0)),
+                patch.object(pipeline, "_history_files", return_value=[history_path]),
+            ):
+                labels, _ = pipeline._build_forward_label_snapshot(features)
+
+        row = labels.loc[
+            labels["trade_date"].eq(dates[0].strftime("%Y%m%d"))
+            & labels["horizon"].eq(3)
+        ].iloc[0]
+        self.assertEqual(row["label_end_date"], dates[3].strftime("%Y%m%d"))
 
     def test_baseline_first_winner_is_trained_only_on_development_and_frozen(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2271,7 +2418,7 @@ class ResearchPipelineTest(unittest.TestCase):
                 "schema_version": 1,
                 "candidate_kind": "transparent_rule",
                 "runtime_contract": "transparent-rule-shadow-v1",
-                "admission_contract": "personal-quant-shadow-v1",
+                "admission_contract": "evidence-first-shadow-v2",
                 "model_version": "rule-a-mom",
                 "market": "a_share",
                 "account_scope": "zz500",
@@ -2292,7 +2439,8 @@ class ResearchPipelineTest(unittest.TestCase):
                         "spec_hash": spec.spec_hash,
                         "artifact": str(artifact_path),
                         "development_admission": {
-                            "contract": "personal-quant-shadow-v1",
+                            "contract": "evidence-first-shadow-v2",
+                            "active_evidence_passed": True,
                         },
                     }
                 },

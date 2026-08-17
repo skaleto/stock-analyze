@@ -19,6 +19,7 @@ import pyarrow.parquet as pq
 
 from .. import competition
 from ..model_iteration import (
+    SHADOW_ADMISSION_CONTRACT,
     ensure_iteration_candidate,
     iteration_portfolio_dir,
     iteration_prediction_path,
@@ -551,6 +552,30 @@ class ResearchPipeline:
         if self.market == "cn_qdii_etf":
             from ..markets.cn_qdii_etf.units import canonicalize_tushare_amount
 
+            if "adj_factor" not in normalized.columns and code:
+                dated_adjustments: list[tuple[str, Path]] = []
+                for candidate in self._cache_dir().glob(f"fund_adj_{code}_*.csv"):
+                    adjustment_match = re.search(r"_(\d{8})\.csv$", candidate.name)
+                    if adjustment_match and adjustment_match.group(1) <= self.run_key:
+                        dated_adjustments.append((adjustment_match.group(1), candidate))
+                if dated_adjustments:
+                    adjustment_path = max(dated_adjustments, key=lambda item: item[0])[1]
+                    adjustments = pd.read_csv(
+                        adjustment_path,
+                        usecols=["trade_date", "adj_factor"],
+                        dtype={"trade_date": str},
+                    )
+                    adjustments["trade_date"] = (
+                        adjustments["trade_date"].astype("string")
+                        .str.replace("-", "", regex=False).str[:8]
+                    )
+                    adjustments["adj_factor"] = pd.to_numeric(
+                        adjustments["adj_factor"], errors="coerce"
+                    )
+                    normalized = normalized.merge(
+                        adjustments.drop_duplicates("trade_date", keep="last"),
+                        on="trade_date", how="left", validate="many_to_one",
+                    )
             normalized = canonicalize_tushare_amount(normalized)
         keep = [
             column
@@ -577,7 +602,7 @@ class ResearchPipeline:
         raw_prices = technical_input.loc[:, price_columns].apply(
             pd.to_numeric, errors="coerce"
         ).reset_index(drop=True)
-        if self.market == "a_share" and "adj_factor" in technical_input.columns:
+        if "adj_factor" in technical_input.columns:
             factor = pd.to_numeric(
                 technical_input["adj_factor"], errors="coerce"
             ).where(lambda values: values.gt(0))
@@ -585,10 +610,14 @@ class ResearchPipeline:
                 technical_input[column] = (
                     pd.to_numeric(technical_input[column], errors="coerce") * factor
                 )
+        adjusted_prices = technical_input.loc[:, price_columns].apply(
+            pd.to_numeric, errors="coerce"
+        ).reset_index(drop=True)
         featured = compute_technical_features(technical_input)
-        # Execution and labels require the actual traded prices. Only derived
-        # technical features use the corporate-action-adjusted series.
+        # Execution uses actual traded prices; labels and derived features use
+        # the corporate-action-adjusted series.
         for column in price_columns:
+            featured[f"adjusted_{column}"] = adjusted_prices[column]
             featured[column] = raw_prices[column]
         return featured.drop(columns="adj_factor", errors="ignore")
 
@@ -1268,8 +1297,12 @@ class ResearchPipeline:
         for account in accounts:
             code = str(account.get("benchmark") or "").split(".")[0].zfill(6)
             frame = raw_frames.get(f"benchmark_{code}", pd.DataFrame()).copy()
-            if frame.empty and self.market == "cn_qdii_etf":
-                frame = features.loc[features["code"].astype("string").str.zfill(6).eq(code)].copy()
+            if self.market == "cn_qdii_etf":
+                adjusted = features.loc[
+                    features["code"].astype("string").str.zfill(6).eq(code)
+                ].copy()
+                if not adjusted.empty:
+                    frame = adjusted
             if frame.empty or not {"trade_date", "open", "close"}.issubset(frame.columns):
                 continue
             frame["trade_date"] = frame["trade_date"].astype("string").str.replace("-", "", regex=False).str[:8]
@@ -1278,10 +1311,12 @@ class ResearchPipeline:
             frame = frame.dropna(subset=["trade_date", "open", "close"]).sort_values("trade_date").drop_duplicates("trade_date", keep="last")
             if frame.empty or float(frame.iloc[0]["close"]) <= 0:
                 continue
-            scale = float(frame.iloc[0]["close"])
+            open_column = "adjusted_open" if "adjusted_open" in frame.columns else "open"
+            close_column = "adjusted_close" if "adjusted_close" in frame.columns else "close"
+            scale = float(frame.iloc[0][close_column])
             indexed = frame.set_index("trade_date")
-            opens.append(indexed["open"] / scale)
-            closes.append(indexed["close"] / scale)
+            opens.append(indexed[open_column] / scale)
+            closes.append(indexed[close_column] / scale)
             weights.append(float(account.get("cash") or 1.0) / total_cash)
             codes.append(code)
         if not closes:
@@ -1632,15 +1667,67 @@ class ResearchPipeline:
         )
         return scored
 
+    def _continuous_a_share_label_prices(
+        self,
+        features: pd.DataFrame,
+    ) -> pd.DataFrame:
+        codes = set(features["code"].astype("string").str.zfill(6))
+        parts: list[pd.DataFrame] = []
+        price_columns = ("open", "high", "low", "close")
+        history_files = self._history_files()
+        if not history_files:
+            available = [
+                column for column in (
+                    "code", "trade_date", *price_columns,
+                    "adjusted_open", "adjusted_high",
+                    "adjusted_low", "adjusted_close",
+                ) if column in features.columns
+            ]
+            return features.loc[:, available].copy()
+        for path in history_files:
+            match = re.search(r"history_(\d{6})", path.name)
+            if match is None or match.group(1) not in codes:
+                continue
+            history = self._normalize_history(path)
+            history = history.loc[history["trade_date"].le(self.run_key)].copy()
+            if history.empty:
+                continue
+            raw_prices = history.loc[:, price_columns].apply(
+                pd.to_numeric, errors="coerce"
+            )
+            part = history.loc[:, ["code", "trade_date", *price_columns]].copy()
+            if "adj_factor" in history.columns:
+                factor = pd.to_numeric(
+                    history["adj_factor"], errors="coerce"
+                ).where(lambda values: values.gt(0))
+                for column in price_columns:
+                    part[f"adjusted_{column}"] = raw_prices[column] * factor
+            parts.append(part)
+        if not parts:
+            raise ValueError("research_label_price_history_missing:a_share")
+        return (
+            pd.concat(parts, ignore_index=True)
+            .sort_values(["code", "trade_date"], kind="stable")
+            .drop_duplicates(["code", "trade_date"], keep="last")
+            .reset_index(drop=True)
+        )
+
     def _build_forward_label_snapshot(
         self,
         features: pd.DataFrame,
     ) -> tuple[pd.DataFrame, float]:
         price_columns = [
-            column for column in ("code", "trade_date", "open", "high", "low", "close")
+            column for column in (
+                "code", "trade_date", "open", "high", "low", "close",
+                "adjusted_open", "adjusted_high", "adjusted_low", "adjusted_close",
+            )
             if column in features.columns
         ]
         scoped = "account_id" in features.columns and not features["account_id"].eq("unscoped").all()
+        continuous_prices = (
+            self._continuous_a_share_label_prices(features)
+            if self.market == "a_share" else None
+        )
         label_parts: list[pd.DataFrame] = []
         benchmark_coverages: list[float] = []
         for account in self._baseline_accounts() if scoped else [None]:
@@ -1655,11 +1742,25 @@ class ResearchPipeline:
             if coverage < 0.95:
                 account_name = str(account.get("id")) if account is not None else "composite"
                 raise ValueError(f"research_benchmark_coverage:{account_name}:{coverage:.4f}")
+            label_prices = account_features[price_columns]
+            if continuous_prices is not None:
+                account_codes = set(
+                    account_features["code"].astype("string").str.zfill(6)
+                )
+                label_prices = continuous_prices.loc[
+                    continuous_prices["code"].astype("string").str.zfill(6).isin(account_codes)
+                ].copy()
             part = build_forward_labels(
-                account_features[price_columns],
+                label_prices,
                 benchmark=benchmark,
                 require_benchmark=True,
             )
+            if continuous_prices is not None:
+                membership = account_features.loc[:, ["code", "trade_date"]].drop_duplicates()
+                part = part.merge(
+                    membership, on=["code", "trade_date"], how="inner",
+                    validate="many_to_one",
+                )
             if account is not None:
                 part["account_id"] = str(account.get("id"))
                 part["research_scope"] = str(account.get("scope") or account.get("id"))
@@ -4310,7 +4411,7 @@ class ResearchPipeline:
             expected = {
                 "candidate_kind": "transparent_rule",
                 "runtime_contract": "transparent-rule-shadow-v1",
-                "admission_contract": "personal-quant-shadow-v1",
+                "admission_contract": SHADOW_ADMISSION_CONTRACT,
                 "model_version": version,
                 "market": self.market,
                 "account_scope": str(account_scope or ""),
