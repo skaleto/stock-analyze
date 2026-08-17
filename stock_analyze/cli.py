@@ -1792,11 +1792,19 @@ def _classical_tournament_cli_summary(result: dict) -> dict:
 def _command_research_workflow(args: argparse.Namespace) -> int:
     from .research.pipeline import ResearchPipeline
 
+    as_of = args.as_of
+    if as_of is None and bool(args.offline):
+        cache_dir = (
+            Path(args.repo_root) / "data" / "shared" / "cache"
+            if args.market == "a_share"
+            else Path(args.repo_root) / "data" / args.market / "shared" / "cache"
+        )
+        as_of = _resolve_offline_as_of(cache_dir)
     pipeline = ResearchPipeline(
         args.repo_root,
         market=args.market,
         agent=args.agent or "codex",
-        as_of=args.as_of,
+        as_of=as_of,
         offline=bool(args.offline),
         max_full_history_instruments=args.max_full_history_instruments,
     )
