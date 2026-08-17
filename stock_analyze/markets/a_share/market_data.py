@@ -45,6 +45,11 @@ OPTIONAL_EMPTY_METHODS = {"dividend_yield"}
 SPOT_EMPTY_RETRY_MAX = 3
 SPOT_EMPTY_RETRY_SLEEP_S = 60.0
 
+# The canonical A-share research window starts in 2018. Benchmark history is
+# part of the label contract, not a short-lookback regime feature, so daily
+# collection must never truncate it to the generic three-year source window.
+RESEARCH_BENCHMARK_START_DATE = "20180101"
+
 
 def _resolve_prepare_as_of(
     repo_root: Path,
@@ -90,7 +95,7 @@ def collect_research_sources(
     as_of_key = str(as_of).replace("-", "")[:8]
     end = pd.Timestamp(as_of_key)
     start_date = (end - pd.Timedelta(days=1100)).strftime("%Y%m%d")
-    benchmark_start_date = start_date
+    benchmark_start_date = RESEARCH_BENCHMARK_START_DATE
     start_month = (end - pd.DateOffset(months=40)).strftime("%Y%m")
     end_month = end.strftime("%Y%m")
     observed = observed_at or datetime.now().astimezone().isoformat(timespec="seconds")

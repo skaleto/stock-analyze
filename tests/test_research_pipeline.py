@@ -198,6 +198,63 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertAlmostEqual(float(values.loc["20220111", "close"]), 5.1 / 5.0)
         self.assertAlmostEqual(float(values.loc["20220114", "close"]), 5.1 / 5.0)
 
+    def test_a_share_benchmark_history_merges_full_canonical_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "data" / "shared" / "backtest_cache" / "benchmark_daily"
+            cache.mkdir(parents=True)
+            pd.DataFrame({
+                "ts_code": ["000300.SH"] * 4,
+                "trade_date": ["20180102", "20190102", "20240102", "20260817"],
+                "open": [100.0, 101.0, 102.0, 103.0],
+                "close": [100.0, 101.0, 102.0, 103.0],
+            }).to_csv(cache / "000300.csv", index=False)
+            truncated = pd.DataFrame({
+                "ts_code": ["000300.SH"] * 2,
+                "trade_date": ["20240102", "20260817"],
+                "open": [202.0, 203.0],
+                "close": [202.0, 203.0],
+                "observed_at": ["2026-08-17", "2026-08-17"],
+            })
+            features = pd.DataFrame({
+                "code": ["000001"] * 4,
+                "trade_date": ["20180102", "20190102", "20240102", "20260817"],
+                "account_id": ["hs300"] * 4,
+            })
+            pipeline = ResearchPipeline(
+                root, market="a_share", agent="codex",
+                as_of="2026-08-17", offline=True,
+            )
+            with patch.object(
+                pipeline,
+                "_load_persisted_source_frames",
+                return_value={"benchmark_000300": truncated},
+            ):
+                benchmark, coverage = pipeline._benchmark_history(
+                    features,
+                    account={
+                        "id": "hs300", "scope": "hs300",
+                        "benchmark": "000300.SH", "cash": 500000,
+                    },
+                )
+
+        values = benchmark.set_index("trade_date")
+        self.assertEqual(coverage, 1.0)
+        self.assertEqual(set(values.index), set(features["trade_date"]))
+        self.assertAlmostEqual(float(values.loc["20240102", "close"]), 202.0 / 100.0)
+
+    def test_a_share_prepare_sources_include_account_benchmarks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline = ResearchPipeline(
+                Path(tmp), market="a_share", agent="codex",
+                as_of="2026-08-17", offline=True,
+            )
+
+            names = pipeline._a_share_prep_source_names()
+
+        self.assertIn("benchmark_000300", names)
+        self.assertIn("benchmark_000905", names)
+
     def test_refresh_labels_uses_latest_feature_snapshot_before_non_trading_day(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

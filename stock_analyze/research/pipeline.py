@@ -668,7 +668,7 @@ class ResearchPipeline:
             available_codes = sorted(featured["code"].dropna().astype(str).unique())
             persisted_sources = self._load_persisted_source_frames(
                 names=(
-                    self._A_SHARE_PREP_SOURCE_NAMES
+                    self._a_share_prep_source_names()
                     if self.market == "a_share"
                     else None
                 )
@@ -706,7 +706,7 @@ class ResearchPipeline:
         else:
             source_frames = self._load_persisted_source_frames(
                 names=(
-                    self._A_SHARE_PREP_SOURCE_NAMES
+                    self._a_share_prep_source_names()
                     if self.market == "a_share"
                     else None
                 )
@@ -1281,6 +1281,69 @@ class ResearchPipeline:
             if account.get("benchmark")
         ]
 
+    def _a_share_prep_source_names(self) -> set[str]:
+        """Sources required to preserve the cumulative A-share research view."""
+
+        return {
+            *self._A_SHARE_PREP_SOURCE_NAMES,
+            *(f"benchmark_{code}" for code in self._benchmark_codes()),
+        }
+
+    def _cached_a_share_benchmark(self, code: str) -> pd.DataFrame:
+        """Read the canonical full benchmark cache as a fallback.
+
+        An older collector used a generic 1,100-day window for index history.
+        Merging the immutable backtest cache prevents one shortened snapshot
+        from destroying the benchmark side of all historical labels.
+        """
+
+        if self.market != "a_share":
+            return pd.DataFrame()
+        path = (
+            self.repo_root
+            / "data"
+            / "shared"
+            / "backtest_cache"
+            / "benchmark_daily"
+            / f"{code}.csv"
+        )
+        if not path.exists():
+            return pd.DataFrame()
+        frame = pd.read_csv(path, dtype={"ts_code": str, "trade_date": str})
+        required = {"trade_date", "open", "close"}
+        if not required.issubset(frame.columns):
+            return pd.DataFrame()
+        frame["trade_date"] = (
+            frame["trade_date"]
+            .astype("string")
+            .str.replace("-", "", regex=False)
+            .str[:8]
+        )
+        return frame.loc[frame["trade_date"].le(self.run_key)].copy()
+
+    @staticmethod
+    def _merge_benchmark_history(
+        canonical: pd.DataFrame,
+        observed: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """Fill history from canonical data while preferring observed overlaps."""
+
+        frames = [frame for frame in (canonical, observed) if not frame.empty]
+        if not frames:
+            return pd.DataFrame()
+        combined = pd.concat(frames, ignore_index=True, sort=False)
+        combined["trade_date"] = (
+            combined["trade_date"]
+            .astype("string")
+            .str.replace("-", "", regex=False)
+            .str[:8]
+        )
+        identity = [
+            column for column in ("ts_code", "trade_date")
+            if column in combined.columns
+        ]
+        return combined.drop_duplicates(identity, keep="last").reset_index(drop=True)
+
     def _benchmark_history(
         self,
         features: pd.DataFrame,
@@ -1297,6 +1360,9 @@ class ResearchPipeline:
         for account in accounts:
             code = str(account.get("benchmark") or "").split(".")[0].zfill(6)
             frame = raw_frames.get(f"benchmark_{code}", pd.DataFrame()).copy()
+            cached_benchmark = self._cached_a_share_benchmark(code)
+            if not cached_benchmark.empty:
+                frame = self._merge_benchmark_history(cached_benchmark, frame)
             if self.market == "cn_qdii_etf":
                 adjusted = features.loc[
                     features["code"].astype("string").str.zfill(6).eq(code)
