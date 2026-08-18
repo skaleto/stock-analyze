@@ -58,6 +58,7 @@ class TushareProTransportTest(unittest.TestCase):
             ("stk_holdernumber", "stk_holdernumber"),
             ("share_float", "share_float"),
             ("dividend", "dividend"),
+            ("block_trade", "block_trade"),
         ):
             with self.subTest(method=method):
                 http = FakeHttpClient([FakeResponse(200, success_payload([]))])

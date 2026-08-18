@@ -556,6 +556,15 @@ def build_parser() -> argparse.ArgumentParser:
     dividend_growth_backfill.add_argument("--end-date", default="2024-12-31")
     dividend_growth_backfill.add_argument("--max-partitions", type=int, default=None)
 
+    block_trade_backfill = sub.add_parser(
+        "backfill-structured-block-trades",
+        help="Backfill resumable Tushare block-trade partitions.",
+    )
+    block_trade_backfill.add_argument("--repo-root", type=Path, default=Path("."))
+    block_trade_backfill.add_argument("--start-date", default="2018-01-01")
+    block_trade_backfill.add_argument("--end-date", default="2024-12-31")
+    block_trade_backfill.add_argument("--max-partitions", type=int, default=None)
+
     tournament = sub.add_parser(
         "run-classical-tournament",
         help="Run one sealed account-scoped classical model tournament.",
@@ -786,6 +795,18 @@ def build_parser() -> argparse.ArgumentParser:
     dividend_growth.add_argument(
         "--output-root", type=Path, default=Path("reports/research")
     )
+
+    block_trade = sub.add_parser(
+        "run-block-trade-premium-study",
+        help="Run the preregistered block-trade premium study.",
+    )
+    block_trade.add_argument("--repo-root", type=Path, default=Path("."))
+    block_trade.add_argument("--snapshot-date", required=True)
+    block_trade.add_argument(
+        "--contract", type=Path,
+        default=Path("configs/research/block_trade_premium_study.yaml"),
+    )
+    block_trade.add_argument("--output-root", type=Path, default=Path("reports/research"))
 
     training_bundle_export = sub.add_parser(
         "research-training-bundle-export",
@@ -1590,6 +1611,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "backfill-structured-dividends":
         ensure_dirs(args.logs_dir)
         return _command_backfill_structured_dividends(args)
+    if args.command == "backfill-structured-block-trades":
+        ensure_dirs(args.logs_dir)
+        return _command_backfill_structured_block_trades(args)
     if args.command == "backtest":
         ensure_dirs(args.logs_dir)
         return _command_backtest(args)
@@ -1660,6 +1684,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run-dividend-growth-study":
         ensure_dirs(args.logs_dir)
         return _command_dividend_growth_study(args)
+    if args.command == "run-block-trade-premium-study":
+        ensure_dirs(args.logs_dir)
+        return _command_block_trade_premium_study(args)
     if args.command in {
         "research-training-bundle-export",
         "research-training-bundle-import",
@@ -2402,6 +2429,49 @@ def _command_backfill_structured_dividends(
         if not hasattr(adapter, "client"):
             raise ValueError("dividend_growth_tushare_unavailable")
         result = run_dividend_growth_backfill(
+            args.repo_root, adapter.client, start_date=args.start_date,
+            end_date=args.end_date, max_partitions=args.max_partitions,
+        )
+    except Exception as exc:  # noqa: BLE001 - typed provider boundary
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def _command_block_trade_premium_study(args: argparse.Namespace) -> int:
+    from .research.block_trade_study import run_block_trade_study
+
+    try:
+        result = run_block_trade_study(
+            args.repo_root, snapshot_date=args.snapshot_date,
+            contract_path=args.contract, output_root=args.output_root,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def _command_backfill_structured_block_trades(
+    args: argparse.Namespace,
+) -> int:
+    from .intelligence.source_registry import build_adapters
+    from .research.block_trade_backfill import run_block_trade_backfill
+
+    try:
+        adapters = build_adapters(
+            args.repo_root,
+            Path(args.repo_root) / "configs" / "intelligence_sources.yaml",
+        )
+        adapter = next(
+            item for item in adapters
+            if getattr(item, "source", "") == "tushare_announcement"
+        )
+        if not hasattr(adapter, "client"):
+            raise ValueError("block_trade_tushare_unavailable")
+        result = run_block_trade_backfill(
             args.repo_root, adapter.client, start_date=args.start_date,
             end_date=args.end_date, max_partitions=args.max_partitions,
         )
