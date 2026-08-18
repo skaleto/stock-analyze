@@ -311,13 +311,26 @@ def evaluate_panel(
             if not panel.empty
             else panel.copy()
         )
-        mature = (
-            family_panel.loc[
-                family_panel["horizon"].eq(max(contract.horizons))
+        if family_panel.empty:
+            comparable = family_panel.copy()
+            mature = family_panel.copy()
+        else:
+            horizon_counts = (
+                family_panel.groupby(["account_scope", "event_id"])["horizon"]
+                .nunique()
+                .rename("horizon_count")
+                .reset_index()
+            )
+            complete_keys = horizon_counts.loc[
+                horizon_counts["horizon_count"].eq(len(contract.horizons)),
+                ["account_scope", "event_id"],
+            ]
+            comparable = family_panel.merge(
+                complete_keys, on=["account_scope", "event_id"], how="inner"
+            )
+            mature = comparable.loc[
+                comparable["horizon"].eq(max(contract.horizons))
             ].copy()
-            if not family_panel.empty
-            else family_panel
-        )
         scope_events = (
             mature.groupby("account_scope")["event_id"].nunique().to_dict()
             if not mature.empty
@@ -355,12 +368,8 @@ def evaluate_panel(
 
         horizon_results: list[dict[str, Any]] = []
         if all(evidence_checks.values()):
-            # Every horizon uses the same account/event cohort that has a
-            # complete 60-session outcome, preventing late-event sample drift.
-            mature_keys = mature[["account_scope", "event_id"]].drop_duplicates()
-            comparable = family_panel.merge(
-                mature_keys, on=["account_scope", "event_id"], how="inner"
-            )
+            # Every horizon uses the same account/event cohort with all three
+            # outcomes, preventing late-event or benchmark-gap sample drift.
             for horizon in contract.horizons:
                 frame = comparable.loc[comparable["horizon"].eq(horizon)].copy()
                 year_means = frame.groupby("event_year")["net_active_return"].mean()

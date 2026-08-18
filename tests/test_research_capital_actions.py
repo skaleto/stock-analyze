@@ -371,3 +371,16 @@ class CapitalActionsStudyTest(unittest.TestCase):
         self.assertFalse(by_horizon[5]["passed"])
         self.assertTrue(by_horizon[20]["passed"])
         self.assertEqual(family["status"], "transparent_baseline_candidate")
+
+    def test_all_horizons_use_one_complete_event_cohort(self):
+        contract = relaxed_contract()
+        panel = outcome_panel("repurchase_completed", [0.02, 0.02, 0.02])
+        panel = panel.loc[
+            ~panel["event_id"].eq("repurchase_completed-2")
+            | ~panel["horizon"].eq(20)
+        ].copy()
+        family = evaluate_panel(panel, {"complete": True}, contract)["families"][0]
+        self.assertEqual(family["evidence"]["events"], 2)
+        self.assertEqual(
+            {row["events"] for row in family["horizons"]}, {2}
+        )
