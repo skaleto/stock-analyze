@@ -90,6 +90,9 @@ class TushareProTransport:
     def share_float(self, **kwargs) -> pd.DataFrame:
         return self._query("share_float", **kwargs)
 
+    def dividend(self, **kwargs) -> pd.DataFrame:
+        return self._query("dividend", **kwargs)
+
     def fund_basic(self, **kwargs) -> pd.DataFrame:
         return self._query("fund_basic", **kwargs)
 
