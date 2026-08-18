@@ -42,12 +42,10 @@ class ArchivedMarketTests(unittest.TestCase):
         self.assertIn("markets=(a_share cn_qdii_etf)", text)
         self.assertNotIn("markets=(a_share hk us cn_qdii_etf)", text)
 
-    def test_overseas_runner_is_an_archive_tombstone(self) -> None:
-        text = (REPO_ROOT / "scripts" / "run-overseas.sh").read_text(
-            encoding="utf-8"
+    def test_overseas_runner_exists_only_in_archive(self) -> None:
+        self.assertFalse(
+            (REPO_ROOT / "scripts" / "run-overseas.sh").exists()
         )
-        self.assertIn("Direct HK/US simulation is archived", text)
-        self.assertNotIn("ipinfo.io", text)
         self.assertTrue(
             (REPO_ROOT / "archive" / "direct-overseas" / "run-overseas.sh").exists()
         )

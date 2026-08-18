@@ -12,10 +12,8 @@
 ## 文档入口
 
 - [系统总览](docs/system-overview.md)：完成态架构、技术路线、数据源、功能和定时任务。
-- [P0-P2 成熟化说明](docs/quant-system-p0-p2-closure.md)：模型门禁、联合风控、决策账本、情报证据与降级契约。
 - [系统 Harness](docs/system-harness.md)：开发、运行、部署、验收和故障处理。
 - [竞赛运行手册](docs/competition-runbook.md)：双策略规则、周度复盘和月度演化。
-- [数据源增强策略](docs/data-source-enrichment-strategy.md)：Tushare、Choice、iFinD、富途等接入边界。
 - [项目维护策略](docs/project-maintenance.md)：当前文档入口、数据保留和定期清理规则。
 
 ## 快速检查

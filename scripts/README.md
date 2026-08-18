@@ -38,7 +38,6 @@ the model output carries that input fingerprint and ECS checks it against the
 original bundle before import. Scheduled inputs keep 8 runs per market; local
 and remote on-demand runs keep 4. Limit CPU usage with
 `MODEL_TRAIN_CPU_COUNT=8`. The old
-`run-local-classical-tournament.sh` name remains a compatibility alias only.
 Every run also returns a bounded report/window bundle, including baseline losses
 and deployment blocks, so ECS Dashboard freshness does not depend on admission.
 Without a verified input bundle the command is report-only and cannot fit or

@@ -12,7 +12,6 @@ OLD_CHECKOUT = "/Users/yaoyibin/Documents/stock/stock-analyze"
 class LocalScriptPathTests(unittest.TestCase):
     def test_local_scripts_do_not_pin_old_checkout(self):
         scripts = [
-            REPO_ROOT / "scripts" / "run-overseas.sh",
             REPO_ROOT / "scripts" / "statusline.sh",
             REPO_ROOT / "scripts" / "install-harness.sh",
         ]
@@ -21,13 +20,10 @@ class LocalScriptPathTests(unittest.TestCase):
                 text = script.read_text(encoding="utf-8")
                 self.assertNotIn(OLD_CHECKOUT, text)
 
-    def test_run_overseas_is_a_tombstone(self):
-        text = (REPO_ROOT / "scripts" / "run-overseas.sh").read_text(
-            encoding="utf-8"
+    def test_direct_overseas_runner_exists_only_in_archive(self):
+        self.assertFalse(
+            (REPO_ROOT / "scripts" / "run-overseas.sh").exists()
         )
-        self.assertIn("Direct HK/US simulation is archived", text)
-        self.assertIn("exit 2", text)
-        self.assertNotIn("ipinfo.io", text)
         self.assertTrue(
             (REPO_ROOT / "archive" / "direct-overseas" / "source" / "scripts" / "notify-overseas.sh").exists()
         )

@@ -251,9 +251,7 @@ Canonical 运行路径是 `data/<market>/<strategy_id>/` 和 `reports/<market>/<
 | **服务与运维** | 拆分 Dashboard 资源接口、优化缓存、整理 systemd 链路和飞书通知 | 页面渐进加载，任务依赖清晰，消息从流水线噪声变成摘要和行动提醒 |
 | **P0-P2 成熟化** | 角色化模型门禁、明确期限、时点 ETF 宇宙、联合优化、压力测试、统计治理、漂移隔离、全链路账本和每日归因 | 正式决策可重建、候选模型失败不拖累正式策略、研究证据不足时明确降级而非伪装可用 |
 
-本轮 P0-P2 的模块、门禁和降级契约见
-[quant-system-p0-p2-closure.md](quant-system-p0-p2-closure.md)。执行和排障从
-[system-harness.md](system-harness.md) 开始。运行状态、数据规模与模型版本以
+执行和排障从 [system-harness.md](system-harness.md) 开始。运行状态、数据规模与模型版本以
 Dashboard 和 ECS 实时记录为准；本文负责解释系统结构和操作边界。
 
 公告子系统的日常操作见
