@@ -12,6 +12,8 @@
   "premium_threshold": 0.02,
   "discount_threshold": -0.05,
   "minimum_amount_market_cap_ratio": 0.001,
+  "maximum_amount_absolute_error_wan": 5.0,
+  "maximum_amount_relative_error": 0.001,
   "minimum_total_events": 100,
   "minimum_unique_securities": 50,
   "minimum_event_years": 4,

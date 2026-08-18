@@ -25,8 +25,10 @@ amount_market_cap_ratio = sum(amount) / same_day_PIT_total_mv
 ```
 
 Tushare price is yuan/share; volume is ten-thousand shares; amount and total
-market value are both ten-thousand yuan. `price * volume` must agree with amount
-within rounding tolerance. Same-day close is the unadjusted public close from
+market value are both ten-thousand yuan. Row-level
+`abs(price * volume - amount)` must be no greater than the larger of 5
+ten-thousand yuan and 0.1% of amount; otherwise the entire stock-day event is
+excluded. Same-day close is the unadjusted public close from
 the frozen materialization, never an adjusted price. Missing close, market cap,
 non-positive price/volume/amount, date leakage, or material unit inconsistency
 fails closed. Buyer and seller names are retained only for provenance and never
