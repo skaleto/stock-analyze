@@ -87,6 +87,9 @@ class TushareProTransport:
     def stk_holdernumber(self, **kwargs) -> pd.DataFrame:
         return self._query("stk_holdernumber", **kwargs)
 
+    def share_float(self, **kwargs) -> pd.DataFrame:
+        return self._query("share_float", **kwargs)
+
     def fund_basic(self, **kwargs) -> pd.DataFrame:
         return self._query("fund_basic", **kwargs)
 
