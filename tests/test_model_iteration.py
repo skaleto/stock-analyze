@@ -354,6 +354,58 @@ class ModelIterationLifecycleTest(unittest.TestCase):
             "data/model_iterations/cn_qdii_etf/5/model-v4",
         )
 
+    def test_scoped_forward_evidence_resolves_matching_composite_portfolio(self):
+        from stock_analyze.model_iteration import (
+            iteration_evidence_portfolio_dir,
+            iteration_portfolio_dir,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            composite = (
+                root / "data/model_iterations/a_share/20/scoped-abc123"
+            )
+            composite.mkdir(parents=True)
+            (composite / "daily_nav.csv").write_text(
+                "date,account_id,total_value,benchmark_close\n",
+                encoding="utf-8",
+            )
+            status_path = composite.parent / "current_status.json"
+            status_path.write_text(json.dumps({
+                "model_versions": {
+                    "hs300": "hs-model-v1",
+                    "zz500": "zz-model-v1",
+                },
+                "portfolio_path": str(composite),
+            }), encoding="utf-8")
+
+            resolved = iteration_evidence_portfolio_dir(
+                root,
+                "a_share",
+                20,
+                "hs-model-v1",
+                account_scope="hs300",
+            )
+            mismatch = iteration_evidence_portfolio_dir(
+                root,
+                "a_share",
+                20,
+                "different-model",
+                account_scope="hs300",
+            )
+
+        self.assertEqual(resolved, composite)
+        self.assertEqual(
+            mismatch,
+            iteration_portfolio_dir(
+                root,
+                "a_share",
+                20,
+                "different-model",
+                account_scope="hs300",
+            ),
+        )
+
     def test_account_scoped_paths_and_candidate_state_are_isolated(self):
         from stock_analyze.model_iteration import (
             ensure_iteration_candidate,

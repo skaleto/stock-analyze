@@ -220,7 +220,7 @@ A 股继续使用共享行情缓存和触发器。工作日 daily worker 负责�
 - `stock-analyze-{claude,codex}-{daily,weekly}.service`
 - `stock-analyze-research.service`：共享行情成功后离线生成特征、事件、状态和预测，再启动 A 股与跨境 ETF 的四个 daily worker。
 - `stock-analyze-model-iteration.service`：仅在四个正式 daily 账本全部成功后启动，避免候选模型与正式账户争抢内存；自身失败独立告警。
-- `stock-analyze-model-training.timer`：每月 1 日 02:30 按最新特征快照重建 `next-open-v3-adjusted` 标签，并为两个市场分别导出带 SHA-256 和源指纹的不可变本机训练包；不在 ECS 执行模型拟合，每市场只保留最近 8 份。随后由本机 runner 锁定包内快照做透明基线与最多 10% 机器学习残差的同窗比较，只有净增量和可部署一致性门禁都通过才回传 Shadow。
+- `stock-analyze-model-training.timer`：每月 1 日 02:30 重建 `next-open-v3-adjusted` 标签，并为两个市场分别选择**截至当时最新且通过完整历史资格审计**的特征/标签快照，导出带 SHA-256 和源指纹的不可变本机训练包；较新但历史截断的日常快照会被跳过并把原因写入 manifest，A 股还必须绑定同日完整 `a-share-materialization-v1` 清单。不在 ECS 执行模型拟合，每市场只保留最近 8 份。随后由本机 runner 锁定包内快照做透明基线与最多 10% 机器学习残差的同窗比较，只有净增量和可部署一致性门禁都通过才回传 Shadow。
 
 QDII 两套策略都有独立定时器：
 

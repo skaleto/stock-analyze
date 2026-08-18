@@ -163,6 +163,7 @@ class ResearchStore:
         categories: tuple[str, ...],
         keep_recent: int = 3,
         keep_monthly: int = 3,
+        preserve_dates: tuple[str, ...] = (),
     ) -> int:
         removed = 0
         for category in categories:
@@ -187,9 +188,14 @@ class ResearchStore:
             retained = recent.union(
                 monthly_checkpoints[month] for month in retained_months
             )
+            retained.update(
+                str(snapshot_date).replace("-", "")[:8]
+                for snapshot_date in preserve_dates
+            )
             for snapshot_date, path in paths.items():
                 if snapshot_date not in retained:
                     path.unlink(missing_ok=True)
+                    path.with_suffix(".metadata.json").unlink(missing_ok=True)
                     removed += 1
         return removed
 

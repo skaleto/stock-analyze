@@ -160,6 +160,67 @@ def iteration_portfolio_dir(
     return base / str(int(horizon)) / _path_token(model_version)
 
 
+def iteration_evidence_portfolio_dir(
+    root: str | Path,
+    market: str,
+    horizon: int,
+    model_version: str,
+    *,
+    account_scope: str | None = None,
+) -> Path:
+    """Resolve the portfolio that actually holds one scoped candidate's NAV.
+
+    Account-scoped predictions are combined into one deterministic
+    ``scoped-<hash>`` iteration portfolio.  The model registry, however, keeps
+    one version per account.  Prefer a legacy per-version portfolio when it
+    exists, otherwise use the current composite portfolio only when its
+    recorded account/version mapping matches the requested candidate.
+    """
+
+    direct = iteration_portfolio_dir(
+        root,
+        market,
+        horizon,
+        model_version,
+        account_scope=account_scope,
+    )
+    if not account_scope or (direct / "daily_nav.csv").is_file():
+        return direct
+
+    base = (
+        Path(root)
+        / "data"
+        / "model_iterations"
+        / str(market)
+        / str(int(horizon))
+    )
+    status = read_json(base / "current_status.json", {})
+    versions = status.get("model_versions") or {}
+    if (
+        not isinstance(versions, dict)
+        or str(versions.get(str(account_scope)) or "") != str(model_version)
+    ):
+        return direct
+
+    raw_portfolio = str(status.get("portfolio_path") or "").strip()
+    if not raw_portfolio:
+        return direct
+    candidate = Path(raw_portfolio)
+    if not candidate.is_absolute():
+        candidate = Path(root) / candidate
+    try:
+        relative = candidate.resolve().relative_to(base.resolve())
+    except (OSError, ValueError):
+        return direct
+    if (
+        len(relative.parts) != 1
+        or not relative.name.startswith("scoped-")
+        or not (candidate / "daily_nav.csv").is_file()
+    ):
+        return direct
+    return candidate
+
+
 def lifecycle_label(status: str | None) -> str:
     return _STATUS_LABELS.get(str(status or ""), "未分类")
 

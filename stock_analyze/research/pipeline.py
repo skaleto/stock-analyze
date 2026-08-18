@@ -23,6 +23,7 @@ from .. import competition
 from ..model_iteration import (
     SHADOW_ADMISSION_CONTRACT,
     ensure_iteration_candidate,
+    iteration_evidence_portfolio_dir,
     iteration_portfolio_dir,
     iteration_prediction_path,
 )
@@ -69,6 +70,7 @@ from .governance import (
     probability_of_backtest_overfit,
 )
 from .lineage import ResearchLineageStore
+from .local_training import select_training_snapshot
 from .labels import LABEL_CONTRACT_VERSION, build_forward_labels
 from .models import (
     TRAINING_PROTOCOL_VERSION,
@@ -2120,11 +2122,21 @@ class ResearchPipeline:
             event_study = pd.DataFrame()
         gc.collect()
         self.store.write_parquet_atomic(self._artifact_path("event_studies"), event_study)
+        try:
+            protected_training_date = select_training_snapshot(
+                self.repo_root,
+                market=self.market,
+                as_of=self.as_of,
+            )[0]
+            protected_training_dates = (protected_training_date,)
+        except (FileNotFoundError, ValueError):
+            protected_training_dates = ()
         pruned_artifacts = self.store.prune_dated_artifacts(
             self.market,
             categories=("features", "labels", "events", "regimes", "event_studies"),
             keep_recent=3,
             keep_monthly=3,
+            preserve_dates=protected_training_dates,
         )
         return {
             "status": "complete",
@@ -4538,7 +4550,7 @@ class ResearchPipeline:
     ) -> dict[str, Any]:
         model_root = self._model_root(horizon, account_scope)
         forward_evidence = load_forward_portfolio_evidence(
-            iteration_portfolio_dir(
+            iteration_evidence_portfolio_dir(
                 self.repo_root,
                 self.market,
                 horizon,

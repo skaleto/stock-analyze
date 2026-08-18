@@ -201,6 +201,7 @@ class ResearchStorageTest(unittest.TestCase):
                 categories=("features", "labels", "events"),
                 keep_recent=3,
                 keep_monthly=3,
+                preserve_dates=("20260131",),
             )
             remaining = {
                 path.stem
@@ -209,9 +210,9 @@ class ResearchStorageTest(unittest.TestCase):
 
         self.assertEqual(
             remaining,
-            {"20260227", "20260331", "20260430", "20260715", "20260716", "20260717"},
+            {"20260131", "20260227", "20260331", "20260430", "20260715", "20260716", "20260717"},
         )
-        self.assertEqual(removed, 6)
+        self.assertEqual(removed, 3)
 
 
 if __name__ == "__main__":
