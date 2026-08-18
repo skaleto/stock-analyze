@@ -31,6 +31,7 @@ class HolderConcentrationContract:
     stress_cost_multiple: float
     concentration_change_threshold: float
     dispersion_change_threshold: float
+    require_report_period_on_or_after_list_date: bool
     minimum_total_events: int
     minimum_unique_securities: int
     minimum_event_years: int
@@ -57,6 +58,7 @@ _FROZEN: dict[str, Any] = {
     "stress_cost_multiple": 1.5,
     "concentration_change_threshold": -0.10,
     "dispersion_change_threshold": 0.10,
+    "require_report_period_on_or_after_list_date": True,
     "minimum_total_events": 100,
     "minimum_unique_securities": 50,
     "minimum_event_years": 4,
@@ -190,6 +192,7 @@ def run_holder_concentration_study(
         root,
         start_date=_iso_date(contract.development_start),
         end_date=_iso_date(contract.development_end),
+        snapshot_date=snapshot_key,
     )
     events = select_study_events(events, contract) if not events.empty else events
     panel = pd.DataFrame()
