@@ -504,6 +504,19 @@ def build_parser() -> argparse.ArgumentParser:
     earnings_backfill.add_argument("--end-date", default="2024-12-31")
     earnings_backfill.add_argument("--max-partitions", type=int, default=None)
 
+    capital_actions_backfill = sub.add_parser(
+        "backfill-structured-capital-actions",
+        help="Backfill resumable Tushare repurchase and holder-trade partitions.",
+    )
+    capital_actions_backfill.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    capital_actions_backfill.add_argument("--start-date", default="2018-01-01")
+    capital_actions_backfill.add_argument("--end-date", default="2024-12-31")
+    capital_actions_backfill.add_argument(
+        "--max-partitions", type=int, default=None
+    )
+
     tournament = sub.add_parser(
         "run-classical-tournament",
         help="Run one sealed account-scoped classical model tournament.",
@@ -672,6 +685,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("configs/research/earnings_drift_study.yaml"),
     )
     earnings_drift.add_argument(
+        "--output-root", type=Path, default=Path("reports/research")
+    )
+
+    capital_actions = sub.add_parser(
+        "run-capital-actions-study",
+        help="Run the preregistered model-free A-share capital-actions study.",
+    )
+    capital_actions.add_argument("--repo-root", type=Path, default=Path("."))
+    capital_actions.add_argument("--snapshot-date", required=True)
+    capital_actions.add_argument(
+        "--contract",
+        type=Path,
+        default=Path("configs/research/capital_actions_study.yaml"),
+    )
+    capital_actions.add_argument(
         "--output-root", type=Path, default=Path("reports/research")
     )
 
@@ -1466,6 +1494,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "backfill-structured-earnings":
         ensure_dirs(args.logs_dir)
         return _command_backfill_structured_earnings(args)
+    if args.command == "backfill-structured-capital-actions":
+        ensure_dirs(args.logs_dir)
+        return _command_backfill_structured_capital_actions(args)
     if args.command == "backtest":
         ensure_dirs(args.logs_dir)
         return _command_backtest(args)
@@ -1524,6 +1555,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run-earnings-drift-study":
         ensure_dirs(args.logs_dir)
         return _command_earnings_drift_study(args)
+    if args.command == "run-capital-actions-study":
+        ensure_dirs(args.logs_dir)
+        return _command_capital_actions_study(args)
     if args.command in {
         "research-training-bundle-export",
         "research-training-bundle-import",
@@ -2073,6 +2107,57 @@ def _command_backfill_structured_earnings(args: argparse.Namespace) -> int:
         if not hasattr(adapter, "client"):
             raise ValueError("structured_earnings_tushare_unavailable")
         result = run_structured_earnings_backfill(
+            args.repo_root,
+            adapter.client,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            max_partitions=args.max_partitions,
+        )
+    except Exception as exc:  # noqa: BLE001 - typed provider boundary
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def _command_capital_actions_study(args: argparse.Namespace) -> int:
+    from .research.capital_actions_study import run_capital_actions_study
+
+    try:
+        result = run_capital_actions_study(
+            args.repo_root,
+            snapshot_date=args.snapshot_date,
+            contract_path=args.contract,
+            output_root=args.output_root,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def _command_backfill_structured_capital_actions(
+    args: argparse.Namespace,
+) -> int:
+    from .intelligence.source_registry import build_adapters
+    from .research.capital_actions_backfill import (
+        run_capital_actions_backfill,
+    )
+
+    try:
+        adapters = build_adapters(
+            args.repo_root,
+            Path(args.repo_root) / "configs" / "intelligence_sources.yaml",
+        )
+        adapter = next(
+            item
+            for item in adapters
+            if getattr(item, "source", "") == "tushare_announcement"
+        )
+        if not hasattr(adapter, "client"):
+            raise ValueError("capital_actions_tushare_unavailable")
+        result = run_capital_actions_backfill(
             args.repo_root,
             adapter.client,
             start_date=args.start_date,

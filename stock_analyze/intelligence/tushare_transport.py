@@ -78,6 +78,12 @@ class TushareProTransport:
     def express(self, **kwargs) -> pd.DataFrame:
         return self._query("express", **kwargs)
 
+    def repurchase(self, **kwargs) -> pd.DataFrame:
+        return self._query("repurchase", **kwargs)
+
+    def stk_holdertrade(self, **kwargs) -> pd.DataFrame:
+        return self._query("stk_holdertrade", **kwargs)
+
     def fund_basic(self, **kwargs) -> pd.DataFrame:
         return self._query("fund_basic", **kwargs)
 

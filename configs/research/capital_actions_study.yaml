@@ -1,0 +1,36 @@
+{
+  "protocol_version": "capital-actions-preregistered-v1",
+  "market": "a_share",
+  "development_start": "20180101",
+  "development_end": "20241231",
+  "historical_diagnostic_start": "20250101",
+  "live_oos_start": "20260818",
+  "horizons": [5, 20, 60],
+  "primary_horizon": 20,
+  "round_trip_cost": 0.0021,
+  "stress_cost_multiple": 1.5,
+  "repurchase_market_cap_ratio": 0.005,
+  "holder_change_ratio": 0.001,
+  "minimum_total_events": 60,
+  "minimum_unique_securities": 30,
+  "minimum_event_years": 3,
+  "minimum_scope_events": 15,
+  "minimum_positive_year_fraction": 0.6666666667,
+  "minimum_bootstrap_probability": 0.95,
+  "maximum_year_contribution_share": 0.50,
+  "bootstrap_samples": 5000,
+  "bootstrap_seed": 20260818,
+  "positive_families": [
+    "repurchase_completed",
+    "holder_company_increase",
+    "holder_management_increase",
+    "holder_individual_increase"
+  ],
+  "diagnostic_families": [
+    "repurchase_plan",
+    "repurchase_stopped",
+    "holder_company_decrease",
+    "holder_management_decrease",
+    "holder_individual_decrease"
+  ]
+}
