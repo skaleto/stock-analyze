@@ -412,6 +412,7 @@ def build_lightweight_event_price_panel(
     snapshot_date: str,
     development_start: str,
     development_end: str,
+    event_codes: set[str] | None = None,
 ) -> pd.DataFrame:
     """Build a PIT account price panel without materializing wide features."""
 
@@ -434,6 +435,9 @@ def build_lightweight_event_price_panel(
         if "/history_" in str(record.get("path") or "")
     ]
     parts: list[pd.DataFrame] = []
+    normalized_event_codes = {
+        str(code).split(".")[0].zfill(6) for code in (event_codes or set())
+    }
     for record in history_records:
         relative = Path(str(record.get("path") or ""))
         if relative.is_absolute() or ".." in relative.parts:
@@ -441,6 +445,11 @@ def build_lightweight_event_price_panel(
         path = (root / relative).resolve()
         if not path.is_relative_to(root) or not path.exists():
             raise ValueError("earnings_drift_history_path_invalid")
+        match = __import__("re").search(r"history_(\d{6})", path.name)
+        if normalized_event_codes and (
+            match is None or match.group(1) not in normalized_event_codes
+        ):
+            continue
         usecols = ["code", "trade_date", "open", "close", "adj_factor"]
         frame = pd.read_csv(
             path,
@@ -544,12 +553,6 @@ def run_earnings_drift_study(
         contract_file = root / contract_file
     contract = load_contract(contract_file)
     snapshot_key = _date_key(snapshot_date)
-    prices = build_lightweight_event_price_panel(
-        root,
-        snapshot_date=snapshot_key,
-        development_start=contract.development_start,
-        development_end=contract.development_end,
-    )
     intelligence_root = root / "data" / "shared" / "intelligence"
     store = IntelligenceStore(intelligence_root)
     cutoff = (
@@ -571,6 +574,20 @@ def run_earnings_drift_study(
     )
     if not structured_events.empty:
         events = pd.concat([events, structured_events], ignore_index=True, sort=False)
+    event_codes = set(
+        events.loc[
+            events["event_type"].isin(contract.event_types)
+            & events["entity_type"].eq("security"),
+            "entity_id",
+        ].dropna().astype(str).str.split(".").str[0].str.zfill(6)
+    )
+    prices = build_lightweight_event_price_panel(
+        root,
+        snapshot_date=snapshot_key,
+        development_start=contract.development_start,
+        development_end=contract.development_end,
+        event_codes=event_codes,
+    )
     panel = build_event_return_panel(
         events,
         prices,

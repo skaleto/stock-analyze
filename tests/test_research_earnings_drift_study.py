@@ -185,6 +185,7 @@ class EarningsDriftStudyTest(unittest.TestCase):
                 snapshot_date="20241231",
                 development_start="20180101",
                 development_end="20181231",
+                event_codes={"000001", "000002"},
             )
 
         self.assertEqual(len(panel), 8)
