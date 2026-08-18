@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from stock_analyze.research.earnings_drift_study import (
+    build_lightweight_event_price_panel,
     build_event_return_panel,
     evaluate_panel,
     load_contract,
@@ -139,6 +140,56 @@ class EarningsDriftStudyTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "falsified")
         self.assertFalse(result["model_training_allowed"])
+
+    def test_lightweight_panel_uses_materialized_history_and_pit_membership(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "data" / "shared" / "cache"
+            raw = root / "data" / "research" / "raw" / "a_share" / "20241231"
+            cache.mkdir(parents=True)
+            raw.mkdir(parents=True)
+            history = cache / "history_000001_20241231_4.csv"
+            pd.DataFrame({
+                "code": ["000001"] * 4,
+                "trade_date": ["20180102", "20180103", "20180104", "20180105"],
+                "open": [10.0, 10.1, 10.2, 10.3],
+                "close": [10.1, 10.2, 10.3, 10.4],
+                "adj_factor": [1.0] * 4,
+            }).to_csv(history, index=False)
+            relative = history.relative_to(root).as_posix()
+            second_history = cache / "history_000002_20241231_4.csv"
+            pd.DataFrame({
+                "code": ["000002"] * 4,
+                "trade_date": ["20180102", "20180103", "20180104", "20180105"],
+                "open": [20.0, 20.1, 20.2, 20.3],
+                "close": [20.1, 20.2, 20.3, 20.4],
+                "adj_factor": [1.0] * 4,
+            }).to_csv(second_history, index=False)
+            second_relative = second_history.relative_to(root).as_posix()
+            (raw / "materialization_manifest.json").write_text(json.dumps({
+                "status": "complete",
+                "outputs": {
+                    relative: {"path": relative},
+                    second_relative: {"path": second_relative},
+                },
+            }), encoding="utf-8")
+            pd.DataFrame({
+                "index_code": ["000300.SH", "000905.SH"],
+                "con_code": ["000001.SZ", "000002.SZ"],
+                "trade_date": ["20171229", "20171229"],
+                "weight": [1.0, 1.0],
+            }).to_parquet(raw / "index_weight.parquet", index=False)
+
+            panel = build_lightweight_event_price_panel(
+                root,
+                snapshot_date="20241231",
+                development_start="20180101",
+                development_end="20181231",
+            )
+
+        self.assertEqual(len(panel), 8)
+        self.assertEqual(set(panel["account_id"]), {"hs300", "zz500"})
+        self.assertIn("adjusted_open", panel)
 
 
 if __name__ == "__main__":
