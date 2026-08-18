@@ -326,6 +326,50 @@ class CLIResearchTest(unittest.TestCase):
             max_partitions=2,
         )
 
+    def test_cli_dispatches_preregistered_share_unlock_study(self):
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "stock_analyze.research.share_unlock_study.run_share_unlock_study",
+            return_value={
+                "status": "insufficient_data",
+                "model_training_allowed": False,
+            },
+        ) as study:
+            code = main([
+                "run-share-unlock-avoidance-study",
+                "--repo-root", tmp,
+                "--snapshot-date", "20260814",
+            ])
+
+        self.assertEqual(code, 0)
+        study.assert_called_once()
+        self.assertEqual(study.call_args.kwargs["snapshot_date"], "20260814")
+
+    def test_cli_dispatches_structured_share_unlock_backfill(self):
+        adapter = type(
+            "Adapter", (),
+            {"source": "tushare_announcement", "client": object()},
+        )()
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch(
+                "stock_analyze.intelligence.source_registry.build_adapters",
+                return_value=(adapter,),
+            ), patch(
+                "stock_analyze.research.share_unlock_backfill.run_share_unlock_backfill",
+                return_value={"status": "in_progress", "completed_partitions": 1},
+            ) as backfill:
+                code = main([
+                    "backfill-structured-share-unlocks", "--repo-root", tmp,
+                    "--start-date", "2020-01-01",
+                    "--end-date", "2020-01-31",
+                    "--max-partitions", "2",
+                ])
+
+        self.assertEqual(code, 0)
+        backfill.assert_called_once_with(
+            Path(tmp), adapter.client, start_date="2020-01-01",
+            end_date="2020-01-31", max_partitions=2,
+        )
+
     def test_cli_dispatches_account_scoped_classical_tournament(self):
         with tempfile.TemporaryDirectory() as tmp, patch(
             "stock_analyze.research.pipeline.ResearchPipeline.run_classical_tournament",
