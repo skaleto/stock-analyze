@@ -495,6 +495,15 @@ def build_parser() -> argparse.ArgumentParser:
     moneyflow_backfill.add_argument("--max-codes", type=int, default=None)
     moneyflow_backfill.add_argument("--force", action="store_true")
 
+    earnings_backfill = sub.add_parser(
+        "backfill-structured-earnings",
+        help="Backfill resumable Tushare forecast and express partitions.",
+    )
+    earnings_backfill.add_argument("--repo-root", type=Path, default=Path("."))
+    earnings_backfill.add_argument("--start-date", default="2018-01-01")
+    earnings_backfill.add_argument("--end-date", default="2024-12-31")
+    earnings_backfill.add_argument("--max-partitions", type=int, default=None)
+
     tournament = sub.add_parser(
         "run-classical-tournament",
         help="Run one sealed account-scoped classical model tournament.",
@@ -1454,6 +1463,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "backfill-a-share-moneyflow":
         ensure_dirs(args.logs_dir)
         return _command_backfill_a_share_moneyflow(args)
+    if args.command == "backfill-structured-earnings":
+        ensure_dirs(args.logs_dir)
+        return _command_backfill_structured_earnings(args)
     if args.command == "backtest":
         ensure_dirs(args.logs_dir)
         return _command_backtest(args)
@@ -2036,6 +2048,38 @@ def _command_earnings_drift_study(args: argparse.Namespace) -> int:
             output_root=args.output_root,
         )
     except (OSError, ValueError) as exc:
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def _command_backfill_structured_earnings(args: argparse.Namespace) -> int:
+    from .intelligence.source_registry import build_adapters
+    from .research.earnings_structured_backfill import (
+        run_structured_earnings_backfill,
+    )
+
+    try:
+        adapters = build_adapters(
+            args.repo_root,
+            Path(args.repo_root) / "configs" / "intelligence_sources.yaml",
+        )
+        adapter = next(
+            item
+            for item in adapters
+            if getattr(item, "source", "") == "tushare_announcement"
+        )
+        if not hasattr(adapter, "client"):
+            raise ValueError("structured_earnings_tushare_unavailable")
+        result = run_structured_earnings_backfill(
+            args.repo_root,
+            adapter.client,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            max_partitions=args.max_partitions,
+        )
+    except Exception as exc:  # noqa: BLE001 - typed provider boundary
         print(f"error: {args.command} failed: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
