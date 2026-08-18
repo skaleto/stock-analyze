@@ -268,6 +268,160 @@ def _load_raw(
     }
 
 
+def _normalize_raw_partition(
+    raw: pd.DataFrame, confirmation_days: int
+) -> tuple[pd.DataFrame, int, int]:
+    """Reduce one unlock-month partition to stock-date aggregates."""
+
+    if raw.empty:
+        return pd.DataFrame(), 0, 0
+    frame = raw.copy()
+    for column in ("float_share", "float_ratio"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    announced = pd.to_datetime(
+        frame["ann_date"], format="%Y%m%d", errors="coerce"
+    )
+    floating = pd.to_datetime(
+        frame["float_date"], format="%Y%m%d", errors="coerce"
+    )
+    age = (floating - announced).dt.days
+    valid_age = (
+        announced.notna()
+        & floating.notna()
+        & age.between(0, int(confirmation_days))
+    )
+    stale_rows = int((~valid_age).sum())
+    frame = frame.loc[
+        valid_age & frame["float_share"].gt(0)
+    ].copy()
+    if frame.empty:
+        return pd.DataFrame(), stale_rows, 0
+    latest = frame.groupby(
+        ["ts_code", "float_date", "share_type"]
+    )["ann_date"].transform("max")
+    frame = frame.loc[frame["ann_date"].eq(latest)].copy()
+    frame["holder_name"] = (
+        frame["holder_name"].astype("string").str.strip()
+    )
+    invalid_keys: set[tuple[str, str, str]] = set()
+    group_columns = ["ts_code", "float_date", "share_type"]
+    for key, group in frame.groupby(group_columns, dropna=False):
+        normalized_key = tuple(str(value) for value in key)
+        if (
+            group["holder_name"].isna().any()
+            or group["holder_name"].eq("").any()
+        ):
+            invalid_keys.add(normalized_key)
+            continue
+        conflicts = group.groupby("holder_name")[[
+            "float_share", "float_ratio"
+        ]].nunique(dropna=False)
+        if bool(conflicts.gt(1).any(axis=None)):
+            invalid_keys.add(normalized_key)
+    keys = list(zip(
+        frame["ts_code"].astype(str),
+        frame["float_date"].astype(str),
+        frame["share_type"].astype(str),
+    ))
+    frame = frame.loc[
+        [key not in invalid_keys for key in keys]
+    ].copy()
+    frame = frame.drop_duplicates(
+        [*group_columns, "holder_name"], keep="last"
+    )
+    tranches = frame.groupby(group_columns, sort=True).agg(
+        ann_date=("ann_date", "max"),
+        unlocked_shares=("float_share", "sum"),
+        reported_ratio_pct=(
+            "float_ratio", lambda values: values.sum(min_count=1)
+        ),
+        holders=("holder_name", "nunique"),
+    ).reset_index()
+    aggregated = tranches.groupby(
+        ["ts_code", "float_date"], sort=True
+    ).agg(
+        confirmation_date=("ann_date", "max"),
+        unlocked_shares=("unlocked_shares", "sum"),
+        reported_ratio_pct=(
+            "reported_ratio_pct", lambda values: values.sum(min_count=1)
+        ),
+        tranche_count=("share_type", "nunique"),
+        holder_count=("holders", "sum"),
+    ).reset_index()
+    return aggregated, stale_rows, len(invalid_keys)
+
+
+def _load_normalized_months(
+    repo_root: Path,
+    start_date: str,
+    end_date: str,
+    confirmation_days: int,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Verify and normalize partitions one at a time to bound memory."""
+
+    root = _root(repo_root)
+    partitions = share_unlock_partitions(start_date, end_date)
+    expected = {_key(start, end) for start, end in partitions}
+    if not _manifest_path(root).exists():
+        return pd.DataFrame(), {
+            "complete": False, "completed_partitions": 0,
+            "total_partitions": len(partitions), "rows": 0,
+            "stale_rows_excluded": 0, "invalid_tranches": 0,
+        }
+    manifest = _load_manifest(
+        root, _date_key(start_date), _date_key(end_date)
+    )
+    aggregates: list[pd.DataFrame] = []
+    raw_rows = stale_rows = invalid_tranches = 0
+    for start, end in partitions:
+        key = _key(start, end)
+        record = manifest["partitions"].get(key)
+        if record is None:
+            continue
+        expected_path = _partition_path(root, start, end)
+        expected_relative = expected_path.relative_to(repo_root).as_posix()
+        if (
+            record.get("start_date") != start
+            or record.get("end_date") != end
+            or record.get("path") != expected_relative
+        ):
+            raise ValueError(f"share_unlock_partition_record:{key}")
+        path = _safe_path(repo_root, record.get("path"))
+        if (
+            not path.exists()
+            or hashlib.sha256(path.read_bytes()).hexdigest()
+            != str(record.get("sha256"))
+        ):
+            raise ValueError(f"share_unlock_partition_tampered:{key}")
+        frame = _validate_partition(
+            pd.read_parquet(path), start, end
+        )
+        if len(frame) != int(record.get("rows") or 0):
+            raise ValueError(f"share_unlock_partition_rows:{key}")
+        raw_rows += len(frame)
+        normalized, stale, invalid = _normalize_raw_partition(
+            frame, confirmation_days
+        )
+        stale_rows += stale
+        invalid_tranches += invalid
+        if not normalized.empty:
+            aggregates.append(normalized)
+    aggregated = (
+        pd.concat(aggregates, ignore_index=True, sort=False)
+        if aggregates else pd.DataFrame()
+    )
+    return aggregated, {
+        "complete": set(manifest["partitions"]) == expected,
+        "completed_partitions": len(
+            set(manifest["partitions"]).intersection(expected)
+        ),
+        "total_partitions": len(partitions),
+        "rows": int(raw_rows),
+        "stale_rows_excluded": int(stale_rows),
+        "invalid_tranches": int(invalid_tranches),
+    }
+
+
 def _pit_total_shares(repo_root: Path, events: pd.DataFrame) -> dict[tuple[str, str], float]:
     daily_root = repo_root / "data" / "shared" / "backtest_cache" / "daily_basic"
     available = sorted((p.stem.replace("-", ""), p) for p in daily_root.glob("*.csv"))
@@ -289,41 +443,18 @@ def load_share_unlock_events(
     end_date: str = "2024-12-31", confirmation_days: int = 30,
     maximum_ratio_disagreement: float = 0.01,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    root = Path(repo_root).resolve(); raw, audit = _load_raw(root, start_date, end_date)
-    if raw.empty:
-        audit.update({"events": 0, "stale_rows_excluded": 0, "invalid_tranches": 0, "ratio_disagreements": 0})
+    root = Path(repo_root).resolve()
+    aggregated, audit = _load_normalized_months(
+        root, start_date, end_date, confirmation_days
+    )
+    if aggregated.empty:
+        audit.setdefault("stale_rows_excluded", 0)
+        audit.setdefault("invalid_tranches", 0)
+        audit.update({
+            "events": 0, "normalized_stock_dates": 0,
+            "missing_denominators": 0, "ratio_disagreements": 0,
+        })
         return pd.DataFrame(), audit
-    frame = raw.copy()
-    for col in ("float_share", "float_ratio"):
-        frame[col] = pd.to_numeric(frame[col], errors="coerce")
-    ann = pd.to_datetime(frame["ann_date"], format="%Y%m%d", errors="coerce")
-    floating = pd.to_datetime(frame["float_date"], format="%Y%m%d", errors="coerce")
-    age = (floating - ann).dt.days
-    valid_age = ann.notna() & floating.notna() & age.between(0, int(confirmation_days))
-    stale_rows = int((~valid_age).sum()); frame = frame.loc[valid_age & frame["float_share"].gt(0)].copy()
-    latest = frame.groupby(["ts_code", "float_date", "share_type"])["ann_date"].transform("max")
-    frame = frame.loc[frame["ann_date"].eq(latest)].copy()
-    frame["holder_name"] = frame["holder_name"].astype("string").str.strip()
-    invalid_keys: set[tuple[str, str, str]] = set()
-    for key, group in frame.groupby(["ts_code", "float_date", "share_type"], dropna=False):
-        if group["holder_name"].isna().any() or group["holder_name"].eq("").any():
-            invalid_keys.add(tuple(str(value) for value in key)); continue
-        conflicts = group.groupby("holder_name")[["float_share", "float_ratio"]].nunique(dropna=False)
-        if bool(conflicts.gt(1).any(axis=None)):
-            invalid_keys.add(tuple(str(value) for value in key))
-    key_series = list(zip(frame["ts_code"].astype(str), frame["float_date"].astype(str), frame["share_type"].astype(str)))
-    frame = frame.loc[[key not in invalid_keys for key in key_series]].copy()
-    frame = frame.drop_duplicates(["ts_code", "float_date", "share_type", "holder_name"], keep="last")
-    tranches = frame.groupby(["ts_code", "float_date", "share_type"], sort=True).agg(
-        ann_date=("ann_date", "max"), unlocked_shares=("float_share", "sum"),
-        reported_ratio_pct=("float_ratio", lambda values: values.sum(min_count=1)),
-        holders=("holder_name", "nunique"),
-    ).reset_index()
-    aggregated = tranches.groupby(["ts_code", "float_date"], sort=True).agg(
-        confirmation_date=("ann_date", "max"), unlocked_shares=("unlocked_shares", "sum"),
-        reported_ratio_pct=("reported_ratio_pct", lambda values: values.sum(min_count=1)),
-        tranche_count=("share_type", "nunique"), holder_count=("holders", "sum"),
-    ).reset_index()
     total_shares = _pit_total_shares(root, aggregated)
     rows: list[dict[str, Any]] = []; disagreements = missing_denominator = 0
     for event in aggregated.itertuples(index=False):
@@ -347,7 +478,6 @@ def load_share_unlock_events(
         })
     events = pd.DataFrame(rows)
     audit.update({
-        "stale_rows_excluded": stale_rows, "invalid_tranches": len(invalid_keys),
         "normalized_stock_dates": int(len(aggregated)), "missing_denominators": missing_denominator,
         "ratio_disagreements": disagreements, "events": int(len(events)),
     })
