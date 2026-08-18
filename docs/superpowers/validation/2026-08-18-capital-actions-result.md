@@ -27,6 +27,12 @@ reported horizon uses the same cohort with complete 5/20/60-session outcomes.
 - Completed-repurchase PIT market-cap coverage by year: 95.2% to 98.2%
 - Manifest SHA-256: `0c37219661107936a0035e29914b6f1d7f335dcce374567a7e269864aeff5e5c`
 
+The real-data unit audit confirms Tushare `repurchase.amount` is yuan: among
+20,125 completed rows with usable disclosed price bounds, 20,122 values of
+`amount / vol` fall inside the relaxed disclosed-price range, while zero values
+of `amount * 10000 / vol` do. Tushare `daily_basic.total_mv` is ten-thousand
+yuan, so the implemented denominator conversion `total_mv * 10000` is correct.
+
 | Positive family | Mature events | Securities | HS300 | ZZ500 | Evidence gate |
 |---|---:|---:|---:|---:|---|
 | Completed repurchase | 2,324 | 400 | 848 | 1,476 | Pass |
@@ -65,6 +71,26 @@ requirements (HS300 +1.36%, ZZ500 -0.33%). No family passes.
 
 Final status: **falsified**.
 
+## Decrease and lifecycle diagnostics
+
+These are preregistered long-side forward-return diagnostics after control or
+risk events. They are not short portfolios, never enter the candidate set, do
+not receive a pass/fail economic gate, and cannot change the overall decision.
+The same 0.1% materiality floor is applied to decrease events.
+
+| Diagnostic family | Mature events | Securities | 5d mean net | 20d mean net | 20d median | 60d mean net | Evidence |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Repurchase plan/approval | 3,502 | 665 | -0.03% | +0.04% | -0.72% | +0.49% | Sufficient |
+| Stopped repurchase | 1 | 1 | -11.72% | -6.81% | -6.81% | -25.37% | Insufficient |
+| Company-holder decrease | 2,951 | 641 | -0.03% | +0.23% | -1.23% | -0.46% | Sufficient |
+| Management decrease | 557 | 180 | -0.32% | +0.36% | -1.14% | -0.47% | Sufficient |
+| Individual decrease | 430 | 144 | +0.60% | +0.65% | -1.15% | -0.06% | Sufficient |
+
+The decrease diagnostics do not support reversing the long-only candidate
+decision. Their 20-session medians are all negative; company and management
+decreases also disagree by account scope. The stopped-repurchase row is only
+one mature event and is explicitly insufficient evidence.
+
 ## Decision
 
 No model is trained, no Shadow candidate is admitted, and no formal strategy or
@@ -75,5 +101,5 @@ result failed. The unused 2025+ diagnostic window remains closed.
 
 Immutable ECS report checksums:
 
-- JSON: `b0aa3ae4df6892607ca332110e239e3db73242d89c1e47ec8ab9a982ba0953db`
-- Markdown: `4647b118260100068beceee7caf11fde9b68521400542c95334a619d1f938643`
+- JSON: `1565682e6917cffabef819bc02ed9c79df3a65747774377134ee6fb232ea0c61`
+- Markdown: `85310a2844fe612bd2ba9b5d3c861b8925297443abac8995e343d782183a8d19`
