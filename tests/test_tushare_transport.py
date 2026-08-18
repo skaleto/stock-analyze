@@ -51,6 +51,23 @@ def success_payload(items: list[list[object]]) -> dict[str, object]:
 
 
 class TushareProTransportTest(unittest.TestCase):
+    def test_capital_actions_use_typed_https_transport(self) -> None:
+        for method, api_name in (
+            ("repurchase", "repurchase"),
+            ("stk_holdertrade", "stk_holdertrade"),
+        ):
+            with self.subTest(method=method):
+                http = FakeHttpClient([FakeResponse(200, success_payload([]))])
+                transport = TushareProTransport(
+                    "secret-token", http_client=http, max_attempts=1
+                )
+                getattr(transport, method)(
+                    start_date="20200101",
+                    end_date="20200131",
+                    fields=FIELDS,
+                )
+                self.assertEqual(http.calls[0]["json"]["api_name"], api_name)
+
     def test_successful_query_returns_typed_frame(self) -> None:
         http = FakeHttpClient([
             FakeResponse(200, success_payload([[
