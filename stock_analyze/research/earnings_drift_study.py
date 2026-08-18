@@ -13,6 +13,7 @@ import pyarrow.parquet as pq
 
 from ..intelligence.store import IntelligenceStore
 from .storage import ResearchStore
+from .earnings_structured_backfill import load_structured_earnings_events
 
 
 @dataclass(frozen=True)
@@ -496,6 +497,13 @@ def run_earnings_drift_study(
         market="a_share",
         availability_policy="research",
     )
+    structured_events, structured_audit = load_structured_earnings_events(
+        root,
+        start_date="2018-01-01",
+        end_date="2024-12-31",
+    )
+    if not structured_events.empty:
+        events = pd.concat([events, structured_events], ignore_index=True, sort=False)
     panel = build_event_return_panel(
         events,
         prices,
@@ -506,6 +514,13 @@ def run_earnings_drift_study(
         contract,
     )
     result = evaluate_panel(panel, contract)
+    if not structured_audit["complete"]:
+        result["status"] = "insufficient_data"
+        result["model_training_allowed"] = False
+        result["horizons"] = []
+        result["evidence_checks"]["structured_backfill_complete"] = False
+    else:
+        result["evidence_checks"]["structured_backfill_complete"] = True
     result.update({
         "snapshot_date": snapshot_key,
         "development_window": [
@@ -515,6 +530,7 @@ def run_earnings_drift_study(
         "historical_diagnostic_opened": False,
         "live_oos_start": contract.live_oos_start,
         "panel_rows": int(len(panel)),
+        "structured_backfill": structured_audit,
     })
     output = Path(output_root)
     if not output.is_absolute():
