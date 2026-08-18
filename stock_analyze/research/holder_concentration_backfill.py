@@ -243,11 +243,49 @@ def _previous_quarter_end(value: str) -> str:
     return (timestamp.to_period("Q") - 1).end_time.strftime("%Y%m%d")
 
 
+def _load_listing_dates(
+    repo_root: Path, snapshot_date: str
+) -> dict[str, str]:
+    snapshot_key = _date_key(snapshot_date)
+    materialized = (
+        repo_root / "data" / "research" / "raw" / "a_share"
+        / snapshot_key / "stock_basic.parquet"
+    )
+    canonical = (
+        repo_root / "data" / "shared" / "backtest_cache"
+        / "stock_basic.csv"
+    )
+    if materialized.exists():
+        frame = pd.read_parquet(
+            materialized, columns=["ts_code", "list_date"]
+        )
+    elif canonical.exists():
+        frame = pd.read_csv(
+            canonical, usecols=["ts_code", "list_date"],
+            dtype={"ts_code": str, "list_date": str},
+        )
+    else:
+        raise FileNotFoundError("holder_concentration_stock_basic_missing")
+    frame["ts_code"] = frame["ts_code"].astype("string")
+    frame["list_date"] = (
+        frame["list_date"].astype("string").map(_date_key)
+    )
+    valid = (
+        frame["ts_code"].str.endswith((".SH", ".SZ"), na=False)
+        & frame["list_date"].str.fullmatch(r"\d{8}", na=False)
+    )
+    frame = frame.loc[valid].drop_duplicates("ts_code", keep="last")
+    return dict(
+        zip(frame["ts_code"].astype(str), frame["list_date"].astype(str))
+    )
+
+
 def load_holder_concentration_events(
     repo_root: str | Path,
     *,
     start_date: str = "2018-01-01",
     end_date: str = "2024-12-31",
+    snapshot_date: str | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     root = Path(repo_root).resolve()
     raw, audit = _load_raw(root, start_date, end_date)
@@ -285,11 +323,26 @@ def load_holder_concentration_events(
         for row in observations.itertuples(index=False)
     }
     rows: list[dict[str, Any]] = []
+    listing_dates = (
+        _load_listing_dates(root, str(snapshot_date))
+        if snapshot_date is not None
+        else None
+    )
+    pre_listing_excluded = 0
     for current in observations.itertuples(index=False):
         previous_end = _previous_quarter_end(str(current.end_date))
         previous = lookup.get((str(current.ts_code), previous_end))
         if previous is None or str(previous.ann_date) > str(current.ann_date):
             continue
+        if listing_dates is not None:
+            list_date = listing_dates.get(str(current.ts_code))
+            if (
+                list_date is None
+                or str(current.end_date) < list_date
+                or previous_end < list_date
+            ):
+                pre_listing_excluded += 1
+                continue
         change = float(current.holder_num) / float(previous.holder_num) - 1.0
         if change < 0.0:
             family = "holder_concentration"
@@ -324,6 +377,7 @@ def load_holder_concentration_events(
     audit.update({
         "observations": int(len(observations)),
         "ambiguous_quarters": int(conflicts.gt(1).sum()),
+        "pre_listing_pairs_excluded": int(pre_listing_excluded),
         "events": int(len(events)),
     })
     return events, audit

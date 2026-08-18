@@ -34,6 +34,17 @@ holder_count_change = current_holder_num / previous_holder_num - 1
 No interpolation or backdating is allowed. The event becomes available after
 the close on its own `ann_date`.
 
+### Pre-unblinding data-eligibility amendment
+
+Before any forward return was calculated, structured-data QA found that some
+pre-IPO quarter records contain only two to eight legal shareholders and then
+jump to tens of thousands after listing. That is an IPO ownership transition,
+not secondary-market holder dispersion. The frozen snapshot's Tushare
+`stock_basic.list_date` is therefore used only as eligibility metadata: both
+the current and immediately previous quarter end must be on or after the stock's
+listing date. Missing list dates fail closed. The amendment was committed before
+running the return study and does not change the +/-10% thresholds or any gate.
+
 ## Frozen event families
 
 - `holder_concentration`: signed quarterly change <= -10%. This is the only

@@ -155,6 +155,34 @@ class HolderConcentrationBackfillTest(unittest.TestCase):
             )
         self.assertTrue(events.empty)
 
+    def test_pre_listing_quarter_pair_is_excluded_before_unblinding(self):
+        rows = [
+            row("20200110", "20191231", 2),
+            row("20200420", "20200331", 100000),
+            row("20200720", "20200630", 80000),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            stock_basic = (
+                Path(tmp) / "data/research/raw/a_share/20200801"
+                / "stock_basic.parquet"
+            )
+            stock_basic.parent.mkdir(parents=True)
+            pd.DataFrame([{
+                "ts_code": "000001.SZ", "list_date": "20200115",
+            }]).to_parquet(stock_basic, index=False)
+            run_holder_concentration_backfill(
+                tmp, HolderClient(rows), start_date="2020-01-01",
+                end_date="2020-12-31",
+            )
+            events, audit = load_holder_concentration_events(
+                tmp, start_date="2020-01-01", end_date="2020-12-31",
+                snapshot_date="20200801",
+            )
+        self.assertEqual(audit["pre_listing_pairs_excluded"], 1)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events.iloc[0]["end_date"], "20200630")
+        self.assertAlmostEqual(events.iloc[0]["holder_count_change"], -0.20)
+
 
 class HolderConcentrationContractTest(unittest.TestCase):
     def test_contract_is_frozen(self):
