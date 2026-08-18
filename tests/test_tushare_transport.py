@@ -55,6 +55,7 @@ class TushareProTransportTest(unittest.TestCase):
         for method, api_name in (
             ("repurchase", "repurchase"),
             ("stk_holdertrade", "stk_holdertrade"),
+            ("stk_holdernumber", "stk_holdernumber"),
         ):
             with self.subTest(method=method):
                 http = FakeHttpClient([FakeResponse(200, success_payload([]))])

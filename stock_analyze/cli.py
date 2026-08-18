@@ -517,6 +517,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-partitions", type=int, default=None
     )
 
+    holder_concentration_backfill = sub.add_parser(
+        "backfill-structured-holder-counts",
+        help="Backfill resumable Tushare shareholder-count partitions.",
+    )
+    holder_concentration_backfill.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    holder_concentration_backfill.add_argument(
+        "--start-date", default="2018-01-01"
+    )
+    holder_concentration_backfill.add_argument(
+        "--end-date", default="2024-12-31"
+    )
+    holder_concentration_backfill.add_argument(
+        "--max-partitions", type=int, default=None
+    )
+
     tournament = sub.add_parser(
         "run-classical-tournament",
         help="Run one sealed account-scoped classical model tournament.",
@@ -700,6 +717,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("configs/research/capital_actions_study.yaml"),
     )
     capital_actions.add_argument(
+        "--output-root", type=Path, default=Path("reports/research")
+    )
+
+    holder_concentration = sub.add_parser(
+        "run-holder-concentration-study",
+        help="Run the preregistered model-free shareholder concentration study.",
+    )
+    holder_concentration.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    holder_concentration.add_argument("--snapshot-date", required=True)
+    holder_concentration.add_argument(
+        "--contract",
+        type=Path,
+        default=Path("configs/research/holder_concentration_study.yaml"),
+    )
+    holder_concentration.add_argument(
         "--output-root", type=Path, default=Path("reports/research")
     )
 
@@ -1497,6 +1531,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "backfill-structured-capital-actions":
         ensure_dirs(args.logs_dir)
         return _command_backfill_structured_capital_actions(args)
+    if args.command == "backfill-structured-holder-counts":
+        ensure_dirs(args.logs_dir)
+        return _command_backfill_structured_holder_counts(args)
     if args.command == "backtest":
         ensure_dirs(args.logs_dir)
         return _command_backtest(args)
@@ -1558,6 +1595,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run-capital-actions-study":
         ensure_dirs(args.logs_dir)
         return _command_capital_actions_study(args)
+    if args.command == "run-holder-concentration-study":
+        ensure_dirs(args.logs_dir)
+        return _command_holder_concentration_study(args)
     if args.command in {
         "research-training-bundle-export",
         "research-training-bundle-import",
@@ -2158,6 +2198,59 @@ def _command_backfill_structured_capital_actions(
         if not hasattr(adapter, "client"):
             raise ValueError("capital_actions_tushare_unavailable")
         result = run_capital_actions_backfill(
+            args.repo_root,
+            adapter.client,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            max_partitions=args.max_partitions,
+        )
+    except Exception as exc:  # noqa: BLE001 - typed provider boundary
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def _command_holder_concentration_study(args: argparse.Namespace) -> int:
+    from .research.holder_concentration_study import (
+        run_holder_concentration_study,
+    )
+
+    try:
+        result = run_holder_concentration_study(
+            args.repo_root,
+            snapshot_date=args.snapshot_date,
+            contract_path=args.contract,
+            output_root=args.output_root,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def _command_backfill_structured_holder_counts(
+    args: argparse.Namespace,
+) -> int:
+    from .intelligence.source_registry import build_adapters
+    from .research.holder_concentration_backfill import (
+        run_holder_concentration_backfill,
+    )
+
+    try:
+        adapters = build_adapters(
+            args.repo_root,
+            Path(args.repo_root) / "configs" / "intelligence_sources.yaml",
+        )
+        adapter = next(
+            item
+            for item in adapters
+            if getattr(item, "source", "") == "tushare_announcement"
+        )
+        if not hasattr(adapter, "client"):
+            raise ValueError("holder_concentration_tushare_unavailable")
+        result = run_holder_concentration_backfill(
             args.repo_root,
             adapter.client,
             start_date=args.start_date,
