@@ -72,6 +72,12 @@ class TushareProTransport:
     def stock_basic(self, **kwargs) -> pd.DataFrame:
         return self._query("stock_basic", **kwargs)
 
+    def forecast(self, **kwargs) -> pd.DataFrame:
+        return self._query("forecast", **kwargs)
+
+    def express(self, **kwargs) -> pd.DataFrame:
+        return self._query("express", **kwargs)
+
     def fund_basic(self, **kwargs) -> pd.DataFrame:
         return self._query("fund_basic", **kwargs)
 
