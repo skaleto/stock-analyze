@@ -3,10 +3,12 @@
 ## Decision
 
 No existing machine-learning artifact is approved for blind retraining or
-promotion. The current four account-scoped Shadow candidates are deterministic
-transparent rules, not fitted estimators, so they must continue forward
-observation rather than be "retrained". No model is Active or used by the
-formal paper accounts.
+promotion. The four account-scoped candidates found at the start of this review
+were deterministic transparent rules, not fitted estimators. A post-deployment
+quality audit proved that all four had entered under the retired
+`personal-quant-shadow-v1` contract without passing the current historical
+quality gate. They were backed up and rejected. No model is now Active or
+Shadow, and no model is used by the formal paper accounts.
 
 One missing evaluation is being completed without changing the frozen protocol:
 the ZZ500 scope under `full-history-rebuild-v1`. HS300, QDII Hong Kong exposure,
@@ -17,10 +19,10 @@ All three returned `no_pass`.
 
 | Market / scope | Current iteration candidate | Kind | Lifecycle | Retrain decision |
 |---|---|---|---|---|
-| A-share / HS300 | `rule-a-mom-02-02cd521a00a7` | transparent rule | Shadow | No fitting exists; continue forward evidence |
-| A-share / ZZ500 | `rule-a-mom-02-d0539ed9d01a` | transparent rule | Shadow | No fitting exists; continue forward evidence |
-| QDII / HK exposure | `rule-q-track-02-89b14a2fe59f` | transparent rule | Shadow | No fitting exists; continue forward evidence |
-| QDII / US exposure | `rule-q-track-01-5b20eaa7b1b6` | transparent rule | Shadow | No fitting exists; continue forward evidence |
+| A-share / HS300 | `rule-a-mom-02-02cd521a00a7` | transparent rule | Rejected | Retired admission contract; historical quality gate not passed |
+| A-share / ZZ500 | `rule-a-mom-02-d0539ed9d01a` | transparent rule | Rejected | Retired admission contract; historical quality gate not passed |
+| QDII / HK exposure | `rule-q-track-02-89b14a2fe59f` | transparent rule | Rejected | Retired admission contract; historical quality gate not passed |
+| QDII / US exposure | `rule-q-track-01-5b20eaa7b1b6` | transparent rule | Rejected | Retired admission contract; historical quality gate not passed |
 
 The model files created by the earlier local/Trae-era work remain Research or
 Rejected. They have no Champion pointer and are not consumed by formal paper
@@ -87,7 +89,18 @@ while the cycle tracker previously searched a nonexistent per-account model
 portfolio. That caused real NAV rows to be reported as `daily_nav_missing` and
 kept usable Shadow cycles at zero. The resolver now uses the composite portfolio
 only when its persisted account-to-version mapping matches the requested
-candidate. Formal accounts and orders are untouched.
+candidate. The recovered two-week evidence was negative for HS300, ZZ500, and
+QDII HK exposure and slightly positive for QDII US exposure, but forward results
+cannot repair the missing historical admission gate. Formal accounts and orders
+were untouched.
+
+## Subsequent authorized scenario experiment
+
+The operator subsequently authorized `scenario-specialists-v1`. Its immutable
+result is recorded in
+`docs/superpowers/validation/2026-08-19-scenario-specialists-result.md`. HS300
+and ZZ500 trained but failed their complete gates; both QDII scopes failed data
+qualification before fitting. It produced no Shadow candidate.
 
 ## Conditions for a future model fit
 
