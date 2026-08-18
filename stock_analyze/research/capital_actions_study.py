@@ -301,6 +301,7 @@ def evaluate_panel(
     panel: pd.DataFrame,
     audit: Mapping[str, Any],
     contract: CapitalActionsContract,
+    diagnostic_panel: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """Evaluate each positive family independently under frozen gates."""
 
@@ -466,6 +467,11 @@ def evaluate_panel(
             "horizons": horizon_results,
         })
 
+    diagnostic_results = evaluate_diagnostic_panel(
+        diagnostic_panel if diagnostic_panel is not None else pd.DataFrame(),
+        audit,
+        contract,
+    )
     statuses = {row["status"] for row in family_results}
     if not bool(audit.get("complete")) or statuses == {"insufficient_data"}:
         overall_status = "insufficient_data"
@@ -477,9 +483,126 @@ def evaluate_panel(
         "protocol_version": contract.protocol_version,
         "status": overall_status,
         "families": family_results,
+        "diagnostics": diagnostic_results,
         "model_training_allowed": False,
         "formal_strategy_unchanged": True,
     }
+
+
+def evaluate_diagnostic_panel(
+    panel: pd.DataFrame,
+    audit: Mapping[str, Any],
+    contract: CapitalActionsContract,
+) -> list[dict[str, Any]]:
+    """Summarize frozen controls without creating candidate decisions."""
+
+    results: list[dict[str, Any]] = []
+    for family in contract.diagnostic_families:
+        family_panel = (
+            panel.loc[panel["family"].eq(family)].copy()
+            if not panel.empty
+            else panel.copy()
+        )
+        if family_panel.empty:
+            comparable = family_panel.copy()
+            mature = family_panel.copy()
+        else:
+            counts = (
+                family_panel.groupby(["account_scope", "event_id"])["horizon"]
+                .nunique()
+                .rename("horizon_count")
+                .reset_index()
+            )
+            complete_keys = counts.loc[
+                counts["horizon_count"].eq(len(contract.horizons)),
+                ["account_scope", "event_id"],
+            ]
+            comparable = family_panel.merge(
+                complete_keys, on=["account_scope", "event_id"], how="inner"
+            )
+            mature = comparable.loc[
+                comparable["horizon"].eq(max(contract.horizons))
+            ].copy()
+        scope_events = (
+            mature.groupby("account_scope")["event_id"].nunique().to_dict()
+            if not mature.empty
+            else {}
+        )
+        years = (
+            sorted(mature["event_year"].dropna().astype(str).unique())
+            if not mature.empty
+            else []
+        )
+        evidence = {
+            "events": int(mature["event_id"].nunique()) if not mature.empty else 0,
+            "securities": int(mature["code"].nunique()) if not mature.empty else 0,
+            "years": years,
+            "scope_events": {
+                str(key): int(value) for key, value in scope_events.items()
+            },
+            "maturity_horizon": max(contract.horizons),
+        }
+        evidence_checks = {
+            "backfill_complete": bool(audit.get("complete")),
+            "events": evidence["events"] >= contract.minimum_total_events,
+            "securities": (
+                evidence["securities"] >= contract.minimum_unique_securities
+            ),
+            "years": len(years) >= contract.minimum_event_years,
+            "scopes": (
+                set(scope_events) == {"hs300", "zz500"}
+                and all(
+                    scope_events[scope] >= contract.minimum_scope_events
+                    for scope in ("hs300", "zz500")
+                )
+            ),
+        }
+        horizons: list[dict[str, Any]] = []
+        for horizon in contract.horizons:
+            frame = (
+                comparable.loc[comparable["horizon"].eq(horizon)].copy()
+                if "horizon" in comparable.columns
+                else comparable.copy()
+            )
+            if frame.empty:
+                continue
+            year_means = frame.groupby("event_year")["net_active_return"].mean()
+            scope_means = (
+                frame.groupby("account_scope")["net_active_return"]
+                .mean()
+                .to_dict()
+            )
+            horizons.append({
+                "horizon": int(horizon),
+                "is_primary": horizon == contract.primary_horizon,
+                "observations": int(len(frame)),
+                "events": int(frame["event_id"].nunique()),
+                "mean_active_return": float(frame["active_return"].mean()),
+                "mean_net_active_return": float(
+                    frame["net_active_return"].mean()
+                ),
+                "median_net_active_return": float(
+                    frame["net_active_return"].median()
+                ),
+                "mean_stress_net_active_return": float(
+                    frame["stress_net_active_return"].mean()
+                ),
+                "positive_year_fraction": float(year_means.gt(0.0).mean()),
+                "scope_mean_net_active_return": {
+                    str(key): float(value) for key, value in scope_means.items()
+                },
+            })
+        results.append({
+            "family": family,
+            "status": "diagnostic_only",
+            "candidate_eligible": False,
+            "gate_applied": False,
+            "evidence": evidence,
+            "evidence_checks": evidence_checks,
+            "evidence_sufficient": bool(all(evidence_checks.values())),
+            "horizons": horizons,
+        })
+    return results
 
 
 def select_eligible_events(
@@ -504,6 +627,68 @@ def select_eligible_events(
         contract.holder_change_ratio
     )
     return selected.loc[selected["eligible"].fillna(False)].copy()
+
+
+def select_diagnostic_events(
+    events: pd.DataFrame,
+    contract: CapitalActionsContract,
+) -> pd.DataFrame:
+    """Select frozen controls while keeping them ineligible as candidates."""
+
+    required = {"family", "materiality"}
+    if required.difference(events.columns):
+        raise ValueError("capital_actions_event_columns")
+    selected = events.loc[
+        events["family"].isin(contract.diagnostic_families)
+    ].copy()
+    holder = selected["family"].str.startswith("holder_", na=False)
+    materiality = pd.to_numeric(selected["materiality"], errors="coerce")
+    selected = selected.loc[
+        ~holder | materiality.ge(contract.holder_change_ratio)
+    ].copy()
+    selected["eligible"] = True
+    return selected
+
+
+def _build_batched_return_panel(
+    repo_root: Path,
+    events: pd.DataFrame,
+    *,
+    snapshot_date: str,
+    contract: CapitalActionsContract,
+    benchmarks: Mapping[str, pd.DataFrame],
+    code_batch_size: int = 400,
+) -> pd.DataFrame:
+    """Bound peak memory while retaining one PIT membership calculation."""
+
+    if events.empty:
+        return pd.DataFrame()
+    codes = sorted(events["code"].dropna().astype(str).unique())
+    panels: list[pd.DataFrame] = []
+    batch_size = max(1, int(code_batch_size))
+    for offset in range(0, len(codes), batch_size):
+        batch_codes = set(codes[offset:offset + batch_size])
+        batch_events = events.loc[
+            events["code"].astype(str).isin(batch_codes)
+        ].copy()
+        prices = build_lightweight_event_price_panel(
+            repo_root,
+            snapshot_date=snapshot_date,
+            development_start=contract.development_start,
+            development_end=contract.development_end,
+            event_codes=batch_codes,
+            retain_nonmembers=True,
+        )
+        batch_panel = build_return_panel(
+            batch_events, prices, benchmarks, contract
+        )
+        if not batch_panel.empty:
+            panels.append(batch_panel)
+    return (
+        pd.concat(panels, ignore_index=True, sort=False)
+        if panels
+        else pd.DataFrame()
+    )
 
 
 def _write_report(result: Mapping[str, Any], path: Path) -> None:
@@ -542,6 +727,35 @@ def _write_report(result: Mapping[str, Any], path: Path) -> None:
                 f"- Passed: {str(row['passed']).lower()}",
                 "",
             ])
+    lines.extend([
+        "## Diagnostic controls",
+        "",
+        (
+            "These are long-side forward returns after control/risk events. "
+            "They are never candidate gates and decreases are not treated as shorts."
+        ),
+        "",
+    ])
+    for family in result["diagnostics"]:
+        evidence = family["evidence"]
+        lines.extend([
+            f"### {family['family']}",
+            "",
+            "- Status: diagnostic_only",
+            "- Candidate eligible: false",
+            f"- Mature events: {evidence['events']}",
+            f"- Securities: {evidence['securities']}",
+            "",
+        ])
+        for row in family["horizons"]:
+            lines.extend([
+                f"#### {row['horizon']} sessions",
+                "",
+                f"- Mean net active return: {row['mean_net_active_return']:.2%}",
+                f"- Median net active return: {row['median_net_active_return']:.2%}",
+                f"- Stress-cost mean: {row['mean_stress_net_active_return']:.2%}",
+                "",
+            ])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -566,28 +780,35 @@ def run_capital_actions_study(
     )
 
     panel = pd.DataFrame()
+    candidate_panel = pd.DataFrame()
+    diagnostic_panel = pd.DataFrame()
     if bool(audit.get("complete")) and not events.empty:
-        eligible = select_eligible_events(events, contract)
-        if not eligible.empty:
-            prices = build_lightweight_event_price_panel(
+        candidates = select_eligible_events(events, contract)
+        diagnostics = select_diagnostic_events(events, contract)
+        study_events = pd.concat(
+            [candidates, diagnostics], ignore_index=True, sort=False
+        )
+        if not study_events.empty:
+            panel = _build_batched_return_panel(
                 root,
+                study_events,
                 snapshot_date=snapshot_key,
-                development_start=contract.development_start,
-                development_end=contract.development_end,
-                event_codes=set(eligible["code"].astype(str)),
-                retain_nonmembers=True,
-            )
-            panel = build_return_panel(
-                eligible,
-                prices,
-                {
+                contract=contract,
+                benchmarks={
                     "hs300": _load_benchmark(root, "000300", snapshot_key),
                     "zz500": _load_benchmark(root, "000905", snapshot_key),
                 },
-                contract,
             )
+            candidate_panel = panel.loc[
+                panel["family"].isin(contract.positive_families)
+            ].copy()
+            diagnostic_panel = panel.loc[
+                panel["family"].isin(contract.diagnostic_families)
+            ].copy()
 
-    result = evaluate_panel(panel, audit, contract)
+    result = evaluate_panel(
+        candidate_panel, audit, contract, diagnostic_panel=diagnostic_panel
+    )
     result.update({
         "snapshot_date": snapshot_key,
         "development_window": [
@@ -596,6 +817,8 @@ def run_capital_actions_study(
         ],
         "backfill": audit,
         "panel_rows": int(len(panel)),
+        "candidate_panel_rows": int(len(candidate_panel)),
+        "diagnostic_panel_rows": int(len(diagnostic_panel)),
         "historical_diagnostic_opened": False,
         "live_oos_start": contract.live_oos_start,
     })
