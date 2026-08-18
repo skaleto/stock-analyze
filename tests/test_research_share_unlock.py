@@ -34,6 +34,23 @@ class UnlockClient:
         )
 
 
+class MonthlyFailDailyClient:
+    def __init__(self):
+        self.calls = []
+
+    def share_float(self, **kwargs):
+        self.calls.append((kwargs["start_date"], kwargs["end_date"], kwargs["offset"]))
+        if kwargs["start_date"] != kwargs["end_date"]:
+            raise ValueError("provider_month_too_large")
+        rows = (
+            [unlock_row(kwargs["start_date"], kwargs["start_date"], 10, 1.0)]
+            if kwargs["start_date"].endswith("02") else []
+        )
+        return pd.DataFrame(
+            rows, columns=["ts_code","ann_date","float_date","float_share","float_ratio","holder_name","share_type"]
+        )
+
+
 def unlock_row(ann, floating, shares, ratio, holder="A", share_type="定增股份", code="000001.SZ"):
     return {"ts_code":code,"ann_date":ann,"float_date":floating,"float_share":shares,"float_ratio":ratio,"holder_name":holder,"share_type":share_type}
 
@@ -48,6 +65,14 @@ class ShareUnlockBackfillTest(unittest.TestCase):
         self.assertEqual(len(share_unlock_partitions("2018-01-01", "2024-12-31")), 84)
         client = UnlockClient(paged=True); frame = _fetch_pages(client, "20200101", "20200131")
         self.assertEqual(len(frame), 2001); self.assertEqual(client.offsets, [0,2000])
+
+    def test_large_month_falls_back_to_days_but_stays_one_partition(self):
+        client = MonthlyFailDailyClient()
+        frame = _fetch_pages(client, "20200101", "20200103")
+        self.assertEqual(len(frame), 1)
+        self.assertEqual(frame.iloc[0]["float_date"], "20200102")
+        self.assertEqual(client.calls[0], ("20200101", "20200103", 0))
+        self.assertIn(("20200102", "20200102", 0), client.calls)
 
     def test_latest_confirmation_replaces_old_snapshot_and_stale_plan(self):
         rows = [
