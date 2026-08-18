@@ -84,6 +84,9 @@ class TushareProTransport:
     def stk_holdertrade(self, **kwargs) -> pd.DataFrame:
         return self._query("stk_holdertrade", **kwargs)
 
+    def stk_holdernumber(self, **kwargs) -> pd.DataFrame:
+        return self._query("stk_holdernumber", **kwargs)
+
     def fund_basic(self, **kwargs) -> pd.DataFrame:
         return self._query("fund_basic", **kwargs)
 
