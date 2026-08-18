@@ -18,6 +18,7 @@ from stock_analyze.research.capital_actions_study import (
     build_return_panel,
     evaluate_panel,
     load_contract,
+    select_diagnostic_events,
     select_eligible_events,
 )
 
@@ -384,3 +385,54 @@ class CapitalActionsStudyTest(unittest.TestCase):
         self.assertEqual(
             {row["events"] for row in family["horizons"]}, {2}
         )
+
+    def test_diagnostic_families_cannot_change_candidate_decision(self):
+        contract = relaxed_contract()
+        candidate = outcome_panel(
+            "repurchase_completed", [0.02, 0.02, 0.02]
+        )
+        diagnostic = outcome_panel(
+            "holder_company_decrease", [0.50, 0.50, 0.50]
+        )
+        result = evaluate_panel(
+            candidate,
+            {"complete": True},
+            contract,
+            diagnostic_panel=diagnostic,
+        )
+        self.assertEqual(result["status"], "transparent_baseline_candidate")
+        control = next(
+            row for row in result["diagnostics"]
+            if row["family"] == "holder_company_decrease"
+        )
+        self.assertEqual(control["status"], "diagnostic_only")
+        self.assertFalse(control["candidate_eligible"])
+        self.assertFalse(control["gate_applied"])
+        self.assertNotIn("passed", control["horizons"][0])
+
+    def test_diagnostic_selection_thresholds_decreases_but_keeps_controls(self):
+        contract = load_contract(CONTRACT)
+        events = pd.DataFrame([
+            {
+                "family": "holder_management_decrease",
+                "materiality": 0.0009, "eligible": False,
+            },
+            {
+                "family": "holder_management_decrease",
+                "materiality": 0.0010, "eligible": False,
+            },
+            {
+                "family": "repurchase_plan",
+                "materiality": float("nan"), "eligible": False,
+            },
+            {
+                "family": "repurchase_completed",
+                "materiality": 0.50, "eligible": True,
+            },
+        ])
+        selected = select_diagnostic_events(events, contract)
+        self.assertEqual(
+            selected["family"].tolist(),
+            ["holder_management_decrease", "repurchase_plan"],
+        )
+        self.assertTrue(selected["eligible"].all())
