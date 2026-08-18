@@ -14,6 +14,7 @@ DEPLOY_SCRIPT = ROOT / "scripts" / "deploy-dashboard-workspaces-to-ecs.sh"
 LEGACY_SCRIPT = ROOT / "scripts" / "deploy-app-to-ecs.sh"
 
 EXPECTED_FILES = [
+    "configs/research/scenario_model_v1.yaml",
     "stock_analyze/cli.py",
     "stock_analyze/dashboard_aggregator.py",
     "stock_analyze/dashboard_api.py",
@@ -31,6 +32,7 @@ EXPECTED_FILES = [
     "stock_analyze/research/models.py",
     "stock_analyze/research/pipeline.py",
     "stock_analyze/research/portfolio_replay.py",
+    "stock_analyze/research/scenario_model.py",
     "stock_analyze/research/shadow_admission.py",
     "stock_analyze/research/storage.py",
     "stock_analyze/research/strategy_campaign.py",
@@ -50,6 +52,7 @@ EXPECTED_FILES = [
     "tests/test_research_models.py",
     "tests/test_research_pipeline.py",
     "tests/test_research_portfolio_replay.py",
+    "tests/test_research_scenario_model.py",
     "tests/test_research_shadow_admission.py",
     "tests/test_research_storage.py",
     "tests/test_research_strategy_campaign.py",

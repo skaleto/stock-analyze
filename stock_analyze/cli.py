@@ -924,6 +924,23 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["hs300", "zz500", "hk_exposure", "us_exposure"],
         default=None,
     )
+    scenario_model = sub.add_parser(
+        "run-scenario-model-experiment",
+        help="Run the frozen three-scene, four-account Research ablation.",
+    )
+    scenario_model.add_argument("--repo-root", type=Path, default=Path("."))
+    scenario_model.add_argument("--snapshot-date", required=True)
+    scenario_model.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/research/scenario_model_v1.yaml"),
+    )
+    scenario_model.add_argument(
+        "--scopes",
+        nargs="+",
+        choices=["hs300", "zz500", "hk_exposure", "us_exposure"],
+        default=None,
+    )
 
     intelligence_ingest = sub.add_parser(
         "intelligence-ingest",
@@ -1713,6 +1730,9 @@ def main(argv: list[str] | None = None) -> int:
     }:
         ensure_dirs(args.logs_dir)
         return _command_full_history_rebuild_maintenance(args)
+    if args.command == "run-scenario-model-experiment":
+        ensure_dirs(args.logs_dir)
+        return _command_scenario_model_experiment(args)
     if args.command in {
         "intelligence-ingest", "intelligence-backfill",
         "intelligence-extract", "intelligence-status", "intelligence-evaluate",
@@ -2753,6 +2773,23 @@ def _command_intelligence_exchange(args: argparse.Namespace) -> int:
         return 0
     if status in {"partial", "awaiting_executor", "ready_to_import"}:
         return 3
+    return 0
+
+
+def _command_scenario_model_experiment(args: argparse.Namespace) -> int:
+    from .research.scenario_model import run_scenario_model_experiment
+
+    try:
+        result = run_scenario_model_experiment(
+            args.repo_root,
+            snapshot_date=args.snapshot_date,
+            config_path=args.config,
+            scopes=args.scopes,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 
