@@ -27,6 +27,7 @@ PROTECTED_PATHS+=("$APP_DIR/data/model_iterations")
 PROTECTED_PATHS+=("$APP_DIR/data/shared/intelligence")
 PROTECTED_PATHS+=("$APP_DIR/data/competition")
 PROTECTED_PATHS+=("$APP_DIR/data/notifications")
+PROTECTED_PATHS+=("$LEGACY_ROOT/data/notifications")
 
 is_protected() {
   local candidate="$1" protected
@@ -102,7 +103,7 @@ RETIRED_PATHS=(
   "$APP_DIR/scripts/overseas_summary.py"
   "$APP_DIR/scripts/notify-daily-summary.sh"
   "$APP_DIR/scripts/verify_data_sources.py"
-  "$LEGACY_ROOT/data"
+  "$LEGACY_ROOT/data/intelligence.db"
   "$LEGACY_ROOT/reports"
 )
 

@@ -71,7 +71,7 @@ class SystemStructureTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse((ROOT / "scripts" / name).exists())
 
-        self.assertTrue((ROOT / "scripts" / "run-overseas.sh").is_file())
+        self.assertFalse((ROOT / "scripts" / "run-overseas.sh").exists())
         self.assertTrue((ROOT / "archive" / "direct-overseas" / "run-overseas.sh").is_file())
         self.assertTrue(
             (ROOT / "archive" / "direct-overseas" / "source" / "scripts" / "verify_data_sources.py").is_file()
@@ -102,6 +102,18 @@ class SystemStructureTests(unittest.TestCase):
             self.assertIn("趋势进攻", text)
         self.assertIn("scripts/system-audit.sh", harness)
         self.assertIn("docs/system-harness.md", agents)
+        self.assertIn("/opt/stock-analyze/data/notifications/", agents)
+        self.assertIn("evidence-first-research-stop-decision.md", agents)
+        for asset in (
+            "Earnings forecast/express",
+            "Repurchase + holder trade",
+            "Shareholder counts",
+            "Restricted-share unlocks",
+            "Implemented annual dividends",
+            "Block trades",
+        ):
+            with self.subTest(asset=asset):
+                self.assertIn(asset, agents)
 
     def test_system_audit_covers_local_and_remote_contracts(self) -> None:
         audit = (ROOT / "scripts" / "system-audit.sh").read_text(encoding="utf-8")
@@ -136,6 +148,11 @@ class SystemStructureTests(unittest.TestCase):
         self.assertIn("data/us", cleanup)
         self.assertIn("data/research/.a_share-feature-batches-*", cleanup)
         self.assertIn("archive/runtime-data/legacy-agent", cleanup)
+        self.assertNotIn('"$LEGACY_ROOT/data"', cleanup)
+        self.assertIn(
+            'PROTECTED_PATHS+=("$LEGACY_ROOT/data/notifications")', cleanup
+        )
+        self.assertIn('"$LEGACY_ROOT/data/intelligence.db"', cleanup)
         for protected in (
             "data/a_share",
             "data/cn_qdii_etf",
@@ -314,7 +331,6 @@ class SystemStructureTests(unittest.TestCase):
         self.assertNotIn("Champion", runbook)
 
         for doc_name in (
-            "data-source-enrichment-strategy.md",
             "system-overview.md",
             "competition-runbook.md",
         ):

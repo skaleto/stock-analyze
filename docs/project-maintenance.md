@@ -1,6 +1,6 @@
 # 项目维护与保留策略
 
-更新日期：2026-08-11
+更新日期：2026-08-18
 
 ## 当前真相入口
 
@@ -9,16 +9,14 @@
 - `system-overview.md`：系统边界、架构、数据与任务总览。
 - `system-harness.md`：开发、部署、巡检和故障处理命令。
 - `competition-runbook.md`：A 股与跨境 ETF 模拟策略运行规则。
-- `quant-system-p0-p2-closure.md`：模型、风控和决策闭环。
-- `data-source-enrichment-strategy.md`：数据源能力与接入边界。
 - `announcement-intelligence-runbook.md`：公告采集、解析、语义抽取和因子供给。
 - `announcement-intelligence-executor-contract.md`：可替换大模型执行器契约。
-- `historical-backtest-flow.md`：回测窗口与准入纪律。
 - `operator-alerting-setup.md`：飞书告警配置。
 - `tushare-token-setup.md`：Tushare 凭据配置。
 
-历史实施计划和设计稿不再作为运行依据。清理前完整状态保存在 Git 提交
-`1b98538`，需要追溯时从 Git 历史读取，不在活跃文档目录保留副本。
+历史实施计划、阶段说明和旧设计稿不再作为运行依据，集中保存在
+`archive/document-history/`。当前预注册研究合同和不可变结果仍保留在
+`docs/superpowers/`。
 
 ## 数据保留
 

@@ -110,7 +110,7 @@ curl -s 'http://127.0.0.1:8765/api/dashboard/governance.json?market=a_share&agen
 `intelligence-semantic-prepare` 在优先扫描未找到执行器任务时，会自动执行同一套
 有界结案逻辑并重试一次；日常任务不需要额外人工调用，且明显事件公告仍保持
 优先。独立命令用于加速历史 backlog 或审计路由分布。
-[local artifact worker harness](superpowers/plans/2026-07-30-local-artifact-worker-harness.md)。
+本地 artifact worker 的导出、执行、导入与状态命令以上述当前契约为准。
 
 ## 5. 周度和月度人工动作
 
@@ -166,7 +166,7 @@ npm run build
 
 - CPU 密集的经典模型拟合只在受信任的本机执行。ECS 月度 timer 只刷新 `next-open-v3-adjusted` 标签，并通过 `scripts/prepare-model-training-bundles.sh` 导出不可变特征、标签和冻结窗口清单；两个市场独立尝试，单市场失败不阻止另一个导出，最终仍返回失败用于告警。本机先校验大小与 SHA-256，并锁定输入包声明的精确快照和源指纹后再训练；模型回传包必须携带同一指纹，ECS 导入时用原输入包复核。只有在同窗、同成本下战胜透明基线，且冻结 bundle 的可部署回放仍有正净超额、真实成交、足够资金利用率并满足相同回撤/换手边界，才生成 Shadow 回传包。ECS 导入遇到任何已有同版本记录时只保留远端生命周期，绝不覆盖 Champion、Active 或 gate history。定时输入包每市场保留 8 份，本机和远端按需训练目录各保留 4 份。
 - 没有经过校验的 ECS 输入包时，基线研究只能写报告，禁止拟合、冻结模型或修改 Registry。无论结果是 `baseline_wins`、`deployment_blocked` 还是进入 Shadow，本机都会回传只含验收报告和冻结窗口的轻量结果包；该包禁止携带模型注册表，线上 Dashboard 因而始终读取当前轮次。输入、模型和结果三类清单都拒绝空文件列表，并由清单内容重新计算源指纹。
-- 标准入口是 `MODEL_TRAIN_CPU_COUNT=8 ./scripts/run-local-baseline-first-research.sh <a_share|cn_qdii_etf> YYYY-MM-DD`。输入和输出都在 `.artifacts/local-model-training/` 留有清单；旧的 `run-local-classical-tournament.sh` 仅作兼容转发。正式策略配置、订单、持仓和净值不在交换包内。
+- 标准入口是 `MODEL_TRAIN_CPU_COUNT=8 ./scripts/run-local-baseline-first-research.sh <a_share|cn_qdii_etf> YYYY-MM-DD`。输入和输出都在 `.artifacts/local-model-training/` 留有清单；正式策略配置、订单、持仓和净值不在交换包内。
 - A 股以 20/60 日动量为透明基线、月频回放；跨境 ETF 以绝对趋势为透明基线、周频回放。机器学习只提供最多 10% 的正则化残差修正，不能覆盖基线方向。
 - 每个账户首次运行时把已经观察过的旧终检窗口冻结到 `data/research/baseline_first/<market>/<scope>/window_manifest.json`；以后只在冻结的开发区间做三折净增量比较，不再依赖或移动旧锦标赛目录。既有模型目录若缺少可迁移的冻结边界必须失败关闭，不能按当天数据重新划窗。
 - QDII Tushare `amount` 只能在研究面板边界从千元转换一次；下游统一消费 `amount_yuan` / `amount_unit=yuan`，单位不匹配必须失败关闭。
