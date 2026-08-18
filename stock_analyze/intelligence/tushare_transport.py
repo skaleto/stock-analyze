@@ -93,6 +93,9 @@ class TushareProTransport:
     def dividend(self, **kwargs) -> pd.DataFrame:
         return self._query("dividend", **kwargs)
 
+    def block_trade(self, **kwargs) -> pd.DataFrame:
+        return self._query("block_trade", **kwargs)
+
     def fund_basic(self, **kwargs) -> pd.DataFrame:
         return self._query("fund_basic", **kwargs)
 
