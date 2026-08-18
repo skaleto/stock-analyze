@@ -213,3 +213,157 @@ def run_structured_earnings_backfill(
         "fetched_rows": int(fetched_rows),
         "manifest": str(_state_path(root)),
     }
+
+
+def _structured_event_id(
+    endpoint: str,
+    ts_code: str,
+    ann_date: str,
+    end_date: str,
+) -> str:
+    payload = f"{endpoint}|{ts_code}|{ann_date}|{end_date}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:24]
+
+
+def _forecast_signal(row: pd.Series) -> tuple[float, float]:
+    lower = pd.to_numeric(pd.Series([row.get("p_change_min")]), errors="coerce").iloc[0]
+    upper = pd.to_numeric(pd.Series([row.get("p_change_max")]), errors="coerce").iloc[0]
+    available = [float(value) for value in (lower, upper) if pd.notna(value)]
+    if available:
+        change = sum(available) / len(available) / 100.0
+        return float((change > 0) - (change < 0)), min(abs(change), 1.0)
+    forecast_type = str(row.get("type") or "")
+    if forecast_type in {"预增", "略增", "扭亏", "续盈"}:
+        return 1.0, 0.35
+    if forecast_type in {"预减", "略减", "首亏", "续亏"}:
+        return -1.0, 0.35
+    return 0.0, 0.0
+
+
+def _express_signal(row: pd.Series) -> tuple[float, float]:
+    current = pd.to_numeric(pd.Series([row.get("n_income")]), errors="coerce").iloc[0]
+    previous = pd.to_numeric(
+        pd.Series([row.get("yoy_net_profit")]), errors="coerce"
+    ).iloc[0]
+    if pd.isna(current) or pd.isna(previous):
+        return 0.0, 0.0
+    denominator = max(abs(float(previous)), 1.0)
+    change = (float(current) - float(previous)) / denominator
+    return float((change > 0) - (change < 0)), min(abs(change), 1.0)
+
+
+def _partition_record_path(repo_root: Path, raw_path: object) -> Path:
+    relative = Path(str(raw_path))
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("earnings_backfill_partition_path_invalid")
+    path = (repo_root / relative).resolve()
+    if not path.is_relative_to(repo_root.resolve()):
+        raise ValueError("earnings_backfill_partition_path_invalid")
+    return path
+
+
+def load_structured_earnings_events(
+    repo_root: str | Path,
+    *,
+    start_date: str = "2018-01-01",
+    end_date: str = "2024-12-31",
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Verify committed partitions and expose conservative date-only events."""
+
+    root = Path(repo_root).resolve()
+    store_root = root / "data" / "research" / "earnings_structured" / "v1"
+    manifest_path = _state_path(store_root)
+    expected = earnings_partitions(start_date, end_date)
+    if not manifest_path.exists():
+        return pd.DataFrame(), {
+            "status": "missing",
+            "complete": False,
+            "completed_partitions": 0,
+            "total_partitions": len(expected),
+            "rows": 0,
+        }
+    state = _load_state(store_root, _date_key(start_date), _date_key(end_date))
+    records = state["partitions"]
+    frames: list[pd.DataFrame] = []
+    for partition in expected:
+        record = records.get(partition.key)
+        if record is None:
+            continue
+        path = _partition_record_path(root, record.get("path"))
+        if not path.exists():
+            raise ValueError(f"earnings_backfill_partition_missing:{partition.key}")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != str(record.get("sha256")):
+            raise ValueError(f"earnings_backfill_partition_tampered:{partition.key}")
+        frame = pd.read_parquet(path)
+        if len(frame) != int(record.get("rows") or 0):
+            raise ValueError(f"earnings_backfill_partition_rows:{partition.key}")
+        if frame.empty:
+            continue
+        frame["endpoint"] = partition.endpoint
+        frames.append(frame)
+    if not frames:
+        events = pd.DataFrame()
+    else:
+        combined = pd.concat(frames, ignore_index=True, sort=False)
+        combined["ann_date"] = combined["ann_date"].astype("string").map(_date_key)
+        combined["end_date"] = combined["end_date"].astype("string").map(_date_key)
+        combined = combined.sort_values(
+            ["endpoint", "ts_code", "ann_date", "end_date", "update_flag"],
+            kind="stable",
+        ).drop_duplicates(
+            ["endpoint", "ts_code", "ann_date", "end_date"], keep="last"
+        )
+        rows: list[dict[str, Any]] = []
+        for _, row in combined.iterrows():
+            endpoint = str(row["endpoint"])
+            direction, strength = (
+                _forecast_signal(row)
+                if endpoint == "forecast"
+                else _express_signal(row)
+            )
+            ann_date = str(row["ann_date"])
+            end_date_key = str(row["end_date"])
+            ts_code = str(row["ts_code"])
+            raw_first_ann_date = row.get("first_ann_date")
+            first_ann_date = (
+                ann_date
+                if pd.isna(raw_first_ann_date) or not str(raw_first_ann_date).strip()
+                else _date_key(raw_first_ann_date)
+            )
+            available_at = (
+                pd.Timestamp(ann_date)
+                .tz_localize("Asia/Shanghai")
+                .replace(hour=16)
+                .tz_convert("UTC")
+                .isoformat()
+            )
+            rows.append({
+                "event_id": _structured_event_id(
+                    endpoint, ts_code, ann_date, end_date_key
+                ),
+                "event_type": (
+                    "earnings_forecast" if endpoint == "forecast" else "earnings_flash"
+                ),
+                "direction": direction,
+                "strength": strength,
+                "confidence": 0.98,
+                "available_at": available_at,
+                "entity_type": "security",
+                "entity_id": ts_code,
+                "ann_date": ann_date,
+                "end_date": end_date_key,
+                "first_ann_date": first_ann_date,
+                "update_flag": str(row.get("update_flag") or ""),
+                "source": f"tushare_{endpoint}",
+            })
+        events = pd.DataFrame(rows)
+    completed = len(records)
+    total = len(expected)
+    return events, {
+        "status": "complete" if completed == total else "in_progress",
+        "complete": completed == total,
+        "completed_partitions": completed,
+        "total_partitions": total,
+        "rows": int(sum(len(frame) for frame in frames)),
+        "events": int(len(events)),
+    }

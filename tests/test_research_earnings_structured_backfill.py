@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,7 @@ import pandas as pd
 
 from stock_analyze.research.earnings_structured_backfill import (
     earnings_partitions,
+    load_structured_earnings_events,
     run_structured_earnings_backfill,
 )
 
@@ -75,6 +77,39 @@ class StructuredEarningsBackfillTest(unittest.TestCase):
                 run_structured_earnings_backfill(
                     tmp, client, start_date="2020-01-01", end_date="2020-01-03",
                     max_partitions=1,
+                )
+
+    def test_revision_is_available_on_its_own_announcement_date(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = FakeClient()
+            run_structured_earnings_backfill(
+                tmp, client, start_date="2020-01-01", end_date="2020-01-02",
+            )
+            events, audit = load_structured_earnings_events(
+                tmp, start_date="2020-01-01", end_date="2020-01-02",
+            )
+
+        self.assertTrue(audit["complete"])
+        forecast = events.loc[events["event_type"].eq("earnings_forecast")]
+        self.assertEqual(set(forecast["ann_date"]), {"20200101", "20200102"})
+        self.assertEqual(
+            set(pd.to_datetime(forecast["available_at"]).dt.tz_convert("Asia/Shanghai").dt.strftime("%Y%m%d")),
+            {"20200101", "20200102"},
+        )
+
+    def test_tampered_partition_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = FakeClient()
+            result = run_structured_earnings_backfill(
+                tmp, client, start_date="2020-01-01", end_date="2020-01-01",
+            )
+            root = Path(tmp)
+            manifest = json.loads(Path(result["manifest"]).read_text())
+            record = next(iter(manifest["partitions"].values()))
+            (root / record["path"]).write_bytes(b"tampered")
+            with self.assertRaisesRegex(ValueError, "partition_tampered"):
+                load_structured_earnings_events(
+                    tmp, start_date="2020-01-01", end_date="2020-01-01",
                 )
 
 
