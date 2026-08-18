@@ -88,7 +88,7 @@ def _load_manifest(root: Path, start: str, end: str) -> dict[str, Any]:
     }
 
 
-def _fetch_pages(client: Any, start: str, end: str) -> pd.DataFrame:
+def _fetch_range_pages(client: Any, start: str, end: str) -> pd.DataFrame:
     pages: list[pd.DataFrame] = []
     offset = 0
     while True:
@@ -103,6 +103,32 @@ def _fetch_pages(client: Any, start: str, end: str) -> pd.DataFrame:
             break
         offset += PAGE_SIZE
     return pd.concat(pages, ignore_index=True, sort=False)
+
+
+def _fetch_pages(client: Any, start: str, end: str) -> pd.DataFrame:
+    try:
+        return _fetch_range_pages(client, start, end)
+    except Exception:
+        if start == end:
+            raise
+        # Some high-volume months exceed the provider's deep-pagination
+        # boundary. Fall back to natural-day queries and still persist one
+        # monthly atomic partition. A failing day remains fail-closed.
+        left = date.fromisoformat(f"{start[:4]}-{start[4:6]}-{start[6:8]}")
+        right = date.fromisoformat(f"{end[:4]}-{end[4:6]}-{end[6:8]}")
+        frames: list[pd.DataFrame] = []
+        current = left
+        while current <= right:
+            key = current.strftime("%Y%m%d")
+            frame = _fetch_range_pages(client, key, key)
+            if not frame.empty:
+                frames.append(frame)
+            current += timedelta(days=1)
+        return (
+            pd.concat(frames, ignore_index=True, sort=False)
+            if frames
+            else pd.DataFrame(columns=FIELDS.split(","))
+        )
 
 
 def _validate_partition(
