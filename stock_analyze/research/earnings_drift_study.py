@@ -14,6 +14,7 @@ import pyarrow.parquet as pq
 from ..intelligence.store import IntelligenceStore
 from .storage import ResearchStore
 from .earnings_structured_backfill import load_structured_earnings_events
+from .universe import attach_point_in_time_universe
 
 
 @dataclass(frozen=True)
@@ -405,6 +406,88 @@ def _load_benchmark(
     return combined.drop_duplicates(["ts_code", "trade_date"], keep="last")
 
 
+def build_lightweight_event_price_panel(
+    repo_root: str | Path,
+    *,
+    snapshot_date: str,
+    development_start: str,
+    development_end: str,
+) -> pd.DataFrame:
+    """Build a PIT account price panel without materializing wide features."""
+
+    root = Path(repo_root).resolve()
+    snapshot_key = _date_key(snapshot_date)
+    manifest_path = (
+        root / "data" / "research" / "raw" / "a_share" / snapshot_key
+        / "materialization_manifest.json"
+    )
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"earnings_drift_materialization_missing:{snapshot_key}"
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("status") != "complete":
+        raise ValueError("earnings_drift_materialization_incomplete")
+    history_records = [
+        record
+        for record in (manifest.get("outputs") or {}).values()
+        if "/history_" in str(record.get("path") or "")
+    ]
+    parts: list[pd.DataFrame] = []
+    for record in history_records:
+        relative = Path(str(record.get("path") or ""))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("earnings_drift_history_path_invalid")
+        path = (root / relative).resolve()
+        if not path.is_relative_to(root) or not path.exists():
+            raise ValueError("earnings_drift_history_path_invalid")
+        usecols = ["code", "trade_date", "open", "close", "adj_factor"]
+        frame = pd.read_csv(
+            path,
+            usecols=lambda column: column in usecols,
+            dtype={"code": str, "trade_date": str},
+        )
+        if {"code", "trade_date", "open", "close"}.difference(frame.columns):
+            raise ValueError("earnings_drift_history_schema")
+        frame["trade_date"] = frame["trade_date"].astype("string").map(_date_key)
+        frame = frame.loc[
+            frame["trade_date"].between(development_start, development_end)
+        ].copy()
+        if frame.empty:
+            continue
+        frame["open"] = pd.to_numeric(frame["open"], errors="coerce")
+        frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
+        if "adj_factor" in frame:
+            factor = pd.to_numeric(frame["adj_factor"], errors="coerce")
+            frame["adjusted_open"] = frame["open"] * factor
+            frame["adjusted_close"] = frame["close"] * factor
+        parts.append(frame)
+    if not parts:
+        raise ValueError("earnings_drift_history_empty")
+    prices = pd.concat(parts, ignore_index=True, sort=False)
+    weights_path = (
+        root / "data" / "research" / "raw" / "a_share" / snapshot_key
+        / "index_weight.parquet"
+    )
+    if not weights_path.exists():
+        raise FileNotFoundError("earnings_drift_index_weight_missing")
+    universe = attach_point_in_time_universe(
+        prices,
+        repo_root=root,
+        market="a_share",
+        accounts=[
+            {"id": "hs300", "scope": "hs300", "benchmark": "000300.SH"},
+            {"id": "zz500", "scope": "zz500", "benchmark": "000905.SH"},
+        ],
+        as_of=snapshot_key,
+        index_weights=pd.read_parquet(weights_path),
+    )
+    if not bool(universe.metadata.get("unbiased_universe")):
+        reasons = ",".join(universe.metadata.get("quality_reasons") or [])
+        raise ValueError(f"earnings_drift_universe_unavailable:{reasons}")
+    return universe.frame
+
+
 def _write_report(result: dict[str, Any], path: Path) -> None:
     evidence = result["evidence"]
     lines = [
@@ -461,27 +544,11 @@ def run_earnings_drift_study(
         contract_file = root / contract_file
     contract = load_contract(contract_file)
     snapshot_key = _date_key(snapshot_date)
-    feature_path = ResearchStore(
-        root / "data" / "research"
-    ).feature_snapshot_path("a_share", snapshot_key)
-    if not feature_path.exists():
-        raise FileNotFoundError(
-            f"earnings_drift_feature_snapshot_missing:{snapshot_key}"
-        )
-    feature_columns = [
-        "code", "trade_date", "account_id", "open", "close",
-        "adjusted_open", "adjusted_close",
-    ]
-    available_columns = set(pq.read_schema(feature_path).names)
-    prices = pd.read_parquet(
-        feature_path,
-        columns=[
-            column for column in feature_columns if column in available_columns
-        ],
-        filters=[
-            ("trade_date", ">=", contract.development_start),
-            ("trade_date", "<=", contract.development_end),
-        ],
+    prices = build_lightweight_event_price_panel(
+        root,
+        snapshot_date=snapshot_key,
+        development_start=contract.development_start,
+        development_end=contract.development_end,
     )
     intelligence_root = root / "data" / "shared" / "intelligence"
     store = IntelligenceStore(intelligence_root)
