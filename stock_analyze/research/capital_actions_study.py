@@ -193,12 +193,9 @@ def build_return_panel(
         str(code): group for code, group in selected.groupby("code", sort=False)
     }
     rows: list[dict[str, Any]] = []
-    for (scope, code), group in working.groupby(
-        ["account_id", "code"], sort=False
-    ):
+    for code, group in working.groupby("code", sort=False):
         event_group = events_by_code.get(str(code))
-        benchmark_pair = benchmark_maps.get(str(scope))
-        if event_group is None or benchmark_pair is None:
+        if event_group is None:
             continue
         ordered = (
             group.sort_values("trade_date", kind="stable")
@@ -206,7 +203,6 @@ def build_return_panel(
             .reset_index(drop=True)
         )
         dates = ordered["trade_date"].astype(str).to_numpy()
-        benchmark_open, benchmark_close = benchmark_pair
         for _, event in event_group.iterrows():
             # Announcements are conservatively available after the close.
             entry_index = int(
@@ -215,6 +211,14 @@ def build_return_panel(
             if entry_index >= len(ordered):
                 continue
             entry_date = str(dates[entry_index])
+            scope_value = ordered.iloc[entry_index]["account_id"]
+            if pd.isna(scope_value):
+                continue
+            scope = str(scope_value)
+            benchmark_pair = benchmark_maps.get(scope)
+            if benchmark_pair is None:
+                continue
+            benchmark_open, benchmark_close = benchmark_pair
             entry_price = float(ordered.iloc[entry_index]["return_open"])
             benchmark_entry = benchmark_open.get(entry_date)
             if (
@@ -562,6 +566,7 @@ def run_capital_actions_study(
                 development_start=contract.development_start,
                 development_end=contract.development_end,
                 event_codes=set(eligible["code"].astype(str)),
+                retain_nonmembers=True,
             )
             panel = build_return_panel(
                 eligible,

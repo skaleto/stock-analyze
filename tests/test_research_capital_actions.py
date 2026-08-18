@@ -272,6 +272,50 @@ class CapitalActionsStudyTest(unittest.TestCase):
         self.assertEqual(set(panel["entry_date"]), {dates[1]})
         self.assertTrue((panel["security_return"] == 0.0).all())
 
+    def test_event_cannot_borrow_future_index_membership(self):
+        contract = relaxed_contract()
+        events = pd.DataFrame([{
+            "event_id": "e1", "family": "repurchase_completed",
+            "code": "000001", "ann_date": "20200102",
+            "eligible": True, "materiality": 0.01,
+        }])
+        dates = pd.bdate_range("2020-01-02", periods=65).strftime("%Y%m%d")
+        prices = pd.DataFrame({
+            "account_id": [pd.NA] * 20 + ["hs300"] * 45,
+            "code": "000001", "trade_date": dates,
+            "open": 1.0, "close": 1.0,
+        })
+        benchmark = pd.DataFrame({
+            "trade_date": dates, "open": 1.0, "close": 1.0,
+        })
+        panel = build_return_panel(
+            events, prices, {"hs300": benchmark}, contract
+        )
+        self.assertTrue(panel.empty)
+
+    def test_leaving_index_does_not_compress_holding_horizon(self):
+        contract = relaxed_contract()
+        events = pd.DataFrame([{
+            "event_id": "e1", "family": "repurchase_completed",
+            "code": "000001", "ann_date": "20200102",
+            "eligible": True, "materiality": 0.01,
+        }])
+        dates = pd.bdate_range("2020-01-02", periods=65).strftime("%Y%m%d")
+        prices = pd.DataFrame({
+            "account_id": [pd.NA, "hs300"] + [pd.NA] * 63,
+            "code": "000001", "trade_date": dates,
+            "open": 1.0, "close": 1.0,
+        })
+        benchmark = pd.DataFrame({
+            "trade_date": dates, "open": 1.0, "close": 1.0,
+        })
+        panel = build_return_panel(
+            events, prices, {"hs300": benchmark}, contract
+        )
+        sixty = panel.loc[panel["horizon"].eq(60)].iloc[0]
+        self.assertEqual(sixty["entry_date"], dates[1])
+        self.assertEqual(sixty["exit_date"], dates[60])
+
     def test_family_evidence_is_independent_and_cannot_be_borrowed(self):
         contract = relaxed_contract()
         enough = outcome_panel("repurchase_completed", [0.02, 0.02, 0.02])
