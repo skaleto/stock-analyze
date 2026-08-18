@@ -88,14 +88,19 @@ def _load_manifest(root: Path, start: str, end: str) -> dict[str, Any]:
     }
 
 
-def _fetch_range_pages(client: Any, start: str, end: str) -> pd.DataFrame:
+def _fetch_range_pages(
+    client: Any, start: str, end: str, *, ann_date: str | None = None
+) -> pd.DataFrame:
     pages: list[pd.DataFrame] = []
     offset = 0
     while True:
-        frame = client.share_float(
-            start_date=start, end_date=end, limit=PAGE_SIZE, offset=offset,
-            fields=FIELDS,
-        )
+        params: dict[str, Any] = {
+            "start_date": start, "end_date": end, "limit": PAGE_SIZE,
+            "offset": offset, "fields": FIELDS,
+        }
+        if ann_date is not None:
+            params["ann_date"] = ann_date
+        frame = client.share_float(**params)
         if not isinstance(frame, pd.DataFrame):
             raise TypeError("share_unlock_response")
         pages.append(frame)
@@ -105,12 +110,31 @@ def _fetch_range_pages(client: Any, start: str, end: str) -> pd.DataFrame:
     return pd.concat(pages, ignore_index=True, sort=False)
 
 
+def _fetch_day_confirmation_shards(
+    client: Any, key: str
+) -> pd.DataFrame:
+    confirmed: list[pd.DataFrame] = []
+    current = date.fromisoformat(f"{key[:4]}-{key[4:6]}-{key[6:8]}")
+    ann_current = current - timedelta(days=30)
+    while ann_current <= current:
+        ann_key = ann_current.strftime("%Y%m%d")
+        shard = _fetch_range_pages(client, key, key, ann_date=ann_key)
+        if not shard.empty:
+            confirmed.append(shard)
+        ann_current += timedelta(days=1)
+    return (
+        pd.concat(confirmed, ignore_index=True, sort=False)
+        if confirmed
+        else pd.DataFrame(columns=FIELDS.split(","))
+    )
+
+
 def _fetch_pages(client: Any, start: str, end: str) -> pd.DataFrame:
     try:
         return _fetch_range_pages(client, start, end)
     except Exception:
         if start == end:
-            raise
+            return _fetch_day_confirmation_shards(client, start)
         # Some high-volume months exceed the provider's deep-pagination
         # boundary. Fall back to natural-day queries and still persist one
         # monthly atomic partition. A failing day remains fail-closed.
@@ -120,7 +144,14 @@ def _fetch_pages(client: Any, start: str, end: str) -> pd.DataFrame:
         current = left
         while current <= right:
             key = current.strftime("%Y%m%d")
-            frame = _fetch_range_pages(client, key, key)
+            try:
+                frame = _fetch_range_pages(client, key, key)
+            except Exception:
+                # A single unlock day can itself exceed the provider's deep
+                # pagination boundary. The protocol only retains confirmations
+                # from the preceding 30 calendar days, so split that exact day
+                # by each eligible ann_date and paginate every shard.
+                frame = _fetch_day_confirmation_shards(client, key)
             if not frame.empty:
                 frames.append(frame)
             current += timedelta(days=1)
