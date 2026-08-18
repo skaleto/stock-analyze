@@ -413,6 +413,7 @@ def build_lightweight_event_price_panel(
     development_start: str,
     development_end: str,
     event_codes: set[str] | None = None,
+    retain_nonmembers: bool = False,
 ) -> pd.DataFrame:
     """Build a PIT account price panel without materializing wide features."""
 
@@ -494,6 +495,22 @@ def build_lightweight_event_price_panel(
     if not bool(universe.metadata.get("unbiased_universe")):
         reasons = ",".join(universe.metadata.get("quality_reasons") or [])
         raise ValueError(f"earnings_drift_universe_unavailable:{reasons}")
+    if retain_nonmembers:
+        # Event studies need membership only at entry. Preserve all subsequent
+        # security prices so leaving an index cannot compress the horizon.
+        memberships = universe.frame[[
+            "code", "trade_date", "account_id"
+        ]].drop_duplicates(["code", "trade_date"], keep="first")
+        complete = prices.copy()
+        complete["code"] = (
+            complete["code"].astype("string").str.split(".").str[0].str.zfill(6)
+        )
+        complete["trade_date"] = (
+            complete["trade_date"].astype("string").map(_date_key)
+        )
+        return complete.merge(
+            memberships, on=["code", "trade_date"], how="left"
+        )
     return universe.frame
 
 
