@@ -39,6 +39,68 @@ class ResearchLocalTrainingTest(unittest.TestCase):
     }
     TRAINING_FINGERPRINT = manifest_source_fingerprint(TRAINING_MANIFEST_BASE)
 
+    @staticmethod
+    def _write_qualified_snapshot(
+        repo: Path,
+        snapshot_date: str,
+        *,
+        signal: float = 1.0,
+    ) -> None:
+        store = ResearchStore(repo / "data/research")
+        store.write_feature_snapshot(
+            "a_share",
+            snapshot_date,
+            pd.DataFrame([
+                {
+                    "code": "000001",
+                    "trade_date": "20180102",
+                    "benchmark_code": "000300",
+                    "signal": signal,
+                },
+                {
+                    "code": "000001",
+                    "trade_date": snapshot_date,
+                    "benchmark_code": "000300",
+                    "signal": signal,
+                },
+            ]),
+        )
+        store.write_label_snapshot(
+            "a_share",
+            snapshot_date,
+            pd.DataFrame([
+                {
+                    "code": "000001",
+                    "trade_date": "20180102",
+                    "horizon": 3,
+                    "label_contract_version": "next-open-v3-adjusted",
+                },
+                {
+                    "code": "000001",
+                    "trade_date": snapshot_date,
+                    "horizon": 3,
+                    "label_contract_version": "next-open-v3-adjusted",
+                },
+            ]),
+        )
+        manifest = (
+            repo / "data/research/raw/a_share" / snapshot_date
+            / "materialization_manifest.json"
+        )
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(json.dumps({
+            "status": "complete",
+            "schema_version": "a-share-materialization-v1",
+            "market": "a_share",
+            "as_of": snapshot_date,
+            "start": "2018-01-01",
+            "end": (
+                f"{snapshot_date[:4]}-{snapshot_date[4:6]}-"
+                f"{snapshot_date[6:8]}"
+            ),
+            "historical_union_count": 1,
+        }), encoding="utf-8")
+
     @classmethod
     def _write_training_input_bundle(
         cls,
@@ -157,17 +219,7 @@ class ResearchLocalTrainingTest(unittest.TestCase):
                 (repo / "configs/intelligence_factors.json").write_text(
                     '{"factors":{}}', encoding="utf-8"
                 )
-            store = ResearchStore(source / "data/research")
-            store.write_feature_snapshot(
-                "a_share",
-                "2026-08-07",
-                pd.DataFrame([{"code": "000001", "trade_date": "20260807", "signal": 1.0}]),
-            )
-            store.write_label_snapshot(
-                "a_share",
-                "2026-08-07",
-                pd.DataFrame([{"code": "000001", "trade_date": "20260807", "horizon": 3, "label": "up"}]),
-            )
+            self._write_qualified_snapshot(source, "20260807")
             window_manifest = (
                 source / "data/research/baseline_first/a_share/hs300"
                 / "window_manifest.json"
@@ -193,6 +245,10 @@ class ResearchLocalTrainingTest(unittest.TestCase):
             ).is_file()
 
         self.assertEqual(manifest["kind"], "research_training_input")
+        self.assertEqual(
+            manifest["snapshot_qualification"]["contract"],
+            "full-history-training-input-v1",
+        )
         self.assertEqual(verified["status"], "verified")
         self.assertEqual(installed["status"], "installed")
         self.assertEqual(target_features.iloc[0]["code"], "000001")
@@ -208,26 +264,7 @@ class ResearchLocalTrainingTest(unittest.TestCase):
             (root / "configs/intelligence_factors.json").write_text(
                 '{"factors":{}}', encoding="utf-8"
             )
-            store = ResearchStore(root / "data/research")
-            store.write_feature_snapshot(
-                "a_share",
-                "2026-08-07",
-                pd.DataFrame([{
-                    "code": "000001",
-                    "trade_date": "20260807",
-                    "signal": 1.0,
-                }]),
-            )
-            store.write_label_snapshot(
-                "a_share",
-                "2026-08-07",
-                pd.DataFrame([{
-                    "code": "000001",
-                    "trade_date": "20260807",
-                    "horizon": 3,
-                    "label": "up",
-                }]),
-            )
+            self._write_qualified_snapshot(root, "20260807")
             destination = Path(tmp) / "bundle"
             export_training_bundle(
                 root,
@@ -235,15 +272,7 @@ class ResearchLocalTrainingTest(unittest.TestCase):
                 as_of="2026-08-07",
                 destination=destination,
             )
-            store.write_feature_snapshot(
-                "a_share",
-                "2026-08-07",
-                pd.DataFrame([{
-                    "code": "000001",
-                    "trade_date": "20260807",
-                    "signal": 2.0,
-                }]),
-            )
+            self._write_qualified_snapshot(root, "20260807", signal=2.0)
 
             with self.assertRaisesRegex(
                 ValueError,
@@ -255,6 +284,55 @@ class ResearchLocalTrainingTest(unittest.TestCase):
                     as_of="2026-08-07",
                     destination=destination,
                 )
+
+    def test_training_bundle_skips_newer_truncated_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "source"
+            (root / "configs").mkdir(parents=True)
+            (root / "configs/competition_a_share.yaml").write_text(
+                '{"competition_id":"fixture"}', encoding="utf-8"
+            )
+            (root / "configs/intelligence_factors.json").write_text(
+                '{"factors":{}}', encoding="utf-8"
+            )
+            self._write_qualified_snapshot(root, "20260807")
+            store = ResearchStore(root / "data/research")
+            store.write_feature_snapshot(
+                "a_share",
+                "2026-08-08",
+                pd.DataFrame([{
+                    "code": "000001",
+                    "trade_date": "20260808",
+                    "benchmark_code": "000300",
+                }]),
+            )
+            store.write_label_snapshot(
+                "a_share",
+                "2026-08-08",
+                pd.DataFrame([{
+                    "code": "000001",
+                    "trade_date": "20260808",
+                    "horizon": 3,
+                    "label_contract_version": "next-open-v3-adjusted",
+                }]),
+            )
+
+            manifest = export_training_bundle(
+                root,
+                market="a_share",
+                as_of="2026-08-08",
+                destination=Path(tmp) / "bundle",
+            )
+
+        self.assertEqual(manifest["snapshot_date"], "20260807")
+        self.assertEqual(
+            manifest["rejected_newer_snapshots"][0]["snapshot_date"],
+            "20260808",
+        )
+        self.assertIn(
+            "training_snapshot_history_shortfall",
+            manifest["rejected_newer_snapshots"][0]["reason"],
+        )
 
     def test_model_import_never_overwrites_same_version_active_champion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

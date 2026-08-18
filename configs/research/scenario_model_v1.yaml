@@ -1,0 +1,81 @@
+protocol: scenario-specialists-v1
+research_only: true
+formal_order_source: false
+source_start: "20180101"
+development_end: "20241231"
+historical_test_start: "20250101"
+open_historical_test: false
+random_state: 20260819
+residual_weight: 0.10
+minimum_feature_coverage: 0.70
+maximum_features: 8
+minimum_scene_training_dates: 120
+forbidden_feature_prefixes: [event_, announcement_, policy_, news_, earnings_, buyback_, shareholder_, contract_, corporate_action_, legal_, delisting_, capital_structure_]
+
+outer_folds:
+  - {train_start: "20180101", train_end: "20201231", validation_start: "20210101", validation_end: "20211231"}
+  - {train_start: "20180101", train_end: "20211231", validation_start: "20220101", validation_end: "20221231"}
+  - {train_start: "20180101", train_end: "20221231", validation_start: "20230101", validation_end: "20231231"}
+  - {train_start: "20180101", train_end: "20231231", validation_start: "20240101", validation_end: "20241231"}
+
+router:
+  contract: trailing-observables-v1
+  trailing_sessions: 252
+  minimum_history_sessions: 60
+  high_volatility_quantile: 0.70
+  expansion_breadth_floor: 0.55
+  stress_breadth_ceiling: 0.45
+  scenes: [expansion, range, stress]
+  precedence: [stress, expansion, range]
+
+model:
+  estimator: elastic_net
+  parameters: {alpha: 0.001, l1_ratio: 0.25}
+  target: raw_excess_return
+  ablations: [transparent_reference, router_only, pooled_residual, scenario_specialists]
+
+gates:
+  expected_outer_folds: 4
+  minimum_scene_share: 0.05
+  minimum_candidate_net_excess_return: 0.0
+  minimum_aggregate_delta_vs_reference: 0.01
+  minimum_aggregate_delta_vs_router: 0.005
+  minimum_aggregate_delta_vs_pooled: 0.005
+  minimum_positive_folds_vs_reference: 3
+  minimum_positive_folds_vs_router: 3
+  minimum_positive_folds_vs_pooled: 3
+  maximum_drawdown_delta_vs_reference: 0.02
+  maximum_turnover_ratio_vs_reference: 1.10
+  minimum_rank_ic: 0.0
+  require_all_scenes_fitted: true
+  require_point_in_time_audit: true
+
+scopes:
+  hs300:
+    market: a_share
+    horizon: 20
+    baseline_spec_id: A_MOM_02
+    rebalance_frequency: monthly
+    exposure: {expansion: 1.00, range: 0.75, stress: 0.25}
+    features: [momentum_20, momentum_60, momentum_120, sma_distance_200, account_low_volatility_percentile, account_liquidity_percentile, account_quality_percentile, realized_volatility_20]
+  zz500:
+    market: a_share
+    horizon: 20
+    baseline_spec_id: A_MOM_02
+    rebalance_frequency: monthly
+    exposure: {expansion: 1.00, range: 0.65, stress: 0.20}
+    features: [momentum_20, momentum_60, momentum_120, sma_distance_200, account_low_volatility_percentile, account_liquidity_percentile, account_quality_percentile, realized_volatility_20]
+  hk_exposure:
+    market: cn_qdii_etf
+    horizon: 10
+    baseline_spec_id: Q_TRACK_02
+    rebalance_frequency: weekly
+    exposure: {expansion: 0.85, range: 0.60, stress: 0.00}
+    features: [nav_momentum_20, account_residual_momentum_20, account_residual_momentum_60, sma_distance_200, natr_14, discount_premium, tracking_error_20, global_index_momentum]
+  us_exposure:
+    market: cn_qdii_etf
+    horizon: 10
+    baseline_spec_id: Q_TRACK_01
+    rebalance_frequency: weekly
+    exposure: {expansion: 0.98, range: 0.70, stress: 0.20}
+    features: [nav_momentum_20, account_residual_momentum_20, account_residual_momentum_60, sma_distance_200, natr_14, discount_premium, tracking_error_20, global_index_momentum]

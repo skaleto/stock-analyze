@@ -7,9 +7,11 @@ import json
 import os
 import shutil
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+import pyarrow.parquet as pq
 
 from ..utils import write_text_atomic
 from .storage import ResearchStore
@@ -51,6 +53,171 @@ def _safe_relative(raw: str) -> Path:
     if value.is_absolute() or ".." in value.parts or not value.parts:
         raise ValueError("transfer_bundle_path_invalid")
     return value
+
+
+def _date_key(value: object) -> str:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    return str(value or "").replace("-", "")[:8]
+
+
+def _parquet_date_bounds(path: Path, column: str) -> tuple[str, str]:
+    parquet = pq.ParquetFile(path)
+    names = parquet.schema_arrow.names
+    if column not in names:
+        raise ValueError(f"training_snapshot_column_missing:{path.name}:{column}")
+    column_index = names.index(column)
+    minimums: list[str] = []
+    maximums: list[str] = []
+    for index in range(parquet.metadata.num_row_groups):
+        statistics = parquet.metadata.row_group(index).column(column_index).statistics
+        if statistics is None or not statistics.has_min_max:
+            minimums = []
+            maximums = []
+            break
+        minimums.append(_date_key(statistics.min))
+        maximums.append(_date_key(statistics.max))
+    if not minimums or not maximums:
+        values = [
+            _date_key(value.as_py())
+            for value in pq.read_table(path, columns=[column]).column(0)
+        ]
+        minimums = values
+        maximums = values
+    valid_minimums = [value for value in minimums if len(value) == 8]
+    valid_maximums = [value for value in maximums if len(value) == 8]
+    if not valid_minimums or not valid_maximums:
+        raise ValueError(f"training_snapshot_date_bounds:{path.name}:{column}")
+    return min(valid_minimums), max(valid_maximums)
+
+
+def _snapshot_dates(repo: Path, market: str, *, as_of: str) -> list[str]:
+    cutoff = _date_key(as_of)
+    features = {
+        path.stem
+        for path in (repo / "data/research/features" / market).glob("*.parquet")
+        if path.stem.isdigit() and path.stem <= cutoff
+    }
+    labels = {
+        path.stem
+        for path in (repo / "data/research/labels" / market).glob("*.parquet")
+        if path.stem.isdigit() and path.stem <= cutoff
+    }
+    return sorted(features.intersection(labels), reverse=True)
+
+
+def _qualify_training_snapshot(
+    repo: Path,
+    *,
+    market: str,
+    snapshot_date: str,
+) -> tuple[dict[str, Any], list[Path]]:
+    """Require a complete 2018+ feature panel before local model fitting."""
+
+    feature_path = repo / "data/research/features" / market / f"{snapshot_date}.parquet"
+    label_path = repo / "data/research/labels" / market / f"{snapshot_date}.parquet"
+    feature_schema = set(pq.ParquetFile(feature_path).schema_arrow.names)
+    label_schema = set(pq.ParquetFile(label_path).schema_arrow.names)
+    missing_features = sorted(
+        {"code", "trade_date", "benchmark_code"}.difference(feature_schema)
+    )
+    missing_labels = sorted(
+        {"code", "trade_date", "horizon", "label_contract_version"}
+        .difference(label_schema)
+    )
+    if missing_features or missing_labels:
+        raise ValueError(
+            "training_snapshot_schema:"
+            f"features={','.join(missing_features) or 'ok'}:"
+            f"labels={','.join(missing_labels) or 'ok'}"
+        )
+
+    feature_start, feature_end = _parquet_date_bounds(feature_path, "trade_date")
+    required_start = "20180101"
+    start_limit = (
+        datetime.strptime(required_start, "%Y%m%d") + timedelta(days=7)
+    ).strftime("%Y%m%d")
+    if feature_start > start_limit:
+        raise ValueError(
+            "training_snapshot_history_shortfall:"
+            f"required={required_start}:observed={feature_start}"
+        )
+    if feature_end < str(snapshot_date):
+        raise ValueError(
+            "training_snapshot_end_shortfall:"
+            f"required={snapshot_date}:observed={feature_end}"
+        )
+
+    provenance: list[Path] = []
+    materialization: dict[str, Any] | None = None
+    if market == "a_share":
+        materialization_path = (
+            repo / "data/research/raw/a_share" / snapshot_date
+            / "materialization_manifest.json"
+        )
+        try:
+            materialization = json.loads(
+                materialization_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"training_snapshot_materialization_missing:{snapshot_date}"
+            ) from exc
+        if (
+            materialization.get("status") != "complete"
+            or materialization.get("schema_version")
+            != "a-share-materialization-v1"
+            or materialization.get("market") != "a_share"
+            or _date_key(materialization.get("as_of")) != snapshot_date
+            or _date_key(materialization.get("start")) > required_start
+            or _date_key(materialization.get("end")) < snapshot_date
+            or int(materialization.get("historical_union_count") or 0) <= 0
+        ):
+            raise ValueError(
+                f"training_snapshot_materialization_invalid:{snapshot_date}"
+            )
+        provenance.append(materialization_path)
+
+    qualification = {
+        "contract": "full-history-training-input-v1",
+        "required_start": required_start,
+        "feature_start": feature_start,
+        "feature_end": feature_end,
+        "feature_rows": int(pq.ParquetFile(feature_path).metadata.num_rows),
+        "label_rows": int(pq.ParquetFile(label_path).metadata.num_rows),
+        "materialization_manifest": (
+            str(provenance[0].relative_to(repo)) if provenance else None
+        ),
+        "historical_union_count": (
+            int(materialization.get("historical_union_count") or 0)
+            if materialization else None
+        ),
+    }
+    return qualification, provenance
+
+
+def select_training_snapshot(
+    repo: Path,
+    *,
+    market: str,
+    as_of: str,
+) -> tuple[str, dict[str, Any], list[Path], list[dict[str, str]]]:
+    rejected: list[dict[str, str]] = []
+    for snapshot_date in _snapshot_dates(repo, market, as_of=as_of):
+        try:
+            qualification, provenance = _qualify_training_snapshot(
+                repo, market=market, snapshot_date=snapshot_date
+            )
+        except ValueError as exc:
+            rejected.append({"snapshot_date": snapshot_date, "reason": str(exc)})
+            continue
+        return snapshot_date, qualification, provenance, rejected
+    raise ValueError(
+        f"training_bundle_full_history_snapshot_missing:{market}:"
+        + ";".join(
+            f"{item['snapshot_date']}={item['reason']}" for item in rejected
+        )
+    )
 
 
 def _copy_atomic(source: Path, destination: Path) -> None:
@@ -112,10 +279,16 @@ def export_training_bundle(
     bundle = Path(destination)
     manifest_path = bundle / "manifest.json"
     store = ResearchStore(repo / "data" / "research")
-    snapshot_date = store.latest_common_snapshot_date(market, as_of=as_of)
+    (
+        snapshot_date,
+        snapshot_qualification,
+        qualification_sources,
+        rejected_snapshots,
+    ) = select_training_snapshot(repo, market=market, as_of=as_of)
     sources = [
         store.feature_snapshot_path(market, snapshot_date),
         store.label_snapshot_path(market, snapshot_date),
+        *qualification_sources,
     ]
     competition_name = (
         "competition_a_share.yaml"
@@ -162,6 +335,8 @@ def export_training_bundle(
         "market": str(market),
         "as_of": str(as_of),
         "snapshot_date": snapshot_date,
+        "snapshot_qualification": snapshot_qualification,
+        "rejected_newer_snapshots": rejected_snapshots,
         "read_only_input": True,
         "files": source_files,
     }
