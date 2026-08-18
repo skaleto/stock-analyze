@@ -545,6 +545,17 @@ def build_parser() -> argparse.ArgumentParser:
     share_unlock_backfill.add_argument("--end-date", default="2024-12-31")
     share_unlock_backfill.add_argument("--max-partitions", type=int, default=None)
 
+    dividend_growth_backfill = sub.add_parser(
+        "backfill-structured-dividends",
+        help="Backfill resumable implemented annual-dividend partitions.",
+    )
+    dividend_growth_backfill.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    dividend_growth_backfill.add_argument("--start-date", default="2018-01-01")
+    dividend_growth_backfill.add_argument("--end-date", default="2024-12-31")
+    dividend_growth_backfill.add_argument("--max-partitions", type=int, default=None)
+
     tournament = sub.add_parser(
         "run-classical-tournament",
         help="Run one sealed account-scoped classical model tournament.",
@@ -759,6 +770,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("configs/research/share_unlock_avoidance_study.yaml"),
     )
     share_unlock.add_argument(
+        "--output-root", type=Path, default=Path("reports/research")
+    )
+
+    dividend_growth = sub.add_parser(
+        "run-dividend-growth-study",
+        help="Run the preregistered annual cash-dividend growth study.",
+    )
+    dividend_growth.add_argument("--repo-root", type=Path, default=Path("."))
+    dividend_growth.add_argument("--snapshot-date", required=True)
+    dividend_growth.add_argument(
+        "--contract", type=Path,
+        default=Path("configs/research/dividend_growth_study.yaml"),
+    )
+    dividend_growth.add_argument(
         "--output-root", type=Path, default=Path("reports/research")
     )
 
@@ -1562,6 +1587,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "backfill-structured-share-unlocks":
         ensure_dirs(args.logs_dir)
         return _command_backfill_structured_share_unlocks(args)
+    if args.command == "backfill-structured-dividends":
+        ensure_dirs(args.logs_dir)
+        return _command_backfill_structured_dividends(args)
     if args.command == "backtest":
         ensure_dirs(args.logs_dir)
         return _command_backtest(args)
@@ -1629,6 +1657,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run-share-unlock-avoidance-study":
         ensure_dirs(args.logs_dir)
         return _command_share_unlock_avoidance_study(args)
+    if args.command == "run-dividend-growth-study":
+        ensure_dirs(args.logs_dir)
+        return _command_dividend_growth_study(args)
     if args.command in {
         "research-training-bundle-export",
         "research-training-bundle-import",
@@ -2328,6 +2359,49 @@ def _command_backfill_structured_share_unlocks(
         if not hasattr(adapter, "client"):
             raise ValueError("share_unlock_tushare_unavailable")
         result = run_share_unlock_backfill(
+            args.repo_root, adapter.client, start_date=args.start_date,
+            end_date=args.end_date, max_partitions=args.max_partitions,
+        )
+    except Exception as exc:  # noqa: BLE001 - typed provider boundary
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def _command_dividend_growth_study(args: argparse.Namespace) -> int:
+    from .research.dividend_growth_study import run_dividend_growth_study
+
+    try:
+        result = run_dividend_growth_study(
+            args.repo_root, snapshot_date=args.snapshot_date,
+            contract_path=args.contract, output_root=args.output_root,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def _command_backfill_structured_dividends(
+    args: argparse.Namespace,
+) -> int:
+    from .intelligence.source_registry import build_adapters
+    from .research.dividend_growth_backfill import run_dividend_growth_backfill
+
+    try:
+        adapters = build_adapters(
+            args.repo_root,
+            Path(args.repo_root) / "configs" / "intelligence_sources.yaml",
+        )
+        adapter = next(
+            item for item in adapters
+            if getattr(item, "source", "") == "tushare_announcement"
+        )
+        if not hasattr(adapter, "client"):
+            raise ValueError("dividend_growth_tushare_unavailable")
+        result = run_dividend_growth_backfill(
             args.repo_root, adapter.client, start_date=args.start_date,
             end_date=args.end_date, max_partitions=args.max_partitions,
         )
