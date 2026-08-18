@@ -10,10 +10,13 @@ quality audit proved that all four had entered under the retired
 quality gate. They were backed up and rejected. No model is now Active or
 Shadow, and no model is used by the formal paper accounts.
 
-One missing evaluation is being completed without changing the frozen protocol:
-the ZZ500 scope under `full-history-rebuild-v1`. HS300, QDII Hong Kong exposure,
-and QDII US exposure already have complete 2018-2024 development evaluations.
-All three returned `no_pass`.
+HS300, QDII Hong Kong exposure, and QDII US exposure have complete 2018-2024
+`full-history-rebuild-v1` development evaluations; all three returned `no_pass`.
+The older multi-family ZZ500 run was still inside CatBoost inner selection after
+more than 90 minutes and had produced no result or model. It was terminated as
+redundant after the subsequently authorized, more directly controlled ZZ500
+scenario experiment completed its four same-window ablations and returned
+`no_pass`.
 
 ## Asset inventory
 
@@ -44,8 +47,8 @@ bundle was exported to Shadow.
 | US exposure | -3.58 percentage points | 0/3 | baseline wins |
 
 The A-share bundle used a feature snapshot beginning in July 2023, so it is not
-the final full-history evidence. A separate `full-history-rebuild-v1` campaign
-used the materialized 2018 history and is the controlling evidence below.
+the final full-history evidence. The complete 2018 materialization is used by the
+full-history and later scenario evidence below.
 
 ## Full-history frozen-protocol evidence
 
@@ -58,7 +61,7 @@ observing results.
 | HS300 | Elastic Net | -0.0236 | -0.1155 | -9.66% | 60.93% | 34.86x | no pass |
 | HK exposure | Additive | -0.0120 | -0.0225 | -8.32% | 56.06% | 17.02x | no pass |
 | US exposure | Additive | -0.0164 | -0.0331 | -15.12% | 49.84% | 8.99x | no pass |
-| ZZ500 | frozen run pending at review start | — | — | — | — | — | complete once, do not iterate |
+| ZZ500 | old multi-family run terminated before result | — | — | — | — | — | superseded by completed controlled scenario ablation |
 
 These failures are not close enough to be repaired by appending several recent
 sessions. The training/development window ends at 2024-12-31, so new 2026 rows
