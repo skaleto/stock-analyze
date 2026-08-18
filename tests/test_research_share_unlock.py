@@ -51,6 +51,27 @@ class MonthlyFailDailyClient:
         )
 
 
+class DayFailAnnShardClient:
+    def __init__(self):
+        self.calls = []
+
+    def share_float(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        if kwargs["start_date"] != kwargs["end_date"]:
+            raise ValueError("month_too_large")
+        if "ann_date" not in kwargs:
+            raise ValueError("day_too_large")
+        rows = (
+            [unlock_row(
+                kwargs["ann_date"], kwargs["start_date"], 10, 1.0
+            )]
+            if kwargs["ann_date"] == kwargs["start_date"] else []
+        )
+        return pd.DataFrame(
+            rows, columns=["ts_code","ann_date","float_date","float_share","float_ratio","holder_name","share_type"]
+        )
+
+
 def unlock_row(ann, floating, shares, ratio, holder="A", share_type="定增股份", code="000001.SZ"):
     return {"ts_code":code,"ann_date":ann,"float_date":floating,"float_share":shares,"float_ratio":ratio,"holder_name":holder,"share_type":share_type}
 
@@ -73,6 +94,16 @@ class ShareUnlockBackfillTest(unittest.TestCase):
         self.assertEqual(frame.iloc[0]["float_date"], "20200102")
         self.assertEqual(client.calls[0], ("20200101", "20200103", 0))
         self.assertIn(("20200102", "20200102", 0), client.calls)
+
+    def test_oversized_day_falls_back_to_confirmation_date_shards(self):
+        client = DayFailAnnShardClient()
+        frame = _fetch_pages(client, "20200131", "20200131")
+        self.assertEqual(len(frame), 1)
+        self.assertEqual(frame.iloc[0]["ann_date"], "20200131")
+        shard_calls = [call for call in client.calls if "ann_date" in call]
+        self.assertEqual(len(shard_calls), 31)
+        self.assertEqual(shard_calls[0]["ann_date"], "20200101")
+        self.assertEqual(shard_calls[-1]["ann_date"], "20200131")
 
     def test_latest_confirmation_replaces_old_snapshot_and_stale_plan(self):
         rows = [
