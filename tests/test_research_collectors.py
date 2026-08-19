@@ -72,6 +72,10 @@ class ResearchCollectorTest(unittest.TestCase):
         self.assertEqual(set(result.frames), {"fund_nav", "fund_share", "index_global", "fx_daily"})
         self.assertEqual(result.frames["fund_nav"].iloc[0]["ts_code"], "513100.SH")
         self.assertTrue(all("observed_at" in frame.columns for frame in result.frames.values()))
+        self.assertEqual(
+            [row["ts_code"] for row in pro.kwargs_by_name["index_global"]],
+            ["SPX", "IXIC", "DJI", "HSI"],
+        )
 
 
 if __name__ == "__main__":

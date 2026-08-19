@@ -808,6 +808,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     block_trade.add_argument("--output-root", type=Path, default=Path("reports/research"))
 
+    qdii_global_backfill = sub.add_parser(
+        "backfill-qdii-global-context",
+        help="Backfill checksummed 2018+ QDII global-index and USD/CNH context.",
+    )
+    qdii_global_backfill.add_argument("--repo-root", type=Path, default=Path("."))
+    qdii_global_backfill.add_argument("--start-date", default="2018-01-01")
+    qdii_global_backfill.add_argument("--end-date", required=True)
+    qdii_global_backfill.add_argument(
+        "--contract", type=Path,
+        default=Path("configs/research/qdii_global_context_v1.yaml"),
+    )
+    qdii_global_repair = sub.add_parser(
+        "repair-qdii-global-context",
+        help="Repair only global PIT context columns in one QDII feature snapshot.",
+    )
+    qdii_global_repair.add_argument("--repo-root", type=Path, default=Path("."))
+    qdii_global_repair.add_argument("--snapshot-date", required=True)
+    qdii_global_repair.add_argument(
+        "--contract", type=Path,
+        default=Path("configs/research/qdii_global_context_v1.yaml"),
+    )
+
     training_bundle_export = sub.add_parser(
         "research-training-bundle-export",
         help="Export checksummed research snapshots for local CPU training.",
@@ -1705,6 +1727,12 @@ def main(argv: list[str] | None = None) -> int:
         ensure_dirs(args.logs_dir)
         return _command_block_trade_premium_study(args)
     if args.command in {
+        "backfill-qdii-global-context",
+        "repair-qdii-global-context",
+    }:
+        ensure_dirs(args.logs_dir)
+        return _command_qdii_global_context(args)
+    if args.command in {
         "research-training-bundle-export",
         "research-training-bundle-import",
         "research-model-bundle-export",
@@ -2468,6 +2496,46 @@ def _command_block_trade_premium_study(args: argparse.Namespace) -> int:
             contract_path=args.contract, output_root=args.output_root,
         )
     except (OSError, ValueError) as exc:
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def _command_qdii_global_context(args: argparse.Namespace) -> int:
+    from .research.qdii_global_context import (
+        backfill_global_context,
+        repair_feature_snapshot,
+    )
+
+    try:
+        if args.command == "repair-qdii-global-context":
+            result = repair_feature_snapshot(
+                args.repo_root,
+                snapshot_date=args.snapshot_date,
+                contract_path=args.contract,
+            )
+        else:
+            from .markets.cn_qdii_etf.data_provider import make_provider
+
+            provider = make_provider(
+                cache_dir=Path(args.repo_root)
+                / "data/cn_qdii_etf/shared/cache",
+                offline=False,
+                as_of=args.end_date,
+                history_start=args.start_date,
+            )
+            try:
+                result = backfill_global_context(
+                    args.repo_root,
+                    provider.pro,
+                    start_date=args.start_date,
+                    end_date=args.end_date,
+                    contract_path=args.contract,
+                )
+            finally:
+                provider.persist_health()
+    except Exception as exc:  # noqa: BLE001 - typed provider/data gate
         print(f"error: {args.command} failed: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))

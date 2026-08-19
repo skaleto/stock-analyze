@@ -204,7 +204,7 @@ class CNQDIETFProvider:
             "fund_share": [lambda code=code: self._fund_share(self.resolve_ts_code(code), as_of_key) for code in codes],
             "index_global": [
                 lambda code=code: self.pro.index_global(ts_code=code, start_date=start_key, end_date=as_of_key)
-                for code in ("SPX", "IXIC", "HSI")
+                for code in ("SPX", "IXIC", "DJI", "HSI")
             ],
             "fx_daily": [lambda: self.pro.fx_daily(ts_code="USDCNH.FXCM", start_date=start_key, end_date=as_of_key)],
         }

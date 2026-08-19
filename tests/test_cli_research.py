@@ -109,6 +109,21 @@ class CLIResearchTest(unittest.TestCase):
             self.assertEqual(args.command, command)
             self.assertTrue(args.offline)
 
+    def test_parser_accepts_qdii_global_context_commands(self):
+        parser = build_parser()
+        backfill = parser.parse_args([
+            "backfill-qdii-global-context",
+            "--end-date", "2026-08-18",
+        ])
+        repair = parser.parse_args([
+            "repair-qdii-global-context",
+            "--snapshot-date", "20260814",
+        ])
+
+        self.assertEqual(backfill.start_date, "2018-01-01")
+        self.assertEqual(backfill.end_date, "2026-08-18")
+        self.assertEqual(repair.snapshot_date, "20260814")
+
     def test_cli_dispatches_strategy_recovery_campaign(self):
         with tempfile.TemporaryDirectory() as tmp, patch(
             "stock_analyze.research.strategy_campaign.run_strategy_campaign",

@@ -742,6 +742,22 @@ class ResearchPipeline:
                 )
             )
             source_count = sum(not frame.empty for frame in source_frames.values())
+        if self.market == "cn_qdii_etf":
+            from .qdii_global_context import load_verified_global_context
+
+            try:
+                verified_context = load_verified_global_context(
+                    self.repo_root,
+                    contract_path=(
+                        self.repo_root
+                        / "configs/research/qdii_global_context_v1.yaml"
+                    ),
+                    as_of=self.as_of,
+                )
+            except ValueError:
+                verified_context = {}
+            if verified_context:
+                source_frames = {**source_frames, **verified_context}
         universe = None
         if self.market == "a_share":
             universe = attach_point_in_time_universe(
@@ -793,6 +809,21 @@ class ResearchPipeline:
                 )
         if self.market == "cn_qdii_etf":
             featured = self._attach_qdii_metadata(featured)
+            from .qdii_global_context import attach_global_context, load_contract
+
+            context_frames = {
+                name: source_frames.get(name, pd.DataFrame())
+                for name in ("index_global", "fx_daily")
+            }
+            if all(not frame.empty for frame in context_frames.values()):
+                featured = attach_global_context(
+                    featured,
+                    context_frames,
+                    contract=load_contract(
+                        self.repo_root
+                        / "configs/research/qdii_global_context_v1.yaml"
+                    ),
+                )
         if universe is None:
             universe = attach_point_in_time_universe(
                 featured,
@@ -1112,6 +1143,7 @@ class ResearchPipeline:
                 cache_dir=self._cache_dir(),
                 offline=False,
                 as_of=self.as_of,
+                history_start="20180101",
             )
             return provider.collect_research_sources(codes)
 
