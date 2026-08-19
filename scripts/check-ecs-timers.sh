@@ -130,6 +130,34 @@ for unit in "${health_services[@]}"; do
 done
 echo "OK: orchestration, research, model, and summary services have no recorded failure."
 
+# A successful service wrapper is not enough: all four challenger account
+# statuses must be terminal-complete on the same production snapshot.
+app_dir="${SA_ECS_APP_DIR:-/opt/stock-analyze/app}"
+challenger_status="$app_dir/data/research/paper_portfolios/current_status.json"
+if [[ -f "$challenger_status" ]]; then
+  python3 - "$challenger_status" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+rows = payload.get("accounts") or []
+expected = {"hs300", "zz500", "hk_exposure", "us_exposure"}
+observed = {str(row.get("account_id") or "") for row in rows}
+if payload.get("status") != "complete" or observed != expected:
+    raise SystemExit(
+        f"paper challenger aggregate invalid: status={payload.get('status')} "
+        f"accounts={sorted(observed)}"
+    )
+failed = [row for row in rows if row.get("status") != "complete"]
+if failed:
+    raise SystemExit(f"paper challenger accounts failed: {failed}")
+print("OK: four isolated production paper challengers are terminal-complete.")
+PY
+else
+  echo "INFO: four-account challenger status not created yet."
+fi
+
 # -------- ledger consistency check --------
 # For each (agent, cadence), compare the most recent service `Finished` event
 # (from journalctl, restricted to systemd-generated lines) against the most
@@ -140,7 +168,6 @@ echo "OK: orchestration, research, model, and summary services have no recorded 
 echo ""
 echo "Checking service-vs-runs.csv ledger consistency (last 7 days)..."
 
-app_dir="${SA_ECS_APP_DIR:-/opt/stock-analyze/app}"
 drift=0
 
 check_service_ledger() {

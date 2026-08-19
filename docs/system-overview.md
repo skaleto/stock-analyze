@@ -256,3 +256,28 @@ Dashboard 和 ECS 实时记录为准；本文负责解释系统结构和操作�
 
 公告子系统的日常操作见
 [公告情报运维手册](announcement-intelligence-runbook.md)。
+
+## Four-account production paper challengers (2026-08-20)
+
+`production-paper-challengers-v1` is an isolated forward paper suite, not a
+formal-strategy or Registry activation. It runs four independent versioned
+`PortfolioStore` accounts after the formal daily finalizer:
+
+| Account | Frozen source | Evidence label |
+|---|---|---|
+| HS300 | long-only adjusted-price 20-session breakout / 10-session exit | `transparent_challenger` |
+| ZZ500 | same rule family and parameters as HS300 | `transparent_challenger` |
+| QDII HK | `Q_TRACK_02` Router plus 10% three-scene ElasticNet residual | `qualified_candidate` |
+| QDII US | `Q_TRACK_01` plus the transparent three-scene Router | `transparent_challenger` |
+
+Each account has isolated state, pending orders, signals, positions, trades,
+NAV, run ledger, status, strategy provenance and source hashes under
+`data/research/paper_portfolios/`. The HK fitted artifact is checksummed under
+`data/research/paper_artifacts/`. Formal `claude`/`codex` files and model
+Registry files are not readers or writers of this runtime.
+
+The production contract requires the signal date to equal the immutable feature
+snapshot date, validates minimum current universe counts and feature coverage,
+then executes only at the next market open using existing market simulators and
+configured costs. Incomplete inputs fail closed. A 20% per-account drawdown
+triggers the frozen liquidation-to-cash stop.

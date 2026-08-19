@@ -340,3 +340,13 @@ curl -fsS http://127.0.0.1:8765/api/dashboard/summary.json
 公告元数据、PDF/OCR、统一语义抽取、事件隔离和容量操作见
 [公告情报运维手册](announcement-intelligence-runbook.md)。公告新因子保持
 `observing`，未通过门禁前不进入正式竞赛决策。
+
+## Isolated four-account forward challenge
+
+The production paper challenge group is outside the two formal competition
+strategies. Its four IDs, evidence labels, initial cash, rule/model provenance,
+exact costs, and stop rules are frozen in
+`configs/research/production_paper_challengers_v1.yaml`. Do not copy its orders,
+positions, NAV, or results into `claude`/`codex`, and do not call a transparent
+challenger a validated model. Forward observations may support a later,
+separately authorized Active decision; they do not automatically promote one.

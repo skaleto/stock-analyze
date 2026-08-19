@@ -1132,6 +1132,9 @@ def run_shadow_cycle(
     run_id: str,
     name_lookup: Mapping[str, str] | None = None,
     account_contracts: Mapping[str, Mapping[str, Any]] | None = None,
+    settle: bool = True,
+    preexecuted_trades: list[dict[str, Any]] | None = None,
+    prenav_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Execute one isolated ML-prediction or transparent-rule paper cycle."""
 
@@ -1190,19 +1193,25 @@ def run_shadow_cycle(
     if not store.state_path.exists():
         market_module.initialize(config, store)
 
-    trades = market_module.execute_due_orders(
-        config,
-        store,
-        provider,
-        as_of=as_of,
-    )
-    nav_rows = market_module.update_nav(
-        config,
-        store,
-        provider,
-        as_of=as_of,
-        notes=f"model shadow; trades={len(trades)}",
-    )
+    if settle:
+        trades = market_module.execute_due_orders(
+            config,
+            store,
+            provider,
+            as_of=as_of,
+        )
+        nav_rows = market_module.update_nav(
+            config,
+            store,
+            provider,
+            as_of=as_of,
+            notes=f"model shadow; trades={len(trades)}",
+        )
+    else:
+        if preexecuted_trades is None or prenav_rows is None:
+            raise ValueError("model_iteration_preexecuted_settlement_missing")
+        trades = list(preexecuted_trades)
+        nav_rows = list(prenav_rows)
     candidates, diagnostics = (
         build_rule_candidates(predictions, profile)
         if decision_mode == "transparent_rule"

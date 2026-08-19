@@ -56,6 +56,8 @@ class CheckEcsTimersScriptTests(unittest.TestCase):
         self.assertIn('"$exit_status" == "75"', script)
         self.assertIn("four formal daily ledgers were not complete", script)
         self.assertIn("bounded-work guard", script)
+        self.assertIn("paper_portfolios/current_status.json", script)
+        self.assertIn("four isolated production paper challengers", script)
 
     def test_reconcile_timer_is_required_but_backfill_remains_manual(self) -> None:
         script = Path("scripts/check-ecs-timers.sh").read_text(encoding="utf-8")

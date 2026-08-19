@@ -898,6 +898,31 @@ def build_parser() -> argparse.ArgumentParser:
         )
         model_iteration.add_argument("--repo-root", type=Path, default=Path("."))
 
+    paper_candidates = sub.add_parser(
+        "run-paper-candidates",
+        help="Run the four isolated production paper challengers.",
+    )
+    paper_candidates.add_argument("--repo-root", type=Path, default=Path("."))
+    paper_candidates.add_argument(
+        "--contract", type=Path,
+        default=Path("configs/research/production_paper_challengers_v1.yaml"),
+    )
+    paper_candidates.add_argument(
+        "--scope", choices=["all", "a_share", "cn_qdii_etf"], default="all"
+    )
+    paper_candidates.add_argument("--offline", action="store_true")
+
+    freeze_paper_candidate = sub.add_parser(
+        "freeze-hk-paper-candidate",
+        help="Fit and serialize the already-qualified HK scenario artifact once.",
+    )
+    freeze_paper_candidate.add_argument("--repo-root", type=Path, default=Path("."))
+    freeze_paper_candidate.add_argument(
+        "--contract", type=Path,
+        default=Path("configs/research/production_paper_challengers_v1.yaml"),
+    )
+    freeze_paper_candidate.add_argument("--force", action="store_true")
+
     shadow_admission = sub.add_parser(
         "admit-personal-quant-shadow",
         help="Freeze and register one transparent-rule Shadow candidate per market.",
@@ -1757,6 +1782,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in {"run-model-iteration", "run-model-shadow"}:
         ensure_dirs(args.logs_dir)
         return _command_run_model_iteration(args)
+    if args.command == "run-paper-candidates":
+        ensure_dirs(args.logs_dir)
+        return _command_run_paper_candidates(args)
+    if args.command == "freeze-hk-paper-candidate":
+        ensure_dirs(args.logs_dir)
+        return _command_freeze_hk_paper_candidate(args)
     if args.command == "admit-personal-quant-shadow":
         ensure_dirs(args.logs_dir)
         return _command_admit_personal_quant_shadow(args)
@@ -2606,6 +2637,35 @@ def _command_run_model_iteration(args: argparse.Namespace) -> int:
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if str(result.get("status") or "") in {"complete", "no_candidate"} else 2
+
+
+def _command_run_paper_candidates(args: argparse.Namespace) -> int:
+    from .research.paper_candidate_runtime import run_production_paper_challengers
+
+    try:
+        result = run_production_paper_challengers(
+            args.repo_root, contract_path=args.contract, markets=args.scope,
+            as_of=args.as_of, offline=bool(args.offline),
+        )
+    except Exception as exc:  # noqa: BLE001 - bounded secret-free CLI boundary
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0 if result.get("status") == "complete" else 2
+
+
+def _command_freeze_hk_paper_candidate(args: argparse.Namespace) -> int:
+    from .research.paper_candidate_runtime import freeze_hk_candidate_artifact
+
+    try:
+        result = freeze_hk_candidate_artifact(
+            args.repo_root, contract_path=args.contract, force=bool(args.force),
+        )
+    except Exception as exc:  # noqa: BLE001 - bounded secret-free CLI boundary
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0
 
 
 def _command_admit_personal_quant_shadow(args: argparse.Namespace) -> int:

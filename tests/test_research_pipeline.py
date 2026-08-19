@@ -3356,6 +3356,30 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertTrue(selected[0].name.endswith("_1098.csv"))
 
+    def test_a_share_cache_selection_prefers_newer_date_before_longer_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_history(root, rows=80, code="000001")
+            cache = root / "data" / "shared" / "cache"
+            stale = cache / "history_000001_20260709_1098.csv"
+            stale.write_text(
+                (cache / "history_000001_20260710_1098.csv").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            current = cache / "history_000001_20260710_220.csv"
+            current.write_text(
+                (cache / "history_000001_20260710_1098.csv").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            (cache / "history_000001_20260710_1098.csv").unlink()
+            pipeline = ResearchPipeline(
+                root, market="a_share", agent="codex", as_of="2026-07-10"
+            )
+
+            selected = pipeline._history_files()
+
+        self.assertEqual([path.name for path in selected], [current.name])
+
     def test_a_share_materialization_marker_blocks_history_consumption(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
