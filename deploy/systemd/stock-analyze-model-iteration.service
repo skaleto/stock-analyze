@@ -12,7 +12,7 @@ Environment=OMP_NUM_THREADS=1
 Environment=OPENBLAS_NUM_THREADS=1
 Environment=MKL_NUM_THREADS=1
 Environment=NUMEXPR_NUM_THREADS=1
-ExecStart=/usr/bin/flock --nonblock /run/stock-analyze-model-iteration.lock /bin/bash -lc 'set +e; result=0; for market in a_share cn_qdii_etf; do /opt/stock-analyze/venv/bin/python -m stock_analyze.cli --market "$market" run-model-iteration --offline; status=$?; if [ "$status" -ne 0 ]; then result="$status"; fi; done; /opt/stock-analyze/venv/bin/python -m stock_analyze.cli --as-of "$(date +%F)" run-paper-candidates --repo-root /opt/stock-analyze/app --scope all --offline; status=$?; if [ "$status" -ne 0 ]; then result="$status"; fi; exit "$result"'
+ExecStart=/usr/bin/flock --nonblock /run/stock-analyze-model-iteration.lock /bin/bash -lc 'set +e; result=0; for market in a_share cn_qdii_etf; do /opt/stock-analyze/venv/bin/python -m stock_analyze.cli --market "$market" run-model-iteration --offline; status=$?; if [ "$status" -ne 0 ]; then result="$status"; fi; done; /opt/stock-analyze/venv/bin/python -m stock_analyze.cli --as-of "$(date +%%F)" run-paper-candidates --repo-root /opt/stock-analyze/app --scope all --offline; status=$?; if [ "$status" -ne 0 ]; then result="$status"; fi; exit "$result"'
 Nice=5
 CPUWeight=50
 IOWeight=50

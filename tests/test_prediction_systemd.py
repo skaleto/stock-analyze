@@ -55,7 +55,7 @@ class PredictionSystemdTest(unittest.TestCase):
         model_iteration = (UNIT_DIR / "stock-analyze-model-iteration.service").read_text(encoding="utf-8")
 
         self.assertIn("run-model-iteration --offline", model_iteration)
-        self.assertIn('--as-of "$(date +%F)" run-paper-candidates --repo-root /opt/stock-analyze/app --scope all --offline', model_iteration)
+        self.assertIn('--as-of "$(date +%%F)" run-paper-candidates --repo-root /opt/stock-analyze/app --scope all --offline', model_iteration)
         self.assertIn("for market in a_share cn_qdii_etf", model_iteration)
         self.assertIn("OnFailure=stock-analyze-pipeline-failure@%n.service", model_iteration)
         self.assertIn("result=", model_iteration)
