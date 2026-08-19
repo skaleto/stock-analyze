@@ -1,6 +1,6 @@
 # Stock Analyze Harness
 
-更新日期：2026-07-30
+更新日期：2026-08-20
 
 这份文档是开发、运行、部署和排障的唯一执行入口。系统事实优先级为：ECS 当前 service/timer 与账本 > 当前代码和测试 > 本文档 > 历史计划和归档。
 
@@ -39,11 +39,15 @@ export SA_DASHBOARD_RELEASE_INPUT_MANIFEST=/tmp/dashboard-release-input.manifest
 `scripts/system-audit.sh`、两份系统文档与 `reports/app`。它只重启 `stock-analyze-dashboard.service`。外部审阅的
 release-input 清单必须绑定当前 40 位 commit；受版本控制的发布文件、前端源码
 和构建脚本必须与该 commit 一致。`reports/app` 是生成目录，不要求纳入 Git，
-但其完整树哈希必须与审阅清单一致。
+但其完整树哈希必须与审阅清单一致。部署会将该 40 位 commit 原子写入远端
+`DEPLOY_VERSION`，远端门禁会将它与 release-input 的 `COMMIT` 逐字核对；
+`release-manifest.txt` 同时记录 commit、标记路径和标记 SHA256，避免相同短哈希
+掩盖错误版本。
 
-脚本在远端取得独占锁后核对预镜像 SHA 并创建回滚备份。同步、目标测试、HTTP
+脚本在远端取得独占锁后核对预镜像 SHA 并创建回滚备份；预镜像包含旧的
+`DEPLOY_VERSION`。同步、版本标记核对、目标测试、HTTP
 状态、250 KB 体积或 0.5 秒热响应门禁失败时，只恢复应用白名单与静态
-资源；恢复后重新核对整份预镜像、检查 service，并验证系统总览 API 和应用页。
+资源以及旧版本标记；恢复后重新核对整份预镜像、检查 service，并验证系统总览 API 和应用页。
 结果写入 `rollback-result.txt` 与 `release-manifest.txt`，之后才释放锁。它不会
 同步配置、清理运行时、安装 unit 或改动 timer。
 

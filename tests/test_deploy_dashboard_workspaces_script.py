@@ -73,6 +73,8 @@ EXPECTED_FILES = [
     "docs/system-harness.md",
     "docs/system-overview.md",
 ]
+DEPLOY_VERSION_FILE = "DEPLOY_VERSION"
+EXPECTED_PREIMAGE_FILES = [DEPLOY_VERSION_FILE, *EXPECTED_FILES]
 
 
 class DashboardWorkspaceDeployScriptTests(unittest.TestCase):
@@ -105,6 +107,11 @@ class DashboardWorkspaceDeployScriptTests(unittest.TestCase):
         remote_app.mkdir()
         release_root.mkdir()
         fake_bin.mkdir()
+
+        (remote_app / DEPLOY_VERSION_FILE).write_text(
+            "preimage-commit\n",
+            encoding="utf-8",
+        )
 
         deploy_script = root / "scripts" / DEPLOY_SCRIPT.name
         deploy_script.parent.mkdir(parents=True)
@@ -381,7 +388,9 @@ else:
     def test_deploy_requires_reviewed_release_manifest_before_build(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             preimage = Path(temporary_directory) / "preimage.manifest"
-            lines = [f"FILE MISSING {path}" for path in EXPECTED_FILES]
+            lines = [
+                f"FILE MISSING {path}" for path in EXPECTED_PREIMAGE_FILES
+            ]
             lines.append("TREE MISSING reports/app")
             preimage.write_text("\n".join(lines) + "\n", encoding="utf-8")
             environment = os.environ.copy()
@@ -460,6 +469,56 @@ else:
         self.assertNotIn("fixture build log", completed.stdout)
         self.assertIn("fixture build log", completed.stderr)
 
+    def test_successful_release_writes_reviewed_commit_marker_and_manifest(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = self._create_deploy_fixture(temporary_directory)
+            root = Path(fixture["root"])
+            expected_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root,
+                check=True,
+                text=True,
+                capture_output=True,
+            ).stdout.strip()
+            preimage, release = self._capture_review_manifests(
+                fixture,
+                temporary_directory,
+            )
+            environment = dict(fixture["environment"])
+            environment["SA_DASHBOARD_PREIMAGE_MANIFEST"] = str(preimage)
+            environment["SA_DASHBOARD_RELEASE_INPUT_MANIFEST"] = str(release)
+
+            completed = self._run_fixture(
+                fixture,
+                "deploy",
+                environment=environment,
+            )
+
+            backup = Path(fixture["release_root"]) / (
+                "reviewed-test-dashboard-workspaces"
+            )
+            deployed_version = (
+                Path(fixture["remote_app"]) / DEPLOY_VERSION_FILE
+            ).read_text(encoding="utf-8")
+            backed_up_version = (
+                backup / "root" / DEPLOY_VERSION_FILE
+            ).read_text(encoding="utf-8")
+            release_result = (backup / "release-manifest.txt").read_text(
+                encoding="utf-8"
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(deployed_version, f"{expected_commit}\n")
+        self.assertEqual(backed_up_version, "preimage-commit\n")
+        self.assertIn(f"commit={expected_commit}", release_result)
+        self.assertIn("deploy_version_file=DEPLOY_VERSION", release_result)
+        self.assertRegex(
+            release_result,
+            r"deploy_version_sha256=[0-9a-f]{64}",
+        )
+
     def test_asset_sync_failure_rolls_back_and_verifies_preimage_and_app(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             fixture = self._create_deploy_fixture(temporary_directory)
@@ -493,6 +552,9 @@ else:
             remote_app = (
                 Path(fixture["remote_app"]) / "reports" / "app" / "index.html"
             ).read_text(encoding="utf-8")
+            remote_version = (
+                Path(fixture["remote_app"]) / DEPLOY_VERSION_FILE
+            ).read_text(encoding="utf-8")
             lock = Path(fixture["release_root"]) / (
                 ".dashboard-workspaces-deploy.lock"
             )
@@ -504,6 +566,7 @@ else:
         self.assertIn("app_canary_status=passed", rollback_result)
         self.assertEqual(remote_cli, "preimage:stock_analyze/cli.py\n")
         self.assertEqual(remote_app, "preimage-app\n")
+        self.assertEqual(remote_version, "preimage-commit\n")
         self.assertFalse(lock.exists())
 
     def test_remote_test_failure_rolls_back_and_records_verified_result(self) -> None:
@@ -533,6 +596,9 @@ else:
             remote_overview = (
                 Path(fixture["remote_app"]) / "docs" / "system-overview.md"
             ).read_text(encoding="utf-8")
+            remote_version = (
+                Path(fixture["remote_app"]) / DEPLOY_VERSION_FILE
+            ).read_text(encoding="utf-8")
             lock = Path(fixture["release_root"]) / (
                 ".dashboard-workspaces-deploy.lock"
             )
@@ -542,6 +608,7 @@ else:
         self.assertIn("preimage_status=verified", rollback_result)
         self.assertIn("app_canary_status=passed", rollback_result)
         self.assertEqual(remote_overview, "preimage:docs/system-overview.md\n")
+        self.assertEqual(remote_version, "preimage-commit\n")
         self.assertFalse(lock.exists())
 
     def test_existing_remote_lock_blocks_mutation(self) -> None:
@@ -773,7 +840,9 @@ else:
         with tempfile.TemporaryDirectory() as temporary_directory:
             manifest = Path(temporary_directory) / "preimage.manifest"
             release_manifest = Path(temporary_directory) / "release.manifest"
-            lines = [f"FILE MISSING {path}" for path in EXPECTED_FILES]
+            lines = [
+                f"FILE MISSING {path}" for path in EXPECTED_PREIMAGE_FILES
+            ]
             lines.append("TREE MISSING reports/app")
             manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
             commit = subprocess.run(
@@ -862,7 +931,9 @@ else:
     def test_validate_manifest_accepts_only_the_complete_allowlist(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             manifest = Path(temporary_directory) / "preimage.manifest"
-            lines = [f"FILE MISSING {path}" for path in EXPECTED_FILES]
+            lines = [
+                f"FILE MISSING {path}" for path in EXPECTED_PREIMAGE_FILES
+            ]
             lines.append("TREE MISSING reports/app")
             manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
