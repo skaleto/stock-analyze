@@ -963,6 +963,18 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["hs300", "zz500", "hk_exposure", "us_exposure"],
         default=None,
     )
+    paper_candidate_gate = sub.add_parser(
+        "evaluate-paper-candidate-gate",
+        help="Apply the first-layer isolated-paper qualification policy.",
+    )
+    paper_candidate_gate.add_argument(
+        "--repo-root", type=Path, default=Path(".")
+    )
+    paper_candidate_gate.add_argument("--source-report", type=Path, required=True)
+    paper_candidate_gate.add_argument(
+        "--contract", type=Path,
+        default=Path("configs/research/paper_candidate_gate_v1.yaml"),
+    )
 
     intelligence_ingest = sub.add_parser(
         "intelligence-ingest",
@@ -1761,6 +1773,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run-scenario-model-experiment":
         ensure_dirs(args.logs_dir)
         return _command_scenario_model_experiment(args)
+    if args.command == "evaluate-paper-candidate-gate":
+        ensure_dirs(args.logs_dir)
+        return _command_paper_candidate_gate(args)
     if args.command in {
         "intelligence-ingest", "intelligence-backfill",
         "intelligence-extract", "intelligence-status", "intelligence-evaluate",
@@ -2858,6 +2873,22 @@ def _command_scenario_model_experiment(args: argparse.Namespace) -> int:
         print(f"error: {args.command} failed: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _command_paper_candidate_gate(args: argparse.Namespace) -> int:
+    from .research.paper_candidate_gate import apply_paper_candidate_gate
+
+    try:
+        result = apply_paper_candidate_gate(
+            args.repo_root,
+            source_report_path=args.source_report,
+            contract_path=args.contract,
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     return 0
 
 

@@ -1,0 +1,28 @@
+protocol: paper-candidate-gate-v1
+policy_layer: research_to_isolated_paper
+known_development_evidence_reassessment: true
+formal_strategy_activated: false
+registry_mutation_allowed: false
+comparison: router_only
+candidate: scenario_specialists
+required_source_protocol: scenario-specialists-v1
+required_label_contract: next-open-v3-adjusted
+required_simulator_version: paper-parity-daily-v1
+required_attribution_status: reconciled
+minimum_candidate_annualized_net_excess: 0.0
+minimum_annualized_increment_vs_router: 0.005
+minimum_cumulative_incremental_cost_multiple: 2.0
+minimum_fold_delta_median_exclusive: 0.0
+maximum_aggregate_drawdown: 0.25
+maximum_aggregate_annual_turnover: 8.0
+disaster_fold:
+  minimum_candidate_net_excess: -0.15
+  minimum_delta_vs_router: -0.05
+  maximum_drawdown: 0.25
+removed_first_layer_requirements:
+  - deflated_sharpe_probability
+  - probability_of_backtest_overfit
+  - multiple_comparators
+  - three_of_four_positive_folds
+  - twelve_shadow_weeks
+second_layer_active_gate_unchanged: true
