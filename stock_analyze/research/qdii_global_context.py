@@ -426,15 +426,6 @@ def repair_feature_snapshot(
     ]
     if len(repaired) != len(original) or repaired_identity != original_identity:
         raise ValueError("qdii_global_context_repair_identity")
-    old_hash = _sha256(path)
-    backup = (
-        root / "data/research/feature_revisions/cn_qdii_etf"
-        / snapshot / f"{old_hash}.parquet"
-    )
-    if not backup.exists():
-        backup.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, backup)
-    _atomic_parquet(repaired, path)
     coverage = {
         column: float(pd.to_numeric(repaired[column], errors="coerce").notna().mean())
         for column in ("global_index_momentum", "global_volatility", "rmb_depreciation")
@@ -468,6 +459,15 @@ def repair_feature_snapshot(
         > repaired.loc[valid_fx, "trade_date"].astype(str)
     ).any()):
         raise ValueError("qdii_global_context_fx_leakage")
+    old_hash = _sha256(path)
+    backup = (
+        root / "data/research/feature_revisions/cn_qdii_etf"
+        / snapshot / f"{old_hash}.parquet"
+    )
+    if not backup.exists():
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, backup)
+    _atomic_parquet(repaired, path)
     audit = {
         "status": "complete",
         "protocol": contract["protocol"],

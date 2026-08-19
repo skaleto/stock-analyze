@@ -180,6 +180,41 @@ class QDIIGlobalContextTest(unittest.TestCase):
             {"exact", "family_proxy"},
         )
 
+    def test_snapshot_repair_does_not_overwrite_when_coverage_gate_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "contract.yaml"
+            payload = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
+            payload["minimum_rows_per_index"] = 5
+            payload["minimum_fx_rows"] = 5
+            config.write_text(
+                yaml.safe_dump(payload, sort_keys=False), encoding="utf-8"
+            )
+            backfill_global_context(
+                root, FakePro(), start_date="2018-01-01",
+                end_date="2018-01-10", contract_path=config,
+            )
+            path = (
+                root / "data/research/features/cn_qdii_etf/20180110.parquet"
+            )
+            path.parent.mkdir(parents=True)
+            pd.DataFrame([{
+                "code": "A", "trade_date": "20180110",
+                "index_key": "sp_500", "close": 1.0,
+            }]).to_parquet(path, index=False)
+            before = path.read_bytes()
+
+            with self.assertRaisesRegex(
+                ValueError, "feature_coverage"
+            ):
+                repair_feature_snapshot(
+                    root, snapshot_date="20180110", contract_path=config
+                )
+
+            after = path.read_bytes()
+
+        self.assertEqual(before, after)
+
 
 if __name__ == "__main__":
     unittest.main()
