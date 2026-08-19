@@ -672,6 +672,12 @@ def _settle_account(
     market_module = competition.get_market_module(market)
     if not store.state_path.exists():
         market_module.initialize(config, store)
+    trades_path = store.data_dir / "trades.csv"
+    if not trades_path.exists():
+        # A zero-trade first cycle still owns an explicit, readable ledger.
+        # Do not rely on append-on-first-fill because production audits require
+        # all account artifacts to exist from initialization onward.
+        store.write_trades([])
     trades = market_module.execute_due_orders(config, store, provider, as_of=as_of)
     nav = market_module.update_nav(
         config, store, provider, as_of=as_of,
