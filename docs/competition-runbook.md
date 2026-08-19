@@ -191,6 +191,12 @@ python3 -m stock_analyze --market <market> --agent <agent> predict --offline
 Challenger 晋级为 Champion 后，系统关闭该验证组合并自动选择下一候选版本；两套正式
 策略始终只读取 Champion 的规范预测文件，不会使用正在迭代的新版本。
 
+第一层 Research 到隔离纸面候选现使用 `paper-candidate-gate-v1`。它只与最强
+`router_only` 对照，保留 PIT、当前标签、真实成本、正净超额、折增量中位数、
+灾难折、25% 回撤和 8 倍换手硬门槛；DSR/PBO、多对照同时胜出、强制 3/4
+胜出和 12 周等待不再属于第一层。第一层通过只写独立资格账本，不修改 Registry
+或正式账户。第二层 Active/Champion 门槛不变，仍要求真实前瞻证据。
+
 ### 模型迭代
 
 `run-model-iteration` 把固定 Challenger 的点时预测用于一个完全隔离的纸面组合，专门

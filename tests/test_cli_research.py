@@ -124,6 +124,18 @@ class CLIResearchTest(unittest.TestCase):
         self.assertEqual(backfill.end_date, "2026-08-18")
         self.assertEqual(repair.snapshot_date, "20260814")
 
+    def test_parser_accepts_first_layer_paper_candidate_gate(self):
+        args = build_parser().parse_args([
+            "evaluate-paper-candidate-gate",
+            "--source-report", "/tmp/scenario-report.json",
+        ])
+
+        self.assertEqual(args.command, "evaluate-paper-candidate-gate")
+        self.assertEqual(
+            args.contract,
+            Path("configs/research/paper_candidate_gate_v1.yaml"),
+        )
+
     def test_cli_dispatches_strategy_recovery_campaign(self):
         with tempfile.TemporaryDirectory() as tmp, patch(
             "stock_analyze.research.strategy_campaign.run_strategy_campaign",

@@ -74,6 +74,10 @@ experiments are evidence; never erase them to reset a result.
   they exist.
 - Champion/Active artifacts are immutable. New candidates move independently
   through `research -> shadow -> active` only after their versioned gates pass.
+- `paper-candidate-gate-v1` is the first product gate from Research to an
+  isolated paper qualification. It compares only against `router_only` and does
+  not mutate the model Registry or formal accounts. The second-layer Active gate
+  remains separate and retains its forward-evidence requirements.
 
 ## 5. Data and model boundary
 
