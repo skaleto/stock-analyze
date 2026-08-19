@@ -1,0 +1,48 @@
+protocol: qdii-global-context-v1
+start_date: "20180101"
+availability_lag_calendar_days: 1
+minimum_rows_per_index: 1500
+minimum_fx_rows: 2000
+minimum_mapped_row_coverage: 0.95
+minimum_feature_coverage: 0.95
+index_sources:
+  SPX: {label: S&P 500, provider_endpoint: index_global}
+  IXIC: {label: Nasdaq Composite, provider_endpoint: index_global}
+  DJI: {label: Dow Jones Industrial Average, provider_endpoint: index_global}
+  HSI: {label: Hang Seng Index, provider_endpoint: index_global}
+fx_sources:
+  USDCNH.FXCM: {label: USD/CNH, provider_endpoint: fx_daily}
+exact_mappings:
+  sp_500: SPX
+  dow_jones_industrial: DJI
+  hang_seng: HSI
+family_proxy_mappings:
+  nasdaq_100: IXIC
+  nasdaq_biotech: IXIC
+  nasdaq_technology: IXIC
+  sp_oil_gas: SPX
+  sp_biotech: SPX
+  sp_500_consumer: SPX
+  msci_us_50: SPX
+  us_reit: SPX
+  hang_seng_internet: HSI
+  csi_hk_connect_internet: HSI
+  hang_seng_connect_tech: HSI
+  csi_hk_connect_information_tech: HSI
+  csi_hk_connect_tech: HSI
+  guozheng_hk_connect_tech: HSI
+  hang_seng_tech: HSI
+  hang_seng_healthcare: HSI
+  csi_hk_connect_healthcare: HSI
+  hang_seng_biotech: HSI
+  hk_innovative_drug: HSI
+  hang_seng_consumer: HSI
+  hk_connect_consumer: HSI
+  hang_seng_connect_high_dividend_low_vol: HSI
+  hang_seng_connect_high_dividend: HSI
+  csi_hk_connect_high_dividend: HSI
+  hk_state_owned: HSI
+  hk_connect_financials: HSI
+  hk_connect_auto: HSI
+  csi_hk_connect_50: HSI
+  hang_seng_china_enterprises: HSI

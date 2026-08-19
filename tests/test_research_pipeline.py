@@ -24,6 +24,26 @@ from stock_analyze.research.labels import LABEL_CONTRACT_VERSION
 
 
 class ResearchPipelineTest(unittest.TestCase):
+    def test_qdii_source_collection_requests_full_history_context(self):
+        from unittest.mock import patch
+
+        pipeline = ResearchPipeline(
+            Path("."), market="cn_qdii_etf", agent="codex",
+            as_of="2026-08-18", offline=False,
+        )
+        provider = SimpleNamespace(
+            collect_research_sources=lambda _codes: SourceCollection(
+                frames={}, health=pd.DataFrame()
+            )
+        )
+        with patch(
+            "stock_analyze.markets.cn_qdii_etf.data_provider.make_provider",
+            return_value=provider,
+        ) as make_provider:
+            pipeline._collect_sources(["513100"])
+
+        self.assertEqual(make_provider.call_args.kwargs["history_start"], "20180101")
+
     @staticmethod
     def _canonical_digest(value: object) -> str:
         payload = json.dumps(
