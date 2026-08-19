@@ -1214,6 +1214,52 @@ class ResearchPipelineTest(unittest.TestCase):
         self.assertTrue(bool(suspended["is_suspended"]))
         self.assertTrue(pd.isna(suspended["open"]))
 
+    def test_a_share_history_normalizes_mixed_status_flags_to_nullable_boolean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "history_000001_20260710_3.csv"
+            pd.DataFrame({
+                "日期": ["2026-07-08", "2026-07-09", "2026-07-10"],
+                "开盘": [10.0, 10.1, 10.2],
+                "最高": [10.2, 10.3, 10.4],
+                "最低": [9.9, 10.0, 10.1],
+                "收盘": [10.1, 10.2, 10.3],
+                "成交量": [100.0, 100.0, 100.0],
+                "成交额": [1_000.0, 1_000.0, 1_000.0],
+                "is_st": [False, 0.0, 1.0],
+                "停牌": [False, 0.0, 1.0],
+            }).to_csv(path, index=False)
+            pipeline = ResearchPipeline(
+                root, market="a_share", agent="codex",
+                as_of="2026-07-10", offline=True,
+            )
+
+            normalized = pipeline._normalize_history(path)
+
+        self.assertEqual(str(normalized["is_st"].dtype), "boolean")
+        self.assertEqual(str(normalized["is_suspended"].dtype), "boolean")
+        self.assertEqual(normalized["is_st"].tolist(), [False, False, True])
+        self.assertEqual(normalized["is_suspended"].tolist(), [False, False, True])
+
+    def test_a_share_history_rejects_unknown_status_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "history_000001_20260710_1.csv"
+            pd.DataFrame([{
+                "trade_date": "20260710", "open": 10.0, "high": 10.2,
+                "low": 9.8, "close": 10.1, "volume": 100.0,
+                "amount": 1_000.0, "is_st": "unknown",
+            }]).to_csv(path, index=False)
+            pipeline = ResearchPipeline(
+                root, market="a_share", agent="codex",
+                as_of="2026-07-10", offline=True,
+            )
+
+            with self.assertRaisesRegex(
+                ValueError, "research_status_flag_invalid:is_st"
+            ):
+                pipeline._normalize_history(path)
+
     def test_materialized_history_has_one_canonical_volume_column(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
