@@ -66,6 +66,7 @@ readonly DASHBOARD_FILES=(
   "docs/system-overview.md"
 )
 readonly DASHBOARD_ASSET_TREE="reports/app"
+readonly DEPLOY_VERSION_FILE="DEPLOY_VERSION"
 readonly DASHBOARD_BUILD_INPUTS=(
   "frontend/dashboard"
   "scripts/deploy-dashboard-workspaces-to-ecs.sh"
@@ -184,7 +185,11 @@ validate_manifest_file() {
   local manifest="$1"
   [[ -f "$manifest" ]] || die "preimage manifest not found: $manifest"
 
-  python3 - "$manifest" "$DASHBOARD_ASSET_TREE" "${DASHBOARD_FILES[@]}" <<'PY'
+  python3 - \
+    "$manifest" \
+    "$DASHBOARD_ASSET_TREE" \
+    "$DEPLOY_VERSION_FILE" \
+    "${DASHBOARD_FILES[@]}" <<'PY'
 from __future__ import annotations
 
 import re
@@ -193,7 +198,8 @@ from pathlib import Path
 
 manifest_path = Path(sys.argv[1])
 tree_path = sys.argv[2]
-file_paths = sys.argv[3:]
+deploy_version_path = sys.argv[3]
+file_paths = [deploy_version_path, *sys.argv[4:]]
 expected = {path: "FILE" for path in file_paths}
 expected[tree_path] = "TREE"
 entries: dict[str, tuple[str, str]] = {}
@@ -431,12 +437,15 @@ capture_remote_preimage() {
   "${SSH_COMMAND[@]}" "$REMOTE_HOST" \
     bash -s -- \
       "$REMOTE_PATH" \
+      "$DEPLOY_VERSION_FILE" \
       "${DASHBOARD_FILES[@]}" \
       -- \
       "$DASHBOARD_ASSET_TREE" <<'REMOTE'
 set -euo pipefail
 
 app_dir="$1"
+shift
+deploy_version_path="$1"
 shift
 file_paths=()
 while [[ "$#" -gt 0 && "$1" != "--" ]]; do
@@ -448,6 +457,7 @@ shift
 tree_path="$1"
 
 cd "$app_dir"
+file_paths=("$deploy_version_path" "${file_paths[@]}")
 for relative in "${file_paths[@]}"; do
   if [[ -f "$relative" ]]; then
     digest="$(sha256sum "$relative" | awk '{print $1}')"
@@ -784,6 +794,21 @@ sync_dashboard_release() {
   rsync -az --delete \
     "$REPO_ROOT/$DASHBOARD_ASSET_TREE/" \
     "$REMOTE_TARGET/$DASHBOARD_ASSET_TREE/"
+  "${SSH_COMMAND[@]}" "$REMOTE_HOST" \
+    bash -s -- "$REMOTE_PATH" "$DEPLOY_VERSION_FILE" "$CURRENT_COMMIT" <<'REMOTE'
+set -euo pipefail
+
+app_dir="$1"
+deploy_version_path="$2"
+commit="$3"
+[[ "$commit" =~ ^[0-9a-f]{40}$ ]] || exit 4
+umask 022
+temporary="$(mktemp "$app_dir/.DEPLOY_VERSION.XXXXXX")"
+trap 'rm -f "$temporary"' EXIT
+printf '%s\n' "$commit" >"$temporary"
+mv -f "$temporary" "$app_dir/$deploy_version_path"
+trap - EXIT
+REMOTE
 }
 
 verify_remote_release() {
@@ -796,6 +821,7 @@ verify_remote_release() {
       "$MAX_BYTES" \
       "$MAX_TTFB_SECONDS" \
       "$CANARY_BASE_URL" \
+      "$DEPLOY_VERSION_FILE" \
       "${DASHBOARD_TEST_MODULES[@]}" \
       -- \
       "${DASHBOARD_CANARY_ENDPOINTS[@]}" <<'REMOTE'
@@ -808,7 +834,8 @@ service_name="$4"
 max_bytes="$5"
 max_ttfb="$6"
 base_url="$7"
-shift 7
+deploy_version_path="$8"
+shift 8
 
 test_modules=()
 while [[ "$#" -gt 0 && "$1" != "--" ]]; do
@@ -834,11 +861,18 @@ hash_tree() {
 }
 
 cd "$app_dir"
+release_commit=""
 while read -r kind expected relative extra; do
   [[ "${kind:-}" == \#* ]] && continue
   [[ -n "${kind:-}" ]] || continue
-  if [[ "$kind" == "FORMAT" || "$kind" == "COMMIT" ]]; then
+  if [[ "$kind" == "FORMAT" ]]; then
     [[ -n "${expected:-}" && -z "${relative:-}" && -z "${extra:-}" ]] || exit 4
+    continue
+  fi
+  if [[ "$kind" == "COMMIT" ]]; then
+    [[ -n "${expected:-}" && -z "${relative:-}" && -z "${extra:-}" ]] || exit 4
+    [[ -z "$release_commit" && "$expected" =~ ^[0-9a-f]{40}$ ]] || exit 4
+    release_commit="$expected"
     continue
   fi
   [[ -z "${extra:-}" ]] || exit 4
@@ -856,6 +890,17 @@ while read -r kind expected relative extra; do
     exit 4
   fi
 done <"$backup_dir/release-input.manifest"
+[[ -n "$release_commit" ]] || exit 4
+[[ -f "$deploy_version_path" ]] || {
+  printf 'deployment version marker missing: %s\n' "$deploy_version_path" >&2
+  exit 4
+}
+actual_deploy_version="$(tr -d '\r\n' <"$deploy_version_path")"
+[[ "$actual_deploy_version" == "$release_commit" ]] || {
+  printf 'deployment version mismatch: expected=%s actual=%s\n' \
+    "$release_commit" "$actual_deploy_version" >&2
+  exit 4
+}
 
 "$python_bin" -m unittest "${test_modules[@]}" -v
 systemctl restart "$service_name"
@@ -902,16 +947,24 @@ write_remote_manifest() {
       "$BACKUP_DIR" \
       "$REMOTE_PATH" \
       "$DASHBOARD_SERVICE" \
-      "$RELEASE_STAMP" <<'REMOTE'
+      "$RELEASE_STAMP" \
+      "$CURRENT_COMMIT" \
+      "$DEPLOY_VERSION_FILE" <<'REMOTE'
 set -euo pipefail
 
 backup_dir="$1"
 app_dir="$2"
 service_name="$3"
 release_stamp="$4"
+commit="$5"
+deploy_version_path="$6"
+[[ "$commit" =~ ^[0-9a-f]{40}$ ]] || exit 6
+actual_deploy_version="$(tr -d '\r\n' <"$app_dir/$deploy_version_path")"
+[[ "$actual_deploy_version" == "$commit" ]] || exit 6
 preimage_sha="$(sha256sum "$backup_dir/expected-preimage.manifest" | awk '{print $1}')"
 release_sha="$(sha256sum "$backup_dir/release-input.manifest" | awk '{print $1}')"
 canary_sha="$(sha256sum "$backup_dir/canary-results.tsv" | awk '{print $1}')"
+deploy_version_sha="$(sha256sum "$app_dir/$deploy_version_path" | awk '{print $1}')"
 
 cat >"$backup_dir/release-manifest.txt" <<EOF
 format=dashboard-workspaces-release-v1
@@ -920,6 +973,9 @@ release_stamp=$release_stamp
 app_dir=$app_dir
 backup_dir=$backup_dir
 service=$service_name
+commit=$commit
+deploy_version_file=$deploy_version_path
+deploy_version_sha256=$deploy_version_sha
 preimage_manifest_sha256=$preimage_sha
 release_input_manifest_sha256=$release_sha
 canary_results_sha256=$canary_sha
