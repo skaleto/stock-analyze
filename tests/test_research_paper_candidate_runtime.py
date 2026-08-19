@@ -22,6 +22,7 @@ from stock_analyze.research.paper_candidate_runtime import (
     load_paper_candidate_contract,
     paper_portfolio_dir,
     run_production_paper_challengers,
+    _settle_account,
 )
 from stock_analyze.research.scenario_model import load_scenario_contract
 
@@ -314,6 +315,49 @@ class ArtifactFreezeTest(unittest.TestCase):
             path.write_text(json.dumps(tampered), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "paper_candidate_artifact_hash"):
                 load_hk_candidate_artifact(root, contract_path=contract_path)
+
+
+class PaperAccountArtifactTest(unittest.TestCase):
+    def test_first_zero_trade_cycle_creates_explicit_trade_ledger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            from stock_analyze.store import PortfolioStore, TRADES_COLUMNS
+
+            store = PortfolioStore(tmp)
+            module = type("Market", (), {
+                "initialize": staticmethod(lambda config, target: target.initialize(config)),
+                "execute_due_orders": staticmethod(
+                    lambda config, target, provider, as_of: []
+                ),
+                "update_nav": staticmethod(
+                    lambda config, target, provider, as_of, notes: []
+                ),
+            })
+            profile = {
+                "version": 1, "market": "a_share", "horizon": 20,
+                "initial_cash": 500_000, "account_id": "hs300",
+                "top_n": 10, "max_single_weight": 0.1,
+                "accounts": [{
+                    "id": "hs300", "scope": "hs300",
+                    "benchmark": "000300", "cash": 500_000,
+                    "top_n": 10,
+                }],
+                "trading": {},
+            }
+
+            with patch(
+                "stock_analyze.research.paper_candidate_runtime.competition.get_market_module",
+                return_value=module,
+            ):
+                trades, nav = _settle_account(
+                    market="a_share", profile=profile, store=store,
+                    provider=object(), as_of="2026-08-19",
+                )
+
+            ledger = pd.read_csv(Path(tmp) / "trades.csv")
+            self.assertEqual(trades, [])
+            self.assertEqual(nav, [])
+            self.assertEqual(ledger.columns.tolist(), TRADES_COLUMNS)
+            self.assertTrue(ledger.empty)
 
 
 class FailClosedOrchestrationTest(unittest.TestCase):
