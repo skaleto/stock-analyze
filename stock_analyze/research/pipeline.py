@@ -556,6 +556,7 @@ class ResearchPipeline:
             "收盘": "close",
             "成交量": "volume",
             "成交额": "amount",
+            "停牌": "is_suspended",
             "vol": "volume",
         }
         if "volume" in frame.columns and "vol" in frame.columns:
@@ -569,6 +570,23 @@ class ResearchPipeline:
         ):
             if column in normalized.columns:
                 normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+        boolean_values = {
+            "true": True, "false": False,
+            "1": True, "0": False,
+            "1.0": True, "0.0": False,
+        }
+        for column in (
+            "is_st", "is_suspended", "is_tradable", "status_conflict",
+            "suspension_conflict", "tushare_suspend_event",
+        ):
+            if column not in normalized.columns:
+                continue
+            source = normalized[column]
+            text = source.astype("string").str.strip().str.lower()
+            unknown = source.notna() & ~text.isin(boolean_values)
+            if bool(unknown.any()):
+                raise ValueError(f"research_status_flag_invalid:{column}")
+            normalized[column] = text.map(boolean_values).astype("boolean")
         if self.market == "cn_qdii_etf":
             from ..markets.cn_qdii_etf.units import canonicalize_tushare_amount
 
