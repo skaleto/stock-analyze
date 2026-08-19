@@ -15,6 +15,7 @@ LEGACY_SCRIPT = ROOT / "scripts" / "deploy-app-to-ecs.sh"
 
 EXPECTED_FILES = [
     "configs/research/paper_candidate_gate_v1.yaml",
+    "configs/research/production_paper_challengers_v1.yaml",
     "configs/research/qdii_global_context_v1.yaml",
     "configs/research/scenario_model_v1.yaml",
     "stock_analyze/cli.py",
@@ -36,6 +37,7 @@ EXPECTED_FILES = [
     "stock_analyze/research/pipeline.py",
     "stock_analyze/research/portfolio_replay.py",
     "stock_analyze/research/paper_candidate_gate.py",
+    "stock_analyze/research/paper_candidate_runtime.py",
     "stock_analyze/research/qdii_global_context.py",
     "stock_analyze/research/scenario_model.py",
     "stock_analyze/research/shadow_admission.py",
@@ -58,6 +60,7 @@ EXPECTED_FILES = [
     "tests/test_research_pipeline.py",
     "tests/test_research_portfolio_replay.py",
     "tests/test_research_paper_candidate_gate.py",
+    "tests/test_research_paper_candidate_runtime.py",
     "tests/test_research_qdii_global_context.py",
     "tests/test_research_collectors.py",
     "tests/test_research_source_features.py",
@@ -66,6 +69,7 @@ EXPECTED_FILES = [
     "tests/test_research_storage.py",
     "tests/test_research_strategy_campaign.py",
     "scripts/system-audit.sh",
+    "scripts/check-ecs-timers.sh",
     "docs/system-harness.md",
     "docs/system-overview.md",
 ]

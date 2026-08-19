@@ -253,3 +253,39 @@ ssh -N \
 ## 11. 完成定义
 
 只有同时满足以下条件才能宣告完成：代码和文档已更新；本地回归通过；前端构建通过；ECS 部署版本已刷新；退役逻辑清理完成；线上 timer/账本/API 正常；正式账户在模型单元失败时仍可独立运行；用户能访问 Dashboard；重要系统文档已回读存档。
+
+## Four isolated production paper challengers
+
+Freeze the already-qualified HK artifact once (idempotent unless `--force`):
+
+```bash
+python3 -m stock_analyze.cli freeze-hk-paper-candidate \
+  --repo-root /opt/stock-analyze/app
+```
+
+Run all four challengers against the latest exact feature date:
+
+```bash
+python3 -m stock_analyze.cli run-paper-candidates \
+  --repo-root /opt/stock-analyze/app --scope all --offline
+```
+
+For a dated recovery/audit, place the global argument before the command:
+
+```bash
+python3 -m stock_analyze.cli --as-of 2026-08-19 run-paper-candidates \
+  --repo-root /opt/stock-analyze/app --scope all --offline
+```
+
+The production `stock-analyze-model-iteration.service` invokes this after the
+legacy isolated iteration check. Verify the aggregate
+`data/research/paper_portfolios/current_status.json` reports exactly four
+`complete` accounts, then verify every versioned account's `runs.csv` terminal
+row, `pending_orders.json` next-open date, and `account_status.json` provenance.
+A service success without these artifacts is not business completion.
+
+The A-share feature builder must choose the newest eligible history cache for
+each code before preferring a longer lookback file on the same date. Otherwise
+old long-window caches can silently shrink the current index cross-section; the
+challenger runtime independently rejects HS300 below 285 current members and
+ZZ500 below 475.

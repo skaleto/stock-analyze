@@ -1,6 +1,6 @@
 # AGENTS.md — Stock Analyze Current Operating Contract
 
-Last updated: 2026-08-18. This file is the repository-wide agent contract.
+Last updated: 2026-08-20. This file is the repository-wide agent contract.
 Historical plans and archived OpenSpec changes are evidence, not instructions.
 
 ## 1. Product and identities
@@ -50,6 +50,8 @@ data/shared/cache/
 data/shared/backtest_cache/
 data/research/models/
 data/model_iterations/
+data/research/paper_portfolios/
+data/research/paper_artifacts/
 data/research/qdii_global_context/
 data/research/feature_revisions/
 ```
@@ -78,6 +80,14 @@ experiments are evidence; never erase them to reset a result.
   isolated paper qualification. It compares only against `router_only` and does
   not mutate the model Registry or formal accounts. The second-layer Active gate
   remains separate and retains its forward-evidence requirements.
+- The versioned `production-paper-challengers-v1` runtime owns four isolated
+  accounts: HS300 and ZZ500 transparent Donchian challengers, the qualified HK
+  scenario specialist, and the US `Q_TRACK_01` transparent scene Router. Their
+  ledgers live only under `data/research/paper_portfolios/`; artifacts live under
+  `data/research/paper_artifacts/`. They never mutate formal accounts or Registry.
+- Every challenger requires an exact-date, complete current cross-section and
+  fails closed on stale/partial inputs. The first frozen stop rule is 20% account
+  drawdown with liquidation to cash. Signals execute at the next market open.
 
 ## 5. Data and model boundary
 

@@ -501,20 +501,24 @@ class ResearchPipeline:
             return sorted(set(declared))
         pattern = "fund_daily_*.csv" if self.market == "cn_qdii_etf" else "history_*.csv"
         candidates = sorted(self._cache_dir().glob(pattern))
-        latest_by_code: dict[str, tuple[tuple[int, str], Path]] = {}
+        latest_by_code: dict[str, tuple[tuple[str, int], Path]] = {}
         for path in candidates:
             if self.market == "a_share":
                 match = re.fullmatch(r"history_(\d{6})_(\d{8})_(\d+)\.csv", path.name)
                 if not match or match.group(2) > self.run_key:
                     continue
                 code = match.group(1)
-                score = (int(match.group(3)), match.group(2))
+                # A newer point-in-time cache must win before lookback length.
+                # The old ordering preferred a stale 1098-row file over a
+                # current 260-row file, silently shrinking the current A-share
+                # cross-section when older long-window caches coexisted.
+                score = (match.group(2), int(match.group(3)))
             else:
                 match = re.fullmatch(r"fund_daily_(\d{6})_[A-Z]+_(\d{8})\.csv", path.name)
                 if not match or match.group(2) > self.run_key:
                     continue
                 code = match.group(1)
-                score = (0, match.group(2))
+                score = (match.group(2), 0)
             current = latest_by_code.get(code)
             if current is None or score > current[0]:
                 latest_by_code[code] = (score, path)
