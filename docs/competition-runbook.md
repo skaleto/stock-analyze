@@ -164,6 +164,10 @@ python3 -m stock_analyze --market <market> --agent <agent> predict --offline
 独立可信度。A 股财务指标以公告日做 as-of 合并，覆盖质量、成长、现金转化、高附加值和
 边际成本代理；跨境 ETF 同步使用净值折溢价、跟踪差、份额、全球指数与汇率。PMI、货币、
 通胀、Shibor 和美债曲线按保守发布日期进入宏观/全球状态，不把最新值倒灌到历史。
+跨境 ETF 的 SPX、IXIC、DJI、HSI 与 USD/CNH 从 2018 年起保存在带哈希的
+`qdii-global-context-v1` 资产中，海外收盘统一到下一自然日才可见。产品按
+`index_key` 绑定 `exact` 或 `family_proxy`；代理只代表宽基市场环境，不能冒充产品
+跟踪指数收益。
 上市公司公告与官方政策已经进入结构化事实库；商业新闻、同花顺和东财热榜在当前
 权限下仍显示 `source_unavailable`，不会用零值或中性值伪造信号。研究预测默认
 不参与排序；只有模型注册表为 `active`、可信度

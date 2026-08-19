@@ -50,6 +50,8 @@ data/shared/cache/
 data/shared/backtest_cache/
 data/research/models/
 data/model_iterations/
+data/research/qdii_global_context/
+data/research/feature_revisions/
 ```
 
 Also preserve `/opt/stock-analyze/data/notifications/`: the pipeline failure
@@ -97,6 +99,14 @@ features. Exact buyback ratios, holder-count changes, unlock ratios, dividend
 growth, and block-trade premiums must not be described as "already used by the
 model" until a versioned daily PIT feature builder, registry entry, coverage
 audit, and controlled ablation exist.
+
+QDII global context is checksummed under
+`data/research/qdii_global_context/v1/`: SPX, IXIC, DJI, HSI, and USD/CNH from
+2018 onward. Source closes are usable only on the next calendar day. Product
+rows retain source index, source date, available date, and `exact` versus
+`family_proxy` mapping. A family proxy is broad market context, never the
+product's tracked-index return. Snapshot revisions under
+`data/research/feature_revisions/` are protected rollback evidence.
 
 ## 6. Evidence-first research discipline
 
