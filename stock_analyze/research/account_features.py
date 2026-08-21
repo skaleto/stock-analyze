@@ -162,7 +162,12 @@ def account_feature_contract(
 def _numeric(frame: pd.DataFrame, column: str) -> pd.Series:
     if column not in frame.columns:
         return pd.Series(np.nan, index=frame.index, dtype=float)
-    return pd.to_numeric(frame[column], errors="coerce")
+    values = pd.to_numeric(frame[column], errors="coerce")
+    return pd.Series(
+        values.to_numpy(dtype=float, na_value=np.nan),
+        index=frame.index,
+        dtype=float,
+    )
 
 
 def _daily_percentile(frame: pd.DataFrame, values: pd.Series) -> pd.Series:

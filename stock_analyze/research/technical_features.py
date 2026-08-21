@@ -239,7 +239,7 @@ def _compute_group_without_calendar_gaps(group: pd.DataFrame) -> pd.DataFrame:
         },
         index=result.index,
     )
-    return pd.concat([result, derived], axis=1, copy=False)
+    return pd.concat([result, derived], axis=1)
 
 
 def compute_technical_features(ohlcv: pd.DataFrame) -> pd.DataFrame:

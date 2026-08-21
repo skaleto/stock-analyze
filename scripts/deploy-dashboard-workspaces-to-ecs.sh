@@ -36,6 +36,7 @@ readonly DASHBOARD_FILES=(
   "stock_analyze/research/shadow_admission.py"
   "stock_analyze/research/storage.py"
   "stock_analyze/research/strategy_campaign.py"
+  "stock_analyze/research/account_features.py"
   "stock_analyze/research/technical_features.py"
   "tests/test_cli_dashboard_routes.py"
   "tests/test_cli_research.py"
@@ -64,6 +65,7 @@ readonly DASHBOARD_FILES=(
   "tests/test_research_storage.py"
   "tests/test_research_strategy_campaign.py"
   "tests/test_intelligence_factors.py"
+  "tests/test_research_account_features.py"
   "tests/test_research_tabular_forward.py"
   "scripts/system-audit.sh"
   "scripts/check-ecs-timers.sh"
@@ -107,6 +109,7 @@ readonly DASHBOARD_TEST_MODULES=(
   "tests.test_research_shadow_admission"
   "tests.test_research_storage"
   "tests.test_research_strategy_campaign"
+  "tests.test_research_account_features"
   "tests.test_research_tabular_forward"
 )
 readonly DASHBOARD_CANARY_ENDPOINTS=(

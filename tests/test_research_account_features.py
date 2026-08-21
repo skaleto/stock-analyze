@@ -114,6 +114,20 @@ class ResearchAccountFeaturesTest(unittest.TestCase):
         self.assertTrue((by_date.mean().abs() < 1e-12).all())
         self.assertTrue(result["market_breadth_1"].between(0.0, 1.0).all())
 
+    def test_alpha158_lite_view_converts_arrow_numeric_inputs_for_model_features(self):
+        frame = self._rows()
+        for column in frame.select_dtypes(include="number").columns:
+            frame[column] = pd.array(frame[column], dtype="float64[pyarrow]")
+
+        result = build_alpha158_lite_feature_view(frame, account_scope="hs300")
+        feature_columns = alpha158_lite_feature_columns(result)
+
+        self.assertTrue(feature_columns)
+        self.assertTrue(
+            all(not isinstance(result[column].dtype, pd.ArrowDtype)
+                for column in feature_columns)
+        )
+
     def test_scope_mismatch_fails_closed(self):
         with self.assertRaisesRegex(ValueError, "account_feature_scope_mismatch"):
             build_account_feature_view(

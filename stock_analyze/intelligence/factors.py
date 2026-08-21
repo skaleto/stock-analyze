@@ -120,7 +120,6 @@ def attach_event_features(
         result = pd.concat(
             [result, pd.DataFrame(defaults, index=result.index)],
             axis=1,
-            copy=False,
         )
     db_path = Path(intelligence_root) / "intelligence.sqlite3"
     if not db_path.exists() or result.empty:
@@ -237,7 +236,7 @@ def _finalize_event_features(result: pd.DataFrame) -> pd.DataFrame:
         columns=[column for column in derived.columns if column in result.columns],
         errors="ignore",
     )
-    result = pd.concat([result, derived], axis=1, copy=False)
+    result = pd.concat([result, derived], axis=1)
     if "_event_date" in result.columns:
         result = result.drop(columns="_event_date")
     return result
