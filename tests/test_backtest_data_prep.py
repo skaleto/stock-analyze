@@ -78,6 +78,12 @@ class PrepareBacktestDataTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_formal_benchmark_collection_keeps_only_hs300_and_zz500(self):
+        self.assertEqual(
+            data_prep.INDEX_CODES,
+            [("000300.SH", "000300"), ("000905.SH", "000905")],
+        )
+
     def test_writes_daily_csv_per_date(self):
         """prepare_backtest_data fetches pro.daily per date and writes a CSV per date."""
         fake_daily = pd.DataFrame({

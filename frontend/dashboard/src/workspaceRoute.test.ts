@@ -44,6 +44,9 @@ const canonicalRouteCases = [
   ["model research detail", {
     view: "model-research", focus: "a_share",
   }, "view=model-research&focus=a_share"],
+  ["multi-agent research", {
+    view: "multi-agent-research",
+  }, "view=multi-agent-research"],
   ["data intelligence", {
     view: "data-intelligence",
   }, "view=data-intelligence"],

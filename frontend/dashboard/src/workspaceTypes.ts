@@ -748,3 +748,39 @@ export type OperationsCenterData = {
     evidence: string;
   }[];
 };
+
+export type MultiAgentResearchLatestRun = {
+  runId: string;
+  createdAt: string | null;
+  status: string;
+  market: string;
+  instrument: {
+    code: string;
+    name: string;
+  };
+  model: string | null;
+  degradedRoles: string[];
+  digest: string;
+  executionEffect: "none_research_only";
+  reportPath: string;
+};
+
+export type MultiAgentResearchData = {
+  schemaVersion: "multi-agent-research-dashboard-v1";
+  status: "available" | "empty";
+  latestRun: MultiAgentResearchLatestRun | null;
+  universe: {
+    status: "available" | "unavailable";
+    asOf: string | null;
+    aShare: {
+      scopeCounts: Record<string, number>;
+      uniqueInstruments?: number | null;
+    };
+    funds: {
+      sourceCounts: Record<string, number>;
+      overseasScopeCounts: Record<string, number>;
+      classificationCounts?: Record<string, number>;
+    };
+  };
+  executionEffect: "none_research_only";
+};

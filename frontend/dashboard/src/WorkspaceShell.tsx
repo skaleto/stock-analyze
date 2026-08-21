@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import {
   Activity,
   BarChart3,
+  BookOpenText,
   BrainCircuit,
   ChevronDown,
   Gauge,
@@ -49,6 +50,9 @@ function defaultRoute(
     return { view: "strategy", mode: "compare", market: marketContext };
   }
   if (view === "model-research") {
+    return { view };
+  }
+  if (view === "multi-agent-research") {
     return { view };
   }
   if (view === "data-intelligence") {
@@ -130,6 +134,19 @@ export function WorkspaceShell({
             >
               <BrainCircuit size={17} aria-hidden="true" />
               <strong>模型研究</strong>
+            </button>
+            <button
+              type="button"
+              className={route.view === "multi-agent-research"
+                ? "rail-nav-item active"
+                : "rail-nav-item"}
+              aria-current={currentPage(route.view === "multi-agent-research")}
+              onClick={() => onNavigate(
+                defaultRoute("multi-agent-research", marketContext),
+              )}
+            >
+              <BookOpenText size={17} aria-hidden="true" />
+              <strong>多角色投研</strong>
             </button>
             <button
               type="button"

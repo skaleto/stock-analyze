@@ -36,6 +36,68 @@ class CLIResearchTest(unittest.TestCase):
             as_of="20200203",
         )
 
+    def test_cli_dispatches_research_universe_refresh_without_strategy_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "stock_analyze.markets.a_share.backtest.data_prep._make_pro_client",
+            return_value="pro-client",
+        ) as client, patch(
+            "stock_analyze.research.universe_expansion.refresh_research_universes",
+            return_value={"status": "complete", "as_of": "20260822"},
+        ) as refresh:
+            code = main([
+                "refresh-research-universes",
+                "--as-of", "2026-08-22",
+                "--repo-root", tmp,
+            ])
+
+        self.assertEqual(code, 0)
+        client.assert_called_once_with()
+        refresh.assert_called_once_with(
+            repo_root=Path(tmp),
+            pro_client="pro-client",
+            as_of="20260822",
+        )
+
+    def test_cli_runs_multi_agent_research_only_when_explicitly_requested(self):
+        evidence = {
+            "market": "a_share",
+            "as_of": "20260820",
+            "instrument": {"code": "000001.SZ", "name": "平安银行"},
+        }
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "stock_analyze.research.multi_agent_workflow.build_research_evidence",
+            return_value=evidence,
+        ) as build_evidence, patch(
+            "stock_analyze.research.multi_agent_workflow.ArkCLIResearchClient",
+            return_value="llm-client",
+        ) as client, patch(
+            "stock_analyze.research.multi_agent_workflow.run_multi_agent_research",
+            return_value={"status": "complete", "run_id": "run-1"},
+        ) as run:
+            code = main([
+                "--market", "a_share",
+                "run-multi-agent-research",
+                "--code", "000001.SZ",
+                "--model", "test-model",
+                "--as-of", "2026-08-22",
+                "--repo-root", tmp,
+            ])
+
+        self.assertEqual(code, 0)
+        build_evidence.assert_called_once_with(
+            repo_root=Path(tmp),
+            market="a_share",
+            code="000001.SZ",
+            as_of="20260822",
+        )
+        client.assert_called_once_with(timeout_seconds=600)
+        run.assert_called_once_with(
+            repo_root=Path(tmp),
+            evidence=evidence,
+            llm_client="llm-client",
+            model="test-model",
+        )
+
     def test_cli_returns_nonzero_when_materialization_fails(self):
         with patch(
             "stock_analyze.research.a_share_materializer.materialize_a_share_research_data",

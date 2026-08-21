@@ -203,6 +203,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     materialize_a_share.add_argument("--repo-root", type=Path, default=Path("."))
 
+    refresh_universes = sub.add_parser(
+        "refresh-research-universes",
+        help=(
+            "Collect a research-only CSI1000 and fund-master catalog; "
+            "does not alter formal account scopes or execution data."
+        ),
+    )
+    refresh_universes.add_argument(
+        "--as-of",
+        default=argparse.SUPPRESS,
+        help="Catalog date YYYY-MM-DD (default: today).",
+    )
+    refresh_universes.add_argument("--repo-root", type=Path, default=Path("."))
+
+    multi_agent_research = sub.add_parser(
+        "run-multi-agent-research",
+        help=(
+            "Explicitly run the audited, research-only multi-role workflow "
+            "from persisted project evidence."
+        ),
+    )
+    multi_agent_research.add_argument("--code", required=True)
+    multi_agent_research.add_argument("--model", default="glm-5.3")
+    multi_agent_research.add_argument(
+        "--as-of",
+        default=argparse.SUPPRESS,
+        help="Evidence cutoff YYYY-MM-DD (default: today).",
+    )
+    multi_agent_research.add_argument("--repo-root", type=Path, default=Path("."))
+    multi_agent_research.add_argument("--timeout-seconds", type=int, default=600)
+
     bt = sub.add_parser(
         "backtest",
         help="Run a historical backtest of an overlay over an arbitrary window.",
@@ -1669,6 +1700,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "materialize-a-share-research-data":
         ensure_dirs(args.logs_dir)
         return _command_materialize_a_share_research_data(args)
+    if args.command == "refresh-research-universes":
+        ensure_dirs(args.logs_dir)
+        return _command_refresh_research_universes(args)
+    if args.command == "run-multi-agent-research":
+        ensure_dirs(args.logs_dir)
+        return _command_run_multi_agent_research(args)
     if args.command == "backfill-a-share-moneyflow":
         ensure_dirs(args.logs_dir)
         return _command_backfill_a_share_moneyflow(args)
@@ -3545,6 +3582,56 @@ def _command_materialize_a_share_research_data(args: argparse.Namespace) -> int:
     return 0
 
 
+def _command_refresh_research_universes(args: argparse.Namespace) -> int:
+    """Run the bounded metadata collection that feeds research-only catalogs."""
+    from .markets.a_share.backtest.data_prep import _make_pro_client
+    from .research.universe_expansion import refresh_research_universes
+
+    as_of = str(getattr(args, "as_of", None) or date.today().isoformat())
+    snapshot_date = as_of.replace("-", "")
+    try:
+        pro_client = _make_pro_client()
+        result = refresh_research_universes(
+            repo_root=args.repo_root,
+            pro_client=pro_client,
+            as_of=snapshot_date,
+        )
+    except Exception as exc:  # noqa: BLE001 - collection must fail closed
+        print(f"error: refresh-research-universes failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _command_run_multi_agent_research(args: argparse.Namespace) -> int:
+    """Run a user-invoked model workflow; never part of Dashboard serving."""
+    from .research.multi_agent_workflow import (
+        ArkCLIResearchClient,
+        build_research_evidence,
+        run_multi_agent_research,
+    )
+
+    as_of = str(getattr(args, "as_of", None) or date.today().isoformat())
+    try:
+        evidence = build_research_evidence(
+            repo_root=args.repo_root,
+            market=args.market,
+            code=args.code,
+            as_of=as_of.replace("-", ""),
+        )
+        result = run_multi_agent_research(
+            repo_root=args.repo_root,
+            evidence=evidence,
+            llm_client=ArkCLIResearchClient(timeout_seconds=args.timeout_seconds),
+            model=args.model,
+        )
+    except Exception as exc:  # noqa: BLE001 - reports must be complete or explicit failures
+        print(f"error: run-multi-agent-research failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _command_backtest(args: argparse.Namespace) -> int:
     """Run a historical backtest of an overlay and write outputs to args.output."""
     from .markets.a_share.backtest import engine
@@ -4102,6 +4189,7 @@ def _is_dashboard_api_path(path: str) -> bool:
         "/api/dashboard/instrument.json",
         "/api/dashboard/system-overview.json",
         "/api/dashboard/model-research.json",
+        "/api/dashboard/multi-agent-research.json",
         "/api/dashboard/data-intelligence.json",
         "/api/dashboard/operations-center.json",
         "/api/dashboard/overview.json",
@@ -4249,6 +4337,14 @@ class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
                     return build_dashboard_model_research_data(
                         repo_root=repo_root,
                         market=market,
+                    )
+                if canonical_path == "/api/dashboard/multi-agent-research.json":
+                    from .dashboard_multi_agent_research import (
+                        build_dashboard_multi_agent_research_data,
+                    )
+
+                    return build_dashboard_multi_agent_research_data(
+                        repo_root=repo_root,
                     )
                 if canonical_path == "/api/dashboard/data-intelligence.json":
                     from .dashboard_workspace_api import (

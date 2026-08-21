@@ -6,6 +6,7 @@ export type WorkspaceView =
   | "system"
   | "strategy"
   | "model-research"
+  | "multi-agent-research"
   | "data-intelligence"
   | "operations";
 
@@ -24,6 +25,7 @@ export type WorkspaceRoute =
       strategy: StrategyKey;
     }
   | { view: "model-research"; focus?: DashboardMarket }
+  | { view: "multi-agent-research" }
   | { view: "data-intelligence"; focus?: DashboardMarket }
   | { view: "operations"; scope: WorkspaceScope };
 
@@ -96,6 +98,9 @@ export function parseWorkspaceRoute(search: string): WorkspaceRoute {
     return focus
       ? { view: "model-research", focus }
       : { view: "model-research" };
+  }
+  if (rawView === "multi-agent-research") {
+    return { view: "multi-agent-research" };
   }
   if (rawView === "data-intelligence" || rawView === "intelligence") {
     const focus = isMarket(params.get("focus"))

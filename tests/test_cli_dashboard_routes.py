@@ -100,6 +100,7 @@ class DashboardRoutesTableTests(unittest.TestCase):
         for resource in (
             "system-overview",
             "model-research",
+            "multi-agent-research",
             "data-intelligence",
             "operations-center",
             "overview",
@@ -227,6 +228,23 @@ class HandlerRewriteTests(unittest.TestCase):
             repo_root=Path(tmp).resolve(),
             market="cn_qdii_etf",
         )
+
+    def test_multi_agent_research_api_reads_completed_artifacts_only(self) -> None:
+        expected = {"status": "empty", "latestRun": None}
+        with TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_multi_agent_research."
+            "build_dashboard_multi_agent_research_data",
+            return_value=expected,
+        ) as builder:
+            status, payload = self._serve_api(
+                Path(tmp),
+                "",
+                path="/api/dashboard/multi-agent-research.json",
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, expected)
+        builder.assert_called_once_with(repo_root=Path(tmp).resolve())
 
     def test_operations_center_api_dispatches_scope_query(self) -> None:
         expected = {"scope": "exceptions", "mainChain": []}

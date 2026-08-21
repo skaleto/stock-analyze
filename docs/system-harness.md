@@ -94,8 +94,14 @@ python3 -m stock_analyze intelligence-semantic-route-finalize \
 python3 -m stock_analyze intelligence-artifact-job-status \
   --repo-root .
 
+# 研究宇宙与显式多角色投研（均不改变正式账户或订单）
+python3 -m stock_analyze refresh-research-universes --as-of 2026-08-22 --repo-root .
+python3 -m stock_analyze --market a_share run-multi-agent-research \
+  --code 000001.SZ --as-of 2026-08-22 --model glm-5.3 --repo-root .
+
 # 决策/风控/归因证据
 curl -s 'http://127.0.0.1:8765/api/dashboard/governance.json?market=a_share&agent=codex'
+curl -s 'http://127.0.0.1:8765/api/dashboard/multi-agent-research.json'
 ```
 
 `run-daily` 顺序固定为执行到期订单、更新净值、生成下一交易日目标。`run-weekly` 不下单。

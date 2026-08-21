@@ -17,6 +17,7 @@ import type {
 import type {
   DataIntelligenceData,
   ModelResearchData,
+  MultiAgentResearchData,
   OperationsCenterData,
 } from "./workspaceTypes";
 
@@ -2728,6 +2729,60 @@ function validateDataIntelligence(value: unknown): DataIntelligenceData {
   return data as unknown as DataIntelligenceData;
 }
 
+const MULTI_AGENT_RESEARCH_RESPONSE_LIMIT = 80_000;
+
+function validateMultiAgentNumberMap(value: unknown, path: string): void {
+  Object.entries(objectAt(value, path)).forEach(([key, item]) => {
+    if (!key || key.length > 128) modelResearchError(`${path}.${key}`);
+    numberAt(item, `${path}.${key}`);
+  });
+}
+
+function validateMultiAgentResearch(value: unknown): MultiAgentResearchData {
+  const data = objectAt(value, "multiAgentResearch");
+  if (data.schemaVersion !== "multi-agent-research-dashboard-v1") {
+    modelResearchError("multiAgentResearch.schemaVersion");
+  }
+  if (data.status !== "available" && data.status !== "empty") {
+    modelResearchError("multiAgentResearch.status");
+  }
+  if (data.executionEffect !== "none_research_only") {
+    modelResearchError("multiAgentResearch.executionEffect");
+  }
+  const universe = objectAt(data.universe, "multiAgentResearch.universe");
+  if (universe.status !== "available" && universe.status !== "unavailable") {
+    modelResearchError("multiAgentResearch.universe.status");
+  }
+  if (universe.asOf !== null) stringAt(universe.asOf, "multiAgentResearch.universe.asOf");
+  const aShare = objectAt(universe.aShare, "multiAgentResearch.universe.aShare");
+  validateMultiAgentNumberMap(aShare.scopeCounts, "multiAgentResearch.universe.aShare.scopeCounts");
+  if (aShare.uniqueInstruments !== undefined && aShare.uniqueInstruments !== null) {
+    numberAt(aShare.uniqueInstruments, "multiAgentResearch.universe.aShare.uniqueInstruments");
+  }
+  const funds = objectAt(universe.funds, "multiAgentResearch.universe.funds");
+  validateMultiAgentNumberMap(funds.sourceCounts, "multiAgentResearch.universe.funds.sourceCounts");
+  validateMultiAgentNumberMap(funds.overseasScopeCounts, "multiAgentResearch.universe.funds.overseasScopeCounts");
+  if (funds.classificationCounts !== undefined) {
+    validateMultiAgentNumberMap(funds.classificationCounts, "multiAgentResearch.universe.funds.classificationCounts");
+  }
+  if (data.latestRun !== null) {
+    const latest = objectAt(data.latestRun, "multiAgentResearch.latestRun");
+    ["runId", "status", "market", "digest", "reportPath"].forEach((key) => {
+      stringAt(latest[key], `multiAgentResearch.latestRun.${key}`);
+    });
+    if (latest.createdAt !== null) stringAt(latest.createdAt, "multiAgentResearch.latestRun.createdAt");
+    if (latest.model !== null) stringAt(latest.model, "multiAgentResearch.latestRun.model");
+    if (latest.executionEffect !== "none_research_only") {
+      modelResearchError("multiAgentResearch.latestRun.executionEffect");
+    }
+    stringArray(latest.degradedRoles, "multiAgentResearch.latestRun.degradedRoles");
+    const instrument = objectAt(latest.instrument, "multiAgentResearch.latestRun.instrument");
+    stringAt(instrument.code, "multiAgentResearch.latestRun.instrument.code");
+    stringAt(instrument.name, "multiAgentResearch.latestRun.instrument.name");
+  }
+  return data as unknown as MultiAgentResearchData;
+}
+
 async function fetchJson<T>(
   url: string,
   signal?: AbortSignal,
@@ -2883,6 +2938,17 @@ export function fetchModelResearch(
     MODEL_RESEARCH_RESPONSE_LIMIT,
     "Model research",
   ).then(validateModelResearch);
+}
+
+export function fetchMultiAgentResearch(
+  signal?: AbortSignal,
+): Promise<MultiAgentResearchData> {
+  return fetchJson<unknown>(
+    "/api/dashboard/multi-agent-research.json",
+    signal,
+    MULTI_AGENT_RESEARCH_RESPONSE_LIMIT,
+    "Multi-agent research",
+  ).then(validateMultiAgentResearch);
 }
 
 export function fetchDataIntelligence(
