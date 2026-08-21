@@ -614,7 +614,7 @@ class CLIResearchTest(unittest.TestCase):
                 "--offline", "--repo-root", tmp,
             ])
 
-        self.assertEqual(code, 75)
+        self.assertEqual(code, 0)
 
     def test_cli_dispatches_prepare_with_explicit_root(self):
         with tempfile.TemporaryDirectory() as tmp, patch(

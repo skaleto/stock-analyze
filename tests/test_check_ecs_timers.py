@@ -57,7 +57,6 @@ class CheckEcsTimersScriptTests(unittest.TestCase):
         self.assertIn('"$exit_status" == "75"', script)
         self.assertIn("four formal daily ledgers were not complete", script)
         self.assertIn("bounded-work guard", script)
-        self.assertIn("adjusted-price coverage guard", script)
         self.assertIn("paper_portfolios/current_status.json", script)
         self.assertIn("four isolated production paper challengers", script)
 

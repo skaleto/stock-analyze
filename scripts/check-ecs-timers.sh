@@ -121,10 +121,6 @@ for unit in "${health_services[@]}"; do
         echo "INFO: $unit skipped or deferred by its bounded-work guard."
         continue
         ;;
-      stock-analyze-tabular-forward.service)
-        echo "INFO: $unit deferred by the adjusted-price coverage guard."
-        continue
-        ;;
     esac
   fi
   if [[ -n "$result" && "$result" != "success" ]] || [[ -n "$exit_status" && "$exit_status" != "0" ]]; then

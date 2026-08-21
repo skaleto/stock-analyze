@@ -220,7 +220,6 @@ class PredictionSystemdTest(unittest.TestCase):
         self.assertNotIn("run-daily", service)
         self.assertNotIn("run-model-iteration", service)
         self.assertIn("MemoryMax=1600M", service)
-        self.assertIn("SuccessExitStatus=75", service)
         self.assertIn("OnCalendar=Mon..Fri *-*-* 19:20:00 Asia/Shanghai", timer)
         self.assertIn("Persistent=true", timer)
 

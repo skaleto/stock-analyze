@@ -2155,7 +2155,7 @@ def _command_research_workflow(args: argparse.Namespace) -> int:
                 "status": "deferred",
                 "reason": str(exc),
             }, ensure_ascii=False, indent=2))
-            return 75
+            return 0
         print(f"error: {args.command} failed: {exc}", file=sys.stderr)
         return 2
     output = (
