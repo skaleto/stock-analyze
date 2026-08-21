@@ -227,10 +227,19 @@ def _compute_group_without_calendar_gaps(group: pd.DataFrame) -> pd.DataFrame:
     computed = _compute_group(group.loc[valid_prices].copy())
     result = group.copy()
     derived_columns = [column for column in computed.columns if column not in result.columns]
-    for column in derived_columns:
-        result[column] = np.nan
-        result.loc[computed.index, column] = computed[column]
-    return result
+    if not derived_columns:
+        return result
+    derived = pd.DataFrame(
+        {
+            column: pd.to_numeric(
+                computed[column].reindex(result.index),
+                errors="coerce",
+            ).to_numpy(dtype=float, na_value=np.nan)
+            for column in derived_columns
+        },
+        index=result.index,
+    )
+    return pd.concat([result, derived], axis=1, copy=False)
 
 
 def compute_technical_features(ohlcv: pd.DataFrame) -> pd.DataFrame:

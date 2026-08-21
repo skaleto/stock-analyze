@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,7 @@ from stock_analyze.research.tabular_forward import (
 from stock_analyze.research.pipeline import ResearchPipeline
 from stock_analyze.research.tabular_ranker import load_tabular_ranker_config
 from stock_analyze.research.tabular_ranker import _config_hash
+from stock_analyze.research.technical_features import compute_technical_features
 
 
 def _config() -> dict:
@@ -111,6 +113,34 @@ def _forward_day(day: str, day_number: int) -> pd.DataFrame:
 
 
 class ResearchTabularForwardTest(unittest.TestCase):
+    def test_technical_features_accept_arrow_columns_when_calendar_rows_are_missing(self):
+        features = pd.DataFrame({
+            "code": pd.array(["000001.SZ"] * 3, dtype="string"),
+            "trade_date": pd.array(
+                ["20260701", "20260702", "20260703"],
+                dtype="string",
+            ),
+            "open": pd.array([1.0, None, 3.0], dtype="float64[pyarrow]"),
+            "high": pd.array([1.1, None, 3.1], dtype="float64[pyarrow]"),
+            "low": pd.array([0.9, None, 2.9], dtype="float64[pyarrow]"),
+            "close": pd.array([1.0, None, 3.0], dtype="float64[pyarrow]"),
+            "benchmark_close": pd.array(
+                [100.0, None, 102.0], dtype="float64[pyarrow]"
+            ),
+            "volume": pd.array([1000.0, None, 3000.0], dtype="float64[pyarrow]"),
+            "amount": pd.array([10000.0, None, 30000.0], dtype="float64[pyarrow]"),
+            "turnover_rate": pd.array(
+                [1.0, None, 3.0], dtype="float64[pyarrow]"
+            ),
+        })
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", FutureWarning)
+            result = compute_technical_features(features)
+
+        self.assertEqual(len(result), len(features))
+        self.assertIn("relative_strength_20", result.columns)
+
     def test_adjustment_join_uses_latest_point_in_time_value_for_new_scope_member(self):
         features = pd.DataFrame([
             {"code": "000009", "trade_date": "20260810", "close": 12.0},

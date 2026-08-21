@@ -4,6 +4,7 @@ import hashlib
 import json
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -210,7 +211,31 @@ class IntelligenceFactorsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             features = pd.DataFrame({"code": ["1"], "trade_date": ["20260718"]})
             enriched = attach_event_features(features, Path(tmp), market="a_share", as_of="2026-07-18")
-            self.assertEqual(enriched.iloc[0]["event_data_coverage"], 0.0)
+        self.assertEqual(enriched.iloc[0]["event_data_coverage"], 0.0)
+
+    def test_missing_event_columns_are_batched_for_fragmented_feature_frames(self) -> None:
+        features = pd.DataFrame({
+            "code": ["000001"],
+            "trade_date": ["20260718"],
+        })
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", pd.errors.PerformanceWarning)
+            for index in range(150):
+                features[f"feature_{index}"] = float(index)
+
+        with tempfile.TemporaryDirectory() as tmp, warnings.catch_warnings():
+            warnings.simplefilter("error", pd.errors.PerformanceWarning)
+            enriched = attach_event_features(
+                features,
+                Path(tmp),
+                market="a_share",
+                as_of="2026-07-18",
+                copy=False,
+            )
+
+        self.assertEqual(len(enriched), 1)
+        self.assertEqual(enriched.iloc[0]["event_data_coverage"], 0.0)
+        self.assertEqual(enriched.iloc[0]["event_net_materiality_20d"], 0.0)
 
     def test_no_event_semantic_run_counts_as_processed_coverage(
         self,

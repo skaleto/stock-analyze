@@ -105,22 +105,23 @@ def attach_event_features(
     copy: bool = True,
 ) -> pd.DataFrame:
     result = features.copy() if copy else features
+    defaults: dict[str, np.ndarray] = {}
     for column in LEGACY_EVENT_FACTOR_COLUMNS:
         if column not in result.columns:
-            values = (
+            defaults[column] = (
                 np.zeros(len(result), dtype=np.float32)
                 if column == "event_data_coverage"
                 else np.full(len(result), np.nan, dtype=np.float32)
             )
-            result[column] = pd.Series(
-                values,
-                index=result.index,
-            )
     for column in EVENT_SPECIFIC_FACTOR_COLUMNS:
         if column not in result.columns:
-            result[column] = pd.Series(
-                np.zeros(len(result), dtype=np.float32), index=result.index,
-            )
+            defaults[column] = np.zeros(len(result), dtype=np.float32)
+    if defaults:
+        result = pd.concat(
+            [result, pd.DataFrame(defaults, index=result.index)],
+            axis=1,
+            copy=False,
+        )
     db_path = Path(intelligence_root) / "intelligence.sqlite3"
     if not db_path.exists() or result.empty:
         return _finalize_event_features(result)
@@ -223,12 +224,20 @@ def _finalize_event_features(result: pd.DataFrame) -> pd.DataFrame:
         result["event_materiality_negative_20d"],
         errors="coerce",
     )
-    result["event_net_strength_5d"] = (
-        positive - negative
-    ).astype(np.float32)
-    result["event_net_materiality_20d"] = (
-        positive_materiality - negative_materiality
-    ).astype(np.float32)
+    derived = pd.DataFrame(
+        {
+            "event_net_strength_5d": (positive - negative).astype(np.float32),
+            "event_net_materiality_20d": (
+                positive_materiality - negative_materiality
+            ).astype(np.float32),
+        },
+        index=result.index,
+    )
+    result = result.drop(
+        columns=[column for column in derived.columns if column in result.columns],
+        errors="ignore",
+    )
+    result = pd.concat([result, derived], axis=1, copy=False)
     if "_event_date" in result.columns:
         result = result.drop(columns="_event_date")
     return result

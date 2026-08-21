@@ -2147,6 +2147,15 @@ def _command_research_workflow(args: argparse.Namespace) -> int:
         else:
             result = pipeline.predict()
     except Exception as exc:  # noqa: BLE001
+        if (
+            args.command == "run-regime-tabular-forward"
+            and str(exc).startswith("regime_tabular_forward_adj_factor_coverage:")
+        ):
+            print(json.dumps({
+                "status": "deferred",
+                "reason": str(exc),
+            }, ensure_ascii=False, indent=2))
+            return 75
         print(f"error: {args.command} failed: {exc}", file=sys.stderr)
         return 2
     output = (

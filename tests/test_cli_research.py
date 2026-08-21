@@ -601,6 +601,21 @@ class CLIResearchTest(unittest.TestCase):
             config_path=Path("configs/research/classical_model.yaml")
         )
 
+    def test_cli_defers_forward_observer_when_adjustment_coverage_is_incomplete(self):
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "stock_analyze.research.pipeline.ResearchPipeline.run_regime_tabular_forward",
+            side_effect=ValueError(
+                "regime_tabular_forward_adj_factor_coverage:0.586000"
+            ),
+        ):
+            code = main([
+                "--market", "a_share", "--agent", "codex",
+                "--as-of", "2026-08-20", "run-regime-tabular-forward",
+                "--offline", "--repo-root", tmp,
+            ])
+
+        self.assertEqual(code, 75)
+
     def test_cli_dispatches_prepare_with_explicit_root(self):
         with tempfile.TemporaryDirectory() as tmp, patch(
             "stock_analyze.research.pipeline.ResearchPipeline.prepare_data",
