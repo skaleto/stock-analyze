@@ -71,6 +71,7 @@ def _optional_number(value: object) -> float | None:
 def build_a_share_research_catalog(
     memberships: Mapping[str, Iterable[Mapping[str, object]]],
     *,
+    stock_basics: Iterable[Mapping[str, object]],
     as_of: str,
 ) -> dict[str, object]:
     """Build an exact-date A-share research membership catalog.
@@ -83,6 +84,11 @@ def build_a_share_research_catalog(
     if not snapshot_date:
         raise ValueError("research_universe_as_of_invalid")
 
+    name_by_code = {
+        _row_text(row, "ts_code", "code"): _text(row.get("name"))
+        for row in stock_basics
+        if _row_text(row, "ts_code", "code") and _text(row.get("name"))
+    }
     by_code: dict[str, dict[str, Any]] = {}
     scope_counts: dict[str, int] = {}
     membership_dates: dict[str, str] = {}
@@ -133,6 +139,10 @@ def build_a_share_research_catalog(
                 membership["weight"] = weight
             record["memberships"].append(membership)
 
+    missing_names = sorted(code for code in by_code if code not in name_by_code)
+    if missing_names:
+        raise ValueError(f"a_share_name_missing:{missing_names[0]}")
+
     records: list[dict[str, object]] = []
     for code in sorted(by_code):
         record = by_code[code]
@@ -142,6 +152,8 @@ def build_a_share_research_catalog(
         )
         latest = max(str(item["membership_date"]) for item in record["memberships"])
         record["membership_date"] = latest
+        record["name"] = name_by_code[code]
+        record["name_source"] = "tushare_stock_basic"
         records.append(record)
 
     summary = {
@@ -149,6 +161,7 @@ def build_a_share_research_catalog(
         "index_codes": dict(A_SHARE_INDEXES),
         "membership_dates": membership_dates,
         "unique_instruments": len(records),
+        "name_coverage": {"named": len(records), "missing": 0},
         "records_sha256": _canonical_hash(records),
     }
     return {
@@ -380,7 +393,11 @@ def refresh_research_universes(
     snapshot_date = _compact_date(as_of)
     if not snapshot_date:
         raise ValueError("research_universe_as_of_invalid")
-    if not hasattr(pro_client, "index_weight") or not hasattr(pro_client, "fund_basic"):
+    if (
+        not hasattr(pro_client, "index_weight")
+        or not hasattr(pro_client, "fund_basic")
+        or not hasattr(pro_client, "stock_basic")
+    ):
         raise ValueError("research_universe_client_invalid")
 
     start_date = _membership_start(snapshot_date)
@@ -403,8 +420,16 @@ def refresh_research_universes(
         pro_client.fund_basic(market="O", status="L"),
         source_name="fund_basic:otc",
     )
+    stock_basics = _rows(
+        pro_client.stock_basic(exchange="", list_status="L", fields="ts_code,name"),
+        source_name="stock_basic:listed",
+    )
 
-    a_share = build_a_share_research_catalog(memberships, as_of=snapshot_date)
+    a_share = build_a_share_research_catalog(
+        memberships,
+        stock_basics=stock_basics,
+        as_of=snapshot_date,
+    )
     funds = build_fund_research_catalog(
         exchange_basic=exchange_basic,
         otc_basic=otc_basic,
@@ -418,6 +443,13 @@ def refresh_research_universes(
             "provider": "tushare",
             "a_share_membership_start": start_date,
             "a_share_indexes": dict(A_SHARE_INDEXES),
+            "a_share_master": {
+                "endpoint": "stock_basic",
+                "exchange": "",
+                "list_status": "L",
+                "fields": ["ts_code", "name"],
+                "rows": len(stock_basics),
+            },
             "fund_masters": {
                 "exchange": {"market": "E", "status": "L", "rows": len(exchange_basic)},
                 "otc": {"market": "O", "status": "L", "rows": len(otc_basic)},

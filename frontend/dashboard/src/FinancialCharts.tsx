@@ -470,10 +470,12 @@ export function CandlestickChart({
   candles,
   trades = [],
   strategyLabel = "当前策略",
+  showTradeMarkers = true,
 }: {
   candles: Candle[];
   trades?: OrderRow[];
   strategyLabel?: string;
+  showTradeMarkers?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -488,8 +490,8 @@ export function CandlestickChart({
   const macdStatus = useMemo(() => macdReading(macdPoints), [macdPoints]);
   const volumePriceStatus = useMemo(() => volumePriceReading(candles), [candles]);
   const visibleTrades = useMemo(
-    () => visibleCandleTrades(candles, trades),
-    [candles, trades],
+    () => showTradeMarkers ? visibleCandleTrades(candles, trades) : [],
+    [candles, showTradeMarkers, trades],
   );
   const markerBundle = useMemo(
     () => buildTradeMarkerBundle(visibleTrades, strategyLabel),
@@ -646,17 +648,19 @@ export function CandlestickChart({
   return (
     <div className="financial-chart candle-chart">
       <div className="chart-toolbar candle-toolbar">
-        <div className="trade-marker-summary" aria-label="当前策略成交标记">
-          <strong>历史成交 · {strategyLabel}</strong>
-          {visibleTrades.length ? (
-            <>
-              <span className="trade-marker-buy">买入 {buyCount}</span>
-              <span className="trade-marker-sell">卖出 {sellCount}</span>
-            </>
-          ) : (
-            <span>暂无成交，执行后自动标注</span>
-          )}
-        </div>
+        {showTradeMarkers ? (
+          <div className="trade-marker-summary" aria-label="当前策略成交标记">
+            <strong>历史成交 · {strategyLabel}</strong>
+            {visibleTrades.length ? (
+              <>
+                <span className="trade-marker-buy">买入 {buyCount}</span>
+                <span className="trade-marker-sell">卖出 {sellCount}</span>
+              </>
+            ) : (
+              <span>暂无成交，执行后自动标注</span>
+            )}
+          </div>
+        ) : <div className="trade-marker-summary" aria-label="投研K线"><strong>投研 K 线</strong><span>仅行情与技术指标</span></div>}
         <div className="range-control" aria-label="K线时间范围">
           {([
             { value: 30, label: "1月" },

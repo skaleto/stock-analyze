@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { Candle, InstrumentMetric } from "./types";
 
 export type WorkspaceStatus =
   | "success"
@@ -832,5 +833,25 @@ export type ResearchUniversePage = {
   total: number;
   scopeOptions: string[];
   records: ResearchUniverseRecord[];
+  executionEffect: "none_research_only";
+};
+
+export type ResearchUniverseInstrumentRequest = {
+  kind: ResearchUniverseKind;
+  code: string;
+};
+
+export type ResearchUniverseInstrumentDetail = {
+  schemaVersion: "research-universe-instrument-v1";
+  status: "available" | "unavailable";
+  asOf: string | null;
+  kind: ResearchUniverseKind;
+  code: string;
+  instrument: ResearchUniverseRecord | null;
+  market: "a_share" | "cn_qdii_etf" | null;
+  latest: (Candle & { changePct: number | null }) | null;
+  candles: Candle[];
+  metrics: InstrumentMetric[];
+  warning: string | null;
   executionEffect: "none_research_only";
 };

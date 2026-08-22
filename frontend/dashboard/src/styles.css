@@ -4040,6 +4040,24 @@ a:hover { text-decoration: underline; }
   font-size: 10px;
 }
 
+.research-universe-detail-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+}
+
+.research-universe-detail-link:hover,
+.research-universe-detail-link:focus-visible {
+  outline: 0;
+  color: var(--accent);
+  text-decoration-color: currentColor;
+}
+
 .research-universe-pagination {
   display: flex;
   align-items: center;

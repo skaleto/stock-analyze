@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BookOpenText, Database, FileText, ShieldCheck } from "lucide-react";
 import { fetchMultiAgentResearch, fetchResearchUniverse } from "./api";
+import ResearchUniverseInstrumentDrawer from "./ResearchUniverseInstrumentDrawer";
 import { WorkspaceStatusBadge } from "./WorkspacePrimitives";
 import { useWorkspaceResource } from "./useWorkspaceResource";
 import type {
@@ -57,6 +58,8 @@ export function MultiAgentResearchPage({
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<string | null>(null);
   const [page, setPage] = useState(1);
+  const [selectedRecord, setSelectedRecord] = useState<ResearchUniverseRecord | null>(null);
+  const drawerTriggerRef = useRef<HTMLElement | null>(null);
   const browserKey = `research-universe:${kind}:${query}:${scope ?? ""}:${page}:50`;
   const browserLoader = useCallback(
     (signal: AbortSignal) => fetchResearchUniverse({
@@ -89,6 +92,8 @@ export function MultiAgentResearchPage({
     setQuery("");
     setScope(null);
     setPage(1);
+    setSelectedRecord(null);
+    drawerTriggerRef.current = null;
   }, []);
 
   const submitSearch = useCallback((event: React.FormEvent<HTMLFormElement>) => {
@@ -102,6 +107,18 @@ export function MultiAgentResearchPage({
     setQuery("");
     setScope(null);
     setPage(1);
+  }, []);
+
+  const openInstrument = useCallback((record: ResearchUniverseRecord, trigger: HTMLElement) => {
+    drawerTriggerRef.current = trigger;
+    setSelectedRecord(record);
+  }, []);
+
+  const closeInstrument = useCallback(() => {
+    const trigger = drawerTriggerRef.current;
+    setSelectedRecord(null);
+    drawerTriggerRef.current = null;
+    window.requestAnimationFrame(() => trigger?.focus());
   }, []);
 
   if (resource.loading && !resource.data) {
@@ -201,7 +218,7 @@ export function MultiAgentResearchPage({
               aria-label="搜索研究目录"
               value={draftQuery}
               maxLength={80}
-              placeholder={kind === "a_share" ? "搜索证券代码" : "搜索基金代码或名称"}
+              placeholder={kind === "a_share" ? "搜索证券代码或名称" : "搜索基金代码或名称"}
               onChange={(event) => setDraftQuery(event.target.value)}
             />
             <select
@@ -255,7 +272,7 @@ export function MultiAgentResearchPage({
                   <tbody>
                     {browserData.records.map((record) => (
                       <tr key={record.code}>
-                        <td><strong>{record.code}</strong></td>
+                        <td><button className="research-universe-detail-link" type="button" aria-label={`查看 ${record.name || record.code} 详情`} onClick={(event) => openInstrument(record, event.currentTarget)}><strong>{record.code}</strong></button></td>
                         <td>{record.name || "—"}</td>
                         {isFundRecord(record) ? (
                           <>
@@ -287,6 +304,8 @@ export function MultiAgentResearchPage({
           ) : null}
         </div>
       </section>
+
+      {selectedRecord ? <ResearchUniverseInstrumentDrawer kind={kind} record={selectedRecord} onClose={closeInstrument} /> : null}
 
       <section className="workspace-detail-panel" aria-label="最新多角色投研">
         <header>

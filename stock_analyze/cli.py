@@ -4191,6 +4191,7 @@ def _is_dashboard_api_path(path: str) -> bool:
         "/api/dashboard/model-research.json",
         "/api/dashboard/multi-agent-research.json",
         "/api/dashboard/research-universe.json",
+        "/api/dashboard/research-universe-instrument.json",
         "/api/dashboard/data-intelligence.json",
         "/api/dashboard/operations-center.json",
         "/api/dashboard/overview.json",
@@ -4349,6 +4350,16 @@ class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
                         scope=(params.get("scope") or [None])[0] or None,
                         page=page,
                         page_size=page_size,
+                    )
+                if canonical_path == "/api/dashboard/research-universe-instrument.json":
+                    from .dashboard_multi_agent_research import (
+                        build_dashboard_research_universe_instrument_data,
+                    )
+
+                    return build_dashboard_research_universe_instrument_data(
+                        repo_root=repo_root,
+                        kind=(params.get("kind") or ["a_share"])[0],
+                        code=(params.get("code") or [""])[0],
                     )
                 market = (params.get("market") or ["a_share"])[0]
                 agent = (params.get("agent") or ["codex"])[0]

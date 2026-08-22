@@ -97,6 +97,7 @@ class DashboardRoutesTableTests(unittest.TestCase):
         self.assertTrue(_is_dashboard_api_path("/api/dashboard/summary.json"))
         self.assertTrue(_is_dashboard_api_path("/api/dashboard.json"))
         self.assertTrue(_is_dashboard_api_path("/api/dashboard/instrument.json"))
+        self.assertTrue(_is_dashboard_api_path("/api/dashboard/research-universe-instrument.json"))
         for resource in (
             "system-overview",
             "model-research",
@@ -282,6 +283,27 @@ class HandlerRewriteTests(unittest.TestCase):
 
                 self.assertEqual(status, 400)
                 self.assertEqual(payload["error"], "invalid_query")
+
+    def test_research_universe_instrument_api_dispatches_catalog_scoped_query(self) -> None:
+        expected = {"status": "available", "candles": []}
+        with TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_multi_agent_research."
+            "build_dashboard_research_universe_instrument_data",
+            return_value=expected,
+        ) as builder:
+            status, payload = self._serve_api(
+                Path(tmp),
+                "kind=a_share&code=000001.SZ",
+                path="/api/dashboard/research-universe-instrument.json",
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, expected)
+        builder.assert_called_once_with(
+            repo_root=Path(tmp).resolve(),
+            kind="a_share",
+            code="000001.SZ",
+        )
 
     def test_operations_center_api_dispatches_scope_query(self) -> None:
         expected = {"scope": "exceptions", "mainChain": []}

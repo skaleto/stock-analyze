@@ -6,8 +6,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+import pandas as pd
+
 from stock_analyze.dashboard_multi_agent_research import (
     build_dashboard_multi_agent_research_data,
+    build_dashboard_research_universe_instrument_data,
     build_dashboard_research_universe_data,
 )
 from stock_analyze.dashboard_http import InvalidDashboardQuery
@@ -24,6 +27,7 @@ class MultiAgentResearchDashboardTests(unittest.TestCase):
                     "records": [
                         {
                             "ts_code": "000002.SZ",
+                            "name": "万科A",
                             "record_kind": "a_share_equity",
                             "research_only": True,
                             "research_scopes": ["hs300"],
@@ -31,6 +35,7 @@ class MultiAgentResearchDashboardTests(unittest.TestCase):
                         },
                         {
                             "ts_code": "000001.SZ",
+                            "name": "平安银行",
                             "record_kind": "a_share_equity",
                             "research_only": True,
                             "research_scopes": ["csi1000", "hs300"],
@@ -158,6 +163,85 @@ class MultiAgentResearchDashboardTests(unittest.TestCase):
         self.assertEqual(payload["scopeOptions"], ["csi1000", "hs300"])
         self.assertEqual(payload["total"], 2)
         self.assertEqual(payload["records"][0]["membershipDate"], "20260731")
+        self.assertEqual(payload["records"][0]["name"], "平安银行")
+        self.assertEqual(payload["executionEffect"], "none_research_only")
+
+    def test_filters_a_share_by_persisted_master_name(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_universe_catalog(root)
+
+            payload = build_dashboard_research_universe_data(
+                repo_root=root,
+                kind="a_share",
+                query="平安",
+                scope=None,
+                page=1,
+                page_size=20,
+            )
+
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["records"][0]["code"], "000001.SZ")
+        self.assertEqual(payload["records"][0]["name"], "平安银行")
+
+    def test_projects_a_catalog_scoped_a_share_detail_without_account_data(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_universe_catalog(root)
+            cache = root / "data/shared/cache"
+            cache.mkdir(parents=True)
+            history = [
+                {
+                    "日期": f"2026{month:02d}{day:02d}",
+                    "开盘": 10 + index,
+                    "最高": 11 + index,
+                    "最低": 9 + index,
+                    "收盘": 10.5 + index,
+                    "成交量": 1000 + index,
+                    "成交额": 10000 + index,
+                }
+                for index, (month, day) in enumerate(
+                    [(6, day) for day in range(1, 29)] + [(7, day) for day in range(1, 31)] + [(8, day) for day in range(1, 5)]
+                )
+            ]
+            pd.DataFrame(history).to_csv(
+                cache / "history_000001_20260822_90.csv",
+                index=False,
+            )
+            (root / "data/a_share/codex").mkdir(parents=True)
+            (root / "data/a_share/codex/trades.csv").write_text(
+                "trade_date,account_id,code\n20260822,formal,000001.SZ\n",
+                encoding="utf-8",
+            )
+
+            payload = build_dashboard_research_universe_instrument_data(
+                repo_root=root,
+                kind="a_share",
+                code="000001.SZ",
+            )
+
+        self.assertEqual(payload["status"], "available")
+        self.assertEqual(payload["instrument"]["name"], "平安银行")
+        self.assertEqual(payload["instrument"]["researchScopes"], ["csi1000", "hs300"])
+        self.assertEqual(len(payload["candles"]), 62)
+        self.assertTrue(payload["metrics"])
+        self.assertNotIn("relatedTrades", payload)
+        self.assertNotIn("predictions", payload)
+        self.assertEqual(payload["executionEffect"], "none_research_only")
+
+    def test_returns_controlled_unavailable_detail_for_unknown_catalog_code(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_universe_catalog(root)
+
+            payload = build_dashboard_research_universe_instrument_data(
+                repo_root=root,
+                kind="a_share",
+                code="999999.SZ",
+            )
+
+        self.assertEqual(payload["status"], "unavailable")
+        self.assertEqual(payload["candles"], [])
         self.assertEqual(payload["executionEffect"], "none_research_only")
 
     def test_filters_fund_code_or_name_scope_and_paginates(self) -> None:

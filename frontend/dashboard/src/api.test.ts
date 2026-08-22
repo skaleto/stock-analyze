@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchModelResearch,
+  fetchResearchUniverseInstrument,
   fetchResearchUniverse,
   fetchSystemOverview,
 } from "./api";
@@ -697,5 +698,42 @@ describe("fetchResearchUniverse", () => {
     await expect(fetchResearchUniverse(request)).rejects.toThrow("records");
     await expect(fetchResearchUniverse(request)).rejects.toThrow("executionEffect");
     await expect(fetchResearchUniverse(request)).rejects.toThrow("tradability");
+  });
+});
+
+describe("fetchResearchUniverseInstrument", () => {
+  it("encodes a catalog-scoped detail request and accepts a read-only response", async () => {
+    const payload = {
+      schemaVersion: "research-universe-instrument-v1",
+      status: "available",
+      asOf: "20260822",
+      kind: "a_share",
+      code: "000001.SZ",
+      instrument: {
+        code: "000001.SZ",
+        name: "平安银行",
+        recordKind: "a_share_equity",
+        researchOnly: true,
+        researchScopes: ["hs300"],
+        membershipDate: "20260731",
+      },
+      market: "a_share",
+      latest: null,
+      candles: [],
+      metrics: [],
+      warning: "暂无可用的历史行情缓存",
+      executionEffect: "none_research_only",
+    };
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse(payload)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchResearchUniverseInstrument({ kind: "a_share", code: "000001.SZ" })).resolves.toMatchObject({
+      instrument: { name: "平安银行" },
+      executionEffect: "none_research_only",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/dashboard/research-universe-instrument.json?kind=a_share&code=000001.SZ",
+      expect.anything(),
+    );
   });
 });

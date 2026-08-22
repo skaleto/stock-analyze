@@ -37,6 +37,11 @@ class AShareResearchCatalogTests(unittest.TestCase):
                     {"con_code": "000005.SZ", "trade_date": "20260901", "weight": 0.3},
                 ],
             },
+            stock_basics=[
+                {"ts_code": "000002.SZ", "name": "万科A"},
+                {"ts_code": "000003.SZ", "name": "测试三号"},
+                {"ts_code": "000004.SZ", "name": "测试四号"},
+            ],
             as_of="20260822",
         )
 
@@ -54,6 +59,8 @@ class AShareResearchCatalogTests(unittest.TestCase):
         records = {record["ts_code"]: record for record in catalog["records"]}
         self.assertNotIn("000001.SZ", records)
         self.assertEqual(records["000002.SZ"]["membership_date"], "20260803")
+        self.assertEqual(records["000002.SZ"]["name"], "万科A")
+        self.assertEqual(records["000002.SZ"]["name_source"], "tushare_stock_basic")
         self.assertEqual(records["000004.SZ"]["research_scopes"], ["csi1000"])
         self.assertTrue(all(record["research_only"] for record in records.values()))
         self.assertTrue(all("execution" not in record for record in records.values()))
@@ -66,6 +73,25 @@ class AShareResearchCatalogTests(unittest.TestCase):
                     "zz500": [{"con_code": "000002.SZ", "trade_date": "20260803"}],
                     "csi1000": [{"con_code": "000003.SZ", "trade_date": "20260901"}],
                 },
+                stock_basics=[],
+                as_of="20260822",
+            )
+
+    def test_rejects_catalog_when_a_selected_member_has_no_master_name(self) -> None:
+        memberships = {
+            "hs300": [{"con_code": "000001.SZ", "trade_date": "20260803"}],
+            "zz500": [{"con_code": "000002.SZ", "trade_date": "20260803"}],
+            "csi1000": [{"con_code": "000003.SZ", "trade_date": "20260803"}],
+        }
+
+        with self.assertRaisesRegex(ValueError, "a_share_name_missing:000003.SZ"):
+            build_a_share_research_catalog(
+                memberships,
+                stock_basics=[
+                    {"ts_code": "000001.SZ", "name": "平安银行"},
+                    {"ts_code": "000002.SZ", "name": "万科A"},
+                    {"ts_code": "000003.SZ", "name": ""},
+                ],
                 as_of="20260822",
             )
 
@@ -160,6 +186,7 @@ class _ResearchUniverseClient:
         self.missing_index = missing_index
         self.index_calls: list[dict[str, object]] = []
         self.fund_calls: list[dict[str, object]] = []
+        self.stock_basic_calls: list[dict[str, object]] = []
 
     def index_weight(self, **kwargs):
         self.index_calls.append(kwargs)
@@ -189,6 +216,14 @@ class _ResearchUniverseClient:
             "status": "L", "benchmark": "MSCI World",
         }])
 
+    def stock_basic(self, **kwargs):
+        self.stock_basic_calls.append(kwargs)
+        return pd.DataFrame([
+            {"ts_code": "000001.SZ", "name": "平安银行"},
+            {"ts_code": "000002.SZ", "name": "万科A"},
+            {"ts_code": "000003.SZ", "name": "测试三号"},
+        ])
+
 
 class ResearchUniverseRefreshTests(unittest.TestCase):
     def test_publishes_dated_and_latest_snapshot_only_after_all_sources_validate(self) -> None:
@@ -205,6 +240,8 @@ class ResearchUniverseRefreshTests(unittest.TestCase):
             self.assertTrue(dated.exists())
             self.assertTrue(latest.exists())
             self.assertEqual(json.loads(latest.read_text(encoding="utf-8"))["as_of"], "20260822")
+            snapshot = json.loads(latest.read_text(encoding="utf-8"))
+            self.assertEqual(snapshot["a_share"]["records"][0]["name"], "平安银行")
             self.assertEqual(result["summary"]["funds"]["source_counts"], {
                 "exchange": 1,
                 "otc": 1,

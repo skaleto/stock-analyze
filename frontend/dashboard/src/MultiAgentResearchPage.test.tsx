@@ -4,6 +4,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MultiAgentResearchPage } from "./MultiAgentResearchPage";
 import { workspaceQueryClient } from "./queryClient";
 
+vi.mock("./FinancialCharts", () => ({
+  CandlestickChart: () => <div>K线图</div>,
+}));
+
 function response(body: unknown): Response {
   return {
     ok: true,
@@ -61,7 +65,7 @@ function universePage(
 ) {
   const aShare = {
     code: "000001.SZ",
-    name: "",
+    name: "平安银行",
     recordKind: "a_share_equity",
     researchOnly: true,
     researchScopes: ["csi1000"],
@@ -96,10 +100,69 @@ function universePage(
   };
 }
 
+function universeInstrument(kind: "a_share" | "exchange_fund" | "otc_fund") {
+  const aShare = kind === "a_share";
+  return {
+    schemaVersion: "research-universe-instrument-v1",
+    status: "available",
+    asOf: "20260822",
+    kind,
+    code: aShare ? "000001.SZ" : "513100.SH",
+    instrument: aShare
+      ? {
+        code: "000001.SZ",
+        name: "平安银行",
+        recordKind: "a_share_equity",
+        researchOnly: true,
+        researchScopes: ["csi1000"],
+        membershipDate: "20260731",
+      }
+      : {
+        code: "513100.SH",
+        name: "纳斯达克100ETF",
+        recordKind: "fund",
+        researchOnly: true,
+        fundType: "ETF",
+        benchmark: "纳斯达克100指数",
+        overseasScope: "nasdaq_100",
+        classificationStatus: "name_benchmark_inferred",
+        tradability: "exchange_research_only",
+      },
+    market: aShare ? "a_share" : "cn_qdii_etf",
+    latest: {
+      date: "2026-08-22",
+      open: 10,
+      high: 11,
+      low: 9,
+      close: 10.5,
+      volume: 1000,
+      amount: 10000,
+      changePct: 0.02,
+    },
+    candles: [
+      { date: "2026-08-21", open: 9, high: 10, low: 8, close: 9.5, volume: 900, amount: 9000 },
+      { date: "2026-08-22", open: 10, high: 11, low: 9, close: 10.5, volume: 1000, amount: 10000 },
+    ],
+    metrics: [{
+      key: "momentum_20",
+      label: "20日动量",
+      explanation: "近20个交易日价格变化。",
+      value: 0.12,
+      format: "percent",
+    }],
+    warning: null,
+    executionEffect: "none_research_only",
+  };
+}
+
 function mockFetch() {
   return vi.fn((url: string) => {
     if (url === "/api/dashboard/multi-agent-research.json") {
       return Promise.resolve(response(summary()));
+    }
+    if (url.includes("/api/dashboard/research-universe-instrument.json")) {
+      const params = new URL(url, "http://dashboard.local").searchParams;
+      return Promise.resolve(response(universeInstrument(params.get("kind") as "a_share" | "exchange_fund" | "otc_fund")));
     }
     const params = new URL(url, "http://dashboard.local").searchParams;
     const kind = params.get("kind") as "a_share" | "exchange_fund" | "otc_fund";
@@ -128,7 +191,7 @@ describe("MultiAgentResearchPage", () => {
 
     render(<MultiAgentResearchPage refreshToken={0} />);
 
-    await waitFor(() => expect(screen.getByText("平安银行")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText("平安银行").length).toBeGreaterThan(0));
     expect(await screen.findByRole("table", { name: "研究目录结果" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "A股" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByText("CSI1000")).toBeInTheDocument();
@@ -155,6 +218,25 @@ describe("MultiAgentResearchPage", () => {
 
     expect(await screen.findByText("纳斯达克100ETF")).toBeInTheDocument();
     expect(screen.getByText("第 1 页 / 共 2 页 · 共 60 条")).toBeInTheDocument();
+  });
+
+  it("opens a read-only research detail drawer for an A-share catalog record", async () => {
+    const fetchMock = mockFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<MultiAgentResearchPage refreshToken={0} />);
+
+    await screen.findByRole("table", { name: "研究目录结果" });
+    await user.click(screen.getByRole("button", { name: "查看 平安银行 详情" }));
+
+    expect(await screen.findByRole("dialog", { name: "平安银行投研详情" })).toBeInTheDocument();
+    expect(screen.getByText("K线行情")).toBeInTheDocument();
+    expect(screen.getByText("20日动量")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/dashboard/research-universe-instrument.json?kind=a_share&code=000001.SZ"),
+      expect.anything(),
+    );
+    expect(screen.queryByText("相关交易")).not.toBeInTheDocument();
   });
 
   it("resets criteria on tabs and separates no-result, unavailable, and OTC comparison states", async () => {

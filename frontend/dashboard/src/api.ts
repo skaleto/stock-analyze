@@ -19,6 +19,8 @@ import type {
   ModelResearchData,
   MultiAgentResearchData,
   OperationsCenterData,
+  ResearchUniverseInstrumentDetail,
+  ResearchUniverseInstrumentRequest,
   ResearchUniversePage,
   ResearchUniverseRequest,
 } from "./workspaceTypes";
@@ -36,6 +38,7 @@ const workspaceStatuses = new Set([
 ]);
 
 const SYSTEM_OVERVIEW_RESPONSE_LIMIT = 250_000;
+const RESEARCH_UNIVERSE_INSTRUMENT_RESPONSE_LIMIT = 180_000;
 const systemMarkets = new Set(["a_share", "cn_qdii_etf"]);
 const systemAgents = new Set(["claude", "codex"]);
 const systemUsageStatuses = new Set([
@@ -2902,6 +2905,76 @@ function validateResearchUniverse(value: unknown): ResearchUniversePage {
   return data as unknown as ResearchUniversePage;
 }
 
+function researchUniverseNullableNumber(value: unknown, path: string): void {
+  if (value !== null && (typeof value !== "number" || !Number.isFinite(value))) {
+    researchUniverseError(path);
+  }
+}
+
+function validateResearchUniverseCandle(value: unknown, path: string): void {
+  const candle = researchUniverseObject(value, path);
+  researchUniverseString(candle.date, `${path}.date`, 16, { nonEmpty: true });
+  for (const key of ["open", "high", "low", "close"] as const) {
+    if (typeof candle[key] !== "number" || !Number.isFinite(candle[key])) {
+      researchUniverseError(`${path}.${key}`);
+    }
+  }
+  researchUniverseNullableNumber(candle.volume, `${path}.volume`);
+  researchUniverseNullableNumber(candle.amount, `${path}.amount`);
+}
+
+function validateResearchUniverseInstrument(
+  value: unknown,
+): ResearchUniverseInstrumentDetail {
+  const data = researchUniverseObject(value, "researchUniverseInstrument");
+  if (data.schemaVersion !== "research-universe-instrument-v1") {
+    researchUniverseError("instrument.schemaVersion");
+  }
+  if (data.status !== "available" && data.status !== "unavailable") {
+    researchUniverseError("instrument.status");
+  }
+  const kind = researchUniverseString(data.kind, "instrument.kind", 32, { nonEmpty: true });
+  if (!researchUniverseKinds.has(kind)) researchUniverseError("instrument.kind");
+  researchUniverseString(data.code, "instrument.code", 64, { nonEmpty: true });
+  if (data.asOf !== null) researchUniverseString(data.asOf, "instrument.asOf", 16);
+  if (data.executionEffect !== "none_research_only") {
+    researchUniverseError("instrument.executionEffect");
+  }
+  for (const forbiddenField of ["relatedTrades", "predictions", "agent", "account"] as const) {
+    if (forbiddenField in data) researchUniverseError(`instrument.${forbiddenField}`);
+  }
+  if (data.instrument === null) {
+    if (data.status !== "unavailable") researchUniverseError("instrument.record");
+  } else {
+    validateResearchUniverseRecord(data.instrument, "instrument.record", kind);
+  }
+  if (data.market !== null && data.market !== "a_share" && data.market !== "cn_qdii_etf") {
+    researchUniverseError("instrument.market");
+  }
+  if (data.latest !== null) {
+    validateResearchUniverseCandle(data.latest, "instrument.latest");
+    const latest = researchUniverseObject(data.latest, "instrument.latest");
+    researchUniverseNullableNumber(latest.changePct, "instrument.latest.changePct");
+  }
+  const candles = researchUniverseArray(data.candles, "instrument.candles", 800);
+  candles.forEach((candle, index) => {
+    validateResearchUniverseCandle(candle, `instrument.candles[${index}]`);
+  });
+  const metrics = researchUniverseArray(data.metrics, "instrument.metrics", 64);
+  metrics.forEach((metricValue, index) => {
+    const metric = researchUniverseObject(metricValue, `instrument.metrics[${index}]`);
+    researchUniverseString(metric.key, `instrument.metrics[${index}].key`, 128, { nonEmpty: true });
+    researchUniverseString(metric.label, `instrument.metrics[${index}].label`, 128, { nonEmpty: true });
+    researchUniverseString(metric.explanation, `instrument.metrics[${index}].explanation`, 512);
+    if (typeof metric.value !== "number" || !Number.isFinite(metric.value)) {
+      researchUniverseError(`instrument.metrics[${index}].value`);
+    }
+    researchUniverseString(metric.format, `instrument.metrics[${index}].format`, 32, { nonEmpty: true });
+  });
+  if (data.warning !== null) researchUniverseString(data.warning, "instrument.warning", 512);
+  return data as unknown as ResearchUniverseInstrumentDetail;
+}
+
 async function fetchJson<T>(
   url: string,
   signal?: AbortSignal,
@@ -3087,6 +3160,19 @@ export function fetchResearchUniverse(
     RESEARCH_UNIVERSE_RESPONSE_LIMIT,
     "Research universe",
   ).then(validateResearchUniverse);
+}
+
+export function fetchResearchUniverseInstrument(
+  request: ResearchUniverseInstrumentRequest,
+  signal?: AbortSignal,
+): Promise<ResearchUniverseInstrumentDetail> {
+  const params = new URLSearchParams({ kind: request.kind, code: request.code });
+  return fetchJson<unknown>(
+    `/api/dashboard/research-universe-instrument.json?${params.toString()}`,
+    signal,
+    RESEARCH_UNIVERSE_INSTRUMENT_RESPONSE_LIMIT,
+    "Research universe instrument",
+  ).then(validateResearchUniverseInstrument);
 }
 
 export function fetchDataIntelligence(
