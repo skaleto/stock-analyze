@@ -194,6 +194,33 @@ describe("useWorkspaceResource", () => {
     });
   });
 
+  it("keeps prior-key data while a replacement page loads when opted in", async () => {
+    const second = deferred<{ value: number }>();
+    const loader = vi.fn()
+      .mockResolvedValueOnce({ value: 7 })
+      .mockImplementationOnce(() => second.promise);
+    const { result, rerender } = renderHook(
+      ({ key }) => useWorkspaceResource(
+        key,
+        true,
+        loader,
+        { keepPreviousData: true },
+      ),
+      { initialProps: { key: "research-universe:a-share:1" } },
+    );
+
+    await waitFor(() => expect(result.current.data).toEqual({ value: 7 }));
+    rerender({ key: "research-universe:a-share:2" });
+    await waitFor(() => expect(loader).toHaveBeenCalledTimes(2));
+    expect(result.current).toMatchObject({
+      key: "research-universe:a-share:2",
+      data: { value: 7 },
+      loading: true,
+      error: null,
+      stale: false,
+    });
+  });
+
   it("ignores a stale resolution after the key changes", async () => {
     const first = deferred<{ value: number }>();
     const second = deferred<{ value: number }>();

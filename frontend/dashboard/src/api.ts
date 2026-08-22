@@ -19,6 +19,8 @@ import type {
   ModelResearchData,
   MultiAgentResearchData,
   OperationsCenterData,
+  ResearchUniversePage,
+  ResearchUniverseRequest,
 } from "./workspaceTypes";
 
 const workspaceStatuses = new Set([
@@ -2730,6 +2732,9 @@ function validateDataIntelligence(value: unknown): DataIntelligenceData {
 }
 
 const MULTI_AGENT_RESEARCH_RESPONSE_LIMIT = 80_000;
+const RESEARCH_UNIVERSE_RESPONSE_LIMIT = 80_000;
+const researchUniverseKinds = new Set(["a_share", "exchange_fund", "otc_fund"]);
+const researchUniversePageSizes = new Set([20, 50, 100]);
 
 function validateMultiAgentNumberMap(value: unknown, path: string): void {
   Object.entries(objectAt(value, path)).forEach(([key, item]) => {
@@ -2781,6 +2786,120 @@ function validateMultiAgentResearch(value: unknown): MultiAgentResearchData {
     stringAt(instrument.name, "multiAgentResearch.latestRun.instrument.name");
   }
   return data as unknown as MultiAgentResearchData;
+}
+
+function researchUniverseError(path: string): never {
+  throw new Error(`Invalid research universe response: ${path}`);
+}
+
+function researchUniverseObject(value: unknown, path: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    researchUniverseError(path);
+  }
+  return value as Record<string, unknown>;
+}
+
+function researchUniverseArray(value: unknown, path: string, limit: number): unknown[] {
+  if (!Array.isArray(value) || value.length > limit) researchUniverseError(path);
+  return value;
+}
+
+function researchUniverseString(
+  value: unknown,
+  path: string,
+  maximum: number,
+  { nonEmpty = false }: { nonEmpty?: boolean } = {},
+): string {
+  if (
+    typeof value !== "string"
+    || value.length > maximum
+    || (nonEmpty && !value)
+  ) {
+    researchUniverseError(path);
+  }
+  return value;
+}
+
+function researchUniverseInteger(value: unknown, path: string): number {
+  if (
+    typeof value !== "number"
+    || !Number.isFinite(value)
+    || !Number.isInteger(value)
+    || value < 0
+  ) {
+    researchUniverseError(path);
+  }
+  return value;
+}
+
+function validateResearchUniverseRecord(
+  value: unknown,
+  path: string,
+  kind: string,
+): void {
+  const record = researchUniverseObject(value, path);
+  researchUniverseString(record.code, `${path}.code`, 64, { nonEmpty: true });
+  researchUniverseString(record.name, `${path}.name`, 256);
+  researchUniverseString(record.recordKind, `${path}.recordKind`, 64, { nonEmpty: true });
+  if (record.researchOnly !== true) researchUniverseError(`${path}.researchOnly`);
+  if (kind === "a_share") {
+    researchUniverseArray(record.researchScopes, `${path}.researchScopes`, 16).forEach(
+      (scope, index) => researchUniverseString(
+        scope,
+        `${path}.researchScopes[${index}]`,
+        128,
+        { nonEmpty: true },
+      ),
+    );
+    if (record.membershipDate !== null) {
+      researchUniverseString(record.membershipDate, `${path}.membershipDate`, 16);
+    }
+    return;
+  }
+  researchUniverseString(record.fundType, `${path}.fundType`, 128);
+  researchUniverseString(record.benchmark, `${path}.benchmark`, 256);
+  if (record.overseasScope !== null) {
+    researchUniverseString(record.overseasScope, `${path}.overseasScope`, 128);
+  }
+  researchUniverseString(record.classificationStatus, `${path}.classificationStatus`, 128);
+  const expectedTradability = kind === "exchange_fund"
+    ? "exchange_research_only"
+    : "otc_non_tradable_research_only";
+  if (record.tradability !== expectedTradability) {
+    researchUniverseError(`${path}.tradability`);
+  }
+}
+
+function validateResearchUniverse(value: unknown): ResearchUniversePage {
+  const data = researchUniverseObject(value, "researchUniverse");
+  if (data.schemaVersion !== "research-universe-browser-v1") {
+    researchUniverseError("schemaVersion");
+  }
+  if (data.status !== "available" && data.status !== "unavailable") {
+    researchUniverseError("status");
+  }
+  const kind = researchUniverseString(data.kind, "kind", 32, { nonEmpty: true });
+  if (!researchUniverseKinds.has(kind)) researchUniverseError("kind");
+  if (data.executionEffect !== "none_research_only") {
+    researchUniverseError("executionEffect");
+  }
+  if (data.asOf !== null) researchUniverseString(data.asOf, "asOf", 16);
+  researchUniverseString(data.query, "query", 80);
+  if (data.scope !== null) researchUniverseString(data.scope, "scope", 128);
+  const page = researchUniverseInteger(data.page, "page");
+  if (page < 1) researchUniverseError("page");
+  const pageSize = researchUniverseInteger(data.pageSize, "pageSize");
+  if (!researchUniversePageSizes.has(pageSize)) researchUniverseError("pageSize");
+  researchUniverseInteger(data.total, "total");
+  researchUniverseArray(data.scopeOptions, "scopeOptions", 128).forEach((scope, index) => {
+    researchUniverseString(scope, `scopeOptions[${index}]`, 128, { nonEmpty: true });
+  });
+  const records = researchUniverseArray(data.records, "records", pageSize);
+  if (records.length > pageSize) researchUniverseError("records exceeds pageSize");
+  records.forEach((record, index) => {
+    validateResearchUniverseRecord(record, `records[${index}]`, kind);
+  });
+  return data as unknown as ResearchUniversePage;
 }
 
 async function fetchJson<T>(
@@ -2949,6 +3068,25 @@ export function fetchMultiAgentResearch(
     MULTI_AGENT_RESEARCH_RESPONSE_LIMIT,
     "Multi-agent research",
   ).then(validateMultiAgentResearch);
+}
+
+export function fetchResearchUniverse(
+  request: ResearchUniverseRequest,
+  signal?: AbortSignal,
+): Promise<ResearchUniversePage> {
+  const params = new URLSearchParams({
+    kind: request.kind,
+    query: request.query,
+  });
+  if (request.scope) params.set("scope", request.scope);
+  params.set("page", String(request.page));
+  params.set("page_size", String(request.pageSize));
+  return fetchJson<unknown>(
+    `/api/dashboard/research-universe.json?${params.toString()}`,
+    signal,
+    RESEARCH_UNIVERSE_RESPONSE_LIMIT,
+    "Research universe",
+  ).then(validateResearchUniverse);
 }
 
 export function fetchDataIntelligence(

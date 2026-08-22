@@ -8,6 +8,10 @@ import { workspaceQueryClient } from "./queryClient";
  */
 export type Loader<T> = (signal: AbortSignal) => Promise<T>;
 
+type WorkspaceResourceOptions = {
+  keepPreviousData?: boolean;
+};
+
 function message(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
@@ -16,6 +20,7 @@ export function useWorkspaceResource<T>(
   key: string,
   enabled: boolean,
   loader: Loader<T>,
+  options: WorkspaceResourceOptions = {},
 ) {
   const queryKey = ["workspace-resource", key] as const;
   const loaderRef = useRef(loader);
@@ -27,6 +32,9 @@ export function useWorkspaceResource<T>(
     queryFn: ({ signal }) => Promise.resolve().then(
       () => loaderRef.current(signal),
     ),
+    placeholderData: options.keepPreviousData
+      ? (previousData) => previousData
+      : undefined,
   }, workspaceQueryClient);
 
   useEffect(() => {

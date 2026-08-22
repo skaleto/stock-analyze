@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchModelResearch, fetchSystemOverview } from "./api";
+import {
+  fetchModelResearch,
+  fetchResearchUniverse,
+  fetchSystemOverview,
+} from "./api";
 
 function unavailableIntelligence() {
   return {
@@ -103,6 +107,33 @@ function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), {
     headers: { "content-type": "application/json; charset=utf-8" },
   });
+}
+
+function validResearchUniversePage() {
+  return {
+    schemaVersion: "research-universe-browser-v1",
+    status: "available",
+    asOf: "20260822",
+    kind: "exchange_fund",
+    query: "纳斯",
+    scope: "nasdaq_100",
+    page: 2,
+    pageSize: 50,
+    total: 51,
+    scopeOptions: ["nasdaq_100", "sp500"],
+    records: [{
+      code: "513100.SH",
+      name: "纳斯达克100ETF",
+      recordKind: "fund",
+      researchOnly: true,
+      fundType: "ETF",
+      benchmark: "纳斯达克100指数",
+      overseasScope: "nasdaq_100",
+      classificationStatus: "name_benchmark_inferred",
+      tradability: "exchange_research_only",
+    }],
+    executionEffect: "none_research_only",
+  };
 }
 
 let systemOverviewFixture: unknown;
@@ -619,5 +650,52 @@ describe("fetchModelResearch", () => {
         `Invalid model research response: ${testCase.path}`,
       );
     }
+  });
+});
+
+describe("fetchResearchUniverse", () => {
+  it("encodes the complete scoped page request and accepts a bounded response", async () => {
+    const payload = validResearchUniversePage();
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse(payload)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchResearchUniverse({
+      kind: "exchange_fund",
+      query: "纳斯",
+      scope: "nasdaq_100",
+      page: 2,
+      pageSize: 50,
+    })).resolves.toMatchObject({ kind: "exchange_fund", total: 51 });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/dashboard/research-universe.json?kind=exchange_fund&query=%E7%BA%B3%E6%96%AF&scope=nasdaq_100&page=2&page_size=50",
+      expect.objectContaining({ cache: "no-cache" }),
+    );
+  });
+
+  it("rejects oversized records, execution effects, and fund rows without tradability", async () => {
+    const oversized = validResearchUniversePage();
+    oversized.pageSize = 100;
+    oversized.records = Array.from({ length: 101 }, () => oversized.records[0]);
+    const wrongEffect = validResearchUniversePage();
+    wrongEffect.executionEffect = "orders_created";
+    const missingTradability = validResearchUniversePage();
+    delete (missingTradability.records[0] as { tradability?: string }).tradability;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(oversized))
+      .mockResolvedValueOnce(jsonResponse(wrongEffect))
+      .mockResolvedValueOnce(jsonResponse(missingTradability));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = {
+      kind: "exchange_fund" as const,
+      query: "",
+      scope: null,
+      page: 1,
+      pageSize: 100,
+    };
+    await expect(fetchResearchUniverse(request)).rejects.toThrow("records");
+    await expect(fetchResearchUniverse(request)).rejects.toThrow("executionEffect");
+    await expect(fetchResearchUniverse(request)).rejects.toThrow("tradability");
   });
 });

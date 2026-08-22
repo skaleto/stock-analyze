@@ -784,3 +784,53 @@ export type MultiAgentResearchData = {
   };
   executionEffect: "none_research_only";
 };
+
+export type ResearchUniverseKind = "a_share" | "exchange_fund" | "otc_fund";
+
+export type ResearchUniverseRequest = {
+  kind: ResearchUniverseKind;
+  query: string;
+  scope: string | null;
+  page: number;
+  pageSize: 20 | 50 | 100;
+};
+
+export type ResearchUniverseAShareRecord = {
+  code: string;
+  name: string;
+  recordKind: "a_share_equity" | string;
+  researchOnly: true;
+  researchScopes: string[];
+  membershipDate: string | null;
+};
+
+export type ResearchUniverseFundRecord = {
+  code: string;
+  name: string;
+  recordKind: "fund" | string;
+  researchOnly: true;
+  fundType: string;
+  benchmark: string;
+  overseasScope: string | null;
+  classificationStatus: string;
+  tradability: "exchange_research_only" | "otc_non_tradable_research_only";
+};
+
+export type ResearchUniverseRecord =
+  | ResearchUniverseAShareRecord
+  | ResearchUniverseFundRecord;
+
+export type ResearchUniversePage = {
+  schemaVersion: "research-universe-browser-v1";
+  status: "available" | "unavailable";
+  asOf: string | null;
+  kind: ResearchUniverseKind;
+  query: string;
+  scope: string | null;
+  page: number;
+  pageSize: 20 | 50 | 100;
+  total: number;
+  scopeOptions: string[];
+  records: ResearchUniverseRecord[];
+  executionEffect: "none_research_only";
+};
