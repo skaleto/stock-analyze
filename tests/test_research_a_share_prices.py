@@ -76,10 +76,20 @@ class AShareResearchPricesTests(unittest.TestCase):
                 as_of="20260823",
                 scope="csi1000",
             )
+            retry_client = _PriceClient()
+            retried = refresh_a_share_research_prices(
+                repo_root=root,
+                pro_client=retry_client,
+                as_of="20260823",
+                scope="csi1000",
+            )
             latest = json.loads(
                 (root / "data/research/a_share_prices/v1/latest.json").read_text(encoding="utf-8")
             )
 
             self.assertEqual(partial["status"], "partial")
+            self.assertEqual(retried["status"], "complete")
+            self.assertEqual(retried["reused"], 1)
+            self.assertEqual([call["ts_code"] for call in retry_client.calls], ["000013.SZ"])
             self.assertEqual(latest["status"], "complete")
-            self.assertEqual(latest["as_of"], "20260822")
+            self.assertEqual(latest["as_of"], "20260823")

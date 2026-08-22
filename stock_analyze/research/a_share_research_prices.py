@@ -105,6 +105,41 @@ def _active_manifest(root: Path) -> dict[str, object]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _stored_history(path: Path, *, code: str, as_of: str) -> list[dict[str, object]]:
+    try:
+        with path.open(encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames != list(_COLUMNS):
+                return []
+            source_rows = [dict(row) for row in reader]
+    except OSError:
+        return []
+    return _normalized_history(source_rows, code=code, as_of=as_of)
+
+
+def _resumable_codes(artifact_root: Path, *, snapshot: str, scope: str) -> set[str]:
+    try:
+        value = json.loads(
+            (artifact_root / "runs" / f"{snapshot}-{scope}.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        return set()
+    if not isinstance(value, Mapping) or (
+        value.get("schema_version") != _SCHEMA
+        or value.get("as_of") != snapshot
+        or value.get("scope") != scope
+    ):
+        return set()
+    completed = value.get("completed")
+    if not isinstance(completed, Mapping):
+        return set()
+    return {
+        str(code).upper()
+        for code in completed
+        if _CODE.fullmatch(str(code).upper())
+    }
+
+
 def a_share_research_price_artifact_warning(
     repo_root: str | Path,
     code: str,
@@ -139,9 +174,21 @@ def refresh_a_share_research_prices(
     artifact_root = _artifact_root(root)
     completed: dict[str, dict[str, object]] = {}
     failures: dict[str, str] = {}
+    reused = 0
+    resumable = _resumable_codes(artifact_root, snapshot=snapshot, scope=scope)
     next_request_at = 0.0
     for code in codes:
         try:
+            if code in resumable:
+                rows = _stored_history(artifact_root / f"{code}.csv", code=code, as_of=snapshot)
+                if len(rows) >= 2:
+                    completed[code] = {
+                        "rows": len(rows),
+                        "first_trade_date": rows[0]["trade_date"],
+                        "last_trade_date": rows[-1]["trade_date"],
+                    }
+                    reused += 1
+                    continue
             delay = next_request_at - time.monotonic()
             if delay > 0:
                 time.sleep(delay)
@@ -167,7 +214,7 @@ def refresh_a_share_research_prices(
     write_text_atomic(artifact_root / "runs" / f"{snapshot}-{scope}.json", serialized)
     if not failures:
         write_text_atomic(artifact_root / "latest.json", serialized)
-    return {"status": status, "as_of": snapshot, "requested": len(codes), "completed": len(completed), "failed": len(failures)}
+    return {"status": status, "as_of": snapshot, "requested": len(codes), "completed": len(completed), "reused": reused, "failed": len(failures)}
 
 
 def read_a_share_research_history(repo_root: str | Path, code: str) -> list[dict[str, Any]]:
@@ -179,16 +226,8 @@ def read_a_share_research_history(repo_root: str | Path, code: str) -> list[dict
     if a_share_research_price_artifact_warning(root, normalized) is not None:
         return []
     path = _artifact_root(root) / f"{normalized}.csv"
-    try:
-        with path.open(encoding="utf-8", newline="") as handle:
-            reader = csv.DictReader(handle)
-            if reader.fieldnames != list(_COLUMNS):
-                return []
-            source_rows = [dict(row) for row in reader]
-            as_of = max((_date_key(row.get("trade_date")) for row in source_rows), default="")
-            rows = _normalized_history(source_rows, code=normalized, as_of=as_of) if as_of else []
-    except OSError:
-        return []
+    manifest_as_of = _date_key(_active_manifest(root).get("as_of"))
+    rows = _stored_history(path, code=normalized, as_of=manifest_as_of) if manifest_as_of else []
     return [
         {
             "date": f"{row['trade_date'][:4]}-{row['trade_date'][4:6]}-{row['trade_date'][6:8]}",
