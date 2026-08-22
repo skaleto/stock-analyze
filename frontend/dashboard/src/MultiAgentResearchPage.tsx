@@ -17,6 +17,23 @@ function count(value: number | null | undefined): string {
   return new Intl.NumberFormat("en-US").format(value ?? 0);
 }
 
+function aShareScopeLabel(value: string): string {
+  if (value.startsWith("industry:")) return `行业 · ${value.slice("industry:".length)}`;
+  if (value.startsWith("board:")) return `板块 · ${value.slice("board:".length)}`;
+  if (value.startsWith("size:")) {
+    const label: Record<string, string> = {
+      micro_cap: "微盘（≤50亿）", small_cap: "小盘（50–200亿）",
+      mid_cap: "中盘（200–1000亿）", large_cap: "大盘（>1000亿）", unclassified: "市值未分类",
+    };
+    return `市值 · ${label[value.slice("size:".length)] ?? value.slice("size:".length)}`;
+  }
+  return value === "all_a_share" ? "全市场 A 股" : value.toUpperCase();
+}
+
+function aShareSizeLabel(value: string): string {
+  return aShareScopeLabel(`size:${value}`).replace("市值 · ", "");
+}
+
 function workspaceStatus(value: string): WorkspaceStatus {
   if (value === "available" || value === "complete") return "success";
   if (value === "completed_with_degradation") return "research";
@@ -192,7 +209,7 @@ export function MultiAgentResearchPage({
         <header>
           <div>
             <h2><Database size={17} aria-hidden="true" /> 研究目录浏览</h2>
-            <p>服务端分页 · 仅读取已落盘目录快照 · 可按代码、名称与研究范围检索</p>
+            <p>服务端分页 · 仅读取已落盘目录快照 · 可按代码、名称、指数范围、行业、板块与市值分层检索</p>
           </div>
           {kind === "otc_fund" ? <span className="research-universe-otc-label">非交易研究对照</span> : null}
         </header>
@@ -230,9 +247,9 @@ export function MultiAgentResearchPage({
               }}
               disabled={!browserData || browserData.scopeOptions.length === 0}
             >
-              <option value="">全部研究范围</option>
+              <option value="">全部范围 / 分类</option>
               {(browserData?.scopeOptions ?? []).map((option) => (
-                <option key={option} value={option}>{option}</option>
+                <option key={option} value={option}>{kind === "a_share" ? aShareScopeLabel(option) : option}</option>
               ))}
             </select>
             <button className="research-universe-submit" type="submit">搜索</button>
@@ -255,6 +272,9 @@ export function MultiAgentResearchPage({
                         <th>代码</th>
                         <th>名称</th>
                         <th>研究范围</th>
+                        <th>行业</th>
+                        <th>板块</th>
+                        <th>市值分层</th>
                         <th>成员日期</th>
                       </tr>
                     ) : (
@@ -297,6 +317,9 @@ export function MultiAgentResearchPage({
                         ) : (
                           <>
                             <td>{record.researchScopes.join(" · ") || "未分类"}</td>
+                            <td>{record.industry || "未分类"}</td>
+                            <td>{record.board || "未分类"}</td>
+                            <td>{aShareSizeLabel(record.sizeBucket)}</td>
                             <td>{record.membershipDate ?? "未记录"}</td>
                           </>
                         )}

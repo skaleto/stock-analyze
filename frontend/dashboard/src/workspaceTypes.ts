@@ -803,6 +803,10 @@ export type ResearchUniverseAShareRecord = {
   researchOnly: true;
   researchScopes: string[];
   membershipDate: string | null;
+  industry: string;
+  board: string;
+  sizeBucket: "micro_cap" | "small_cap" | "mid_cap" | "large_cap" | "unclassified" | string;
+  marketCapDate: string | null;
 };
 
 export type ResearchUniverseFundRecord = {
@@ -841,6 +845,13 @@ export type ResearchUniverseInstrumentRequest = {
   code: string;
 };
 
+export type ResearchUniverseNavPoint = {
+  date: string;
+  unitNav: number | null;
+  accumNav: number | null;
+  adjustedNav: number;
+};
+
 export type ResearchUniverseInstrumentDetail = {
   schemaVersion: "research-universe-instrument-v1";
   status: "available" | "unavailable";
@@ -851,6 +862,8 @@ export type ResearchUniverseInstrumentDetail = {
   market: "a_share" | "cn_qdii_etf" | null;
   latest: (Candle & { changePct: number | null }) | null;
   candles: Candle[];
+  navSeries: ResearchUniverseNavPoint[];
+  navLatest: ResearchUniverseNavPoint | null;
   metrics: InstrumentMetric[];
   warning: string | null;
   executionEffect: "none_research_only";

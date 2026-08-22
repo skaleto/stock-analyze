@@ -132,6 +132,72 @@ export function PerformanceChart({
   );
 }
 
+export function NavLineChart({
+  points,
+}: {
+  points: Array<{ date: string; unitNav: number | null; accumNav: number | null; adjustedNav: number }>;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [range, setRange] = useState<30 | 90 | 365 | 0>(365);
+  const filtered = useMemo(() => range === 0 ? points : points.slice(-range), [points, range]);
+  const [hovered, setHovered] = useState(filtered[filtered.length - 1] ?? null);
+
+  useEffect(() => {
+    setHovered(filtered[filtered.length - 1] ?? null);
+  }, [filtered]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || filtered.length === 0) return undefined;
+    const chart = createChart(container, {
+      width: Math.max(container.clientWidth, 320),
+      height: 270,
+      layout: chartLayout,
+      grid: { vertLines: { color: "#182230" }, horzLines: { color: "#182230" } },
+      rightPriceScale: { borderColor: "#2a3748", scaleMargins: { top: 0.12, bottom: 0.12 } },
+      timeScale: { borderColor: "#2a3748", rightOffset: 2 },
+      crosshair: { mode: CrosshairMode.Normal },
+      localization: { priceFormatter: (price: number) => price.toFixed(4) },
+    });
+    const series = chart.addSeries(LineSeries, {
+      color: "#22d3ee", lineWidth: 2, title: "复权净值", priceLineVisible: false, lastValueVisible: true,
+    });
+    series.setData(filtered.map((point) => ({ time: point.date as Time, value: point.adjustedNav })));
+    const byDate = new Map(filtered.map((point) => [point.date, point]));
+    chart.subscribeCrosshairMove((parameter) => {
+      const currentDate = typeof parameter.time === "string" ? parameter.time : null;
+      setHovered((currentDate && byDate.get(currentDate)) || filtered[filtered.length - 1] || null);
+    });
+    chart.timeScale().fitContent();
+    const stopObserving = observeChart(container, chart);
+    return () => {
+      stopObserving();
+      chart.remove();
+    };
+  }, [filtered]);
+
+  if (points.length === 0) return <div className="chart-empty">暂无已落盘净值历史</div>;
+  return (
+    <div className="financial-chart nav-line-chart">
+      <div className="chart-toolbar">
+        <div className="chart-legend" aria-label="净值图例"><span><i className="legend-portfolio" />复权净值</span></div>
+        <div className="range-control" aria-label="净值时间范围">
+          {([{ value: 30, label: "1月" }, { value: 90, label: "3月" }, { value: 365, label: "1年" }, { value: 0, label: "全部" }] as const).map((item) => (
+            <button key={item.value} type="button" className={range === item.value ? "active" : ""} onClick={() => setRange(item.value)}>{item.label}</button>
+          ))}
+        </div>
+      </div>
+      <div className="chart-readout" aria-live="polite">
+        <span>{hovered?.date ?? "-"}</span>
+        <span>复权净值 <b>{hovered?.adjustedNav.toFixed(4) ?? "-"}</b></span>
+        <span>单位净值 <b>{hovered?.unitNav?.toFixed(4) ?? "-"}</b></span>
+        <span>累计净值 <b>{hovered?.accumNav?.toFixed(4) ?? "-"}</b></span>
+      </div>
+      <div ref={containerRef} className="chart-canvas" aria-label="场外基金复权净值走势" />
+    </div>
+  );
+}
+
 export function StrategyComparisonChart({
   points,
   strategies,

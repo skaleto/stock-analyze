@@ -32,6 +32,10 @@ class MultiAgentResearchDashboardTests(unittest.TestCase):
                             "research_only": True,
                             "research_scopes": ["hs300"],
                             "membership_date": "20260731",
+                            "industry": "全国地产",
+                            "board": "主板",
+                            "size_bucket": "mid_cap",
+                            "market_cap_date": "20260821",
                         },
                         {
                             "ts_code": "000001.SZ",
@@ -40,6 +44,10 @@ class MultiAgentResearchDashboardTests(unittest.TestCase):
                             "research_only": True,
                             "research_scopes": ["csi1000", "hs300"],
                             "membership_date": "20260731",
+                            "industry": "银行",
+                            "board": "主板",
+                            "size_bucket": "large_cap",
+                            "market_cap_date": "20260821",
                         },
                     ],
                 },
@@ -160,7 +168,10 @@ class MultiAgentResearchDashboardTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "available")
         self.assertEqual([row["code"] for row in payload["records"]], ["000001.SZ", "000002.SZ"])
-        self.assertEqual(payload["scopeOptions"], ["csi1000", "hs300"])
+        self.assertEqual(payload["scopeOptions"], [
+            "board:主板", "csi1000", "hs300",
+            "industry:全国地产", "industry:银行", "size:large_cap", "size:mid_cap",
+        ])
         self.assertEqual(payload["total"], 2)
         self.assertEqual(payload["records"][0]["membershipDate"], "20260731")
         self.assertEqual(payload["records"][0]["name"], "平安银行")
@@ -183,6 +194,25 @@ class MultiAgentResearchDashboardTests(unittest.TestCase):
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["records"][0]["code"], "000001.SZ")
         self.assertEqual(payload["records"][0]["name"], "平安银行")
+
+    def test_projects_and_filters_a_share_board_industry_and_size(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_universe_catalog(root)
+
+            payload = build_dashboard_research_universe_data(
+                repo_root=root,
+                kind="a_share",
+                query="",
+                scope="industry:银行",
+                page=1,
+                page_size=20,
+            )
+
+        self.assertEqual(payload["total"], 1)
+        self.assertIn("industry:银行", payload["scopeOptions"])
+        self.assertEqual(payload["records"][0]["board"], "主板")
+        self.assertEqual(payload["records"][0]["sizeBucket"], "large_cap")
 
     def test_projects_a_catalog_scoped_a_share_detail_without_account_data(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -243,6 +273,40 @@ class MultiAgentResearchDashboardTests(unittest.TestCase):
         self.assertEqual(payload["status"], "unavailable")
         self.assertEqual(payload["candles"], [])
         self.assertEqual(payload["executionEffect"], "none_research_only")
+
+    def test_reads_research_price_and_otc_nav_artifacts_without_provider_calls(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_universe_catalog(root)
+            prices = root / "data/research/a_share_prices/v1"
+            prices.mkdir(parents=True)
+            (prices / "000001.SZ.csv").write_text(
+                "ts_code,trade_date,open,high,low,close,vol,amount\n"
+                "000001.SZ,20260820,9,10,8,9.5,900,9000\n"
+                "000001.SZ,20260821,10,11,9,10.5,1000,10000\n",
+                encoding="utf-8",
+            )
+            navs = root / "data/research/otc_fund_nav/v1"
+            navs.mkdir(parents=True)
+            (navs / "000834.OF.csv").write_text(
+                "ts_code,ann_date,nav_date,unit_nav,accum_nav,adj_nav\n"
+                "000834.OF,20260821,20260820,1,1,1\n"
+                "000834.OF,20260822,20260821,1.1,1.1,1.1\n",
+                encoding="utf-8",
+            )
+
+            equity = build_dashboard_research_universe_instrument_data(
+                repo_root=root, kind="a_share", code="000001.SZ",
+            )
+            otc = build_dashboard_research_universe_instrument_data(
+                repo_root=root, kind="otc_fund", code="000834.OF",
+            )
+
+        self.assertEqual(len(equity["candles"]), 2)
+        self.assertEqual(equity["instrument"]["industry"], "银行")
+        self.assertEqual(otc["candles"], [])
+        self.assertEqual(otc["navSeries"][-1]["adjustedNav"], 1.1)
+        self.assertTrue(otc["metrics"])
 
     def test_filters_fund_code_or_name_scope_and_paginates(self) -> None:
         with TemporaryDirectory() as tmp:

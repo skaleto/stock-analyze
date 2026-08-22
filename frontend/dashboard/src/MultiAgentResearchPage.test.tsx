@@ -6,6 +6,7 @@ import { workspaceQueryClient } from "./queryClient";
 
 vi.mock("./FinancialCharts", () => ({
   CandlestickChart: () => <div>K线图</div>,
+  NavLineChart: () => <div>复权净值图</div>,
 }));
 
 function response(body: unknown): Response {
@@ -70,6 +71,10 @@ function universePage(
     researchOnly: true,
     researchScopes: ["csi1000"],
     membershipDate: "20260731",
+    industry: "银行",
+    board: "主板",
+    sizeBucket: "large_cap",
+    marketCapDate: "20260821",
   };
   const fund = {
     code: kind === "otc_fund" ? "000834.OF" : "513100.SH",
@@ -102,12 +107,13 @@ function universePage(
 
 function universeInstrument(kind: "a_share" | "exchange_fund" | "otc_fund") {
   const aShare = kind === "a_share";
+  const otc = kind === "otc_fund";
   return {
     schemaVersion: "research-universe-instrument-v1",
     status: "available",
     asOf: "20260822",
     kind,
-    code: aShare ? "000001.SZ" : "513100.SH",
+    code: aShare ? "000001.SZ" : otc ? "000834.OF" : "513100.SH",
     instrument: aShare
       ? {
         code: "000001.SZ",
@@ -116,20 +122,24 @@ function universeInstrument(kind: "a_share" | "exchange_fund" | "otc_fund") {
         researchOnly: true,
         researchScopes: ["csi1000"],
         membershipDate: "20260731",
+        industry: "银行",
+        board: "主板",
+        sizeBucket: "large_cap",
+        marketCapDate: "20260821",
       }
       : {
-        code: "513100.SH",
-        name: "纳斯达克100ETF",
+        code: otc ? "000834.OF" : "513100.SH",
+        name: otc ? "纳斯达克100指数基金" : "纳斯达克100ETF",
         recordKind: "fund",
         researchOnly: true,
         fundType: "ETF",
         benchmark: "纳斯达克100指数",
         overseasScope: "nasdaq_100",
         classificationStatus: "name_benchmark_inferred",
-        tradability: "exchange_research_only",
+        tradability: otc ? "otc_non_tradable_research_only" : "exchange_research_only",
       },
-    market: aShare ? "a_share" : "cn_qdii_etf",
-    latest: {
+    market: aShare ? "a_share" : otc ? null : "cn_qdii_etf",
+    latest: otc ? null : {
       date: "2026-08-22",
       open: 10,
       high: 11,
@@ -139,10 +149,15 @@ function universeInstrument(kind: "a_share" | "exchange_fund" | "otc_fund") {
       amount: 10000,
       changePct: 0.02,
     },
-    candles: [
+    candles: otc ? [] : [
       { date: "2026-08-21", open: 9, high: 10, low: 8, close: 9.5, volume: 900, amount: 9000 },
       { date: "2026-08-22", open: 10, high: 11, low: 9, close: 10.5, volume: 1000, amount: 10000 },
     ],
+    navSeries: otc ? [
+      { date: "2026-08-21", unitNav: 1, accumNav: 1, adjustedNav: 1 },
+      { date: "2026-08-22", unitNav: 1.1, accumNav: 1.1, adjustedNav: 1.1 },
+    ] : [],
+    navLatest: otc ? { date: "2026-08-22", unitNav: 1.1, accumNav: 1.1, adjustedNav: 1.1 } : null,
     metrics: [{
       key: "momentum_20",
       label: "20日动量",
@@ -194,7 +209,7 @@ describe("MultiAgentResearchPage", () => {
     await waitFor(() => expect(screen.getAllByText("平安银行").length).toBeGreaterThan(0));
     expect(await screen.findByRole("table", { name: "研究目录结果" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "A股" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByText("CSI1000")).toBeInTheDocument();
+    expect(screen.getAllByText("CSI1000").length).toBeGreaterThan(0);
     expect(screen.getByText("场外基金目录")).toBeInTheDocument();
     expect(screen.getAllByText(/仅研究/).length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: /运行|生成|刷新目录|交易/ })).not.toBeInTheDocument();
@@ -263,6 +278,21 @@ describe("MultiAgentResearchPage", () => {
     await user.keyboard(" ");
 
     expect(await screen.findByRole("dialog", { name: "平安银行投研详情" })).toBeInTheDocument();
+  });
+
+  it("renders an OTC fund as a NAV curve rather than a fabricated K-line", async () => {
+    vi.stubGlobal("fetch", mockFetch());
+    const user = userEvent.setup();
+    render(<MultiAgentResearchPage refreshToken={0} />);
+
+    await screen.findByRole("table", { name: "研究目录结果" });
+    await user.click(screen.getByRole("tab", { name: "场外基金" }));
+    await user.click(await screen.findByRole("row", { name: /000834\.OF.*纳斯达克100ETF/i }));
+
+    expect(await screen.findByRole("dialog", { name: "纳斯达克100ETF投研详情" })).toBeInTheDocument();
+    expect(screen.getByText("复权净值走势")).toBeInTheDocument();
+    expect(screen.getByText("复权净值图")).toBeInTheDocument();
+    expect(screen.queryByText("K线行情")).not.toBeInTheDocument();
   });
 
   it("resets criteria on tabs and separates no-result, unavailable, and OTC comparison states", async () => {

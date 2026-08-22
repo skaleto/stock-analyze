@@ -206,7 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
     refresh_universes = sub.add_parser(
         "refresh-research-universes",
         help=(
-            "Collect a research-only CSI1000 and fund-master catalog; "
+            "Collect a research-only full A-share and fund-master catalog; "
             "does not alter formal account scopes or execution data."
         ),
     )
@@ -216,6 +216,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Catalog date YYYY-MM-DD (default: today).",
     )
     refresh_universes.add_argument("--repo-root", type=Path, default=Path("."))
+
+    refresh_a_share_prices = sub.add_parser(
+        "refresh-a-share-research-prices",
+        help=(
+            "Collect durable research-only A-share OHLCV detail for one persisted "
+            "catalog scope; does not touch formal account or backtest caches."
+        ),
+    )
+    refresh_a_share_prices.add_argument("--as-of", default=argparse.SUPPRESS)
+    refresh_a_share_prices.add_argument("--scope", default="csi1000")
+    refresh_a_share_prices.add_argument("--repo-root", type=Path, default=Path("."))
+
+    refresh_otc_nav = sub.add_parser(
+        "refresh-otc-fund-nav",
+        help=(
+            "Collect durable research-only OTC fund NAV history for persisted "
+            "overseas scopes; Dashboard reads only the saved artifact."
+        ),
+    )
+    refresh_otc_nav.add_argument("--as-of", default=argparse.SUPPRESS)
+    refresh_otc_nav.add_argument(
+        "--scope",
+        action="append",
+        help="Repeat for each overseas scope; defaults to nasdaq_100 and sp_500.",
+    )
+    refresh_otc_nav.add_argument("--repo-root", type=Path, default=Path("."))
 
     multi_agent_research = sub.add_parser(
         "run-multi-agent-research",
@@ -1703,6 +1729,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "refresh-research-universes":
         ensure_dirs(args.logs_dir)
         return _command_refresh_research_universes(args)
+    if args.command == "refresh-a-share-research-prices":
+        ensure_dirs(args.logs_dir)
+        return _command_refresh_a_share_research_prices(args)
+    if args.command == "refresh-otc-fund-nav":
+        ensure_dirs(args.logs_dir)
+        return _command_refresh_otc_fund_nav(args)
     if args.command == "run-multi-agent-research":
         ensure_dirs(args.logs_dir)
         return _command_run_multi_agent_research(args)
@@ -3598,6 +3630,47 @@ def _command_refresh_research_universes(args: argparse.Namespace) -> int:
         )
     except Exception as exc:  # noqa: BLE001 - collection must fail closed
         print(f"error: refresh-research-universes failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _command_refresh_a_share_research_prices(args: argparse.Namespace) -> int:
+    """Run the explicit research-only A-share detail collector."""
+    from .markets.a_share.backtest.data_prep import _make_pro_client
+    from .research.a_share_research_prices import refresh_a_share_research_prices
+
+    as_of = str(getattr(args, "as_of", None) or date.today().isoformat()).replace("-", "")
+    try:
+        result = refresh_a_share_research_prices(
+            repo_root=args.repo_root,
+            pro_client=_make_pro_client(),
+            as_of=as_of,
+            scope=str(args.scope),
+        )
+    except Exception as exc:  # noqa: BLE001 - collection must expose bounded failure
+        print(f"error: refresh-a-share-research-prices failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _command_refresh_otc_fund_nav(args: argparse.Namespace) -> int:
+    """Run the explicit research-only OTC NAV collector."""
+    from .markets.a_share.backtest.data_prep import _make_pro_client
+    from .research.otc_fund_nav import refresh_otc_fund_nav
+
+    as_of = str(getattr(args, "as_of", None) or date.today().isoformat()).replace("-", "")
+    scopes = tuple(args.scope or ("nasdaq_100", "sp_500"))
+    try:
+        result = refresh_otc_fund_nav(
+            repo_root=args.repo_root,
+            pro_client=_make_pro_client(),
+            as_of=as_of,
+            scopes=scopes,
+        )
+    except Exception as exc:  # noqa: BLE001 - collection must expose bounded failure
+        print(f"error: refresh-otc-fund-nav failed: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

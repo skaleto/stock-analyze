@@ -13,6 +13,8 @@ from .dashboard_finance import (
     read_latest_research_values,
 )
 from .dashboard_http import InvalidDashboardQuery
+from .research.a_share_research_prices import read_a_share_research_history
+from .research.otc_fund_nav import read_otc_fund_nav_detail
 
 
 MAX_DIGEST_CHARS = 4_000
@@ -111,8 +113,26 @@ def _a_share_browser_records(payload: Mapping[str, object]) -> list[dict[str, ob
             "researchOnly": True,
             "researchScopes": _text_list(row.get("research_scopes")),
             "membershipDate": _text(row.get("membership_date"), limit=16) or None,
+            "industry": _text(row.get("industry"), limit=128),
+            "board": _text(row.get("board"), limit=64),
+            "sizeBucket": _text(row.get("size_bucket"), limit=64) or "unclassified",
+            "marketCapDate": _text(row.get("market_cap_date"), limit=16) or None,
         })
     return records
+
+
+def _a_share_filter_options(record: Mapping[str, object]) -> list[str]:
+    options = _text_list(record.get("researchScopes"))
+    industry = _text(record.get("industry"), limit=128)
+    board = _text(record.get("board"), limit=64)
+    size_bucket = _text(record.get("sizeBucket"), limit=64)
+    if industry:
+        options.append(f"industry:{industry}")
+    if board:
+        options.append(f"board:{board}")
+    if size_bucket:
+        options.append(f"size:{size_bucket}")
+    return sorted(set(options))
 
 
 def _fund_browser_records(
@@ -203,7 +223,9 @@ def build_dashboard_research_universe_data(
         item
         for record in records
         for item in (
-            record[scope_key]
+            _a_share_filter_options(record)
+            if kind == "a_share"
+            else record[scope_key]
             if isinstance(record[scope_key], list)
             else [record[scope_key]]
         )
@@ -220,7 +242,9 @@ def build_dashboard_research_universe_data(
         and (
             scope is None
             or (
-                scope in record[scope_key]
+                scope in _a_share_filter_options(record)
+                if kind == "a_share"
+                else scope in record[scope_key]
                 if isinstance(record[scope_key], list)
                 else scope == record[scope_key]
             )
@@ -282,6 +306,8 @@ def _empty_research_universe_instrument(
         "market": None,
         "latest": None,
         "candles": [],
+        "navSeries": [],
+        "navLatest": None,
         "metrics": [],
         "warning": warning,
         "executionEffect": "none_research_only",
@@ -301,6 +327,10 @@ def _research_universe_instrument_metadata(
         metadata.update({
             "researchScopes": _text_list(record.get("researchScopes")),
             "membershipDate": _text(record.get("membershipDate"), limit=16) or None,
+            "industry": _text(record.get("industry"), limit=128),
+            "board": _text(record.get("board"), limit=64),
+            "sizeBucket": _text(record.get("sizeBucket"), limit=64) or "unclassified",
+            "marketCapDate": _text(record.get("marketCapDate"), limit=16) or None,
         })
     else:
         metadata.update({
@@ -362,6 +392,7 @@ def build_dashboard_research_universe_instrument_data(
 
     instrument = _research_universe_instrument_metadata(record, kind=kind)
     if kind == "otc_fund":
+        nav_series, nav_latest, nav_metrics = read_otc_fund_nav_detail(root, code)
         return {
             "schemaVersion": RESEARCH_UNIVERSE_INSTRUMENT_SCHEMA,
             "status": "available",
@@ -372,23 +403,32 @@ def build_dashboard_research_universe_instrument_data(
             "market": None,
             "latest": None,
             "candles": [],
-            "metrics": [],
-            "warning": "场外基金为非交易研究对照，当前不展示场内 K 线。",
+            "navSeries": nav_series,
+            "navLatest": nav_latest,
+            "metrics": nav_metrics,
+            "warning": (
+                None if nav_series
+                else "场外基金净值历史尚未采集；请等待后台研究数据任务完成。"
+            ),
             "executionEffect": "none_research_only",
         }
 
     market = "a_share" if kind == "a_share" else "cn_qdii_etf"
+    normalized = code
+    candles: list[dict[str, Any]] = []
+    warning: str | None = None
+    if kind == "a_share":
+        candles = read_a_share_research_history(root, code)
     try:
-        normalized, candles, warning = read_instrument_history(root, market, code)
-        metrics = build_history_metrics(
-            candles,
-            read_latest_research_values(root, market, normalized),
-        )
+        if not candles:
+            normalized, candles, warning = read_instrument_history(root, market, code)
     except (InstrumentDataError, ValueError):
-        normalized = code
-        candles = []
-        metrics = []
         warning = "历史行情或研究指标缓存不可读。"
+    try:
+        factor_values = read_latest_research_values(root, market, normalized)
+    except (InstrumentDataError, ValueError):
+        factor_values = {}
+    metrics = build_history_metrics(candles, factor_values)
     return _json_safe({
         "schemaVersion": RESEARCH_UNIVERSE_INSTRUMENT_SCHEMA,
         "status": "available",
@@ -399,6 +439,8 @@ def build_dashboard_research_universe_instrument_data(
         "market": market,
         "latest": _latest_quote(candles),
         "candles": candles,
+        "navSeries": [],
+        "navLatest": None,
         "metrics": metrics,
         "warning": warning,
         "executionEffect": "none_research_only",

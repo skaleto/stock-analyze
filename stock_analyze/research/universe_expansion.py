@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections import Counter
 from collections.abc import Iterable, Mapping
@@ -63,7 +64,8 @@ def _optional_number(value: object) -> float | None:
     if value is None or _text(value) == "":
         return None
     try:
-        return float(value)
+        number = float(value)
+        return number if math.isfinite(number) else None
     except (TypeError, ValueError):
         return None
 
@@ -72,6 +74,7 @@ def build_a_share_research_catalog(
     memberships: Mapping[str, Iterable[Mapping[str, object]]],
     *,
     stock_basics: Iterable[Mapping[str, object]],
+    market_basics: Iterable[Mapping[str, object]] = (),
     as_of: str,
 ) -> dict[str, object]:
     """Build an exact-date A-share research membership catalog.
@@ -84,12 +87,12 @@ def build_a_share_research_catalog(
     if not snapshot_date:
         raise ValueError("research_universe_as_of_invalid")
 
-    name_by_code = {
-        _row_text(row, "ts_code", "code"): _text(row.get("name"))
+    master_by_code = {
+        _row_text(row, "ts_code", "code"): dict(row)
         for row in stock_basics
         if _row_text(row, "ts_code", "code") and _text(row.get("name"))
     }
-    by_code: dict[str, dict[str, Any]] = {}
+    memberships_by_code: dict[str, list[dict[str, object]]] = {}
     scope_counts: dict[str, int] = {}
     membership_dates: dict[str, str] = {}
     for scope, index_code in A_SHARE_INDEXES.items():
@@ -118,17 +121,6 @@ def build_a_share_research_catalog(
             code = _row_text(row, "con_code", "ts_code")
             if not code:
                 continue
-            record = by_code.setdefault(
-                code,
-                {
-                    "ts_code": code,
-                    "record_kind": "a_share_equity",
-                    "research_only": True,
-                    "research_scopes": [],
-                    "memberships": [],
-                },
-            )
-            record["research_scopes"].append(scope)
             membership = {
                 "scope": scope,
                 "index_code": index_code,
@@ -137,22 +129,51 @@ def build_a_share_research_catalog(
             weight = _optional_number(row.get("weight"))
             if weight is not None:
                 membership["weight"] = weight
-            record["memberships"].append(membership)
+            memberships_by_code.setdefault(code, []).append(membership)
 
-    missing_names = sorted(code for code in by_code if code not in name_by_code)
+    missing_names = sorted(code for code in memberships_by_code if code not in master_by_code)
     if missing_names:
         raise ValueError(f"a_share_name_missing:{missing_names[0]}")
 
+    market_by_code: dict[str, dict[str, object]] = {}
+    for row in market_basics:
+        code = _row_text(row, "ts_code", "code")
+        market_date = _compact_date(row.get("trade_date"))
+        if not code or not market_date or market_date > snapshot_date:
+            continue
+        previous = market_by_code.get(code)
+        if previous is None or market_date > _compact_date(previous.get("trade_date")):
+            market_by_code[code] = dict(row)
+
     records: list[dict[str, object]] = []
-    for code in sorted(by_code):
-        record = by_code[code]
-        record["research_scopes"] = sorted(set(record["research_scopes"]))
-        record["memberships"] = sorted(
-            record["memberships"], key=lambda item: str(item["scope"])
+    for code in sorted(master_by_code):
+        master = master_by_code[code]
+        memberships_for_code = sorted(
+            memberships_by_code.get(code, []), key=lambda item: str(item["scope"])
         )
-        latest = max(str(item["membership_date"]) for item in record["memberships"])
-        record["membership_date"] = latest
-        record["name"] = name_by_code[code]
+        scopes = ["all_a_share", *[str(item["scope"]) for item in memberships_for_code]]
+        market_basic = market_by_code.get(code, {})
+        total_mv = _optional_number(market_basic.get("total_mv"))
+        circ_mv = _optional_number(market_basic.get("circ_mv"))
+        record: dict[str, object] = {
+            "ts_code": code,
+            "record_kind": "a_share_equity",
+            "research_only": True,
+            "research_scopes": sorted(set(scopes)),
+            "memberships": memberships_for_code,
+            "membership_date": (
+                max(str(item["membership_date"]) for item in memberships_for_code)
+                if memberships_for_code else None
+            ),
+            "name": _text(master.get("name")),
+            "industry": _text(master.get("industry")),
+            "board": _text(master.get("market")),
+            "list_date": _compact_date(master.get("list_date")) or None,
+            "market_cap_date": _compact_date(market_basic.get("trade_date")) or None,
+            "total_mv": total_mv,
+            "circ_mv": circ_mv,
+            "size_bucket": _market_cap_bucket(total_mv),
+        }
         record["name_source"] = "tushare_stock_basic"
         records.append(record)
 
@@ -162,6 +183,10 @@ def build_a_share_research_catalog(
         "membership_dates": membership_dates,
         "unique_instruments": len(records),
         "name_coverage": {"named": len(records), "missing": 0},
+        "market_cap_coverage": {
+            "available": sum(1 for record in records if record["total_mv"] is not None),
+            "missing": sum(1 for record in records if record["total_mv"] is None),
+        },
         "records_sha256": _canonical_hash(records),
     }
     return {
@@ -171,6 +196,19 @@ def build_a_share_research_catalog(
         "records": records,
         "summary": summary,
     }
+
+
+def _market_cap_bucket(total_mv: float | None) -> str:
+    """Classify Tushare ``total_mv`` (ten-thousand yuan) with fixed labels."""
+    if total_mv is None or total_mv <= 0:
+        return "unclassified"
+    if total_mv <= 500_000:
+        return "micro_cap"
+    if total_mv <= 2_000_000:
+        return "small_cap"
+    if total_mv <= 10_000_000:
+        return "mid_cap"
+    return "large_cap"
 
 
 def _fund_scope(name: str, benchmark: str) -> tuple[str | None, list[str]]:
@@ -386,9 +424,9 @@ def refresh_research_universes(
 ) -> dict[str, object]:
     """Collect a bounded first research universe snapshot from Tushare.
 
-    This collection job intentionally fetches metadata and current index
-    membership only.  It does not alter formal account configurations, write
-    execution caches, retrieve NAV histories, or reach a broker.
+    This collection job writes research catalog metadata only. It does not
+    alter formal account configurations, execution caches, NAV histories, or
+    reach a broker.
     """
     snapshot_date = _compact_date(as_of)
     if not snapshot_date:
@@ -397,6 +435,7 @@ def refresh_research_universes(
         not hasattr(pro_client, "index_weight")
         or not hasattr(pro_client, "fund_basic")
         or not hasattr(pro_client, "stock_basic")
+        or not hasattr(pro_client, "daily_basic")
     ):
         raise ValueError("research_universe_client_invalid")
 
@@ -421,13 +460,38 @@ def refresh_research_universes(
         source_name="fund_basic:otc",
     )
     stock_basics = _rows(
-        pro_client.stock_basic(exchange="", list_status="L", fields="ts_code,name"),
+        pro_client.stock_basic(
+            exchange="",
+            list_status="L",
+            fields="ts_code,name,industry,market,list_date",
+        ),
         source_name="stock_basic:listed",
     )
+    requested = date(
+        int(snapshot_date[:4]), int(snapshot_date[4:6]), int(snapshot_date[6:])
+    )
+    market_basics: list[dict[str, object]] = []
+    market_cap_date = ""
+    for offset in range(8):
+        candidate = (requested - timedelta(days=offset)).strftime("%Y%m%d")
+        rows = _rows(
+            pro_client.daily_basic(
+                trade_date=candidate,
+                fields="ts_code,trade_date,total_mv,circ_mv",
+            ),
+            source_name=f"daily_basic:{candidate}",
+        )
+        if rows:
+            market_basics = rows
+            market_cap_date = candidate
+            break
+    if not market_basics:
+        raise ValueError("a_share_market_basic_missing")
 
     a_share = build_a_share_research_catalog(
         memberships,
         stock_basics=stock_basics,
+        market_basics=market_basics,
         as_of=snapshot_date,
     )
     funds = build_fund_research_catalog(
@@ -447,8 +511,14 @@ def refresh_research_universes(
                 "endpoint": "stock_basic",
                 "exchange": "",
                 "list_status": "L",
-                "fields": ["ts_code", "name"],
+                "fields": ["ts_code", "name", "industry", "market", "list_date"],
                 "rows": len(stock_basics),
+            },
+            "a_share_market_basic": {
+                "endpoint": "daily_basic",
+                "trade_date": market_cap_date,
+                "fields": ["ts_code", "trade_date", "total_mv", "circ_mv"],
+                "rows": len(market_basics),
             },
             "fund_masters": {
                 "exchange": {"market": "E", "status": "L", "rows": len(exchange_basic)},

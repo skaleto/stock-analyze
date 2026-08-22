@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, BookOpen, LoaderCircle, X } from "lucide-react";
 import { fetchResearchUniverseInstrument } from "./api";
-import { CandlestickChart } from "./FinancialCharts";
+import { CandlestickChart, NavLineChart } from "./FinancialCharts";
 import { formatFieldValue } from "./finance";
 import type {
   ResearchUniverseInstrumentDetail,
@@ -22,6 +22,10 @@ function metadataEntries(record: ResearchUniverseRecord): Array<[string, string]
   return [
     ["研究范围", record.researchScopes.join(" · ") || "未分类"],
     ["成员日期", record.membershipDate ?? "未记录"],
+    ["行业", record.industry || "未分类"],
+    ["板块", record.board || "未分类"],
+    ["市值分层", record.sizeBucket || "未分类"],
+    ["市值日期", record.marketCapDate ?? "未记录"],
   ];
 }
 
@@ -107,18 +111,26 @@ export default function ResearchUniverseInstrumentDrawer({
           {detail?.status === "unavailable" ? <p className="research-universe-state">{detail.warning ?? "投研详情暂不可用。"}</p> : null}
           {detail?.status === "available" ? (
             <>
-              <section className="instrument-chart-block">
-                <div className="drawer-section-title"><BookOpen size={15} aria-hidden="true" /><h3>K线行情</h3></div>
-                {latest ? (
-                  <div className="instrument-quote">
-                    <span>最新收盘</span>
-                    <strong>{latest.close.toFixed(3)}</strong>
-                    <b className={(latest.changePct ?? 0) >= 0 ? "positive" : "negative"}>{formatFieldValue("momentum_20", latest.changePct)}</b>
-                    <small>{latest.date}</small>
-                  </div>
-                ) : null}
-                <CandlestickChart candles={detail.candles} showTradeMarkers={false} />
-              </section>
+              {detail.candles.length ? (
+                <section className="instrument-chart-block">
+                  <div className="drawer-section-title"><BookOpen size={15} aria-hidden="true" /><h3>K线行情</h3></div>
+                  {latest ? (
+                    <div className="instrument-quote">
+                      <span>最新收盘</span>
+                      <strong>{latest.close.toFixed(3)}</strong>
+                      <b className={(latest.changePct ?? 0) >= 0 ? "positive" : "negative"}>{formatFieldValue("momentum_20", latest.changePct)}</b>
+                      <small>{latest.date}</small>
+                    </div>
+                  ) : null}
+                  <CandlestickChart candles={detail.candles} showTradeMarkers={false} />
+                </section>
+              ) : null}
+              {detail.navSeries.length ? (
+                <section className="instrument-chart-block">
+                  <div className="drawer-section-title"><BookOpen size={15} aria-hidden="true" /><h3>复权净值走势</h3></div>
+                  <NavLineChart points={detail.navSeries} />
+                </section>
+              ) : null}
               {detail.metrics.length ? (
                 <section className="research-metrics">
                   <div className="drawer-section-title"><BookOpen size={15} aria-hidden="true" /><h3>关键指标</h3></div>

@@ -94,8 +94,12 @@ python3 -m stock_analyze intelligence-semantic-route-finalize \
 python3 -m stock_analyze intelligence-artifact-job-status \
   --repo-root .
 
-# 研究宇宙与显式多角色投研（均不改变正式账户或订单）
+# 研究宇宙、明细缓存与显式多角色投研（均不改变正式账户或订单）
 python3 -m stock_analyze refresh-research-universes --as-of 2026-08-22 --repo-root .
+# CSI1000 三年日线；可将 --scope 改为任一已落盘 A 股范围（如 all_a_share）
+python3 -m stock_analyze refresh-a-share-research-prices --as-of 2026-08-22 --scope csi1000 --repo-root .
+# 当前纳斯达克 100 与标普 500 对应的场外基金复权净值
+python3 -m stock_analyze refresh-otc-fund-nav --as-of 2026-08-22 --repo-root .
 python3 -m stock_analyze --market a_share run-multi-agent-research \
   --code 000001.SZ --as-of 2026-08-22 --model glm-5.3 --repo-root .
 

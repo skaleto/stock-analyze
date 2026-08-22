@@ -40,7 +40,9 @@ readonly DASHBOARD_FILES=(
   "stock_analyze/research/storage.py"
   "stock_analyze/research/strategy_campaign.py"
   "stock_analyze/research/account_features.py"
+  "stock_analyze/research/a_share_research_prices.py"
   "stock_analyze/research/technical_features.py"
+  "stock_analyze/research/otc_fund_nav.py"
   "stock_analyze/research/universe_expansion.py"
   "tests/test_backtest_data_prep.py"
   "tests/test_cli_dashboard_routes.py"
@@ -74,6 +76,8 @@ readonly DASHBOARD_FILES=(
   "tests/test_intelligence_factors.py"
   "tests/test_research_account_features.py"
   "tests/test_research_tabular_forward.py"
+  "tests/test_research_a_share_prices.py"
+  "tests/test_research_otc_fund_nav.py"
   "tests/test_research_universe_expansion.py"
   "scripts/system-audit.sh"
   "scripts/check-ecs-timers.sh"
@@ -122,6 +126,8 @@ readonly DASHBOARD_TEST_MODULES=(
   "tests.test_research_strategy_campaign"
   "tests.test_research_account_features"
   "tests.test_research_tabular_forward"
+  "tests.test_research_a_share_prices"
+  "tests.test_research_otc_fund_nav"
   "tests.test_research_universe_expansion"
 )
 readonly DASHBOARD_CANARY_ENDPOINTS=(

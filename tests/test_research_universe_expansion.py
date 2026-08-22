@@ -22,6 +22,49 @@ from stock_analyze.research.universe_expansion import (
 
 
 class AShareResearchCatalogTests(unittest.TestCase):
+    def test_includes_active_non_index_stock_with_classification_and_market_cap(self) -> None:
+        catalog = build_a_share_research_catalog(
+            {
+                "hs300": [{"con_code": "000001.SZ", "trade_date": "20260803"}],
+                "zz500": [{"con_code": "000002.SZ", "trade_date": "20260803"}],
+                "csi1000": [{"con_code": "000003.SZ", "trade_date": "20260803"}],
+            },
+            stock_basics=[
+                {
+                    "ts_code": "000001.SZ", "name": "平安银行", "industry": "银行",
+                    "market": "主板", "list_date": "19910403",
+                },
+                {
+                    "ts_code": "000002.SZ", "name": "万科A", "industry": "全国地产",
+                    "market": "主板", "list_date": "19910129",
+                },
+                {
+                    "ts_code": "000003.SZ", "name": "测试三号", "industry": "半导体",
+                    "market": "科创板", "list_date": "20200101",
+                },
+                {
+                    "ts_code": "300001.SZ", "name": "特锐德", "industry": "电气设备",
+                    "market": "创业板", "list_date": "20091030",
+                },
+            ],
+            market_basics=[
+                {"ts_code": "000001.SZ", "trade_date": "20260821", "total_mv": 20_000_000.0, "circ_mv": 19_000_000.0},
+                {"ts_code": "000002.SZ", "trade_date": "20260821", "total_mv": 700_000.0, "circ_mv": 650_000.0},
+                {"ts_code": "000003.SZ", "trade_date": "20260821", "total_mv": 400_000.0, "circ_mv": 350_000.0},
+                {"ts_code": "300001.SZ", "trade_date": "20260821", "total_mv": 300_000.0, "circ_mv": 280_000.0},
+            ],
+            as_of="20260822",
+        )
+
+        records = {record["ts_code"]: record for record in catalog["records"]}
+        self.assertEqual(len(records), 4)
+        self.assertEqual(records["300001.SZ"]["research_scopes"], ["all_a_share"])
+        self.assertEqual(records["300001.SZ"]["industry"], "电气设备")
+        self.assertEqual(records["300001.SZ"]["board"], "创业板")
+        self.assertEqual(records["300001.SZ"]["size_bucket"], "micro_cap")
+        self.assertEqual(records["300001.SZ"]["market_cap_date"], "20260821")
+        self.assertEqual(records["000001.SZ"]["size_bucket"], "large_cap")
+
     def test_keeps_only_latest_available_membership_per_index(self) -> None:
         catalog = build_a_share_research_catalog(
             {
@@ -61,7 +104,7 @@ class AShareResearchCatalogTests(unittest.TestCase):
         self.assertEqual(records["000002.SZ"]["membership_date"], "20260803")
         self.assertEqual(records["000002.SZ"]["name"], "万科A")
         self.assertEqual(records["000002.SZ"]["name_source"], "tushare_stock_basic")
-        self.assertEqual(records["000004.SZ"]["research_scopes"], ["csi1000"])
+        self.assertEqual(records["000004.SZ"]["research_scopes"], ["all_a_share", "csi1000"])
         self.assertTrue(all(record["research_only"] for record in records.values()))
         self.assertTrue(all("execution" not in record for record in records.values()))
 
@@ -222,6 +265,13 @@ class _ResearchUniverseClient:
             {"ts_code": "000001.SZ", "name": "平安银行"},
             {"ts_code": "000002.SZ", "name": "万科A"},
             {"ts_code": "000003.SZ", "name": "测试三号"},
+        ])
+
+    def daily_basic(self, **kwargs):
+        return pd.DataFrame([
+            {"ts_code": "000001.SZ", "trade_date": kwargs["trade_date"], "total_mv": 20_000_000.0, "circ_mv": 19_000_000.0},
+            {"ts_code": "000002.SZ", "trade_date": kwargs["trade_date"], "total_mv": 2_000_000.0, "circ_mv": 1_900_000.0},
+            {"ts_code": "000003.SZ", "trade_date": kwargs["trade_date"], "total_mv": 300_000.0, "circ_mv": 280_000.0},
         ])
 
 

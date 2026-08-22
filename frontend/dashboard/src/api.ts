@@ -2857,6 +2857,12 @@ function validateResearchUniverseRecord(
     if (record.membershipDate !== null) {
       researchUniverseString(record.membershipDate, `${path}.membershipDate`, 16);
     }
+    researchUniverseString(record.industry, `${path}.industry`, 128);
+    researchUniverseString(record.board, `${path}.board`, 64);
+    researchUniverseString(record.sizeBucket, `${path}.sizeBucket`, 64, { nonEmpty: true });
+    if (record.marketCapDate !== null) {
+      researchUniverseString(record.marketCapDate, `${path}.marketCapDate`, 16);
+    }
     return;
   }
   researchUniverseString(record.fundType, `${path}.fundType`, 128);
@@ -2923,6 +2929,16 @@ function validateResearchUniverseCandle(value: unknown, path: string): void {
   researchUniverseNullableNumber(candle.amount, `${path}.amount`);
 }
 
+function validateResearchUniverseNavPoint(value: unknown, path: string): void {
+  const point = researchUniverseObject(value, path);
+  researchUniverseString(point.date, `${path}.date`, 16, { nonEmpty: true });
+  researchUniverseNullableNumber(point.unitNav, `${path}.unitNav`);
+  researchUniverseNullableNumber(point.accumNav, `${path}.accumNav`);
+  if (typeof point.adjustedNav !== "number" || !Number.isFinite(point.adjustedNav) || point.adjustedNav <= 0) {
+    researchUniverseError(`${path}.adjustedNav`);
+  }
+}
+
 function validateResearchUniverseInstrument(
   value: unknown,
 ): ResearchUniverseInstrumentDetail {
@@ -2960,6 +2976,13 @@ function validateResearchUniverseInstrument(
   candles.forEach((candle, index) => {
     validateResearchUniverseCandle(candle, `instrument.candles[${index}]`);
   });
+  const navSeries = researchUniverseArray(data.navSeries, "instrument.navSeries", 800);
+  navSeries.forEach((point, index) => {
+    validateResearchUniverseNavPoint(point, `instrument.navSeries[${index}]`);
+  });
+  if (data.navLatest !== null) {
+    validateResearchUniverseNavPoint(data.navLatest, "instrument.navLatest");
+  }
   const metrics = researchUniverseArray(data.metrics, "instrument.metrics", 64);
   metrics.forEach((metricValue, index) => {
     const metric = researchUniverseObject(metricValue, `instrument.metrics[${index}]`);

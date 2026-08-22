@@ -11,6 +11,27 @@ from stock_analyze.research.local_training import manifest_source_fingerprint
 
 
 class CLIResearchTest(unittest.TestCase):
+    def test_cli_dispatches_research_price_and_otc_nav_collectors(self):
+        with patch(
+            "stock_analyze.research.a_share_research_prices.refresh_a_share_research_prices",
+            return_value={"status": "complete", "completed": 2},
+        ) as prices, patch(
+            "stock_analyze.research.otc_fund_nav.refresh_otc_fund_nav",
+            return_value={"status": "complete", "completed": 2},
+        ) as navs, patch(
+            "stock_analyze.markets.a_share.backtest.data_prep._make_pro_client",
+            return_value="pro-client",
+        ):
+            self.assertEqual(main([
+                "refresh-a-share-research-prices", "--scope", "csi1000", "--as-of", "2026-08-22",
+            ]), 0)
+            self.assertEqual(main([
+                "refresh-otc-fund-nav", "--scope", "sp_500", "--as-of", "2026-08-22",
+            ]), 0)
+
+        self.assertEqual(prices.call_args.kwargs["scope"], "csi1000")
+        self.assertEqual(navs.call_args.kwargs["scopes"], ("sp_500",))
+
     def test_cli_dispatches_a_share_materializer(self):
         with tempfile.TemporaryDirectory() as tmp, patch(
             "stock_analyze.research.a_share_materializer.materialize_a_share_research_data",
