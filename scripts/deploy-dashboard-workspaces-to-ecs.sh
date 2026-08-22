@@ -845,19 +845,26 @@ REMOTE
 }
 
 verify_remote_release() {
-  "${SSH_COMMAND[@]}" "$REMOTE_HOST" \
-    bash -s -- \
-      "$REMOTE_PATH" \
-      "$BACKUP_DIR" \
-      "$REMOTE_PYTHON" \
-      "$DASHBOARD_SERVICE" \
-      "$MAX_BYTES" \
-      "$MAX_TTFB_SECONDS" \
-      "$CANARY_BASE_URL" \
-      "$DEPLOY_VERSION_FILE" \
-      "${DASHBOARD_TEST_MODULES[@]}" \
-      -- \
-      "${DASHBOARD_CANARY_ENDPOINTS[@]}" <<'REMOTE'
+  local remote_command="bash -s --"
+  local argument quoted_argument
+  local -a remote_arguments=(
+    "$REMOTE_PATH"
+    "$BACKUP_DIR"
+    "$REMOTE_PYTHON"
+    "$DASHBOARD_SERVICE"
+    "$MAX_BYTES"
+    "$MAX_TTFB_SECONDS"
+    "$CANARY_BASE_URL"
+    "$DEPLOY_VERSION_FILE"
+    "${DASHBOARD_TEST_MODULES[@]}"
+    --
+    "${DASHBOARD_CANARY_ENDPOINTS[@]}"
+  )
+  for argument in "${remote_arguments[@]}"; do
+    printf -v quoted_argument '%q' "$argument"
+    remote_command+=" $quoted_argument"
+  done
+  "${SSH_COMMAND[@]}" "$REMOTE_HOST" "$remote_command" <<'REMOTE'
 set -euo pipefail
 
 app_dir="$1"
