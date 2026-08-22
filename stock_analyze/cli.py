@@ -4190,6 +4190,7 @@ def _is_dashboard_api_path(path: str) -> bool:
         "/api/dashboard/system-overview.json",
         "/api/dashboard/model-research.json",
         "/api/dashboard/multi-agent-research.json",
+        "/api/dashboard/research-universe.json",
         "/api/dashboard/data-intelligence.json",
         "/api/dashboard/operations-center.json",
         "/api/dashboard/overview.json",
@@ -4326,6 +4327,28 @@ class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
                     return build_dashboard_operations_center_data(
                         repo_root=repo_root,
                         scope=scope,
+                    )
+                if canonical_path == "/api/dashboard/research-universe.json":
+                    from .dashboard_multi_agent_research import (
+                        build_dashboard_research_universe_data,
+                    )
+
+                    raw_page = (params.get("page") or ["1"])[0]
+                    raw_page_size = (params.get("page_size") or ["50"])[0]
+                    try:
+                        page = int(raw_page)
+                        page_size = int(raw_page_size)
+                    except ValueError as exc:
+                        raise InvalidDashboardQuery(
+                            "page and page_size must be integers"
+                        ) from exc
+                    return build_dashboard_research_universe_data(
+                        repo_root=repo_root,
+                        kind=(params.get("kind") or ["a_share"])[0],
+                        query=(params.get("query") or [""])[0],
+                        scope=(params.get("scope") or [None])[0] or None,
+                        page=page,
+                        page_size=page_size,
                     )
                 market = (params.get("market") or ["a_share"])[0]
                 agent = (params.get("agent") or ["codex"])[0]

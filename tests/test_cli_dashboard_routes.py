@@ -101,6 +101,7 @@ class DashboardRoutesTableTests(unittest.TestCase):
             "system-overview",
             "model-research",
             "multi-agent-research",
+            "research-universe",
             "data-intelligence",
             "operations-center",
             "overview",
@@ -245,6 +246,42 @@ class HandlerRewriteTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload, expected)
         builder.assert_called_once_with(repo_root=Path(tmp).resolve())
+
+    def test_research_universe_api_dispatches_bounded_query(self) -> None:
+        expected = {"status": "available", "records": []}
+        with TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_multi_agent_research."
+            "build_dashboard_research_universe_data",
+            return_value=expected,
+        ) as builder:
+            status, payload = self._serve_api(
+                Path(tmp),
+                "kind=otc_fund&query=%E7%BA%B3%E6%96%AF&scope=nasdaq_100&page=2&page_size=50",
+                path="/api/dashboard/research-universe.json",
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, expected)
+        builder.assert_called_once_with(
+            repo_root=Path(tmp).resolve(),
+            kind="otc_fund",
+            query="纳斯",
+            scope="nasdaq_100",
+            page=2,
+            page_size=50,
+        )
+
+    def test_research_universe_api_rejects_non_integer_pagination(self) -> None:
+        with TemporaryDirectory() as tmp:
+            for query in ("page=bad", "page_size=bad"):
+                status, payload = self._serve_api(
+                    Path(tmp),
+                    query,
+                    path="/api/dashboard/research-universe.json",
+                )
+
+                self.assertEqual(status, 400)
+                self.assertEqual(payload["error"], "invalid_query")
 
     def test_operations_center_api_dispatches_scope_query(self) -> None:
         expected = {"scope": "exceptions", "mainChain": []}
