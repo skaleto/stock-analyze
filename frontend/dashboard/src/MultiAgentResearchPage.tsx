@@ -271,8 +271,20 @@ export function MultiAgentResearchPage({
                   </thead>
                   <tbody>
                     {browserData.records.map((record) => (
-                      <tr key={record.code}>
-                        <td><button className="research-universe-detail-link" type="button" aria-label={`查看 ${record.name || record.code} 详情`} onClick={(event) => openInstrument(record, event.currentTarget)}><strong>{record.code}</strong></button></td>
+                      <tr
+                        key={record.code}
+                        className="research-universe-row"
+                        tabIndex={0}
+                        title="点击查看投研详情；按 Enter 或空格键打开"
+                        onClick={(event) => openInstrument(record, event.currentTarget)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            openInstrument(record, event.currentTarget);
+                          }
+                        }}
+                      >
+                        <td><strong>{record.code}</strong></td>
                         <td>{record.name || "—"}</td>
                         {isFundRecord(record) ? (
                           <>

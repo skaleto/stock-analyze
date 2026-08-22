@@ -220,14 +220,14 @@ describe("MultiAgentResearchPage", () => {
     expect(screen.getByText("第 1 页 / 共 2 页 · 共 60 条")).toBeInTheDocument();
   });
 
-  it("opens a read-only research detail drawer for an A-share catalog record", async () => {
+  it("opens a read-only research detail drawer when an A-share catalog row is clicked", async () => {
     const fetchMock = mockFetch();
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
     render(<MultiAgentResearchPage refreshToken={0} />);
 
     await screen.findByRole("table", { name: "研究目录结果" });
-    await user.click(screen.getByRole("button", { name: "查看 平安银行 详情" }));
+    await user.click(screen.getByRole("row", { name: /000001\.SZ.*平安银行.*csi1000.*20260731/i }));
 
     expect(await screen.findByRole("dialog", { name: "平安银行投研详情" })).toBeInTheDocument();
     expect(screen.getByText("K线行情")).toBeInTheDocument();
@@ -237,6 +237,32 @@ describe("MultiAgentResearchPage", () => {
       expect.anything(),
     );
     expect(screen.queryByText("相关交易")).not.toBeInTheDocument();
+  });
+
+  it("opens a research detail drawer when a focused catalog row receives Enter", async () => {
+    vi.stubGlobal("fetch", mockFetch());
+    const user = userEvent.setup();
+    render(<MultiAgentResearchPage refreshToken={0} />);
+
+    await screen.findByRole("table", { name: "研究目录结果" });
+    const row = screen.getByRole("row", { name: /000001\.SZ.*平安银行.*csi1000.*20260731/i });
+    row.focus();
+    await user.keyboard("{Enter}");
+
+    expect(await screen.findByRole("dialog", { name: "平安银行投研详情" })).toBeInTheDocument();
+  });
+
+  it("opens a research detail drawer when a focused catalog row receives Space", async () => {
+    vi.stubGlobal("fetch", mockFetch());
+    const user = userEvent.setup();
+    render(<MultiAgentResearchPage refreshToken={0} />);
+
+    await screen.findByRole("table", { name: "研究目录结果" });
+    const row = screen.getByRole("row", { name: /000001\.SZ.*平安银行.*csi1000.*20260731/i });
+    row.focus();
+    await user.keyboard(" ");
+
+    expect(await screen.findByRole("dialog", { name: "平安银行投研详情" })).toBeInTheDocument();
   });
 
   it("resets criteria on tabs and separates no-result, unavailable, and OTC comparison states", async () => {

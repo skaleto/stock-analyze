@@ -4030,32 +4030,23 @@ a:hover { text-decoration: underline; }
   border-bottom: 0;
 }
 
-.research-universe-table tbody tr:hover td {
+.research-universe-table tbody .research-universe-row {
+  cursor: pointer;
+}
+
+.research-universe-table tbody .research-universe-row:hover td,
+.research-universe-table tbody .research-universe-row:focus-visible td {
   background: rgba(49, 191, 211, 0.035);
+}
+
+.research-universe-table tbody .research-universe-row:focus-visible td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .research-universe-table td strong {
   color: var(--text);
   font-family: "SF Mono", "JetBrains Mono", Menlo, monospace;
   font-size: 10px;
-}
-
-.research-universe-detail-link {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  text-align: left;
-  text-decoration: underline;
-  text-decoration-color: transparent;
-  text-underline-offset: 3px;
-}
-
-.research-universe-detail-link:hover,
-.research-universe-detail-link:focus-visible {
-  outline: 0;
-  color: var(--accent);
-  text-decoration-color: currentColor;
 }
 
 .research-universe-pagination {
