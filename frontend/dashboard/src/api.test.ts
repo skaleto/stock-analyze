@@ -692,7 +692,7 @@ describe("fetchResearchUniverse", () => {
       query: "",
       scope: null,
       page: 1,
-      pageSize: 100,
+      pageSize: 100 as const,
     };
     await expect(fetchResearchUniverse(request)).rejects.toThrow("records");
     await expect(fetchResearchUniverse(request)).rejects.toThrow("executionEffect");
