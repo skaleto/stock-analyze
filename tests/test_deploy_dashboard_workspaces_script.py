@@ -48,7 +48,9 @@ EXPECTED_FILES = [
     "stock_analyze/research/storage.py",
     "stock_analyze/research/strategy_campaign.py",
     "stock_analyze/research/account_features.py",
+    "stock_analyze/research/a_share_research_prices.py",
     "stock_analyze/research/technical_features.py",
+    "stock_analyze/research/otc_fund_nav.py",
     "stock_analyze/research/universe_expansion.py",
     "tests/test_backtest_data_prep.py",
     "tests/test_cli_dashboard_routes.py",
@@ -82,6 +84,8 @@ EXPECTED_FILES = [
     "tests/test_intelligence_factors.py",
     "tests/test_research_account_features.py",
     "tests/test_research_tabular_forward.py",
+    "tests/test_research_a_share_prices.py",
+    "tests/test_research_otc_fund_nav.py",
     "tests/test_research_universe_expansion.py",
     "scripts/system-audit.sh",
     "scripts/check-ecs-timers.sh",
@@ -164,7 +168,13 @@ class DashboardWorkspaceDeployScriptTests(unittest.TestCase):
         )
         self._write_executable(
             fake_bin / "ssh",
-            "#!/usr/bin/env bash\nset -euo pipefail\nshift\nexec \"$@\"\n",
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "shift\n"
+            "if [[ \"$#\" -eq 1 ]]; then\n"
+            "  exec bash -c \"$1\"\n"
+            "fi\n"
+            "exec \"$@\"\n",
         )
         self._write_executable(
             fake_bin / "systemctl",
