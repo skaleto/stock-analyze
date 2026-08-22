@@ -13,8 +13,14 @@ from .dashboard_finance import (
     read_latest_research_values,
 )
 from .dashboard_http import InvalidDashboardQuery
-from .research.a_share_research_prices import read_a_share_research_history
-from .research.otc_fund_nav import read_otc_fund_nav_detail
+from .research.a_share_research_prices import (
+    a_share_research_price_artifact_warning,
+    read_a_share_research_history,
+)
+from .research.otc_fund_nav import (
+    otc_fund_nav_artifact_warning,
+    read_otc_fund_nav_detail,
+)
 
 
 MAX_DIGEST_CHARS = 4_000
@@ -26,6 +32,7 @@ RESEARCH_UNIVERSE_PAGE_SIZES = frozenset({20, 50, 100})
 MAX_RESEARCH_UNIVERSE_QUERY_CHARS = 80
 MAX_RESEARCH_UNIVERSE_SCOPE_CHARS = 128
 MAX_RESEARCH_UNIVERSE_CODE_CHARS = 64
+MAX_RESEARCH_UNIVERSE_SCOPE_OPTIONS = 128
 
 
 def _mapping(value: object) -> dict[str, Any]:
@@ -230,7 +237,7 @@ def build_dashboard_research_universe_data(
             else [record[scope_key]]
         )
         if isinstance(item, str) and item
-    })
+    })[:MAX_RESEARCH_UNIVERSE_SCOPE_OPTIONS]
     normalized_query = query.casefold()
     filtered = [
         record for record in records
@@ -392,7 +399,12 @@ def build_dashboard_research_universe_instrument_data(
 
     instrument = _research_universe_instrument_metadata(record, kind=kind)
     if kind == "otc_fund":
-        nav_series, nav_latest, nav_metrics = read_otc_fund_nav_detail(root, code)
+        nav_warning = otc_fund_nav_artifact_warning(root, code, expected_as_of=as_of)
+        nav_series, nav_latest, nav_metrics = (
+            ([], None, [])
+            if nav_warning
+            else read_otc_fund_nav_detail(root, code)
+        )
         return {
             "schemaVersion": RESEARCH_UNIVERSE_INSTRUMENT_SCHEMA,
             "status": "available",
@@ -406,7 +418,7 @@ def build_dashboard_research_universe_instrument_data(
             "navSeries": nav_series,
             "navLatest": nav_latest,
             "metrics": nav_metrics,
-            "warning": (
+            "warning": nav_warning or (
                 None if nav_series
                 else "场外基金净值历史尚未采集；请等待后台研究数据任务完成。"
             ),
@@ -418,10 +430,18 @@ def build_dashboard_research_universe_instrument_data(
     candles: list[dict[str, Any]] = []
     warning: str | None = None
     if kind == "a_share":
-        candles = read_a_share_research_history(root, code)
+        scopes = _text_list(record.get("researchScopes"))
+        price_warning = (
+            a_share_research_price_artifact_warning(root, code, expected_as_of=as_of)
+            if "csi1000" in scopes
+            else None
+        )
+        candles = [] if price_warning else read_a_share_research_history(root, code)
+        warning = price_warning
     try:
         if not candles:
-            normalized, candles, warning = read_instrument_history(root, market, code)
+            normalized, candles, fallback_warning = read_instrument_history(root, market, code)
+            warning = warning or fallback_warning
     except (InstrumentDataError, ValueError):
         warning = "历史行情或研究指标缓存不可读。"
     try:

@@ -97,6 +97,35 @@ def _artifact_root(root: Path) -> Path:
     return root / "data/research/a_share_prices/v1"
 
 
+def _active_manifest(root: Path) -> dict[str, object]:
+    try:
+        value = json.loads((_artifact_root(root) / "latest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def a_share_research_price_artifact_warning(
+    repo_root: str | Path,
+    code: str,
+    *,
+    expected_as_of: str | None = None,
+) -> str | None:
+    """Return a bounded warning unless one current completed artifact owns ``code``."""
+    normalized = str(code or "").upper()
+    if not _CODE.fullmatch(normalized):
+        return "研究行情代码无效。"
+    manifest = _active_manifest(Path(repo_root).resolve())
+    if manifest.get("schema_version") != _SCHEMA or manifest.get("status") != "complete":
+        return "CSI1000 研究行情采集尚未完整完成；已降级读取既有历史缓存。"
+    if expected_as_of and manifest.get("as_of") != _date_key(expected_as_of):
+        return "CSI1000 研究行情与当前目录日期不一致；已降级读取既有历史缓存。"
+    completed = manifest.get("completed")
+    if not isinstance(completed, Mapping) or normalized not in completed:
+        return "该 CSI1000 标的未通过当前研究行情采集；已降级读取既有历史缓存。"
+    return None
+
+
 def refresh_a_share_research_prices(
     *, repo_root: str | Path, pro_client: object, as_of: str, scope: str = "csi1000"
 ) -> dict[str, object]:
@@ -124,8 +153,10 @@ def refresh_a_share_research_prices(
             completed[code] = {"rows": len(rows), "first_trade_date": rows[0]["trade_date"], "last_trade_date": rows[-1]["trade_date"]}
         except Exception as exc:  # noqa: BLE001 - retain prior file and report bounded status
             failures[code] = type(exc).__name__
+    status = "complete" if not failures else "partial"
     manifest = {
         "schema_version": _SCHEMA,
+        "status": status,
         "as_of": snapshot,
         "scope": scope,
         "requested": len(codes),
@@ -134,8 +165,9 @@ def refresh_a_share_research_prices(
     }
     serialized = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
     write_text_atomic(artifact_root / "runs" / f"{snapshot}-{scope}.json", serialized)
-    write_text_atomic(artifact_root / "latest.json", serialized)
-    return {"status": "complete" if not failures else "partial", "as_of": snapshot, "requested": len(codes), "completed": len(completed), "failed": len(failures)}
+    if not failures:
+        write_text_atomic(artifact_root / "latest.json", serialized)
+    return {"status": status, "as_of": snapshot, "requested": len(codes), "completed": len(completed), "failed": len(failures)}
 
 
 def read_a_share_research_history(repo_root: str | Path, code: str) -> list[dict[str, Any]]:
@@ -143,7 +175,10 @@ def read_a_share_research_history(repo_root: str | Path, code: str) -> list[dict
     normalized = str(code or "").upper()
     if not _CODE.fullmatch(normalized):
         return []
-    path = _artifact_root(Path(repo_root).resolve()) / f"{normalized}.csv"
+    root = Path(repo_root).resolve()
+    if a_share_research_price_artifact_warning(root, normalized) is not None:
+        return []
+    path = _artifact_root(root) / f"{normalized}.csv"
     try:
         with path.open(encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)

@@ -51,6 +51,35 @@ def _artifact_root(root: Path) -> Path:
     return root / "data/research/otc_fund_nav/v1"
 
 
+def _active_manifest(root: Path) -> dict[str, object]:
+    try:
+        value = json.loads((_artifact_root(root) / "latest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def otc_fund_nav_artifact_warning(
+    repo_root: str | Path,
+    code: str,
+    *,
+    expected_as_of: str | None = None,
+) -> str | None:
+    """Return a warning unless a complete, current NAV manifest owns ``code``."""
+    normalized = str(code or "").upper()
+    if not _CODE.fullmatch(normalized):
+        return "场外基金代码无效。"
+    manifest = _active_manifest(Path(repo_root).resolve())
+    if manifest.get("schema_version") != _SCHEMA or manifest.get("status") != "complete":
+        return "场外基金净值采集尚未完整完成。"
+    if expected_as_of and manifest.get("as_of") != _date_key(expected_as_of):
+        return "场外基金净值与当前目录日期不一致，未展示旧缓存。"
+    completed = manifest.get("completed")
+    if not isinstance(completed, Mapping) or normalized not in completed:
+        return "该场外基金未通过当前净值采集。"
+    return None
+
+
 def _catalog_codes(root: Path, scopes: tuple[str, ...]) -> list[str]:
     try:
         payload = json.loads((root / "data/research/universe_catalogs/latest.json").read_text(encoding="utf-8"))
@@ -77,7 +106,16 @@ def _normalized_nav(rows: list[dict[str, object]], *, code: str, as_of: str) -> 
         current_code = str(row.get("ts_code") or "").upper()
         unit_nav, accum_nav, adj_nav = (_number(row.get(key)) for key in ("unit_nav", "accum_nav", "adj_nav"))
         adjusted = adj_nav or accum_nav or unit_nav
-        if current_code != code or not nav_date or nav_date < minimum or nav_date > as_of or adjusted is None or adjusted <= 0:
+        if (
+            current_code != code
+            or not nav_date
+            or not ann_date
+            or nav_date < minimum
+            or nav_date > as_of
+            or ann_date > as_of
+            or adjusted is None
+            or adjusted <= 0
+        ):
             continue
         previous = by_date.get(nav_date)
         if previous is None or ann_date >= str(previous["ann_date"]):
@@ -127,11 +165,13 @@ def refresh_otc_fund_nav(
             completed[code] = {"rows": len(rows), "first_nav_date": rows[0]["nav_date"], "last_nav_date": rows[-1]["nav_date"]}
         except Exception as exc:  # noqa: BLE001 - preserve any prior valid file
             failures[code] = type(exc).__name__
-    manifest = {"schema_version": _SCHEMA, "as_of": snapshot, "scopes": list(scopes), "requested": len(codes), "completed": completed, "failures": failures}
+    status = "complete" if not failures else "partial"
+    manifest = {"schema_version": _SCHEMA, "status": status, "as_of": snapshot, "scopes": list(scopes), "requested": len(codes), "completed": completed, "failures": failures}
     serialized = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True)
     write_text_atomic(artifact_root / "runs" / f"{snapshot}.json", serialized)
-    write_text_atomic(artifact_root / "latest.json", serialized)
-    return {"status": "complete" if not failures else "partial", "as_of": snapshot, "requested": len(codes), "completed": len(completed), "failed": len(failures)}
+    if not failures:
+        write_text_atomic(artifact_root / "latest.json", serialized)
+    return {"status": status, "as_of": snapshot, "requested": len(codes), "completed": len(completed), "failed": len(failures)}
 
 
 def _metric(key: str, label: str, explanation: str, value: float) -> dict[str, object]:
@@ -143,15 +183,20 @@ def read_otc_fund_nav_detail(repo_root: str | Path, code: str) -> tuple[list[dic
     normalized = str(code or "").upper()
     if not _CODE.fullmatch(normalized):
         return [], None, []
-    path = _artifact_root(Path(repo_root).resolve()) / f"{normalized}.csv"
+    root = Path(repo_root).resolve()
+    if otc_fund_nav_artifact_warning(root, normalized) is not None:
+        return [], None, []
+    as_of = _date_key(_active_manifest(root).get("as_of"))
+    if not as_of:
+        return [], None, []
+    path = _artifact_root(root) / f"{normalized}.csv"
     try:
         with path.open(encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             if reader.fieldnames != list(_COLUMNS):
                 return [], None, []
             source_rows = [dict(row) for row in reader]
-            as_of = max((_date_key(row.get("nav_date")) for row in source_rows), default="")
-            rows = _normalized_nav(source_rows, code=normalized, as_of=as_of) if as_of else []
+            rows = _normalized_nav(source_rows, code=normalized, as_of=as_of)
     except OSError:
         return [], None, []
     series = [

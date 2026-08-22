@@ -14,7 +14,7 @@ Dashboard 只读取目录快照、已有行情缓存和 `data/research/features/
 
 新增 `/api/dashboard/research-universe-instrument.json?kind=<kind>&code=<code>`，仅接受当前目录快照内的标的。响应包含目录元数据、可用的 K 线、最新价格变化和已有研究指标，并永久标记 `executionEffect: none_research_only`。
 
-`a_share` 映射已有 A 股缓存；`exchange_fund` 映射跨境 ETF 缓存；`otc_fund` 只展示目录元数据，并以可理解的提示说明当前没有可展示的场内 K 线。缓存缺失时以受控 warning 返回空 K 线，绝不回源请求或伪造数值。
+`a_share` 映射已有 A 股缓存；`exchange_fund` 映射跨境 ETF 缓存；`otc_fund` 读取独立的研究净值缓存，展示复权净值曲线及收益、波动、回撤等统计，不伪造为场内 K 线。缓存缺失、目录日期不一致或采集未完整时以受控 warning 返回空序列，绝不回源请求或伪造数值。
 
 研究目录表将代码/名称作为可访问的详情按钮。点击后打开右侧只读抽屉，展示名称、代码、研究范围/基金元数据、最新行情、K 线及指标；Escape、关闭按钮和遮罩均可关闭抽屉。抽屉不显示交易、持仓、策略概率或执行控件。
 

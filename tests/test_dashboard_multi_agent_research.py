@@ -214,6 +214,33 @@ class MultiAgentResearchDashboardTests(unittest.TestCase):
         self.assertEqual(payload["records"][0]["board"], "主板")
         self.assertEqual(payload["records"][0]["sizeBucket"], "large_cap")
 
+    def test_bounds_a_share_scope_options_to_the_frontend_contract(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_universe_catalog(root)
+            catalog_path = root / "data/research/universe_catalogs/latest.json"
+            catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+            catalog["a_share"]["records"].extend(
+                {
+                    "ts_code": f"{code:06d}.SZ",
+                    "name": f"样本{code}",
+                    "record_kind": "a_share_equity",
+                    "research_only": True,
+                    "research_scopes": ["all_a_share"],
+                    "industry": f"行业{code}",
+                    "board": "主板",
+                    "size_bucket": "micro_cap",
+                }
+                for code in range(100000, 100140)
+            )
+            catalog_path.write_text(json.dumps(catalog, ensure_ascii=False), encoding="utf-8")
+
+            payload = build_dashboard_research_universe_data(
+                repo_root=root, kind="a_share", query="", scope=None, page=1, page_size=20
+            )
+
+        self.assertEqual(len(payload["scopeOptions"]), 128)
+
     def test_projects_a_catalog_scoped_a_share_detail_without_account_data(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -254,6 +281,7 @@ class MultiAgentResearchDashboardTests(unittest.TestCase):
         self.assertEqual(payload["instrument"]["name"], "平安银行")
         self.assertEqual(payload["instrument"]["researchScopes"], ["csi1000", "hs300"])
         self.assertEqual(len(payload["candles"]), 62)
+        self.assertIn("尚未完整", payload["warning"])
         self.assertTrue(payload["metrics"])
         self.assertNotIn("relatedTrades", payload)
         self.assertNotIn("predictions", payload)
@@ -286,6 +314,12 @@ class MultiAgentResearchDashboardTests(unittest.TestCase):
                 "000001.SZ,20260821,10,11,9,10.5,1000,10000\n",
                 encoding="utf-8",
             )
+            (prices / "latest.json").write_text(json.dumps({
+                "schema_version": "a-share-research-prices-v1",
+                "status": "complete",
+                "as_of": "20260822",
+                "completed": {"000001.SZ": {"rows": 2}},
+            }), encoding="utf-8")
             navs = root / "data/research/otc_fund_nav/v1"
             navs.mkdir(parents=True)
             (navs / "000834.OF.csv").write_text(
@@ -294,6 +328,12 @@ class MultiAgentResearchDashboardTests(unittest.TestCase):
                 "000834.OF,20260822,20260821,1.1,1.1,1.1\n",
                 encoding="utf-8",
             )
+            (navs / "latest.json").write_text(json.dumps({
+                "schema_version": "otc-fund-nav-v1",
+                "status": "complete",
+                "as_of": "20260822",
+                "completed": {"000834.OF": {"rows": 2}},
+            }), encoding="utf-8")
 
             equity = build_dashboard_research_universe_instrument_data(
                 repo_root=root, kind="a_share", code="000001.SZ",

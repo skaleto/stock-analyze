@@ -136,6 +136,9 @@ readonly DASHBOARD_CANARY_ENDPOINTS=(
   "/api/dashboard/multi-agent-research.json"
   "/api/dashboard/data-intelligence.json?market=a_share"
   "/api/dashboard/operations-center.json?scope=all"
+  "/api/dashboard/research-universe.json?kind=a_share&page=1&page_size=20"
+  "/api/dashboard/research-universe-instrument.json?kind=a_share&code=000001.SZ"
+  "/api/dashboard/research-universe-instrument.json?kind=otc_fund&code=006426.OF"
   "/app.html?view=system"
 )
 
