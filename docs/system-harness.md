@@ -102,6 +102,8 @@ python3 -m stock_analyze --market a_share run-multi-agent-research \
 # 决策/风控/归因证据
 curl -s 'http://127.0.0.1:8765/api/dashboard/governance.json?market=a_share&agent=codex'
 curl -s 'http://127.0.0.1:8765/api/dashboard/multi-agent-research.json'
+curl -s 'http://127.0.0.1:8765/api/dashboard/research-universe.json?kind=a_share&page=1&page_size=50'
+curl -s 'http://127.0.0.1:8765/api/dashboard/research-universe.json?kind=exchange_fund&query=%E7%BA%B3%E6%96%AF&page=1&page_size=50'
 ```
 
 `run-daily` 顺序固定为执行到期订单、更新净值、生成下一交易日目标。`run-weekly` 不下单。
