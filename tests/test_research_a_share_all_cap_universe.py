@@ -1,0 +1,1298 @@
+from __future__ import annotations
+
+import hashlib
+import inspect
+import json
+import shutil
+import unittest
+from datetime import date, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from stock_analyze.research import a_share_all_cap_universe as universe_module
+from stock_analyze.research.a_share_all_cap_universe import (
+    DAILY_HARD_STATUS_COLUMNS,
+    MEMBERSHIP_COLUMNS,
+    assign_stable_sleeve,
+    build_daily_hard_status,
+    build_review_membership,
+    load_verified_all_cap_universe,
+    materialize_all_cap_universe,
+    raw_sleeve_for_rank,
+)
+from stock_analyze.research.a_share_all_cap_contract import (
+    AllCapContract,
+    SleeveContract,
+)
+
+
+EXPECTED_MEMBERSHIP_COLUMNS = (
+    "review_date",
+    "effective_date",
+    "code",
+    "eligible",
+    "exclusion_reasons",
+    "size_rank",
+    "raw_sleeve",
+    "stable_sleeve",
+    "total_mv",
+    "circ_mv",
+    "avg_amount_252",
+    "non_trading_days_252",
+    "industry_l1",
+    "industry_l2",
+    "industry_l3",
+    "industry_source_date",
+    "status_source",
+    "universe_contract_version",
+)
+
+
+class SleeveAssignmentTests(unittest.TestCase):
+    boundaries = (300, 800, 1800, 3800)
+
+    def test_membership_columns_are_the_exact_public_contract(self) -> None:
+        self.assertEqual(MEMBERSHIP_COLUMNS, EXPECTED_MEMBERSHIP_COLUMNS)
+
+    def test_raw_sleeves_include_unfunded_nano_watch(self) -> None:
+        expected = {
+            1: "large",
+            300: "large",
+            301: "mid",
+            800: "mid",
+            801: "small",
+            1800: "small",
+            1801: "micro",
+            3800: "micro",
+            3801: "nano_watch",
+        }
+        self.assertEqual(
+            {
+                rank: raw_sleeve_for_rank(rank, self.boundaries)
+                for rank in expected
+            },
+            expected,
+        )
+
+    def test_previous_large_is_retained_only_inside_ten_percent_buffer(self) -> None:
+        self.assertEqual(
+            assign_stable_sleeve(
+                size_rank=315,
+                previous="large",
+                boundaries=self.boundaries,
+                buffer_fraction=0.10,
+            ),
+            "large",
+        )
+        self.assertEqual(
+            assign_stable_sleeve(
+                size_rank=331,
+                previous="large",
+                boundaries=self.boundaries,
+                buffer_fraction=0.10,
+            ),
+            "mid",
+        )
+
+    def test_missing_or_unchanged_previous_sleeve_returns_raw(self) -> None:
+        self.assertEqual(
+            assign_stable_sleeve(
+                size_rank=301,
+                previous=None,
+                boundaries=self.boundaries,
+                buffer_fraction=0.10,
+            ),
+            "mid",
+        )
+        self.assertEqual(
+            assign_stable_sleeve(
+                size_rank=301,
+                previous="mid",
+                boundaries=self.boundaries,
+                buffer_fraction=0.10,
+            ),
+            "mid",
+        )
+
+    def test_invalid_rank_boundaries_previous_or_buffer_fail_closed(self) -> None:
+        cases = (
+            {"size_rank": 0, "previous": None, "boundaries": self.boundaries, "buffer_fraction": 0.10},
+            {"size_rank": 1.5, "previous": None, "boundaries": self.boundaries, "buffer_fraction": 0.10},
+            {"size_rank": 1, "previous": None, "boundaries": (300, 300, 1800, 3800), "buffer_fraction": 0.10},
+            {"size_rank": 1, "previous": "unknown", "boundaries": self.boundaries, "buffer_fraction": 0.10},
+            {"size_rank": 1, "previous": None, "boundaries": self.boundaries, "buffer_fraction": -0.01},
+        )
+        for kwargs in cases:
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaisesRegex(ValueError, "all_cap_universe_sleeve"):
+                    assign_stable_sleeve(**kwargs)
+
+
+def _contract(
+    *,
+    start: date = date(2024, 6, 24),
+    end: date = date(2024, 7, 1),
+    boundaries: tuple[int, int, int, int] = (300, 800, 1800, 3800),
+) -> AllCapContract:
+    raw = {
+        "contract_version": 1,
+        "universe": {
+            "liquidity_lookback_sessions": 252,
+            "maximum_non_trading_days": 60,
+            "new_entry_minimum_amount_percentile": 0.20,
+            "retention_minimum_amount_percentile": 0.10,
+            "listing_age": {
+                "main_board_days": 90,
+                "chinext_days": 90,
+                "star_days": 365,
+                "bse_days": 730,
+            },
+        },
+        "storage": {"minimum_filesystem_free_fraction_after_publish": 0.15},
+    }
+    return AllCapContract(
+        campaign_id="test_all_cap",
+        development_start=start,
+        development_end=end,
+        holdout_start=date(2025, 1, 1),
+        holdout_end=date(2025, 12, 31),
+        holdout_policy="open_once_after_data_code_and_development_gates",
+        size_boundaries=boundaries,
+        boundary_buffer_fraction=0.10,
+        sleeves=(
+            SleeveContract("large", 1, boundaries[0], "L", 0.35),
+            SleeveContract("mid", boundaries[0] + 1, boundaries[1], "M", 0.30),
+            SleeveContract("small", boundaries[1] + 1, boundaries[2], "S", 0.25),
+            SleeveContract("micro", boundaries[2] + 1, boundaries[3], "X", 0.10),
+        ),
+        raw=raw,
+    )
+
+
+def _date_key(value: date) -> str:
+    return value.strftime("%Y%m%d")
+
+
+def _review_inputs(
+    codes: list[str],
+    *,
+    review: date = date(2024, 6, 28),
+    amounts: dict[str, float] | None = None,
+    total_mv: dict[str, float] | None = None,
+    list_dates: dict[str, date] | None = None,
+    status_codes: set[str] | None = None,
+    previous_codes: set[str] | None = None,
+) -> dict[str, pd.DataFrame]:
+    amount_values = amounts or {
+        code: float((len(codes) - index) * 100)
+        for index, code in enumerate(codes)
+    }
+    mv_values = total_mv or {
+        code: float((len(codes) - index) * 1_000)
+        for index, code in enumerate(codes)
+    }
+    listing = list_dates or {
+        code: review - timedelta(days=1_000) for code in codes
+    }
+    status_present = set(codes) if status_codes is None else status_codes
+    open_days = [review - timedelta(days=offset) for offset in (4, 3, 2, 1, 0)]
+    next_open = review + timedelta(days=3)
+    return {
+        "trade_calendar": pd.DataFrame(
+            [
+                {"cal_date": _date_key(day), "is_open": "1"}
+                for day in [*open_days, next_open]
+            ]
+        ),
+        "stock_master": pd.DataFrame(
+            [
+                {
+                    "ts_code": code,
+                    "list_date": _date_key(listing[code]),
+                    "delist_date": "",
+                    "list_status": "L",
+                    "source_date": _date_key(review),
+                }
+                for code in codes
+            ]
+        ),
+        "daily": pd.DataFrame(
+            [
+                {
+                    "ts_code": code,
+                    "trade_date": _date_key(day),
+                    "amount": amount_values[code],
+                }
+                for day in open_days
+                for code in codes
+            ]
+        ),
+        "daily_basic": pd.DataFrame(
+            [
+                {
+                    "ts_code": code,
+                    "trade_date": _date_key(review),
+                    "total_mv": mv_values[code],
+                    "circ_mv": mv_values[code] * 0.8,
+                }
+                for code in codes
+            ]
+        ),
+        "status": pd.DataFrame(
+            [
+                {
+                    "ts_code": code,
+                    "trade_date": _date_key(review),
+                    "source_date": _date_key(review),
+                    "is_st": "0",
+                    "tradestatus": "1",
+                    "is_delisting": "0",
+                    "status_source": "baostock+suspend_d",
+                }
+                for code in codes
+                if code in status_present
+            ]
+        ),
+        "industry_membership": pd.DataFrame(
+            [
+                {
+                    "ts_code": code,
+                    "l1_code": "801010.SI",
+                    "l2_code": "801011.SI",
+                    "l3_code": "850111.SI",
+                    "in_date": "20200101",
+                    "out_date": "",
+                    "source_date": _date_key(review),
+                }
+                for code in codes
+            ]
+        ),
+        "previous_membership": pd.DataFrame(
+            [
+                {
+                    "review_date": "20240329",
+                    "code": code,
+                    "eligible": True,
+                    "stable_sleeve": "large",
+                }
+                for code in sorted(previous_codes or set())
+            ],
+            columns=("review_date", "code", "eligible", "stable_sleeve"),
+        ),
+    }
+
+
+class ReviewMembershipTests(unittest.TestCase):
+    review = date(2024, 6, 28)
+    contract = _contract()
+
+    def test_excludes_future_listing_st_and_missing_status(self) -> None:
+        codes = ["000001.SZ", "000002.SZ", "000003.SZ", "000004.SZ"]
+        inputs = _review_inputs(
+            codes,
+            list_dates={
+                codes[0]: self.review - timedelta(days=1_000),
+                codes[1]: self.review + timedelta(days=1),
+                codes[2]: self.review - timedelta(days=1_000),
+                codes[3]: self.review - timedelta(days=1_000),
+            },
+            status_codes=set(codes[:3]),
+        )
+        inputs["status"].loc[
+            inputs["status"]["ts_code"].eq("000003.SZ"), "is_st"
+        ] = "1"
+
+        result = build_review_membership(
+            inputs,
+            review_date=_date_key(self.review),
+            contract=self.contract,
+        ).set_index("code")
+
+        self.assertIn("not_listed", result.loc["000002.SZ", "exclusion_reasons"])
+        self.assertIn("st", result.loc["000003.SZ", "exclusion_reasons"])
+        self.assertIn("status_missing", result.loc["000004.SZ", "exclusion_reasons"])
+        self.assertFalse(result.loc[["000002.SZ", "000003.SZ", "000004.SZ"], "eligible"].any())
+
+    def test_listing_age_uses_explicit_board_specific_calendar_thresholds(self) -> None:
+        thresholds = {
+            "600001.SH": 90,
+            "600002.SH": 89,
+            "300001.SZ": 90,
+            "688001.SH": 365,
+            "688002.SH": 364,
+            "430001.BJ": 730,
+            "430002.BJ": 729,
+            "900001.SH": 1_000,
+        }
+        for code, age in thresholds.items():
+            with self.subTest(code=code, age=age):
+                inputs = _review_inputs(
+                    [code],
+                    list_dates={code: self.review - timedelta(days=age)},
+                )
+                row = build_review_membership(
+                    inputs,
+                    review_date=self.review,
+                    contract=self.contract,
+                ).iloc[0]
+                if code in {"600002.SH", "688002.SH", "430002.BJ"}:
+                    self.assertIn("listing_age", row["exclusion_reasons"])
+                elif code == "900001.SH":
+                    self.assertIn("unsupported_board", row["exclusion_reasons"])
+                else:
+                    self.assertTrue(row["eligible"], row["exclusion_reasons"])
+
+    def test_liquidity_hysteresis_uses_top_80_and_top_90_with_code_ties(self) -> None:
+        codes = [f"0000{index:02d}.SZ" for index in range(1, 11)]
+        amounts = {
+            **{code: float(110 - index * 10) for index, code in enumerate(codes[:7], 1)},
+            codes[7]: 20.0,
+            codes[8]: 20.0,
+            codes[9]: 10.0,
+        }
+        new_result = build_review_membership(
+            _review_inputs(codes, amounts=amounts),
+            review_date=self.review,
+            contract=self.contract,
+        ).set_index("code")
+        self.assertTrue(new_result.loc[codes[7], "eligible"])
+        self.assertIn("liquidity", new_result.loc[codes[8], "exclusion_reasons"])
+
+        retained_result = build_review_membership(
+            _review_inputs(codes, amounts=amounts, previous_codes={codes[8]}),
+            review_date=self.review,
+            contract=self.contract,
+        ).set_index("code")
+        self.assertTrue(retained_result.loc[codes[8], "eligible"])
+        self.assertIn("liquidity", retained_result.loc[codes[9], "exclusion_reasons"])
+
+    def test_latest_ineligible_quarter_does_not_reuse_older_eligible_retention(self) -> None:
+        codes = [f"0000{index:02d}.SZ" for index in range(1, 11)]
+        amounts = {
+            **{code: float(110 - index * 10) for index, code in enumerate(codes[:7], 1)},
+            codes[7]: 20.0,
+            codes[8]: 20.0,
+            codes[9]: 10.0,
+        }
+        inputs = _review_inputs(codes, amounts=amounts)
+        inputs["previous_membership"] = pd.DataFrame(
+            [
+                {
+                    "review_date": "20231229",
+                    "code": codes[8],
+                    "eligible": True,
+                    "stable_sleeve": "large",
+                },
+                {
+                    "review_date": "20240329",
+                    "code": codes[8],
+                    "eligible": False,
+                    "stable_sleeve": pd.NA,
+                },
+            ]
+        )
+
+        result = build_review_membership(
+            inputs,
+            review_date=self.review,
+            contract=self.contract,
+        ).set_index("code")
+
+        self.assertFalse(result.loc[codes[8], "eligible"])
+        self.assertIn("liquidity", result.loc[codes[8], "exclusion_reasons"])
+
+    def test_future_amount_market_cap_industry_and_status_rows_are_ignored(self) -> None:
+        code = "000001.SZ"
+        inputs = _review_inputs([code], amounts={code: 100.0}, total_mv={code: 1_000.0})
+        future = _date_key(self.review + timedelta(days=3))
+        inputs["daily"] = pd.concat(
+            [inputs["daily"], pd.DataFrame([{"ts_code": code, "trade_date": future, "amount": 999_999.0}])],
+            ignore_index=True,
+        )
+        inputs["daily_basic"] = pd.concat(
+            [inputs["daily_basic"], pd.DataFrame([{"ts_code": code, "trade_date": future, "total_mv": 9_999.0, "circ_mv": 8_888.0}])],
+            ignore_index=True,
+        )
+        inputs["status"] = pd.concat(
+            [
+                inputs["status"],
+                pd.DataFrame(
+                    [{
+                        "ts_code": code,
+                        "trade_date": future,
+                        "source_date": future,
+                        "is_st": "1",
+                        "tradestatus": "0",
+                        "is_delisting": "1",
+                        "status_source": "future",
+                    }]
+                ),
+            ],
+            ignore_index=True,
+        )
+        inputs["industry_membership"] = pd.concat(
+            [
+                inputs["industry_membership"],
+                pd.DataFrame(
+                    [{
+                        "ts_code": code,
+                        "l1_code": "FUTURE",
+                        "l2_code": "FUTURE",
+                        "l3_code": "FUTURE",
+                        "in_date": "20200101",
+                        "out_date": "",
+                        "source_date": future,
+                    }]
+                ),
+            ],
+            ignore_index=True,
+        )
+
+        row = build_review_membership(
+            inputs,
+            review_date=self.review,
+            contract=self.contract,
+        ).iloc[0]
+
+        self.assertTrue(row["eligible"], row["exclusion_reasons"])
+        self.assertEqual(row["avg_amount_252"], 100.0)
+        self.assertEqual(row["total_mv"], 1_000.0)
+        self.assertEqual(row["industry_l1"], "801010.SI")
+        self.assertEqual(row["industry_source_date"], "20200101")
+        self.assertEqual(row["status_source"], "baostock+suspend_d")
+
+    def test_industry_out_date_is_exclusive_and_overlaps_are_ambiguous(self) -> None:
+        codes = ["000001.SZ", "000002.SZ"]
+        inputs = _review_inputs(codes)
+        inputs["industry_membership"].loc[
+            inputs["industry_membership"]["ts_code"].eq(codes[0]), "out_date"
+        ] = _date_key(self.review)
+        overlap = inputs["industry_membership"].loc[
+            inputs["industry_membership"]["ts_code"].eq(codes[1])
+        ].copy()
+        overlap["l1_code"] = "801020.SI"
+        inputs["industry_membership"] = pd.concat(
+            [inputs["industry_membership"], overlap], ignore_index=True
+        )
+
+        result = build_review_membership(
+            inputs,
+            review_date=self.review,
+            contract=self.contract,
+        ).set_index("code")
+
+        self.assertIn("industry_missing", result.loc[codes[0], "exclusion_reasons"])
+        self.assertIn("industry_ambiguous", result.loc[codes[1], "exclusion_reasons"])
+
+    def test_identical_active_industry_or_status_duplicates_fail_closed(self) -> None:
+        codes = ["000001.SZ", "000002.SZ"]
+        inputs = _review_inputs(codes)
+        inputs["industry_membership"] = pd.concat(
+            [
+                inputs["industry_membership"],
+                inputs["industry_membership"].loc[
+                    inputs["industry_membership"]["ts_code"].eq(codes[0])
+                ],
+            ],
+            ignore_index=True,
+        )
+        inputs["status"] = pd.concat(
+            [
+                inputs["status"],
+                inputs["status"].loc[inputs["status"]["ts_code"].eq(codes[1])],
+            ],
+            ignore_index=True,
+        )
+
+        result = build_review_membership(
+            inputs,
+            review_date=self.review,
+            contract=self.contract,
+        ).set_index("code")
+
+        self.assertIn("industry_ambiguous", result.loc[codes[0], "exclusion_reasons"])
+        self.assertIn("status_missing", result.loc[codes[1], "exclusion_reasons"])
+
+    def test_market_cap_ties_rank_by_code_and_previous_applies_after_eligibility(self) -> None:
+        codes = ["000002.SZ", "000001.SZ", "000003.SZ"]
+        inputs = _review_inputs(
+            codes,
+            total_mv={code: 1_000.0 for code in codes},
+            previous_codes={"000003.SZ"},
+            status_codes={"000001.SZ", "000002.SZ"},
+        )
+        result = build_review_membership(
+            inputs,
+            review_date=self.review,
+            contract=self.contract,
+        ).set_index("code")
+
+        self.assertEqual(result.loc["000001.SZ", "size_rank"], 1)
+        self.assertEqual(result.loc["000002.SZ", "size_rank"], 2)
+        self.assertTrue(pd.isna(result.loc["000003.SZ", "size_rank"]))
+        self.assertTrue(pd.isna(result.loc["000003.SZ", "stable_sleeve"]))
+
+    def test_invalid_amount_and_market_caps_have_sorted_explicit_reasons(self) -> None:
+        code = "000001.SZ"
+        inputs = _review_inputs([code])
+        inputs["daily"].loc[:, "amount"] = -1.0
+        inputs["daily_basic"].loc[:, "total_mv"] = 0.0
+        inputs["daily_basic"].loc[:, "circ_mv"] = float("nan")
+
+        row = build_review_membership(
+            inputs,
+            review_date=self.review,
+            contract=self.contract,
+        ).iloc[0]
+
+        self.assertEqual(
+            row["exclusion_reasons"],
+            "amount_invalid;circ_mv_invalid;total_mv_invalid",
+        )
+
+    def test_pre_listing_open_sessions_do_not_reduce_liquidity_or_count_non_trading(self) -> None:
+        code = "000001.SZ"
+        list_date = self.review - timedelta(days=90)
+        inputs = _review_inputs([code], list_dates={code: list_date})
+        inputs["trade_calendar"] = pd.concat(
+            [
+                pd.DataFrame(
+                    [{
+                        "cal_date": _date_key(list_date - timedelta(days=1)),
+                        "is_open": "1",
+                    }]
+                ),
+                inputs["trade_calendar"],
+            ],
+            ignore_index=True,
+        )
+
+        row = build_review_membership(
+            inputs,
+            review_date=self.review,
+            contract=self.contract,
+        ).iloc[0]
+
+        self.assertEqual(row["avg_amount_252"], 100.0)
+        self.assertEqual(row["non_trading_days_252"], 0)
+        self.assertTrue(row["eligible"], row["exclusion_reasons"])
+
+    def test_effective_date_is_the_next_open_session(self) -> None:
+        inputs = _review_inputs(["000001.SZ"])
+        row = build_review_membership(
+            inputs,
+            review_date=self.review,
+            contract=self.contract,
+        ).iloc[0]
+        self.assertEqual(row["effective_date"], "20240701")
+
+        inputs["trade_calendar"] = inputs["trade_calendar"].loc[
+            inputs["trade_calendar"]["cal_date"].le(_date_key(self.review))
+        ]
+        with self.assertRaisesRegex(ValueError, "all_cap_universe_next_open"):
+            build_review_membership(
+                inputs,
+                review_date=self.review,
+                contract=self.contract,
+            )
+
+
+EXPECTED_DAILY_HARD_STATUS_COLUMNS = (
+    "trade_date",
+    "code",
+    "listed",
+    "st",
+    "delisting",
+    "suspended",
+    "limit_up",
+    "limit_down",
+    "at_limit_up",
+    "at_limit_down",
+    "status_complete",
+    "status_conflict",
+    "buy_executable",
+    "sell_executable",
+    "prohibit_new_position",
+    "status_source",
+    "hard_status_version",
+)
+
+
+def _daily_status_inputs() -> dict[str, pd.DataFrame]:
+    trade_date = "20240628"
+    codes = [f"0000{index:02d}.SZ" for index in range(1, 10)]
+    stock_master = pd.DataFrame(
+        [
+            {
+                "ts_code": code,
+                "list_date": "20200101" if code != codes[7] else "20240701",
+                "delist_date": trade_date if code == codes[8] else "",
+                "list_status": "D" if code == codes[8] else "L",
+            }
+            for code in codes
+        ]
+    )
+    daily = pd.DataFrame(
+        [
+            {
+                "ts_code": code,
+                "trade_date": trade_date,
+                "open": 11.0 if code == codes[3] else 9.0 if code == codes[4] else 10.0,
+            }
+            for code in codes
+        ]
+    )
+    stk_limit = pd.DataFrame(
+        [
+            {
+                "ts_code": code,
+                "trade_date": trade_date,
+                "up_limit": 11.0,
+                "down_limit": 9.0,
+            }
+            for code in codes
+        ]
+    )
+    baostock_status = pd.DataFrame(
+        [
+            {
+                "ts_code": code,
+                "trade_date": trade_date,
+                "tradestatus": "0" if code == codes[2] else "1",
+                "is_st": "1" if code == codes[1] else "0",
+                "st_source": "baostock_history_isST_v1",
+            }
+            for code in codes
+            if code != codes[5]
+        ]
+    )
+    suspend_d = pd.DataFrame(
+        [
+            {
+                "ts_code": code,
+                "trade_date": trade_date,
+                "suspend_timing": "09:30-15:00",
+                "suspend_type": "S",
+            }
+            for code in (codes[2], codes[6])
+        ],
+        columns=("ts_code", "trade_date", "suspend_timing", "suspend_type"),
+    )
+    return {
+        "stock_master": stock_master,
+        "daily": daily,
+        "stk_limit": stk_limit,
+        "baostock_status": baostock_status,
+        "suspend_d": suspend_d,
+    }
+
+
+class DailyHardStatusTests(unittest.TestCase):
+    trade_date = "20240628"
+
+    def test_schema_and_st_suspension_limits_missing_conflict_and_lifecycle(self) -> None:
+        result = build_daily_hard_status(
+            trade_date=self.trade_date,
+            **_daily_status_inputs(),
+        ).set_index("code")
+
+        self.assertEqual(DAILY_HARD_STATUS_COLUMNS, EXPECTED_DAILY_HARD_STATUS_COLUMNS)
+        self.assertTrue(result.loc["000001.SZ", "buy_executable"])
+        self.assertTrue(result.loc["000001.SZ", "sell_executable"])
+
+        self.assertTrue(result.loc["000002.SZ", "st"])
+        self.assertFalse(result.loc["000002.SZ", "buy_executable"])
+        self.assertTrue(result.loc["000002.SZ", "sell_executable"])
+
+        self.assertTrue(result.loc["000003.SZ", "suspended"])
+        self.assertFalse(result.loc["000003.SZ", "buy_executable"])
+        self.assertFalse(result.loc["000003.SZ", "sell_executable"])
+
+        self.assertTrue(result.loc["000004.SZ", "at_limit_up"])
+        self.assertFalse(result.loc["000004.SZ", "buy_executable"])
+        self.assertTrue(result.loc["000004.SZ", "sell_executable"])
+        self.assertTrue(result.loc["000005.SZ", "at_limit_down"])
+        self.assertTrue(result.loc["000005.SZ", "buy_executable"])
+        self.assertFalse(result.loc["000005.SZ", "sell_executable"])
+
+        self.assertFalse(result.loc["000006.SZ", "status_complete"])
+        self.assertTrue(result.loc["000006.SZ", "prohibit_new_position"])
+        self.assertFalse(result.loc["000006.SZ", "buy_executable"])
+        self.assertFalse(result.loc["000006.SZ", "sell_executable"])
+
+        self.assertTrue(result.loc["000007.SZ", "status_conflict"])
+        self.assertFalse(result.loc["000007.SZ", "buy_executable"])
+        self.assertFalse(result.loc["000007.SZ", "sell_executable"])
+
+        self.assertFalse(result.loc["000008.SZ", "listed"])
+        self.assertFalse(result.loc["000008.SZ", "buy_executable"])
+        self.assertTrue(result.loc["000009.SZ", "delisting"])
+        self.assertFalse(result.loc["000009.SZ", "buy_executable"])
+
+    def test_duplicate_keys_in_each_daily_source_are_rejected(self) -> None:
+        for source in ("daily", "stk_limit", "baostock_status", "suspend_d"):
+            with self.subTest(source=source):
+                inputs = _daily_status_inputs()
+                inputs[source] = pd.concat(
+                    [inputs[source], inputs[source].iloc[[0]]], ignore_index=True
+                )
+                with self.assertRaisesRegex(ValueError, "all_cap_hard_status_duplicate"):
+                    build_daily_hard_status(
+                        trade_date=self.trade_date,
+                        **inputs,
+                    )
+
+    def test_future_status_timestamps_are_rejected(self) -> None:
+        inputs = _daily_status_inputs()
+        future = inputs["baostock_status"].iloc[[0]].copy()
+        future["trade_date"] = "20240701"
+        inputs["baostock_status"] = pd.concat(
+            [inputs["baostock_status"], future], ignore_index=True
+        )
+        with self.assertRaisesRegex(ValueError, "all_cap_hard_status_future"):
+            build_daily_hard_status(
+                trade_date=self.trade_date,
+                **inputs,
+            )
+
+    def test_agreed_full_day_suspension_is_complete_without_a_daily_bar(self) -> None:
+        inputs = _daily_status_inputs()
+        inputs["daily"] = inputs["daily"].loc[
+            ~inputs["daily"]["ts_code"].eq("000003.SZ")
+        ].copy()
+
+        row = build_daily_hard_status(
+            trade_date=self.trade_date,
+            **inputs,
+        ).set_index("code").loc["000003.SZ"]
+
+        self.assertTrue(row["status_complete"])
+        self.assertTrue(row["suspended"])
+        self.assertFalse(row["buy_executable"])
+        self.assertFalse(row["sell_executable"])
+
+
+def _canonical_hash(payload: dict[str, object]) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+class _FakeSources:
+    def __init__(self, codes: list[str], open_dates: list[str]) -> None:
+        self.metadata = {
+            "manifest_sha256": "a" * 64,
+            "start_date": min(open_dates),
+            "end_date": max(open_dates),
+        }
+        self.industry_membership = pd.DataFrame(
+            [
+                {
+                    "ts_code": code,
+                    "l1_code": "801010.SI",
+                    "l2_code": "801011.SI",
+                    "l3_code": "850111.SI",
+                    "in_date": "20200101",
+                    "out_date": "",
+                    "is_new": "Y",
+                }
+                for code in codes
+            ]
+        )
+        self._limits = pd.DataFrame(
+            [
+                {
+                    "ts_code": code,
+                    "trade_date": trade_date,
+                    "pre_close": 10.0,
+                    "up_limit": 11.0,
+                    "down_limit": 9.0,
+                }
+                for trade_date in open_dates
+                for code in codes
+            ]
+        )
+
+    def load_stk_limit_year(self, year: str | int) -> pd.DataFrame:
+        return self._limits.loc[
+            self._limits["trade_date"].str.startswith(str(year))
+        ].copy()
+
+
+def _write_csv(path: Path, frame: pd.DataFrame) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(path, index=False)
+
+
+def _write_complete_cache(repo_root: Path) -> tuple[_FakeSources, AllCapContract]:
+    cache = repo_root / "data/shared/backtest_cache"
+    open_dates = ["20240624", "20240625", "20240626", "20240627", "20240628"]
+    code = "000001.SZ"
+    _write_csv(
+        cache / "trade_cal.csv",
+        pd.DataFrame(
+            [
+                {"exchange": "SSE", "cal_date": value, "is_open": "1"}
+                for value in [*open_dates, "20240701"]
+            ]
+        ),
+    )
+    _write_csv(
+        cache / "stock_basic.csv",
+        pd.DataFrame(
+            [{
+                "ts_code": code,
+                "list_date": "20200101",
+                "delist_date": "",
+                "list_status": "L",
+            }]
+        ),
+    )
+    (cache / "_meta.json").write_text(
+        json.dumps(
+            {
+                "stock_basic_done": True,
+                "stock_basic_statuses_done": ["L", "D", "P"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    for value in open_dates:
+        dashed = f"{value[:4]}-{value[4:6]}-{value[6:]}"
+        _write_csv(
+            cache / "daily" / f"{dashed}.csv",
+            pd.DataFrame(
+                [{
+                    "ts_code": code,
+                    "trade_date": value,
+                    "open": 10.0,
+                    "high": 10.5,
+                    "low": 9.5,
+                    "close": 10.0,
+                    "amount": 100.0,
+                }]
+            ),
+        )
+        _write_csv(
+            cache / "daily_basic" / f"{dashed}.csv",
+            pd.DataFrame(
+                [{
+                    "ts_code": code,
+                    "trade_date": value,
+                    "total_mv": 1_000.0,
+                    "circ_mv": 800.0,
+                }]
+            ),
+        )
+        _write_csv(
+            cache / "suspend_d" / f"{dashed}.csv",
+            pd.DataFrame(
+                columns=("ts_code", "trade_date", "suspend_timing", "suspend_type")
+            ),
+        )
+    _write_csv(
+        cache / "adj_factor" / f"{code}.csv",
+        pd.DataFrame(
+            [
+                {"ts_code": code, "trade_date": value, "adj_factor": 1.0}
+                for value in open_dates
+            ]
+        ),
+    )
+    _write_csv(
+        cache / "baostock_status" / f"{code}.csv",
+        pd.DataFrame(
+            [
+                {
+                    "ts_code": code,
+                    "trade_date": value,
+                    "tradestatus": "1",
+                    "is_st": "0",
+                    "st_source": "baostock_history_isST_v1",
+                }
+                for value in open_dates
+            ]
+        ),
+    )
+    sources = _FakeSources([code], open_dates)
+    sources.metadata["stock_master_sha256"] = hashlib.sha256(
+        (cache / "stock_basic.csv").read_bytes()
+    ).hexdigest()
+    sources.metadata["open_trade_dates"] = list(open_dates)
+    return (
+        sources,
+        _contract(start=date(2024, 6, 24), end=date(2024, 6, 28)),
+    )
+
+
+def _resign_manifest_and_latest(repo_root: Path, mutate) -> None:
+    latest_path = repo_root / "data/research/a_share_all_cap/v1/universe/latest.json"
+    latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    publication = repo_root / "data/research/a_share_all_cap/v1/universe" / latest["publication"]
+    manifest_path = publication / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    mutate(manifest, publication)
+    manifest.pop("manifest_sha256", None)
+    manifest["manifest_sha256"] = _canonical_hash(manifest)
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    latest["manifest_sha256"] = manifest["manifest_sha256"]
+    latest.pop("marker_sha256", None)
+    latest["marker_sha256"] = _canonical_hash(latest)
+    latest_path.write_text(
+        json.dumps(latest, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+class UniverseMaterializationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        self.repo_root = Path(self.temp_dir.name)
+        self.sources, self.contract = _write_complete_cache(self.repo_root)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _materialize(self) -> dict[str, object]:
+        with patch.object(
+            universe_module,
+            "load_verified_all_cap_sources",
+            return_value=self.sources,
+        ) as loader:
+            result = materialize_all_cap_universe(
+                repo_root=self.repo_root,
+                contract=self.contract,
+            )
+        loader.assert_called_once_with(self.repo_root)
+        return result
+
+    def test_materializes_quarter_review_and_daily_year_partitions_offline(self) -> None:
+        result = self._materialize()
+        verified = load_verified_all_cap_universe(self.repo_root)
+        membership = verified.load_membership_year("2024")
+        hard_status = verified.load_hard_status_year("2024")
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(membership["review_date"].astype(str).tolist(), ["20240628"])
+        self.assertEqual(membership["effective_date"].astype(str).tolist(), ["20240701"])
+        self.assertEqual(hard_status["trade_date"].nunique(), 5)
+        self.assertTrue(membership.iloc[0]["eligible"])
+        self.assertTrue(hard_status["buy_executable"].all())
+        self.assertTrue(str(membership["code"].dtype).startswith("string"))
+        self.assertTrue(str(hard_status["trade_date"].dtype).startswith("string"))
+
+        universe_root = self.repo_root / "data/research/a_share_all_cap/v1/universe"
+        published_files = {
+            path.relative_to(universe_root).as_posix()
+            for path in universe_root.rglob("*")
+            if path.is_file()
+        }
+        self.assertTrue(any(path.endswith("membership/year=2024.parquet") for path in published_files))
+        self.assertTrue(any(path.endswith("daily_hard_status/year=2024.parquet") for path in published_files))
+        self.assertFalse(any("daily_basic" in path or "/daily/" in path for path in published_files))
+        source = inspect.getsource(universe_module)
+        self.assertNotIn("collect_all_cap_sources", source)
+        self.assertNotIn("pro_client", source)
+
+    def test_verified_loader_metadata_is_immutable_and_lazy_load_rechecks_checksum(self) -> None:
+        self._materialize()
+        verified = load_verified_all_cap_universe(self.repo_root)
+        with self.assertRaises(TypeError):
+            verified.metadata["status"] = "tampered"
+        with self.assertRaises(TypeError):
+            verified.membership["2099"] = verified.membership["2024"]
+        with self.assertRaises(TypeError):
+            verified.membership["2024"].record["path"] = "elsewhere.parquet"
+
+        partition = next((verified.publication_dir / "membership").glob("*.parquet"))
+        partition.write_bytes(partition.read_bytes() + b"corrupt-after-load")
+        with self.assertRaisesRegex(ValueError, "all_cap_universe_checksum"):
+            verified.load_membership_year("2024")
+
+    def test_missing_or_partial_cache_fails_closed(self) -> None:
+        missing = self.repo_root / "data/shared/backtest_cache/daily_basic/2024-06-26.csv"
+        missing.unlink()
+        with patch.object(
+            universe_module,
+            "load_verified_all_cap_sources",
+            return_value=self.sources,
+        ):
+            with self.assertRaisesRegex(ValueError, "all_cap_universe_insufficient_data"):
+                materialize_all_cap_universe(
+                    repo_root=self.repo_root,
+                    contract=self.contract,
+                )
+        self.assertFalse(
+            (self.repo_root / "data/research/a_share_all_cap/v1/universe/latest.json").exists()
+        )
+
+    def test_stock_master_meta_requires_complete_l_d_p_collection(self) -> None:
+        meta = self.repo_root / "data/shared/backtest_cache/_meta.json"
+        meta.write_text(
+            json.dumps(
+                {
+                    "stock_basic_done": True,
+                    "stock_basic_statuses_done": ["L"],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        with patch.object(
+            universe_module,
+            "load_verified_all_cap_sources",
+            return_value=self.sources,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "all_cap_universe_insufficient_data"
+            ):
+                materialize_all_cap_universe(
+                    repo_root=self.repo_root,
+                    contract=self.contract,
+                )
+
+    def test_missing_verified_source_fails_closed_without_fallback(self) -> None:
+        with patch.object(
+            universe_module,
+            "load_verified_all_cap_sources",
+            side_effect=ValueError("all_cap_source_manifest_missing"),
+        ) as loader:
+            with self.assertRaisesRegex(
+                ValueError, "all_cap_universe_insufficient_data:sources"
+            ):
+                materialize_all_cap_universe(
+                    repo_root=self.repo_root,
+                    contract=self.contract,
+                )
+        loader.assert_called_once_with(self.repo_root)
+
+    def test_source_identity_and_daily_limit_completeness_are_required(self) -> None:
+        self.sources.metadata["stock_master_sha256"] = "b" * 64
+        with patch.object(
+            universe_module,
+            "load_verified_all_cap_sources",
+            return_value=self.sources,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "all_cap_universe_insufficient_data:sources"
+            ):
+                materialize_all_cap_universe(
+                    repo_root=self.repo_root,
+                    contract=self.contract,
+                )
+
+        self.sources, self.contract = _write_complete_cache(self.repo_root)
+        self.sources._limits = self.sources._limits.loc[
+            ~self.sources._limits["trade_date"].eq("20240626")
+        ].copy()
+        with patch.object(
+            universe_module,
+            "load_verified_all_cap_sources",
+            return_value=self.sources,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "all_cap_universe_insufficient_data:sources"
+            ):
+                materialize_all_cap_universe(
+                    repo_root=self.repo_root,
+                    contract=self.contract,
+                )
+
+    def test_b_share_is_rejected_by_board_without_requiring_source_limit_coverage(self) -> None:
+        cache = self.repo_root / "data/shared/backtest_cache"
+        b_code = "900901.SH"
+        master_path = cache / "stock_basic.csv"
+        master = pd.read_csv(master_path, dtype=str, keep_default_na=False)
+        master = pd.concat(
+            [
+                master,
+                pd.DataFrame(
+                    [{
+                        "ts_code": b_code,
+                        "list_date": "20200101",
+                        "delist_date": "",
+                        "list_status": "L",
+                    }]
+                ),
+            ],
+            ignore_index=True,
+        )
+        _write_csv(master_path, master)
+        open_dates = ["20240624", "20240625", "20240626", "20240627", "20240628"]
+        for trade_date in open_dates:
+            dashed = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}"
+            daily_path = cache / "daily" / f"{dashed}.csv"
+            daily = pd.read_csv(daily_path, dtype=str, keep_default_na=False)
+            _write_csv(
+                daily_path,
+                pd.concat(
+                    [
+                        daily,
+                        pd.DataFrame(
+                            [{
+                                "ts_code": b_code,
+                                "trade_date": trade_date,
+                                "open": 10.0,
+                                "high": 10.5,
+                                "low": 9.5,
+                                "close": 10.0,
+                                "amount": 100.0,
+                            }]
+                        ),
+                    ],
+                    ignore_index=True,
+                ),
+            )
+            basic_path = cache / "daily_basic" / f"{dashed}.csv"
+            basic = pd.read_csv(basic_path, dtype=str, keep_default_na=False)
+            _write_csv(
+                basic_path,
+                pd.concat(
+                    [
+                        basic,
+                        pd.DataFrame(
+                            [{
+                                "ts_code": b_code,
+                                "trade_date": trade_date,
+                                "total_mv": 500.0,
+                                "circ_mv": 400.0,
+                            }]
+                        ),
+                    ],
+                    ignore_index=True,
+                ),
+            )
+        _write_csv(
+            cache / "adj_factor" / f"{b_code}.csv",
+            pd.DataFrame(
+                [
+                    {"ts_code": b_code, "trade_date": value, "adj_factor": 1.0}
+                    for value in open_dates
+                ]
+            ),
+        )
+        _write_csv(
+            cache / "baostock_status" / f"{b_code}.csv",
+            pd.DataFrame(
+                [
+                    {
+                        "ts_code": b_code,
+                        "trade_date": value,
+                        "tradestatus": "1",
+                        "is_st": "0",
+                        "st_source": "baostock_history_isST_v1",
+                    }
+                    for value in open_dates
+                ]
+            ),
+        )
+        self.sources.metadata["stock_master_sha256"] = hashlib.sha256(
+            master_path.read_bytes()
+        ).hexdigest()
+
+        self._materialize()
+        membership = load_verified_all_cap_universe(
+            self.repo_root
+        ).load_membership_year("2024").set_index("code")
+        self.assertFalse(membership.loc[b_code, "eligible"])
+        self.assertIn("unsupported_board", membership.loc[b_code, "exclusion_reasons"])
+
+    def test_corrupt_partition_and_resigned_semantic_manifest_are_rejected(self) -> None:
+        self._materialize()
+        latest = json.loads(
+            (self.repo_root / "data/research/a_share_all_cap/v1/universe/latest.json").read_text()
+        )
+        publication = (
+            self.repo_root
+            / "data/research/a_share_all_cap/v1/universe"
+            / latest["publication"]
+        )
+        partition = next((publication / "membership").glob("*.parquet"))
+        original = partition.read_bytes()
+        partition.write_bytes(original + b"corrupt")
+        with self.assertRaisesRegex(ValueError, "all_cap_universe_checksum"):
+            load_verified_all_cap_universe(self.repo_root)
+        partition.write_bytes(original)
+
+        def false_bounds(manifest: dict[str, object], _publication: Path) -> None:
+            manifest["partitions"]["membership"][0]["min_date"] = "20240101"
+
+        _resign_manifest_and_latest(self.repo_root, false_bounds)
+        with self.assertRaisesRegex(ValueError, "all_cap_universe_manifest_dates"):
+            load_verified_all_cap_universe(self.repo_root)
+
+    def test_duplicate_keys_are_rejected_even_when_partition_and_manifest_are_resigned(self) -> None:
+        self._materialize()
+
+        def duplicate_membership(manifest: dict[str, object], publication: Path) -> None:
+            record = manifest["partitions"]["membership"][0]
+            path = publication / record["path"]
+            schema = pq.ParquetFile(path).schema_arrow
+            frame = pq.read_table(path).to_pandas(types_mapper=pd.ArrowDtype)
+            duplicated = pd.concat([frame, frame.iloc[[0]]], ignore_index=True)
+            pq.write_table(
+                pa.Table.from_pandas(
+                    duplicated,
+                    schema=schema,
+                    preserve_index=False,
+                    safe=True,
+                ),
+                path,
+                compression="snappy",
+            )
+            record["rows"] = len(frame) + 1
+            record["bytes"] = path.stat().st_size
+            record["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            manifest["row_counts"]["membership"] = len(frame) + 1
+
+        _resign_manifest_and_latest(self.repo_root, duplicate_membership)
+        with self.assertRaisesRegex(ValueError, "all_cap_universe_duplicate"):
+            load_verified_all_cap_universe(self.repo_root)
+
+    def test_low_projected_disk_preserves_old_verified_latest(self) -> None:
+        self._materialize()
+        latest_path = self.repo_root / "data/research/a_share_all_cap/v1/universe/latest.json"
+        original_latest = latest_path.read_bytes()
+        usage = shutil._ntuple_diskusage(total=1_000_000, used=900_000, free=100_000)
+        with (
+            patch.object(
+                universe_module,
+                "load_verified_all_cap_sources",
+                return_value=self.sources,
+            ),
+            patch.object(universe_module.shutil, "disk_usage", return_value=usage),
+        ):
+            with self.assertRaisesRegex(ValueError, "all_cap_universe_free_space"):
+                materialize_all_cap_universe(
+                    repo_root=self.repo_root,
+                    contract=self.contract,
+                )
+        self.assertEqual(latest_path.read_bytes(), original_latest)
+        verified = load_verified_all_cap_universe(self.repo_root)
+        self.assertEqual(len(verified.load_membership_year("2024")), 1)
+
+    def test_latest_symlink_is_rejected(self) -> None:
+        self._materialize()
+        latest_path = self.repo_root / "data/research/a_share_all_cap/v1/universe/latest.json"
+        external = self.repo_root / "outside-latest.json"
+        latest_path.replace(external)
+        latest_path.symlink_to(external)
+        with self.assertRaisesRegex(ValueError, "all_cap_universe_symlink"):
+            load_verified_all_cap_universe(self.repo_root)
+
+
+if __name__ == "__main__":
+    unittest.main()
