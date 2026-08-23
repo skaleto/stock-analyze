@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import math
 import re
@@ -784,8 +786,9 @@ def _read_stock_master(repo_root: Path) -> tuple[pd.DataFrame, str]:
     if path.is_symlink():
         raise ValueError("all_cap_source_symlink:stock_master")
     try:
+        stock_basic_bytes = path.read_bytes()
         frame = pd.read_csv(
-            path,
+            io.BytesIO(stock_basic_bytes),
             dtype={
                 "ts_code": "string",
                 "list_date": "string",
@@ -832,7 +835,10 @@ def _read_stock_master(repo_root: Path) -> tuple[pd.DataFrame, str]:
     closed = frame["delist_date"].notna()
     if (frame.loc[closed, "delist_date"] < frame.loc[closed, "list_date"]).any():
         raise ValueError("all_cap_source_stock_master_schema")
-    return _normalize_identifier_dtypes(frame), source_store.sha256(path)
+    return (
+        _normalize_identifier_dtypes(frame),
+        hashlib.sha256(stock_basic_bytes).hexdigest(),
+    )
 
 
 def _expected_stocks(master: pd.DataFrame, trade_date: str) -> set[str]:

@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pandas as pd
 import pyarrow.parquet as pq
 
+from stock_analyze.research import a_share_all_cap_sources as all_cap_sources
 from stock_analyze.research.a_share_all_cap_sources import (
     collect_all_cap_sources,
     load_verified_all_cap_sources,
@@ -1160,6 +1161,56 @@ class AllCapSourceCollectorTests(unittest.TestCase):
 
         self.assertIn("830001.BJ", set(limits["ts_code"]))
         self.assertTrue(set(limits["ts_code"]).isdisjoint({"200001.SZ", "900901.SH"}))
+
+    def test_stock_master_frame_and_hash_share_one_atomic_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self.write_stock_master(root)
+            original_bytes = path.read_bytes()
+            replacement = path.with_name("stock_basic.replacement.csv")
+            replacement_frame = pd.read_csv(
+                path,
+                dtype=str,
+                keep_default_na=False,
+            )
+            replacement_frame = pd.concat(
+                [
+                    replacement_frame,
+                    pd.DataFrame(
+                        [
+                            {
+                                "ts_code": "000004.SZ",
+                                "list_date": "20200101",
+                                "delist_date": "",
+                                "list_status": "L",
+                            }
+                        ]
+                    ),
+                ],
+                ignore_index=True,
+            )
+            replacement_frame.to_csv(replacement, index=False)
+            real_read_csv = pd.read_csv
+
+            def replace_after_parse(
+                source: object,
+                *args: object,
+                **kwargs: object,
+            ) -> pd.DataFrame:
+                frame = real_read_csv(source, *args, **kwargs)
+                os.replace(replacement, path)
+                return frame
+
+            with patch.object(
+                all_cap_sources.pd,
+                "read_csv",
+                side_effect=replace_after_parse,
+            ):
+                master, digest = all_cap_sources._read_stock_master(root)
+
+            self.assertNotIn("000004.SZ", set(master["ts_code"]))
+            self.assertIn(b"000004.SZ", path.read_bytes())
+            self.assertEqual(digest, hashlib.sha256(original_bytes).hexdigest())
 
     def test_master_change_does_not_reuse_publication_and_only_refetches_limits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
