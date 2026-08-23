@@ -68,6 +68,24 @@ class CLIResearchAllCapTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
         make_client.assert_not_called()
 
+    def test_reversed_interval_fails_before_provider_construction(self) -> None:
+        with patch(
+            "stock_analyze.markets.a_share.backtest.data_prep._make_pro_client",
+        ) as make_client, redirect_stderr(io.StringIO()) as error:
+            code = main(
+                [
+                    "refresh-a-share-all-cap-sources",
+                    "--start",
+                    "2024-01-02",
+                    "--end",
+                    "2024-01-01",
+                ]
+            )
+
+        self.assertEqual(code, 2)
+        self.assertIn("all_cap_source_interval", error.getvalue())
+        make_client.assert_not_called()
+
     def test_collection_failure_returns_nonzero_without_printing_secrets(self) -> None:
         with patch(
             "stock_analyze.markets.a_share.backtest.data_prep._make_pro_client",

@@ -1,28 +1,21 @@
-"""Verified reference sources for the research-only A-share all-cap campaign."""
+"""PIT-safe, resumable reference sources for A-share all-cap research."""
 
 from __future__ import annotations
 
-import calendar
-import hashlib
-import json
-import os
+import math
 import re
-import shutil
-import tempfile
-import uuid
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
-from pathlib import Path, PurePosixPath
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
 import numpy as np
 import pandas as pd
-import pyarrow.parquet as pq
 
-from ..utils import write_text_atomic
-from .storage import ResearchStore
+from . import a_share_all_cap_source_store as source_store
 
 
 __all__ = [
@@ -43,96 +36,53 @@ REFERENCE_INDEXES = {
 }
 
 _SW2021_L1_CODES = (
-    "801010.SI",
-    "801030.SI",
-    "801040.SI",
-    "801050.SI",
-    "801080.SI",
-    "801110.SI",
-    "801120.SI",
-    "801130.SI",
-    "801140.SI",
-    "801150.SI",
-    "801160.SI",
-    "801170.SI",
-    "801180.SI",
-    "801200.SI",
-    "801210.SI",
-    "801230.SI",
-    "801710.SI",
-    "801720.SI",
-    "801730.SI",
-    "801740.SI",
-    "801750.SI",
-    "801760.SI",
-    "801770.SI",
-    "801780.SI",
-    "801790.SI",
-    "801880.SI",
-    "801890.SI",
-    "801950.SI",
-    "801960.SI",
-    "801970.SI",
+    "801010.SI", "801030.SI", "801040.SI", "801050.SI", "801080.SI",
+    "801110.SI", "801120.SI", "801130.SI", "801140.SI", "801150.SI",
+    "801160.SI", "801170.SI", "801180.SI", "801200.SI", "801210.SI",
+    "801230.SI", "801710.SI", "801720.SI", "801730.SI", "801740.SI",
+    "801750.SI", "801760.SI", "801770.SI", "801780.SI", "801790.SI",
+    "801880.SI", "801890.SI", "801950.SI", "801960.SI", "801970.SI",
     "801980.SI",
 )
 
-_SOURCE_SCHEMA_VERSION = 1
-_SOURCE_CONTRACT_VERSION = "a-share-all-cap-sources-v1"
 CSI2000_INCEPTION = date(2023, 9, 1)
-
 _SLEEVE_INDEXES = tuple(
     code for code, sleeve in REFERENCE_INDEXES.items() if sleeve != "all_share"
 )
-_PUBLICATION_ID = re.compile(r"^[0-9]{8}_[0-9]{8}_[a-f0-9]{32}$")
-_IDENTIFIER_COLUMNS = frozenset(
-    {
-        "cal_date",
-        "con_code",
-        "in_date",
-        "index_code",
-        "is_new",
-        "l1_code",
-        "l2_code",
-        "l3_code",
-        "out_date",
-        "trade_date",
-        "ts_code",
-    }
-)
-_DATASETS = frozenset(
-    {"index_weights", "index_daily", "industry_membership", "stk_limit"}
-)
-_DATE_COLUMNS = {
-    "index_weights": "trade_date",
-    "index_daily": "trade_date",
-    "industry_membership": "in_date",
-    "stk_limit": "trade_date",
-}
-_SINGLE_FILE_PATHS = {
-    "index_weights": "index_weights.parquet",
-    "index_daily": "index_daily.parquet",
-    "industry_membership": "industry_membership.parquet",
-}
-_YEAR_PARTITION = re.compile(r"^[0-9]{4}$")
+_A_SHARE_CODE = re.compile(r"^[0-9]{6}\.(?:SH|SZ|BJ)$")
+_RETRY_ATTEMPTS = 3
+_RETRY_BASE_SECONDS = 0.35
 
 
 @dataclass(frozen=True)
 class AllCapSourceManifest:
-    """A fully verified source publication and its normalized tables."""
+    """Verified publication with lazy, yearly access to daily limit prices."""
 
     metadata: Mapping[str, object]
     publication_dir: Path
     index_daily: Mapping[str, pd.DataFrame]
     index_weights: Mapping[str, pd.DataFrame]
     industry_membership: pd.DataFrame
-    stk_limit: pd.DataFrame
+    stk_limit: Mapping[str, source_store.SourcePartition]
+
+    def load_stk_limit_year(self, year: str | int) -> pd.DataFrame:
+        key = str(year)
+        partition = self.stk_limit.get(key)
+        if partition is None:
+            raise KeyError(f"all_cap_source_stk_limit_year:{key}")
+        frame = partition.load()
+        _validate_stk_limit_values(frame)
+        return _normalize_identifier_dtypes(frame)
 
 
-def _source_root(repo_root: str | Path) -> Path:
-    return (
-        Path(repo_root).resolve()
-        / "data/research/a_share_all_cap/v1/sources"
-    )
+def _deep_freeze(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {str(key): _deep_freeze(item) for key, item in value.items()}
+        )
+    if isinstance(value, list):
+        return tuple(_deep_freeze(item) for item in value)
+    return value
 
 
 def _date_key(value: object, *, code: str) -> str:
@@ -161,45 +111,61 @@ def _source_frame(value: object, *, source_name: str) -> pd.DataFrame:
     raise ValueError(f"all_cap_source_transport:{source_name}")
 
 
-def _string_columns(
+def _empty_frame(dataset: str) -> pd.DataFrame:
+    return source_store.ARROW_SCHEMAS[dataset].empty_table().to_pandas(
+        types_mapper=pd.ArrowDtype
+    )
+
+
+def _select_columns(
     frame: pd.DataFrame,
     columns: tuple[str, ...],
     *,
-    error_code: str,
+    code: str,
+) -> pd.DataFrame:
+    if set(columns).difference(frame.columns):
+        raise ValueError(code)
+    return frame.loc[:, list(columns)].copy()
+
+
+def _strings(
+    frame: pd.DataFrame,
+    columns: tuple[str, ...],
+    *,
+    code: str,
     nullable: frozenset[str] = frozenset(),
 ) -> pd.DataFrame:
-    missing = set(columns).difference(frame.columns)
-    if missing:
-        raise ValueError(error_code)
     result = frame.copy()
     for column in columns:
+        if column not in result:
+            raise ValueError(code)
         values = result[column].astype("string[pyarrow]").str.strip()
         values = values.mask(values == "")
         if column not in nullable and values.isna().any():
-            raise ValueError(error_code)
+            raise ValueError(code)
         result[column] = values.astype("string[pyarrow]")
     return result
 
 
-def _date_columns(
+def _dates(
     frame: pd.DataFrame,
     columns: tuple[str, ...],
     *,
-    error_code: str,
+    code: str,
     nullable: frozenset[str] = frozenset(),
 ) -> pd.DataFrame:
     result = frame.copy()
     for column in columns:
-        if column not in result.columns:
-            raise ValueError(error_code)
+        if column not in result:
+            raise ValueError(code)
         normalized: list[object] = []
         for value in result[column]:
             if pd.isna(value) or not str(value).strip():
                 if column not in nullable:
-                    raise ValueError(error_code)
+                    raise ValueError(code)
                 normalized.append(pd.NA)
-                continue
-            normalized.append(_date_key(value, code=error_code))
+            else:
+                normalized.append(_date_key(value, code=code))
         result[column] = pd.Series(
             normalized,
             index=result.index,
@@ -208,221 +174,394 @@ def _date_columns(
     return result
 
 
-def _numeric_columns(
+def _numbers(
     frame: pd.DataFrame,
     columns: tuple[str, ...],
     *,
-    error_code: str,
-    positive: bool = False,
+    code: str,
+    positive: tuple[str, ...] = (),
+    nonnegative: tuple[str, ...] = (),
 ) -> pd.DataFrame:
     result = frame.copy()
-    if set(columns).difference(result.columns):
-        raise ValueError(error_code)
     for column in columns:
-        values = pd.to_numeric(result[column], errors="coerce")
-        if values.isna().any() or not np.isfinite(values.astype(float)).all():
-            raise ValueError(error_code)
-        if positive and (values <= 0).any():
-            raise ValueError(error_code)
+        if column not in result:
+            raise ValueError(code)
+        values = pd.to_numeric(result[column], errors="coerce").astype("float64")
+        if values.isna().any() or not np.isfinite(values).all():
+            raise ValueError(code)
+        if column in positive and (values <= 0).any():
+            raise ValueError(code)
+        if column in nonnegative and (values < 0).any():
+            raise ValueError(code)
         result[column] = values
     return result
 
 
-def _normalize_reloaded_identifiers(frame: pd.DataFrame) -> pd.DataFrame:
-    normalized = frame.copy()
-    for column in _IDENTIFIER_COLUMNS.intersection(normalized.columns):
-        normalized[column] = normalized[column].astype("string[pyarrow]")
-    return normalized
+def _normalize_identifier_dtypes(frame: pd.DataFrame) -> pd.DataFrame:
+    result = frame.copy()
+    identifiers = {
+        "cal_date", "con_code", "in_date", "index_code", "is_new",
+        "l1_code", "l2_code", "l3_code", "out_date", "snapshot_as_of",
+        "trade_date", "ts_code",
+    }
+    for column in identifiers.intersection(result.columns):
+        result[column] = result[column].astype("string[pyarrow]")
+    return result
 
 
-def _month_periods(start: date, end: date) -> list[tuple[date, date]]:
-    periods: list[tuple[date, date]] = []
+class _ProviderCaller:
+    def __init__(self, interval_seconds: float) -> None:
+        if not math.isfinite(interval_seconds) or interval_seconds < 0:
+            raise ValueError("all_cap_source_request_interval")
+        self.interval_seconds = float(interval_seconds)
+        self.last_request_started: float | None = None
+
+    def call(self, method: Any, **kwargs: object) -> object:
+        for attempt in range(_RETRY_ATTEMPTS):
+            now = time.monotonic()
+            if self.last_request_started is not None and self.interval_seconds:
+                wait = self.interval_seconds - (now - self.last_request_started)
+                if wait > 0:
+                    time.sleep(wait)
+            self.last_request_started = time.monotonic()
+            try:
+                return method(**kwargs)
+            except Exception:  # noqa: BLE001 - provider failures are retryable
+                if attempt + 1 == _RETRY_ATTEMPTS:
+                    raise
+                time.sleep(_RETRY_BASE_SECONDS * (2**attempt))
+        raise RuntimeError("all_cap_source_provider_retry_unreachable")
+
+
+def _month_snapshots(start: date, end: date) -> list[date]:
+    snapshots: list[date] = []
     cursor = date(start.year, start.month, 1)
     while cursor <= end:
-        month_end = date(
-            cursor.year,
-            cursor.month,
-            calendar.monthrange(cursor.year, cursor.month)[1],
+        snapshots.append(max(start, cursor))
+        cursor = (
+            date(cursor.year + 1, 1, 1)
+            if cursor.month == 12
+            else date(cursor.year, cursor.month + 1, 1)
         )
-        periods.append((max(start, cursor), min(end, month_end)))
-        if cursor.month == 12:
-            cursor = date(cursor.year + 1, 1, 1)
-        else:
-            cursor = date(cursor.year, cursor.month + 1, 1)
-    return periods
+    return snapshots
 
 
 def _expected_pre_inception(start: date, end: date) -> list[dict[str, str]]:
-    records: list[dict[str, str]] = []
-    for period_start, period_end in _month_periods(start, end):
-        if period_end < CSI2000_INCEPTION:
-            records.append(
-                {
-                    "dataset": "index_weights",
-                    "ts_code": "932000.CSI",
-                    "period_start": period_start.strftime("%Y%m%d"),
-                    "period_end": period_end.strftime("%Y%m%d"),
-                    "status": "pre_inception",
-                }
-            )
-    return records
+    return [
+        {
+            "dataset": "index_weights",
+            "index_code": "932000.CSI",
+            "snapshot_as_of": snapshot.strftime("%Y%m%d"),
+            "status": "pre_inception",
+        }
+        for snapshot in _month_snapshots(start, end)
+        if snapshot < CSI2000_INCEPTION
+    ]
 
 
-def _normalize_index_weights(
+def _normalize_weight_snapshot(
     source: object,
     *,
     index_code: str,
-    period_start: str,
-    period_end: str,
+    query_start: str,
+    snapshot_as_of: str,
 ) -> pd.DataFrame:
     code = "all_cap_source_index_weight_schema"
     frame = _source_frame(source, source_name="index_weight")
     if frame.empty:
         raise ValueError("all_cap_source_index_weight_empty")
-    frame = _string_columns(
+    frame = _select_columns(
         frame,
-        ("index_code", "con_code", "trade_date"),
-        error_code=code,
+        ("index_code", "con_code", "trade_date", "weight"),
+        code=code,
     )
-    frame = _date_columns(frame, ("trade_date",), error_code=code)
-    frame = _numeric_columns(frame, ("weight",), error_code=code)
+    frame = _strings(frame, ("index_code", "con_code", "trade_date"), code=code)
+    frame = _dates(frame, ("trade_date",), code=code)
+    frame = _numbers(frame, ("weight",), code=code, positive=("weight",))
+    if set(frame["index_code"]) != {index_code}:
+        raise ValueError(code)
+    if (frame["trade_date"] > snapshot_as_of).any():
+        raise ValueError("all_cap_source_index_weight_future")
+    if (frame["trade_date"] < query_start).any():
+        raise ValueError(code)
+    latest_date = str(frame["trade_date"].max())
+    latest = frame.loc[frame["trade_date"] == latest_date].copy()
+    if latest.empty or latest.duplicated(["index_code", "con_code"]).any():
+        raise ValueError("all_cap_source_index_weight_duplicate")
+    latest.insert(1, "snapshot_as_of", snapshot_as_of)
+    latest = latest[
+        ["index_code", "snapshot_as_of", "con_code", "trade_date", "weight"]
+    ]
+    return _normalize_identifier_dtypes(
+        latest.sort_values("con_code").reset_index(drop=True)
+    )
+
+
+def _validate_weight_values(frame: pd.DataFrame) -> None:
+    code = "all_cap_source_manifest_index_weights"
+    normalized = _strings(
+        frame,
+        ("index_code", "snapshot_as_of", "con_code", "trade_date"),
+        code=code,
+    )
+    normalized = _dates(
+        normalized,
+        ("snapshot_as_of", "trade_date"),
+        code=code,
+    )
+    normalized = _numbers(
+        normalized,
+        ("weight",),
+        code=code,
+        positive=("weight",),
+    )
     if (
-        set(frame["index_code"]) != {index_code}
-        or (frame["trade_date"] < period_start).any()
-        or (frame["trade_date"] > period_end).any()
-        or (frame["weight"] < 0).any()
+        normalized.duplicated(
+            ["index_code", "snapshot_as_of", "con_code"]
+        ).any()
+        or (normalized["trade_date"] > normalized["snapshot_as_of"]).any()
     ):
         raise ValueError(code)
-    frame = frame.drop_duplicates().reset_index(drop=True)
-    if frame.duplicated(["index_code", "con_code", "trade_date"]).any():
-        raise ValueError("all_cap_source_index_weight_duplicate")
-    return frame
 
 
-def _collect_index_weights(
+def _collect_weights(
+    job: source_store.JobStore,
+    caller: _ProviderCaller,
     pro_client: object,
     start: date,
     end: date,
-) -> tuple[pd.DataFrame, list[dict[str, str]]]:
-    pieces: list[pd.DataFrame] = []
-    pre_inception = _expected_pre_inception(start, end)
-    for period_start, period_end in _month_periods(start, end):
+) -> None:
+    for snapshot in _month_snapshots(start, end):
+        snapshot_key = snapshot.strftime("%Y%m%d")
+        query_start = (snapshot - timedelta(days=95)).strftime("%Y%m%d")
         for index_code in _SLEEVE_INDEXES:
-            if index_code == "932000.CSI" and period_end < CSI2000_INCEPTION:
-                continue
-            query_start = max(period_start, CSI2000_INCEPTION)
-            if index_code != "932000.CSI":
-                query_start = period_start
-            start_key = query_start.strftime("%Y%m%d")
-            end_key = period_end.strftime("%Y%m%d")
-            source = pro_client.index_weight(
-                index_code=index_code,
-                start_date=start_key,
-                end_date=end_key,
+            key = f"index_weight:{index_code}:{snapshot_key}"
+            existing = job.load_checkpoint(key, "index_weights")
+            pre_inception = (
+                index_code == "932000.CSI" and snapshot < CSI2000_INCEPTION
             )
-            pieces.append(
-                _normalize_index_weights(
-                    source,
+            if existing is not None:
+                if pre_inception and existing.empty:
+                    continue
+                try:
+                    _validate_weight_values(existing)
+                    if (
+                        set(existing["index_code"]) == {index_code}
+                        and set(existing["snapshot_as_of"]) == {snapshot_key}
+                    ):
+                        continue
+                except ValueError:
+                    pass
+            if pre_inception:
+                job.save_checkpoint(
+                    key,
+                    "index_weights",
+                    _empty_frame("index_weights"),
+                    status="pre_inception",
                     index_code=index_code,
-                    period_start=start_key,
-                    period_end=end_key,
+                    snapshot_as_of=snapshot_key,
                 )
+                continue
+            frame = _normalize_weight_snapshot(
+                caller.call(
+                    pro_client.index_weight,
+                    index_code=index_code,
+                    start_date=query_start,
+                    end_date=snapshot_key,
+                ),
+                index_code=index_code,
+                query_start=query_start,
+                snapshot_as_of=snapshot_key,
             )
-    if not pieces:
-        raise ValueError("all_cap_source_index_weight_empty")
-    combined = pd.concat(pieces, ignore_index=True, sort=False)
-    combined = combined.sort_values(
-        ["index_code", "trade_date", "con_code"]
-    ).reset_index(drop=True)
-    return _normalize_reloaded_identifiers(combined), pre_inception
+            job.save_checkpoint(
+                key,
+                "index_weights",
+                frame,
+                status="complete",
+                index_code=index_code,
+                snapshot_as_of=snapshot_key,
+            )
+
+
+def _normalize_trade_calendar(source: object, start: str, end: str) -> pd.DataFrame:
+    code = "all_cap_source_trade_calendar_schema"
+    frame = _source_frame(source, source_name="trade_cal")
+    frame = _select_columns(frame, ("cal_date", "is_open"), code=code)
+    frame = _strings(frame, ("cal_date", "is_open"), code=code)
+    frame = _dates(frame, ("cal_date",), code=code)
+    frame = frame.loc[frame["is_open"] == "1"].drop_duplicates("cal_date")
+    frame = frame.sort_values("cal_date").reset_index(drop=True)
+    if (
+        frame.empty
+        or (frame["cal_date"] < start).any()
+        or (frame["cal_date"] > end).any()
+    ):
+        raise ValueError("all_cap_source_trade_calendar_empty")
+    return _normalize_identifier_dtypes(frame)
+
+
+def _trade_calendar(
+    job: source_store.JobStore,
+    caller: _ProviderCaller,
+    pro_client: object,
+    start: str,
+    end: str,
+) -> list[str]:
+    key = "trade_calendar:all"
+    frame = job.load_checkpoint(key, "trade_calendar")
+    if frame is not None:
+        try:
+            frame = _normalize_trade_calendar(frame, start, end)
+        except ValueError:
+            frame = None
+    if frame is None:
+        frame = _normalize_trade_calendar(
+            caller.call(
+                pro_client.trade_cal,
+                exchange="",
+                start_date=start,
+                end_date=end,
+                is_open="1",
+            ),
+            start,
+            end,
+        )
+        job.save_checkpoint(key, "trade_calendar", frame)
+    return [str(value) for value in frame["cal_date"]]
 
 
 def _normalize_index_daily(
     source: object,
     *,
     index_code: str,
-    start_key: str,
-    end_key: str,
-    open_dates: tuple[str, ...],
+    start: str,
+    end: str,
+    open_dates: set[str],
 ) -> pd.DataFrame:
     code = "all_cap_source_index_daily_schema"
     frame = _source_frame(source, source_name="index_daily")
     if frame.empty:
         raise ValueError("all_cap_source_index_daily_empty")
-    frame = _string_columns(
+    frame = _select_columns(
         frame,
-        ("ts_code", "trade_date"),
-        error_code=code,
+        ("ts_code", "trade_date", "open", "high", "low", "close", "vol"),
+        code=code,
     )
-    frame = _date_columns(frame, ("trade_date",), error_code=code)
-    frame = _numeric_columns(
+    frame = _strings(frame, ("ts_code", "trade_date"), code=code)
+    frame = _dates(frame, ("trade_date",), code=code)
+    frame = _numbers(
         frame,
-        ("close",),
-        error_code=code,
-        positive=True,
+        ("open", "high", "low", "close", "vol"),
+        code=code,
+        positive=("open", "high", "low", "close"),
+        nonnegative=("vol",),
     )
     if (
         set(frame["ts_code"]) != {index_code}
-        or (frame["trade_date"] < start_key).any()
-        or (frame["trade_date"] > end_key).any()
+        or (frame["trade_date"] < start).any()
+        or (frame["trade_date"] > end).any()
+        or frame.duplicated(["ts_code", "trade_date"]).any()
     ):
         raise ValueError(code)
-    frame = frame.drop_duplicates().reset_index(drop=True)
-    if frame.duplicated(["ts_code", "trade_date"]).any():
-        raise ValueError("all_cap_source_index_daily_duplicate")
-    if set(frame["trade_date"]) != set(open_dates):
+    if set(frame["trade_date"]) != open_dates:
         raise ValueError("all_cap_source_index_daily_calendar")
-    return frame
+    return _normalize_identifier_dtypes(
+        frame.sort_values("trade_date").reset_index(drop=True)
+    )
+
+
+def _validate_index_daily_values(frame: pd.DataFrame) -> None:
+    code = "all_cap_source_manifest_index_daily"
+    normalized = _strings(frame, ("ts_code", "trade_date"), code=code)
+    normalized = _dates(normalized, ("trade_date",), code=code)
+    normalized = _numbers(
+        normalized,
+        ("open", "high", "low", "close", "vol"),
+        code=code,
+        positive=("open", "high", "low", "close"),
+        nonnegative=("vol",),
+    )
+    if normalized.duplicated(["ts_code", "trade_date"]).any():
+        raise ValueError(code)
 
 
 def _collect_index_daily(
+    job: source_store.JobStore,
+    caller: _ProviderCaller,
     pro_client: object,
-    start: date,
-    end: date,
+    start: str,
+    end: str,
     open_dates: list[str],
-) -> pd.DataFrame:
-    start_key = start.strftime("%Y%m%d")
-    end_key = end.strftime("%Y%m%d")
-    pieces = [
-        _normalize_index_daily(
-            pro_client.index_daily(
+) -> None:
+    expected = set(open_dates)
+    for index_code in REFERENCE_INDEXES:
+        key = f"index_daily:{index_code}"
+        frame = job.load_checkpoint(key, "index_daily")
+        if frame is not None:
+            try:
+                _normalize_index_daily(
+                    frame,
+                    index_code=index_code,
+                    start=start,
+                    end=end,
+                    open_dates=expected,
+                )
+                continue
+            except ValueError:
+                pass
+        frame = _normalize_index_daily(
+            caller.call(
+                pro_client.index_daily,
                 ts_code=index_code,
-                start_date=start_key,
-                end_date=end_key,
+                start_date=start,
+                end_date=end,
             ),
             index_code=index_code,
-            start_key=start_key,
-            end_key=end_key,
-            open_dates=tuple(open_dates),
+            start=start,
+            end=end,
+            open_dates=expected,
         )
-        for index_code in REFERENCE_INDEXES
-    ]
-    combined = pd.concat(pieces, ignore_index=True, sort=False)
-    return _normalize_reloaded_identifiers(
-        combined.sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
-    )
+        job.save_checkpoint(key, "index_daily", frame, index_code=index_code)
 
 
-def _industry_codes(pro_client: object) -> tuple[str, ...]:
-    discover = getattr(pro_client, "index_classify", None)
-    if not callable(discover):
-        return _SW2021_L1_CODES
-    source = _source_frame(
-        discover(level="L1", src="SW2021"),
-        source_name="index_classify",
-    )
-    source = _string_columns(
-        source,
-        ("index_code",),
-        error_code="all_cap_source_industry_codes",
-    )
-    discovered = set(source["index_code"])
-    if discovered != set(_SW2021_L1_CODES) or len(source["index_code"].unique()) != 31:
+def _industry_codes(
+    job: source_store.JobStore,
+    caller: _ProviderCaller,
+    pro_client: object,
+) -> tuple[str, ...]:
+    key = "industry_codes:SW2021"
+    frame = job.load_checkpoint(key, "industry_codes")
+    if frame is None:
+        discover = getattr(pro_client, "index_classify", None)
+        if callable(discover):
+            frame = _source_frame(
+                caller.call(discover, level="L1", src="SW2021"),
+                source_name="index_classify",
+            )
+            frame = _select_columns(
+                frame,
+                ("index_code",),
+                code="all_cap_source_industry_codes",
+            )
+            frame = _strings(
+                frame,
+                ("index_code",),
+                code="all_cap_source_industry_codes",
+            )
+            if set(frame["index_code"]) != set(_SW2021_L1_CODES):
+                raise ValueError("all_cap_source_industry_codes")
+            frame = frame.drop_duplicates().sort_values("index_code").reset_index(drop=True)
+        else:
+            frame = pd.DataFrame(
+                {"index_code": pd.Series(_SW2021_L1_CODES, dtype="string[pyarrow]")}
+            )
+        job.save_checkpoint(key, "industry_codes", frame)
+    if set(frame["index_code"]) != set(_SW2021_L1_CODES) or len(frame) != 31:
         raise ValueError("all_cap_source_industry_codes")
     return _SW2021_L1_CODES
 
 
-def _normalize_industry_membership(
+def _normalize_industry(
     source: object,
     *,
     l1_code: str,
@@ -432,28 +571,25 @@ def _normalize_industry_membership(
     frame = _source_frame(source, source_name="index_member_all")
     if frame.empty:
         raise ValueError("all_cap_source_industry_empty")
-    if "l1_code" not in frame.columns:
+    if "l1_code" not in frame:
         frame["l1_code"] = l1_code
-    if "is_new" not in frame.columns:
+    if "is_new" not in frame:
         frame["is_new"] = is_new
-    frame = _string_columns(
+    columns = (
+        "l1_code", "l2_code", "l3_code", "ts_code",
+        "in_date", "out_date", "is_new",
+    )
+    frame = _select_columns(frame, columns, code=code)
+    frame = _strings(
         frame,
-        (
-            "l1_code",
-            "l2_code",
-            "l3_code",
-            "ts_code",
-            "in_date",
-            "out_date",
-            "is_new",
-        ),
-        error_code=code,
+        columns,
+        code=code,
         nullable=frozenset({"out_date"}),
     )
-    frame = _date_columns(
+    frame = _dates(
         frame,
         ("in_date", "out_date"),
-        error_code=code,
+        code=code,
         nullable=frozenset({"out_date"}),
     )
     frame["is_new"] = frame["is_new"].str.upper()
@@ -462,14 +598,15 @@ def _normalize_industry_membership(
     closed = frame["out_date"].notna()
     if (frame.loc[closed, "out_date"] <= frame.loc[closed, "in_date"]).any():
         raise ValueError("all_cap_source_industry_interval")
-    return frame
+    frame = frame.drop_duplicates(list(columns)).sort_values(list(columns))
+    return _normalize_identifier_dtypes(frame.reset_index(drop=True))
 
 
 def _reject_industry_overlaps(frame: pd.DataFrame) -> None:
-    for _, stock in frame.groupby("ts_code", sort=False):
+    for ts_code, stock in frame.groupby("ts_code", sort=False):
         for level in ("l1_code", "l2_code", "l3_code"):
             intervals = (
-                stock[[level, "in_date", "out_date", "is_new"]]
+                stock[[level, "in_date", "out_date"]]
                 .drop_duplicates()
                 .sort_values(["in_date", "out_date"], na_position="last")
             )
@@ -479,324 +616,383 @@ def _reject_industry_overlaps(frame: pd.DataFrame) -> None:
                 out_date = "99991231" if pd.isna(row[2]) else str(row[2])
                 if latest_end and in_date < latest_end:
                     raise ValueError(
-                        f"all_cap_source_industry_overlap:{stock.iloc[0]['ts_code']}:{level}"
+                        f"all_cap_source_industry_overlap:{ts_code}:{level}"
                     )
                 latest_end = max(latest_end, out_date)
 
 
-def _collect_industry_membership(
+def _validate_industry_values(frame: pd.DataFrame) -> None:
+    columns = (
+        "l1_code", "l2_code", "l3_code", "ts_code",
+        "in_date", "out_date", "is_new",
+    )
+    normalized = _strings(
+        frame,
+        columns,
+        code="all_cap_source_manifest_industry",
+        nullable=frozenset({"out_date"}),
+    )
+    normalized = _dates(
+        normalized,
+        ("in_date", "out_date"),
+        code="all_cap_source_manifest_industry",
+        nullable=frozenset({"out_date"}),
+    )
+    closed = normalized["out_date"].notna()
+    if (normalized.loc[closed, "out_date"] <= normalized.loc[closed, "in_date"]).any():
+        raise ValueError("all_cap_source_industry_interval")
+    if normalized.duplicated(list(columns)).any():
+        raise ValueError("all_cap_source_manifest_industry")
+    _reject_industry_overlaps(normalized)
+
+
+def _collect_industry(
+    job: source_store.JobStore,
+    caller: _ProviderCaller,
     pro_client: object,
-) -> tuple[pd.DataFrame, list[dict[str, str]]]:
-    pieces: list[pd.DataFrame] = []
-    requests: list[dict[str, str]] = []
-    for l1_code in _industry_codes(pro_client):
+) -> None:
+    for l1_code in _industry_codes(job, caller, pro_client):
         for is_new in ("Y", "N"):
-            pieces.append(
-                _normalize_industry_membership(
-                    pro_client.index_member_all(
+            key = f"industry:{l1_code}:{is_new}"
+            frame = job.load_checkpoint(key, "industry_membership")
+            if frame is not None:
+                try:
+                    normalized = _normalize_industry(
+                        frame,
                         l1_code=l1_code,
                         is_new=is_new,
-                    ),
+                    )
+                    if normalized.equals(frame):
+                        continue
+                except ValueError:
+                    pass
+            frame = _normalize_industry(
+                caller.call(
+                    pro_client.index_member_all,
                     l1_code=l1_code,
                     is_new=is_new,
-                )
+                ),
+                l1_code=l1_code,
+                is_new=is_new,
             )
-            requests.append({"l1_code": l1_code, "is_new": is_new})
-    combined = pd.concat(pieces, ignore_index=True, sort=False)
-    key = [
-        "l1_code",
-        "l2_code",
-        "l3_code",
-        "ts_code",
-        "in_date",
-        "out_date",
-        "is_new",
+            job.save_checkpoint(
+                key,
+                "industry_membership",
+                frame,
+                l1_code=l1_code,
+                is_new=is_new,
+            )
+
+
+def _read_stock_master(repo_root: Path) -> tuple[pd.DataFrame, str]:
+    path = repo_root / "data/shared/backtest_cache/stock_basic.csv"
+    if not path.is_file():
+        raise ValueError("all_cap_source_stock_master_missing")
+    if path.is_symlink():
+        raise ValueError("all_cap_source_symlink:stock_master")
+    try:
+        frame = pd.read_csv(
+            path,
+            dtype={
+                "ts_code": "string",
+                "list_date": "string",
+                "delist_date": "string",
+            },
+            keep_default_na=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - malformed master fails closed
+        raise ValueError("all_cap_source_stock_master_schema") from exc
+    required = ("ts_code", "list_date", "delist_date")
+    try:
+        frame = _select_columns(
+            frame,
+            required,
+            code="all_cap_source_stock_master_schema",
+        )
+        frame = _strings(
+            frame,
+            required,
+            code="all_cap_source_stock_master_schema",
+            nullable=frozenset({"delist_date"}),
+        )
+        frame = _dates(
+            frame,
+            ("list_date", "delist_date"),
+            code="all_cap_source_stock_master_schema",
+            nullable=frozenset({"delist_date"}),
+        )
+    except ValueError as exc:
+        raise ValueError("all_cap_source_stock_master_schema") from exc
+    if (
+        frame.empty
+        or frame["ts_code"].duplicated().any()
+        or not frame["ts_code"].map(
+            lambda value: bool(_A_SHARE_CODE.fullmatch(str(value)))
+        ).all()
+    ):
+        raise ValueError("all_cap_source_stock_master_schema")
+    closed = frame["delist_date"].notna()
+    if (frame.loc[closed, "delist_date"] < frame.loc[closed, "list_date"]).any():
+        raise ValueError("all_cap_source_stock_master_schema")
+    return _normalize_identifier_dtypes(frame), source_store.sha256(path)
+
+
+def _expected_stocks(master: pd.DataFrame, trade_date: str) -> set[str]:
+    active = master.loc[
+        (master["list_date"] <= trade_date)
+        & (master["delist_date"].isna() | (master["delist_date"] >= trade_date))
     ]
-    combined = combined.drop_duplicates(key).sort_values(key).reset_index(drop=True)
-    _reject_industry_overlaps(combined)
-    return _normalize_reloaded_identifiers(combined), requests
+    return {str(value) for value in active["ts_code"]}
 
 
-def _open_trade_dates(pro_client: object, start: date, end: date) -> list[str]:
-    code = "all_cap_source_trade_calendar_schema"
-    start_key = start.strftime("%Y%m%d")
-    end_key = end.strftime("%Y%m%d")
-    source = _source_frame(
-        pro_client.trade_cal(
-            exchange="",
-            start_date=start_key,
-            end_date=end_key,
-            is_open="1",
-        ),
-        source_name="trade_cal",
-    )
-    source = _string_columns(
-        source,
-        ("cal_date", "is_open"),
-        error_code=code,
-    )
-    source = _date_columns(source, ("cal_date",), error_code=code)
-    source = source[source["is_open"] == "1"]
-    dates = sorted(set(source["cal_date"]))
-    if not dates or dates[0] < start_key or dates[-1] > end_key:
-        raise ValueError("all_cap_source_trade_calendar_empty")
-    return dates
-
-
-def _normalize_stk_limit(source: object, *, trade_date: str) -> pd.DataFrame:
+def _normalize_stk_limit_response(
+    source: object,
+    *,
+    trade_date: str,
+    expected: set[str],
+) -> tuple[pd.DataFrame, dict[str, int]]:
     code = "all_cap_source_stk_limit_schema"
     frame = _source_frame(source, source_name="stk_limit")
     if frame.empty:
         raise ValueError("all_cap_source_stk_limit_empty")
-    frame = _string_columns(
+    frame = _select_columns(
         frame,
-        ("ts_code", "trade_date"),
-        error_code=code,
+        ("ts_code", "trade_date", "pre_close", "up_limit", "down_limit"),
+        code=code,
     )
-    frame = _date_columns(frame, ("trade_date",), error_code=code)
-    frame = _numeric_columns(
+    frame = _strings(frame, ("ts_code", "trade_date"), code=code)
+    frame = _dates(frame, ("trade_date",), code=code)
+    frame = _numbers(
         frame,
-        ("up_limit", "down_limit"),
-        error_code=code,
-        positive=True,
+        ("pre_close", "up_limit", "down_limit"),
+        code=code,
+        positive=("pre_close", "up_limit", "down_limit"),
     )
     if set(frame["trade_date"]) != {trade_date}:
         raise ValueError(code)
-    frame = frame.drop_duplicates().reset_index(drop=True)
     if frame.duplicated(["ts_code", "trade_date"]).any():
         raise ValueError("all_cap_source_stk_limit_duplicate")
-    return frame
+    observed = {str(value) for value in frame["ts_code"]}
+    missing = expected.difference(observed)
+    if missing:
+        raise ValueError(
+            f"all_cap_source_stk_limit_missing:{trade_date}:{len(missing)}"
+        )
+    filtered = frame.loc[frame["ts_code"].isin(expected)].copy()
+    filtered = filtered.sort_values("ts_code").reset_index(drop=True)
+    return _normalize_identifier_dtypes(filtered), {
+        "expected_count": len(expected),
+        "observed_count": len(observed),
+        "missing_count": 0,
+        "extra_count": len(observed.difference(expected)),
+    }
+
+
+def _validate_stk_limit_values(frame: pd.DataFrame) -> None:
+    code = "all_cap_source_manifest_stk_limit"
+    normalized = _strings(frame, ("ts_code", "trade_date"), code=code)
+    normalized = _dates(normalized, ("trade_date",), code=code)
+    normalized = _numbers(
+        normalized,
+        ("pre_close", "up_limit", "down_limit"),
+        code=code,
+        positive=("pre_close", "up_limit", "down_limit"),
+    )
+    if normalized.duplicated(["ts_code", "trade_date"]).any():
+        raise ValueError(code)
 
 
 def _collect_stk_limit(
+    job: source_store.JobStore,
+    caller: _ProviderCaller,
     pro_client: object,
+    master: pd.DataFrame,
     open_dates: list[str],
-) -> pd.DataFrame:
-    pieces = [
-        _normalize_stk_limit(
-            pro_client.stk_limit(trade_date=trade_date),
+) -> None:
+    for trade_date in open_dates:
+        expected = _expected_stocks(master, trade_date)
+        if not expected:
+            raise ValueError(f"all_cap_source_stock_master_empty:{trade_date}")
+        key = f"stk_limit:{trade_date}"
+        record = job.checkpoint_record(key)
+        frame = job.load_checkpoint(key, "stk_limit")
+        if frame is not None and record is not None:
+            try:
+                _validate_stk_limit_values(frame)
+                if (
+                    set(frame["ts_code"]) == expected
+                    and int(record.get("expected_count") or -1) == len(expected)
+                    and int(record.get("missing_count") or -1) == 0
+                ):
+                    continue
+            except (TypeError, ValueError):
+                pass
+        frame, counts = _normalize_stk_limit_response(
+            caller.call(pro_client.stk_limit, trade_date=trade_date),
             trade_date=trade_date,
+            expected=expected,
         )
-        for trade_date in open_dates
-    ]
-    combined = pd.concat(pieces, ignore_index=True, sort=False)
-    combined = combined.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
-    return _normalize_reloaded_identifiers(combined)
+        job.save_checkpoint(key, "stk_limit", frame, **counts)
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _canonical_hash(payload: Mapping[str, object]) -> str:
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _parquet_contract(path: Path) -> tuple[dict[str, object], str]:
-    try:
-        parquet = pq.ParquetFile(path)
-        schema = parquet.schema_arrow
-        codecs = {
-            parquet.metadata.row_group(row_group)
-            .column(column)
-            .compression.upper()
-            for row_group in range(parquet.metadata.num_row_groups)
-            for column in range(parquet.metadata.row_group(row_group).num_columns)
-        }
-    except Exception as exc:  # noqa: BLE001 - unreadable metadata fails closed
-        raise ValueError(f"all_cap_source_parquet:{path.name}") from exc
-    if len(codecs) != 1 or "UNCOMPRESSED" in codecs:
-        raise ValueError("all_cap_source_manifest_compression")
-    return (
-        {
-            "columns": list(schema.names),
-            "fields": [
-                {"name": field.name, "dtype": str(field.type)}
-                for field in schema
-            ],
-        },
-        next(iter(codecs)),
+def _concat_checkpoints(
+    job: source_store.JobStore,
+    keys: list[str],
+    dataset: str,
+) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for key in keys:
+        frame = job.load_checkpoint(key, dataset)
+        if frame is None:
+            raise ValueError(f"all_cap_source_checkpoint_incomplete:{key}")
+        if not frame.empty:
+            frames.append(frame)
+    if not frames:
+        raise ValueError(f"all_cap_source_checkpoint_incomplete:{dataset}")
+    return _normalize_identifier_dtypes(
+        pd.concat(frames, ignore_index=True, sort=False)
     )
 
 
-def _file_record(
-    staging_dir: Path,
-    path: Path,
+def _build_candidate(
+    job: source_store.JobStore,
     *,
-    dataset: str,
-    partition: str,
-    frame: pd.DataFrame,
-) -> tuple[dict[str, object], dict[str, object]]:
-    date_column = _DATE_COLUMNS[dataset]
-    schema, compression = _parquet_contract(path)
-    record = {
-        "path": path.relative_to(staging_dir).as_posix(),
-        "dataset": dataset,
-        "partition": partition,
-        "rows": int(len(frame)),
-        "bytes": int(path.stat().st_size),
-        "sha256": _sha256(path),
-        "compression": compression,
-        "min_date": str(frame[date_column].min()),
-        "max_date": str(frame[date_column].max()),
-    }
-    return record, schema
+    start: date,
+    end: date,
+    open_dates: list[str],
+    stock_master_sha256: str,
+) -> Path:
+    snapshots = [value.strftime("%Y%m%d") for value in _month_snapshots(start, end)]
+    weight_keys = [
+        f"index_weight:{index_code}:{snapshot}"
+        for snapshot in snapshots
+        for index_code in _SLEEVE_INDEXES
+    ]
+    daily_keys = [f"index_daily:{index_code}" for index_code in REFERENCE_INDEXES]
+    industry_keys = [
+        f"industry:{l1_code}:{is_new}"
+        for l1_code in _SW2021_L1_CODES
+        for is_new in ("Y", "N")
+    ]
+    index_weights = _concat_checkpoints(job, weight_keys, "index_weights")
+    index_weights = index_weights.sort_values(
+        ["index_code", "snapshot_as_of", "con_code"]
+    ).reset_index(drop=True)
+    index_daily = _concat_checkpoints(job, daily_keys, "index_daily")
+    index_daily = index_daily.sort_values(["ts_code", "trade_date"]).reset_index(
+        drop=True
+    )
+    industry = _concat_checkpoints(job, industry_keys, "industry_membership")
+    industry = industry.drop_duplicates().sort_values(
+        ["l1_code", "l2_code", "l3_code", "ts_code", "in_date", "out_date", "is_new"]
+    ).reset_index(drop=True)
+    _reject_industry_overlaps(industry)
 
-
-def _write_source_files(
-    staging_dir: Path,
-    *,
-    index_weights: pd.DataFrame,
-    index_daily: pd.DataFrame,
-    industry_membership: pd.DataFrame,
-    stk_limit: pd.DataFrame,
-) -> tuple[
-    dict[str, list[dict[str, object]]],
-    dict[str, dict[str, object]],
-]:
-    store = ResearchStore(staging_dir)
+    candidate = job.reset_candidate()
     partitions: dict[str, list[dict[str, object]]] = {
-        dataset: [] for dataset in _DATASETS
+        dataset: [] for dataset in source_store.PUBLICATION_DATASETS
     }
-    dataset_schemas: dict[str, dict[str, object]] = {}
     for dataset, frame in (
         ("index_weights", index_weights),
         ("index_daily", index_daily),
-        ("industry_membership", industry_membership),
+        ("industry_membership", industry),
     ):
-        path = store.write_parquet_atomic(
-            staging_dir / f"{dataset}.parquet",
-            frame,
+        partitions[dataset].append(
+            source_store.write_publication_frame(candidate, dataset, frame)
         )
-        record, schema = _file_record(
-            staging_dir,
-            path,
-            dataset=dataset,
-            partition="all",
-            frame=frame,
-        )
-        partitions[dataset].append(record)
-        dataset_schemas[dataset] = schema
-    years = stk_limit["trade_date"].str.slice(0, 4)
-    for year in sorted(set(years)):
-        frame = stk_limit.loc[years == year].reset_index(drop=True)
-        path = store.write_parquet_atomic(
-            staging_dir / "stk_limit" / f"year={year}.parquet",
-            frame,
-        )
-        record, schema = _file_record(
-            staging_dir,
-            path,
-            dataset="stk_limit",
-            partition=str(year),
-            frame=frame,
-        )
-        if "stk_limit" in dataset_schemas and dataset_schemas["stk_limit"] != schema:
-            raise ValueError("all_cap_source_manifest_schema")
-        partitions["stk_limit"].append(record)
-        dataset_schemas["stk_limit"] = schema
-    return partitions, dataset_schemas
 
+    daily_completeness: list[dict[str, object]] = []
+    by_year: dict[str, list[tuple[Path, Mapping[str, object]]]] = {}
+    for trade_date in open_dates:
+        key = f"stk_limit:{trade_date}"
+        record = job.checkpoint_record(key)
+        if record is None:
+            raise ValueError(f"all_cap_source_checkpoint_incomplete:{key}")
+        path = job.root.joinpath(*Path(str(record["path"])).parts)
+        by_year.setdefault(trade_date[:4], []).append((path, record))
+        daily_completeness.append(
+            {
+                "trade_date": trade_date,
+                "expected_count": int(record["expected_count"]),
+                "observed_count": int(record["observed_count"]),
+                "missing_count": int(record["missing_count"]),
+                "extra_count": int(record["extra_count"]),
+            }
+        )
+    for year, checkpoints in sorted(by_year.items()):
+        partitions["stk_limit"].append(
+            source_store.merge_stk_limit_year(candidate, year, checkpoints)
+        )
 
-def _build_manifest(
-    staging_dir: Path,
-    *,
-    publication_id: str,
-    start: date,
-    end: date,
-    partitions: Mapping[str, list[dict[str, object]]],
-    dataset_schemas: Mapping[str, dict[str, object]],
-    pre_inception: list[dict[str, str]],
-    industry_requests: list[dict[str, str]],
-    open_dates: list[str],
-) -> dict[str, object]:
     files = sorted(
         [dict(item) for records in partitions.values() for item in records],
         key=lambda item: str(item["path"]),
     )
     manifest: dict[str, object] = {
-        "schema_version": _SOURCE_SCHEMA_VERSION,
-        "contract_version": _SOURCE_CONTRACT_VERSION,
+        "schema_version": source_store.SCHEMA_VERSION,
+        "contract_version": source_store.CONTRACT_VERSION,
         "status": "complete",
-        "publication_id": publication_id,
+        "publication_id": job.publication_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "start_date": start.strftime("%Y%m%d"),
         "end_date": end.strftime("%Y%m%d"),
         "reference_indexes": dict(REFERENCE_INDEXES),
         "industry_contract": "SW2021",
-        "industry_requests": industry_requests,
-        "pre_inception": pre_inception,
+        "industry_requests": [
+            {"l1_code": l1_code, "is_new": is_new}
+            for l1_code in _SW2021_L1_CODES
+            for is_new in ("Y", "N")
+        ],
+        "pre_inception": _expected_pre_inception(start, end),
         "open_trade_dates": open_dates,
+        "stock_master_sha256": stock_master_sha256,
+        "stk_limit_completeness": daily_completeness,
         "dataset_schemas": {
-            dataset: dict(schema)
-            for dataset, schema in sorted(dataset_schemas.items())
+            dataset: source_store.schema_contract(dataset)
+            for dataset in source_store.PUBLICATION_DATASETS
         },
         "row_counts": {
             dataset: sum(int(item["rows"]) for item in records)
             for dataset, records in partitions.items()
         },
-        "partitions": {
-            dataset: [dict(item) for item in records]
-            for dataset, records in sorted(partitions.items())
-        },
+        "partitions": partitions,
         "files": files,
     }
-    manifest["manifest_sha256"] = _canonical_hash(manifest)
-    write_text_atomic(
-        staging_dir / "manifest.json",
-        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    source_store.write_manifest(candidate, manifest)
+    return candidate
+
+
+def _validate_publication_values(
+    directory: Path,
+) -> source_store.VerifiedPublication:
+    stk_dates: dict[str, int] = {}
+
+    def validate_partition(
+        dataset: str,
+        frame: pd.DataFrame,
+        record: Mapping[str, object],
+    ) -> None:
+        if dataset == "index_weights":
+            _validate_weight_values(frame)
+        elif dataset == "index_daily":
+            _validate_index_daily_values(frame)
+        elif dataset == "industry_membership":
+            _validate_industry_values(frame)
+        else:
+            _validate_stk_limit_values(frame)
+            counts = frame.groupby("trade_date", sort=False).size()
+            for trade_date, count in counts.items():
+                key = str(trade_date)
+                if key in stk_dates:
+                    raise ValueError("all_cap_source_manifest_stk_limit")
+                stk_dates[key] = int(count)
+
+    verified = source_store.verify_publication(
+        directory,
+        expected_reference_indexes=REFERENCE_INDEXES,
+        partition_validator=validate_partition,
     )
-    return manifest
-
-
-def _read_json(path: Path, *, missing_code: str) -> dict[str, object]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise ValueError(missing_code) from exc
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ValueError("all_cap_source_manifest_malformed") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("all_cap_source_manifest_malformed")
-    return payload
-
-
-def _safe_relative_path(value: object) -> PurePosixPath:
-    path = PurePosixPath(str(value or ""))
-    if not path.parts or path.is_absolute() or ".." in path.parts:
-        raise ValueError("all_cap_source_manifest_path")
-    return path
-
-
-def _manifest_without_hash(manifest: Mapping[str, object]) -> dict[str, object]:
-    payload = dict(manifest)
-    payload.pop("manifest_sha256", None)
-    return payload
-
-
-def _verify_manifest_shape(manifest: Mapping[str, object]) -> None:
-    if (
-        manifest.get("schema_version") != _SOURCE_SCHEMA_VERSION
-        or manifest.get("contract_version") != _SOURCE_CONTRACT_VERSION
-        or manifest.get("status") != "complete"
-        or dict(manifest.get("reference_indexes") or {}) != REFERENCE_INDEXES
-        or manifest.get("industry_contract") != "SW2021"
-    ):
-        raise ValueError("all_cap_source_manifest_contract")
-    publication_id = str(manifest.get("publication_id") or "")
-    if not _PUBLICATION_ID.fullmatch(publication_id):
-        raise ValueError("all_cap_source_manifest_publication")
+    manifest = verified.manifest
     start_key = _date_key(
         manifest.get("start_date"),
         code="all_cap_source_manifest_dates",
@@ -807,429 +1003,223 @@ def _verify_manifest_shape(manifest: Mapping[str, object]) -> None:
     )
     if start_key > end_key:
         raise ValueError("all_cap_source_manifest_dates")
-    expected_hash = manifest.get("manifest_sha256")
-    if expected_hash != _canonical_hash(_manifest_without_hash(manifest)):
-        raise ValueError("all_cap_source_checksum:manifest")
-
-
-def _manifest_date(value: object) -> str:
-    raw = str(value or "")
-    if not re.fullmatch(r"[0-9]{8}", raw):
-        raise ValueError("all_cap_source_manifest_dates")
-    if _date_key(raw, code="all_cap_source_manifest_dates") != raw:
-        raise ValueError("all_cap_source_manifest_dates")
-    return raw
-
-
-def _manifest_schemas(
-    manifest: Mapping[str, object],
-) -> dict[str, dict[str, object]]:
-    schemas = manifest.get("dataset_schemas")
-    if not isinstance(schemas, Mapping) or set(schemas) != _DATASETS:
-        raise ValueError("all_cap_source_manifest_schema")
-    normalized: dict[str, dict[str, object]] = {}
-    for dataset in _DATASETS:
-        schema = schemas.get(dataset)
-        if not isinstance(schema, Mapping):
-            raise ValueError("all_cap_source_manifest_schema")
-        columns = schema.get("columns")
-        fields = schema.get("fields")
-        if (
-            not isinstance(columns, list)
-            or not columns
-            or not all(isinstance(column, str) and column for column in columns)
-            or not isinstance(fields, list)
-            or len(fields) != len(columns)
-        ):
-            raise ValueError("all_cap_source_manifest_schema")
-        normalized_fields: list[dict[str, str]] = []
-        for field in fields:
-            if not isinstance(field, Mapping):
-                raise ValueError("all_cap_source_manifest_schema")
-            name = field.get("name")
-            dtype = field.get("dtype")
-            if not isinstance(name, str) or not isinstance(dtype, str) or not dtype:
-                raise ValueError("all_cap_source_manifest_schema")
-            normalized_fields.append({"name": name, "dtype": dtype})
-        if columns != [field["name"] for field in normalized_fields]:
-            raise ValueError("all_cap_source_manifest_schema")
-        normalized[dataset] = {
-            "columns": list(columns),
-            "fields": normalized_fields,
-        }
-    return normalized
-
-
-def _validate_partition_records(
-    files: list[object],
-    partitions: Mapping[str, object],
-) -> dict[str, list[dict[str, object]]]:
-    normalized: dict[str, list[dict[str, object]]] = {}
-    for dataset in _DATASETS:
-        records = partitions.get(dataset)
-        if not isinstance(records, list) or not records:
-            raise ValueError(f"all_cap_source_manifest_incomplete:{dataset}")
-        dataset_records: list[dict[str, object]] = []
-        seen_partitions: set[str] = set()
-        for item in records:
-            if not isinstance(item, Mapping):
-                raise ValueError("all_cap_source_manifest_malformed")
-            record = dict(item)
-            partition = str(record.get("partition") or "")
-            relative = _safe_relative_path(record.get("path")).as_posix()
-            if str(record.get("dataset") or "") != dataset:
-                raise ValueError("all_cap_source_manifest_partition")
-            if dataset in _SINGLE_FILE_PATHS:
-                if (
-                    len(records) != 1
-                    or partition != "all"
-                    or relative != _SINGLE_FILE_PATHS[dataset]
-                ):
-                    raise ValueError("all_cap_source_manifest_partition")
-            elif (
-                not _YEAR_PARTITION.fullmatch(partition)
-                or relative != f"stk_limit/year={partition}.parquet"
-                or partition in seen_partitions
-            ):
-                raise ValueError("all_cap_source_manifest_partition")
-            seen_partitions.add(partition)
-            min_date = _manifest_date(record.get("min_date"))
-            max_date = _manifest_date(record.get("max_date"))
-            if min_date > max_date or (
-                dataset == "stk_limit"
-                and (min_date[:4] != partition or max_date[:4] != partition)
-            ):
-                raise ValueError("all_cap_source_manifest_dates")
-            compression = record.get("compression")
-            if (
-                not isinstance(compression, str)
-                or not compression
-                or compression != compression.upper()
-                or compression == "UNCOMPRESSED"
-            ):
-                raise ValueError("all_cap_source_manifest_compression")
-            dataset_records.append(record)
-        normalized[dataset] = dataset_records
-
-    file_records: dict[str, dict[str, object]] = {}
-    for item in files:
-        if not isinstance(item, Mapping):
-            raise ValueError("all_cap_source_manifest_malformed")
-        record = dict(item)
-        relative = _safe_relative_path(record.get("path")).as_posix()
-        if relative in file_records:
-            raise ValueError("all_cap_source_manifest_incomplete")
-        file_records[relative] = record
-    partition_records = {
-        str(record["path"]): record
-        for records in normalized.values()
-        for record in records
-    }
-    if file_records != partition_records:
-        raise ValueError("all_cap_source_manifest_incomplete:partitions")
-    return normalized
-
-
-def _read_verified_frames(
-    publication_dir: Path,
-    manifest: Mapping[str, object],
-) -> dict[str, list[pd.DataFrame]]:
-    files = manifest.get("files")
-    partitions = manifest.get("partitions")
-    row_counts = manifest.get("row_counts")
-    if (
-        not isinstance(files, list)
-        or not isinstance(partitions, Mapping)
-        or not isinstance(row_counts, Mapping)
-        or set(partitions) != _DATASETS
-        or set(row_counts) != _DATASETS
-    ):
-        raise ValueError("all_cap_source_manifest_incomplete")
-    schemas = _manifest_schemas(manifest)
-    partition_records = _validate_partition_records(files, partitions)
-    by_dataset: dict[str, list[pd.DataFrame]] = {
-        dataset: [] for dataset in _DATASETS
-    }
-    declared_paths: set[str] = set()
-    for dataset in _DATASETS:
-        for record in partition_records[dataset]:
-            relative = _safe_relative_path(record.get("path"))
-            relative_text = relative.as_posix()
-            if relative_text in declared_paths:
-                raise ValueError("all_cap_source_manifest_incomplete")
-            declared_paths.add(relative_text)
-            path = publication_dir.joinpath(*relative.parts)
-            if not path.is_file():
-                raise ValueError(f"all_cap_source_manifest_incomplete:{relative_text}")
-            if _sha256(path) != record.get("sha256"):
-                raise ValueError(f"all_cap_source_checksum:{relative_text}")
-            try:
-                expected_bytes = int(record.get("bytes") or -1)
-                expected_rows = int(record.get("rows") or -1)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("all_cap_source_manifest_malformed") from exc
-            if path.stat().st_size != expected_bytes:
-                raise ValueError(f"all_cap_source_checksum:{relative_text}:bytes")
-            actual_schema, actual_compression = _parquet_contract(path)
-            if actual_schema != schemas[dataset]:
-                raise ValueError("all_cap_source_manifest_schema")
-            if actual_compression != record.get("compression"):
-                raise ValueError("all_cap_source_manifest_compression")
-            try:
-                frame = pd.read_parquet(path, dtype_backend="pyarrow")
-            except Exception as exc:  # noqa: BLE001 - corrupt parquet fails closed
-                raise ValueError(f"all_cap_source_parquet:{relative_text}") from exc
-            frame = _normalize_reloaded_identifiers(frame)
-            if len(frame) != expected_rows:
-                raise ValueError(f"all_cap_source_manifest_rows:{relative_text}")
-            date_column = _DATE_COLUMNS[dataset]
-            if date_column not in frame or frame.empty:
-                raise ValueError("all_cap_source_manifest_dates")
-            actual_min = _manifest_date(frame[date_column].min())
-            actual_max = _manifest_date(frame[date_column].max())
-            if (
-                actual_min != record.get("min_date")
-                or actual_max != record.get("max_date")
-            ):
-                raise ValueError("all_cap_source_manifest_dates")
-            by_dataset[dataset].append(frame)
-    actual_paths = {
-        path.relative_to(publication_dir).as_posix()
-        for path in publication_dir.rglob("*.parquet")
-        if path.is_file()
-    }
-    if actual_paths != declared_paths:
-        raise ValueError("all_cap_source_manifest_incomplete:files")
-    for dataset in _DATASETS:
-        observed_rows = sum(len(frame) for frame in by_dataset[dataset])
-        try:
-            expected_rows = int(row_counts.get(dataset) or -1)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("all_cap_source_manifest_malformed") from exc
-        if observed_rows != expected_rows:
-            raise ValueError(f"all_cap_source_manifest_rows:{dataset}")
-    return by_dataset
-
-
-def _combined(
-    frames: Mapping[str, list[pd.DataFrame]],
-    dataset: str,
-) -> pd.DataFrame:
-    values = frames[dataset]
-    if not values:
-        raise ValueError(f"all_cap_source_manifest_incomplete:{dataset}")
-    return _normalize_reloaded_identifiers(
-        pd.concat(values, ignore_index=True, sort=False)
-    )
-
-
-def _verify_loaded_semantics(
-    manifest: Mapping[str, object],
-    frames: Mapping[str, list[pd.DataFrame]],
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    start_key = str(manifest["start_date"])
-    end_key = str(manifest["end_date"])
-    index_daily = _combined(frames, "index_daily")
-    index_weights = _combined(frames, "index_weights")
-    membership = _combined(frames, "industry_membership")
-    stk_limit = _combined(frames, "stk_limit")
-    raw_open_dates = manifest.get("open_trade_dates")
-    if not isinstance(raw_open_dates, list):
+    start = datetime.strptime(start_key, "%Y%m%d").date()
+    end = datetime.strptime(end_key, "%Y%m%d").date()
+    open_dates_raw = manifest.get("open_trade_dates")
+    if not isinstance(open_dates_raw, list):
         raise ValueError("all_cap_source_manifest_stk_limit")
-    try:
-        open_dates = [_manifest_date(value) for value in raw_open_dates]
-    except ValueError as exc:
-        raise ValueError("all_cap_source_manifest_stk_limit") from exc
+    open_dates = [
+        _date_key(value, code="all_cap_source_manifest_stk_limit")
+        for value in open_dates_raw
+    ]
     if (
         not open_dates
-        or open_dates != raw_open_dates
+        or open_dates != open_dates_raw
         or sorted(set(open_dates)) != open_dates
         or open_dates[0] < start_key
         or open_dates[-1] > end_key
     ):
         raise ValueError("all_cap_source_manifest_stk_limit")
-    expected_open_dates = set(open_dates)
-    if (
-        set(index_daily.get("ts_code", [])) != set(REFERENCE_INDEXES)
-        or index_daily.duplicated(["ts_code", "trade_date"]).any()
-        or (index_daily["trade_date"] < start_key).any()
-        or (index_daily["trade_date"] > end_key).any()
-        or any(
-            set(
-                index_daily.loc[
-                    index_daily["ts_code"] == index_code,
-                    "trade_date",
-                ]
-            )
-            != expected_open_dates
-            for index_code in REFERENCE_INDEXES
-        )
-    ):
-        raise ValueError("all_cap_source_manifest_index_daily")
-    expected_weight_codes = set(_SLEEVE_INDEXES)
-    if end_key < CSI2000_INCEPTION.strftime("%Y%m%d"):
-        expected_weight_codes.remove("932000.CSI")
-    if (
-        set(index_weights.get("index_code", [])) != expected_weight_codes
-        or index_weights.duplicated(
-            ["index_code", "con_code", "trade_date"]
-        ).any()
-        or (
-            (index_weights["index_code"] == "932000.CSI")
-            & (index_weights["trade_date"] < "20230901")
-        ).any()
-    ):
+
+    weights = verified.frames["index_weights"]
+    expected_snapshots = {
+        (index_code, snapshot.strftime("%Y%m%d"))
+        for snapshot in _month_snapshots(start, end)
+        for index_code in _SLEEVE_INDEXES
+        if not (index_code == "932000.CSI" and snapshot < CSI2000_INCEPTION)
+    }
+    observed_snapshots = set(
+        zip(weights["index_code"], weights["snapshot_as_of"], strict=True)
+    )
+    if observed_snapshots != expected_snapshots:
         raise ValueError("all_cap_source_manifest_index_weights")
-    membership_key = [
-        "l1_code",
-        "l2_code",
-        "l3_code",
-        "ts_code",
-        "in_date",
-        "out_date",
-        "is_new",
-    ]
+    for _, snapshot in weights.groupby(["index_code", "snapshot_as_of"]):
+        if snapshot["trade_date"].nunique() != 1:
+            raise ValueError("all_cap_source_manifest_index_weights")
+    if manifest.get("pre_inception") != _expected_pre_inception(start, end):
+        raise ValueError("all_cap_source_manifest_pre_inception")
+
+    daily = verified.frames["index_daily"]
+    if set(daily["ts_code"]) != set(REFERENCE_INDEXES):
+        raise ValueError("all_cap_source_manifest_index_daily")
+    for index_code in REFERENCE_INDEXES:
+        if set(daily.loc[daily["ts_code"] == index_code, "trade_date"]) != set(
+            open_dates
+        ):
+            raise ValueError("all_cap_source_manifest_index_daily")
+
+    industry = verified.frames["industry_membership"]
     if (
-        set(membership.get("l1_code", [])) != set(_SW2021_L1_CODES)
-        or set(membership.get("is_new", [])) != {"Y", "N"}
-        or membership.duplicated(membership_key).any()
+        set(industry["l1_code"]) != set(_SW2021_L1_CODES)
+        or set(industry["is_new"]) != {"Y", "N"}
+        or manifest.get("industry_contract") != "SW2021"
+        or manifest.get("industry_requests")
+        != [
+            {"l1_code": l1_code, "is_new": is_new}
+            for l1_code in _SW2021_L1_CODES
+            for is_new in ("Y", "N")
+        ]
     ):
         raise ValueError("all_cap_source_manifest_industry")
-    _reject_industry_overlaps(membership)
-    expected_requests = [
-        {"l1_code": industry_code, "is_new": is_new}
-        for industry_code in _SW2021_L1_CODES
-        for is_new in ("Y", "N")
-    ]
-    if manifest.get("industry_requests") != expected_requests:
-        raise ValueError("all_cap_source_manifest_industry_requests")
-    expected_pre_inception = _expected_pre_inception(
-        datetime.strptime(start_key, "%Y%m%d").date(),
-        datetime.strptime(end_key, "%Y%m%d").date(),
-    )
-    if manifest.get("pre_inception") != expected_pre_inception:
-        raise ValueError("all_cap_source_manifest_pre_inception")
-    if (
-        set(stk_limit.get("trade_date", [])) != expected_open_dates
-        or stk_limit.duplicated(["ts_code", "trade_date"]).any()
-    ):
+
+    completeness = manifest.get("stk_limit_completeness")
+    if not isinstance(completeness, list):
         raise ValueError("all_cap_source_manifest_stk_limit")
-    return index_weights, index_daily, membership, stk_limit
-
-
-def _read_verified_publication(
-    publication_dir: Path,
-) -> tuple[dict[str, object], tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]]:
-    manifest = _read_json(
-        publication_dir / "manifest.json",
-        missing_code="all_cap_source_manifest_missing",
-    )
-    _verify_manifest_shape(manifest)
-    frames = _read_verified_frames(publication_dir, manifest)
-    normalized = _verify_loaded_semantics(manifest, frames)
-    return manifest, normalized
+    declared_daily: dict[str, int] = {}
+    for item in completeness:
+        if not isinstance(item, Mapping):
+            raise ValueError("all_cap_source_manifest_stk_limit")
+        trade_date = str(item.get("trade_date") or "")
+        try:
+            expected_count = int(item["expected_count"])
+            observed_count = int(item["observed_count"])
+            missing_count = int(item["missing_count"])
+            extra_count = int(item["extra_count"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("all_cap_source_manifest_stk_limit") from exc
+        if (
+            missing_count != 0
+            or observed_count != expected_count + extra_count
+            or expected_count <= 0
+        ):
+            raise ValueError("all_cap_source_manifest_stk_limit")
+        declared_daily[trade_date] = expected_count
+    if declared_daily != stk_dates or set(stk_dates) != set(open_dates):
+        raise ValueError("all_cap_source_manifest_stk_limit")
+    return verified
 
 
 def publish_all_cap_sources(
     staging_dir: str | Path,
     repo_root: str | Path,
 ) -> Path:
-    """Verify and atomically advance the all-cap source publication marker."""
+    """Verify, atomically install, verify again, then advance latest."""
 
-    source_root = _source_root(repo_root)
-    publications_root = source_root / "publications"
-    publications_root.mkdir(parents=True, exist_ok=True)
-    staging = Path(staging_dir).resolve()
-    if staging.parent != publications_root.resolve() or not staging.is_dir():
+    staging = Path(staging_dir).absolute()
+    pubs = source_store.publications_root(repo_root).absolute()
+    if staging.parent != pubs or staging.is_symlink() or not staging.is_dir():
         raise ValueError("all_cap_source_staging_path")
-    manifest, _ = _read_verified_publication(staging)
-    publication_id = str(manifest["publication_id"])
-    destination = publications_root / publication_id
-    if destination.exists():
-        raise ValueError("all_cap_source_publication_exists")
-    os.replace(staging, destination)
-    published_manifest, _ = _read_verified_publication(destination)
-    marker: dict[str, object] = {
-        "schema_version": _SOURCE_SCHEMA_VERSION,
-        "contract_version": _SOURCE_CONTRACT_VERSION,
-        "status": "complete",
-        "publication": f"publications/{publication_id}",
-        "manifest_sha256": published_manifest["manifest_sha256"],
-    }
-    marker["marker_sha256"] = _canonical_hash(marker)
-    write_text_atomic(
-        source_root / "latest.json",
-        json.dumps(marker, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    verified = _validate_publication_values(staging)
+    publication_id = str(verified.manifest["publication_id"])
+    destination = source_store.install_publication(staging, publication_id)
+    published = _validate_publication_values(destination)
+    source_store.write_latest(repo_root, published.manifest)
     return destination / "manifest.json"
+
+
+def _latest_verified(repo_root: str | Path) -> source_store.VerifiedPublication:
+    marker = source_store.read_latest(repo_root)
+    publication_dir = Path(marker["publication_dir"])
+    verified = _validate_publication_values(publication_dir)
+    if (
+        marker.get("manifest_sha256") != verified.manifest.get("manifest_sha256")
+        or publication_dir.name != verified.manifest.get("publication_id")
+    ):
+        raise ValueError("all_cap_source_checksum:latest_manifest")
+    return verified
+
+
+def _find_matching_publication(
+    repo_root: Path,
+    start: date,
+    end: date,
+) -> Path | None:
+    start_key = start.strftime("%Y%m%d")
+    end_key = end.strftime("%Y%m%d")
+    root = source_store.source_root(repo_root)
+    latest_path = root / "latest.json"
+    if latest_path.exists() or latest_path.is_symlink():
+        latest = _latest_verified(repo_root)
+        if (
+            latest.manifest.get("start_date") == start_key
+            and latest.manifest.get("end_date") == end_key
+        ):
+            return (
+                source_store.publications_root(repo_root)
+                / str(latest.manifest["publication_id"])
+                / "manifest.json"
+            )
+    pubs = source_store.publications_root(repo_root)
+    if not pubs.exists():
+        return None
+    if pubs.is_symlink():
+        raise ValueError("all_cap_source_symlink:publications")
+    matches: list[source_store.VerifiedPublication] = []
+    for candidate in pubs.iterdir():
+        if candidate.is_symlink():
+            raise ValueError(f"all_cap_source_symlink:{candidate.name}")
+        if not candidate.is_dir() or not re.fullmatch(
+            r"[0-9]{8}_[0-9]{8}_[a-f0-9]{32}",
+            candidate.name,
+        ):
+            continue
+        try:
+            verified = _validate_publication_values(candidate)
+        except ValueError as exc:
+            if "all_cap_source_symlink" in str(exc):
+                raise
+            continue
+        if (
+            verified.manifest.get("start_date") == start_key
+            and verified.manifest.get("end_date") == end_key
+        ):
+            matches.append(verified)
+    if not matches:
+        return None
+    selected = max(matches, key=lambda item: str(item.manifest.get("created_at") or ""))
+    source_store.write_latest(repo_root, selected.manifest)
+    return (
+        source_store.publications_root(repo_root)
+        / str(selected.manifest["publication_id"])
+        / "manifest.json"
+    )
 
 
 def load_verified_all_cap_sources(
     repo_root: str | Path,
 ) -> AllCapSourceManifest:
-    """Load only the publication currently named by a valid atomic marker."""
+    """Load verified small tables and immutable yearly limit descriptors."""
 
-    source_root = _source_root(repo_root)
-    marker = _read_json(
-        source_root / "latest.json",
-        missing_code="all_cap_source_manifest_missing",
+    verified = _latest_verified(repo_root)
+    publication_dir = (
+        source_store.publications_root(repo_root)
+        / str(verified.manifest["publication_id"])
     )
-    required_marker_fields = {
-        "schema_version",
-        "contract_version",
-        "status",
-        "publication",
-        "manifest_sha256",
-        "marker_sha256",
-    }
-    if not required_marker_fields.issubset(marker):
-        raise ValueError("all_cap_source_manifest_malformed")
-    marker_payload = dict(marker)
-    marker_hash = marker_payload.pop("marker_sha256", None)
-    if marker_hash != _canonical_hash(marker_payload):
-        raise ValueError("all_cap_source_checksum:latest")
-    if (
-        marker.get("schema_version") != _SOURCE_SCHEMA_VERSION
-        or marker.get("contract_version") != _SOURCE_CONTRACT_VERSION
-        or marker.get("status") != "complete"
-    ):
-        raise ValueError("all_cap_source_manifest_contract")
-    relative = _safe_relative_path(marker.get("publication"))
-    if len(relative.parts) != 2 or relative.parts[0] != "publications":
-        raise ValueError("all_cap_source_manifest_path")
-    publication_dir = source_root.joinpath(*relative.parts)
-    manifest, normalized = _read_verified_publication(publication_dir)
-    if (
-        str(manifest["publication_id"]) != relative.parts[1]
-        or marker.get("manifest_sha256") != manifest.get("manifest_sha256")
-    ):
-        raise ValueError("all_cap_source_checksum:latest_manifest")
-    index_weights, index_daily, membership, stk_limit = normalized
-    daily_by_code = MappingProxyType(
+    daily = _normalize_identifier_dtypes(verified.frames["index_daily"])
+    weights = _normalize_identifier_dtypes(verified.frames["index_weights"])
+    limit_partitions = MappingProxyType(
         {
-            code: index_daily.loc[index_daily["ts_code"] == code]
-            .reset_index(drop=True)
-            .copy()
-            for code in REFERENCE_INDEXES
-        }
-    )
-    weights_by_code = MappingProxyType(
-        {
-            code: index_weights.loc[index_weights["index_code"] == code]
-            .reset_index(drop=True)
-            .copy()
-            for code in _SLEEVE_INDEXES
-            if code in set(index_weights["index_code"])
+            year: source_store.SourcePartition(
+                path=partition.path,
+                dataset=partition.dataset,
+                partition=partition.partition,
+                record=_deep_freeze(dict(partition.record)),
+            )
+            for year, partition in sorted(verified.stk_limit.items())
         }
     )
     return AllCapSourceManifest(
-        metadata=MappingProxyType(dict(manifest)),
+        metadata=_deep_freeze(dict(verified.manifest)),
         publication_dir=publication_dir,
-        index_daily=daily_by_code,
-        index_weights=weights_by_code,
-        industry_membership=membership.copy(),
-        stk_limit=stk_limit.copy(),
+        index_daily=MappingProxyType(
+            {
+                code: daily.loc[daily["ts_code"] == code].reset_index(drop=True).copy()
+                for code in REFERENCE_INDEXES
+            }
+        ),
+        index_weights=MappingProxyType(
+            {
+                code: weights.loc[weights["index_code"] == code]
+                .reset_index(drop=True)
+                .copy()
+                for code in _SLEEVE_INDEXES
+                if code in set(weights["index_code"])
+            }
+        ),
+        industry_membership=_normalize_identifier_dtypes(
+            verified.frames["industry_membership"]
+        ),
+        stk_limit=limit_partitions,
     )
 
 
@@ -1239,68 +1229,40 @@ def collect_all_cap_sources(
     pro_client: object,
     start: date,
     end: date,
+    request_interval_seconds: float = 0.35,
 ) -> dict[str, object]:
-    """Collect and publish bounded all-cap reference data without formal writes."""
+    """Collect bounded sources with durable checkpoints and atomic publication."""
 
     if not isinstance(start, date) or not isinstance(end, date) or start > end:
         raise ValueError("all_cap_source_interval")
     required_methods = (
-        "index_weight",
-        "index_daily",
-        "index_member_all",
-        "trade_cal",
-        "stk_limit",
+        "index_weight", "index_daily", "index_member_all", "trade_cal", "stk_limit",
     )
     if any(not callable(getattr(pro_client, method, None)) for method in required_methods):
         raise ValueError("all_cap_source_client")
-    source_root = _source_root(repo_root)
-    publications_root = source_root / "publications"
-    publications_root.mkdir(parents=True, exist_ok=True)
-    publication_id = (
-        f"{start:%Y%m%d}_{end:%Y%m%d}_{uuid.uuid4().hex}"
+    repo_root = Path(repo_root).absolute()
+    existing = _find_matching_publication(repo_root, start, end)
+    if existing is not None:
+        return {"status": "complete", "manifest": str(existing)}
+
+    caller = _ProviderCaller(request_interval_seconds)
+    master, master_hash = _read_stock_master(repo_root)
+    start_key = start.strftime("%Y%m%d")
+    end_key = end.strftime("%Y%m%d")
+    job = source_store.JobStore(repo_root, start_key, end_key)
+    open_dates = _trade_calendar(job, caller, pro_client, start_key, end_key)
+    _collect_weights(job, caller, pro_client, start, end)
+    _collect_index_daily(
+        job, caller, pro_client, start_key, end_key, open_dates
     )
-    staging = Path(
-        tempfile.mkdtemp(
-            prefix=".all-cap-sources-",
-            dir=publications_root,
-        )
+    _collect_industry(job, caller, pro_client)
+    _collect_stk_limit(job, caller, pro_client, master, open_dates)
+    candidate = _build_candidate(
+        job,
+        start=start,
+        end=end,
+        open_dates=open_dates,
+        stock_master_sha256=master_hash,
     )
-    try:
-        open_dates = _open_trade_dates(pro_client, start, end)
-        index_weights, pre_inception = _collect_index_weights(
-            pro_client,
-            start,
-            end,
-        )
-        index_daily = _collect_index_daily(
-            pro_client,
-            start,
-            end,
-            open_dates,
-        )
-        membership, industry_requests = _collect_industry_membership(pro_client)
-        stk_limit = _collect_stk_limit(pro_client, open_dates)
-        partitions, dataset_schemas = _write_source_files(
-            staging,
-            index_weights=index_weights,
-            index_daily=index_daily,
-            industry_membership=membership,
-            stk_limit=stk_limit,
-        )
-        _build_manifest(
-            staging,
-            publication_id=publication_id,
-            start=start,
-            end=end,
-            partitions=partitions,
-            dataset_schemas=dataset_schemas,
-            pre_inception=pre_inception,
-            industry_requests=industry_requests,
-            open_dates=open_dates,
-        )
-        manifest_path = publish_all_cap_sources(staging, repo_root)
-    except Exception:
-        if staging.exists():
-            shutil.rmtree(staging)
-        raise
-    return {"status": "complete", "manifest": str(manifest_path)}
+    manifest = publish_all_cap_sources(candidate, repo_root)
+    return {"status": "complete", "manifest": str(manifest)}

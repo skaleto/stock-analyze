@@ -3704,6 +3704,13 @@ def _command_refresh_a_share_all_cap_sources(args: argparse.Namespace) -> int:
     from .markets.a_share.backtest.data_prep import _make_pro_client
     from .research.a_share_all_cap_sources import collect_all_cap_sources
 
+    if args.start > args.end:
+        print(
+            "error: refresh-a-share-all-cap-sources failed: "
+            "all_cap_source_interval",
+            file=sys.stderr,
+        )
+        return 2
     try:
         result = collect_all_cap_sources(
             repo_root=Path.cwd(),
