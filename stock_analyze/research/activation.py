@@ -83,6 +83,15 @@ class GateReport:
     metrics: dict[str, object]
 
 
+@dataclass(frozen=True)
+class AllCapSleeveGateReport:
+    """Fail-closed development gate for one independently funded sleeve."""
+
+    passed: bool
+    reasons: tuple[str, ...]
+    metrics: dict[str, object]
+
+
 _VALID_TRANSITIONS = {("research", "shadow"), ("shadow", "active")}
 _MODEL_ROLES = ("classifier", "ranker", "portfolio")
 _TERMINAL_MODEL_STATUSES = {"rejected", "superseded", "quarantined", "retired"}
@@ -130,6 +139,159 @@ def select_registry_model(
         registered = [item for item in candidates if item[1].get("registered_at")]
         return max(registered, key=lambda item: str(item[1]["registered_at"])) if registered else candidates[-1]
     return None
+
+
+def evaluate_all_cap_sleeve_gate(
+    metrics: dict[str, object],
+    gates: dict[str, object],
+) -> AllCapSleeveGateReport:
+    """Evaluate one all-cap sleeve without consulting aggregate performance."""
+
+    def number(name: str) -> float | None:
+        return finite(metrics.get(name))
+
+    def finite(raw: object) -> float | None:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
+    def threshold(name: str) -> float:
+        try:
+            value = float(gates[name])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"all_cap_gate_contract:{name}") from exc
+        if not math.isfinite(value):
+            raise ValueError(f"all_cap_gate_contract:{name}")
+        return value
+
+    def at_least(metric: str, gate: str) -> bool:
+        value = number(metric)
+        return value is not None and value >= threshold(gate)
+
+    def at_most(metric: str, gate: str) -> bool:
+        value = number(metric)
+        return value is not None and value <= threshold(gate)
+
+    rank_ic = number("rank_ic")
+    net_excess = number("net_excess_return")
+    single_cost_excess = number("single_cost_net_excess_return")
+    liquidation = metrics.get("liquidation_days")
+    required_liquidation_scenarios = (
+        "normal",
+        "half_volume",
+        "consecutive_limit_down",
+    )
+    liquidation_values = (
+        [finite(liquidation.get(name)) for name in required_liquidation_scenarios]
+        if isinstance(liquidation, dict)
+        else []
+    )
+    liquidation_complete = len(liquidation_values) == len(
+        required_liquidation_scenarios
+    ) and all(
+        value is not None and value <= threshold("maximum_liquidation_days")
+        for value in liquidation_values
+    )
+    cost_attribution = metrics.get("cost_attribution")
+    required_cost_components = {"commission", "stamp_tax", "slippage", "impact", "total"}
+    attribution_values = (
+        tuple(cost_attribution.values())
+        if isinstance(cost_attribution, dict)
+        else ()
+    )
+    cost_attribution_complete = (
+        isinstance(cost_attribution, dict)
+        and required_cost_components.issubset(cost_attribution)
+        and all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            and float(value) >= 0.0
+            for value in attribution_values
+        )
+    )
+    checks = {
+        "simulator_parity": (
+            gates.get("require_simulator_parity") is not True
+            or metrics.get("simulator_version") == "paper-parity-daily-v1"
+        ),
+        "oos_folds": at_least("oos_folds", "minimum_oos_folds"),
+        "oos_dates": at_least("oos_dates", "minimum_oos_dates"),
+        "completed_trades": at_least(
+            "completed_trades", "minimum_completed_trades"
+        ),
+        "rank_ic": rank_ic is not None
+        and rank_ic > threshold("minimum_rank_ic"),
+        "icir": at_least("icir", "minimum_icir"),
+        "positive_oos_folds": at_least(
+            "positive_oos_folds", "minimum_positive_oos_folds"
+        ),
+        "gross_return": number("gross_return") is not None,
+        "net_return": number("net_return") is not None,
+        "benchmark_return": number("benchmark_return") is not None,
+        "net_excess_return": net_excess is not None
+        and net_excess > threshold("minimum_sleeve_net_excess_return"),
+        "single_cost_net_excess_return": single_cost_excess is not None
+        and single_cost_excess > threshold("minimum_sleeve_net_excess_return"),
+        "double_cost_net_excess_return": at_least(
+            "double_cost_net_excess_return",
+            "minimum_double_cost_net_excess_return",
+        ),
+        "max_drawdown": at_most("max_drawdown", "maximum_drawdown"),
+        "benchmark_drawdown_multiple": at_most(
+            "benchmark_drawdown_multiple",
+            "maximum_benchmark_drawdown_multiple",
+        ),
+        "annual_turnover": number("annual_turnover") is not None,
+        "target_fill_rate": at_least(
+            "target_fill_rate", "minimum_target_fill_rate"
+        ),
+        "cost_attribution": cost_attribution_complete,
+        "attribution_status": metrics.get("attribution_status") == "reconciled",
+        "deflated_sharpe_probability": at_least(
+            "deflated_sharpe_probability",
+            "minimum_deflated_sharpe_probability",
+        ),
+        "probability_of_backtest_overfit": at_most(
+            "probability_of_backtest_overfit",
+            "maximum_probability_of_backtest_overfit",
+        ),
+        "pbo_trial_count": (
+            (pbo_trials := number("pbo_trial_count")) is not None
+            and pbo_trials >= 4
+        ),
+        "positive_calendar_years": at_least(
+            "positive_calendar_years", "minimum_positive_calendar_years"
+        ),
+        "single_year_positive_excess_share": at_most(
+            "single_year_positive_excess_share",
+            "maximum_single_year_positive_excess_share",
+        ),
+        "orders_within_base_adv": at_least(
+            "orders_within_base_adv",
+            "minimum_base_orders_within_adv_fraction",
+        ),
+        "orders_within_hard_adv": number("orders_within_hard_adv") == 1.0,
+        "participation_rate_p50": number("participation_rate_p50") is not None,
+        "participation_rate_p90": number("participation_rate_p90") is not None,
+        "participation_rate_p95": number("participation_rate_p95") is not None,
+        "participation_rate_p99": number("participation_rate_p99") is not None,
+        "maximum_order_adv_fraction": at_most(
+            "maximum_order_adv_fraction", "maximum_order_adv_fraction"
+        ),
+        "liquidation_days": liquidation_complete,
+        "maximum_liquidation_days": at_most(
+            "maximum_liquidation_days", "maximum_liquidation_days"
+        ),
+    }
+    reasons = tuple(name for name, passed in checks.items() if not passed)
+    return AllCapSleeveGateReport(
+        passed=not reasons,
+        reasons=reasons,
+        metrics=dict(metrics),
+    )
 
 
 def evaluate_activation(

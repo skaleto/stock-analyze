@@ -9,6 +9,7 @@ from stock_analyze.research.activation import (
     ModelRegistry,
     ShadowCycleTracker,
     activation_evidence_from_metrics,
+    evaluate_all_cap_sleeve_gate,
     evaluate_activation,
     evaluate_role_activation,
     transition_status,
@@ -75,6 +76,45 @@ def passing_evidence(**overrides) -> ActivationEvidence:
 
 
 class ResearchActivationTest(unittest.TestCase):
+    def test_all_cap_sleeve_gate_fails_closed_and_keeps_reason_order(self):
+        gates = {
+            "minimum_oos_folds": 4,
+            "minimum_positive_oos_folds": 3,
+            "minimum_oos_dates": 252,
+            "minimum_completed_trades": 100,
+            "minimum_rank_ic": 0.02,
+            "minimum_icir": 0.30,
+            "minimum_sleeve_net_excess_return": 0.0,
+            "minimum_double_cost_net_excess_return": 0.0,
+            "maximum_drawdown": 0.20,
+            "maximum_benchmark_drawdown_multiple": 1.20,
+            "minimum_target_fill_rate": 0.95,
+            "minimum_deflated_sharpe_probability": 0.95,
+            "maximum_probability_of_backtest_overfit": 0.50,
+            "minimum_positive_calendar_years": 4,
+            "maximum_single_year_positive_excess_share": 0.50,
+            "maximum_liquidation_days": 5,
+            "maximum_order_adv_fraction": 0.05,
+            "minimum_base_orders_within_adv_fraction": 0.99,
+            "require_simulator_parity": True,
+        }
+
+        report = evaluate_all_cap_sleeve_gate(
+            {
+                "oos_folds": 3,
+                "oos_dates": math.nan,
+                "rank_ic": None,
+            },
+            gates,
+        )
+
+        self.assertFalse(report.passed)
+        self.assertEqual(
+            report.reasons[:3],
+            ("simulator_parity", "oos_folds", "oos_dates"),
+        )
+        self.assertIn("rank_ic", report.reasons)
+
     def test_registry_admits_development_winner_as_versioned_shadow_idempotently(self):
         with tempfile.TemporaryDirectory() as tmp:
             registry = ModelRegistry(Path(tmp) / "registry.json")
