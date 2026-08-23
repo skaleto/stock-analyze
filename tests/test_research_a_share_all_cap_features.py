@@ -3,7 +3,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from stock_analyze.research.a_share_all_cap_contract import load_all_cap_contract
+from stock_analyze.config import load_config
+from stock_analyze.research.a_share_all_cap_contract import (
+    load_all_cap_contract,
+    parse_all_cap_contract,
+)
 from stock_analyze.research.a_share_all_cap_features import (
     attach_all_cap_membership,
     build_decision_calendar,
@@ -52,9 +56,9 @@ class AShareAllCapFeaturesTest(unittest.TestCase):
         calendar = build_decision_calendar(open_dates, self.contract)
 
         expected_steps = {
-            ("claude", "large"): 10,
-            ("claude", "mid"): 10,
-            ("claude", "small"): 10,
+            ("claude", "large"): 20,
+            ("claude", "mid"): 20,
+            ("claude", "small"): 20,
             ("claude", "micro"): 20,
             ("codex", "large"): 5,
             ("codex", "mid"): 5,
@@ -76,6 +80,73 @@ class AShareAllCapFeaturesTest(unittest.TestCase):
             self.assertEqual(observed, {step}, key)
         for column in ("trade_date", "agent", "stable_sleeve"):
             self.assertIsInstance(calendar[column].dtype, pd.StringDtype)
+
+    def test_decision_calendar_rejects_forged_contract(self) -> None:
+        open_dates = ["20240102", "20240103"]
+        forged_contract = load_config(
+            CONTRACT_PATH,
+            apply_migrations=False,
+        )
+        forged_contract["candidates"]["claude"]["decision_interval_sessions"][
+            "large"
+        ] = 99
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "all_cap_decision_calendar_contract",
+        ):
+            build_decision_calendar(open_dates, forged_contract)
+
+    def test_decision_calendar_rejects_incomplete_intervals(self) -> None:
+        cases = {
+            "missing_agent": ("candidates", "codex"),
+            "missing_interval_map": (
+                "candidates",
+                "claude",
+                "decision_interval_sessions",
+            ),
+            "missing_sleeve": (
+                "candidates",
+                "claude",
+                "decision_interval_sessions",
+                "large",
+            ),
+        }
+        for name, path in cases.items():
+            with self.subTest(name=name):
+                payload = load_config(
+                    CONTRACT_PATH,
+                    apply_migrations=False,
+                )
+                target = payload
+                for key in path[:-1]:
+                    target = target[key]
+                del target[path[-1]]
+                contract = parse_all_cap_contract(payload)
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "all_cap_decision_calendar_contract",
+                ):
+                    build_decision_calendar(["20240102"], contract)
+
+    def test_decision_calendar_rejects_non_positive_integer_intervals(self) -> None:
+        for invalid in (0, -1, True, 1.5, "20"):
+            with self.subTest(invalid=invalid):
+                payload = load_config(
+                    CONTRACT_PATH,
+                    apply_migrations=False,
+                )
+                payload["candidates"]["claude"]["decision_interval_sessions"][
+                    "large"
+                ] = invalid
+                contract = parse_all_cap_contract(payload)
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "all_cap_decision_calendar_contract",
+                ):
+                    build_decision_calendar(["20240102"], contract)
 
     def test_membership_starts_on_effective_date_and_keeps_complete_evidence(self) -> None:
         features = pd.DataFrame(

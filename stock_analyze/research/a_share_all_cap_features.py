@@ -6,6 +6,7 @@ from collections.abc import Iterable, Mapping
 
 import pandas as pd
 
+from .a_share_all_cap_contract import AllCapContract
 from .a_share_all_cap_universe import MEMBERSHIP_COLUMNS
 from .universe import (
     PointInTimeUniverseResult,
@@ -21,10 +22,7 @@ _DEFAULT_BENCHMARKS = {
     "small": "000852.SH",
     "micro": "932000.CSI",
 }
-_FROZEN_DECISION_INTERVALS = {
-    "claude": {"large": 10, "mid": 10, "small": 10, "micro": 20},
-    "codex": {"large": 5, "mid": 5, "small": 10, "micro": 20},
-}
+_FROZEN_AGENT_IDS = frozenset(("claude", "codex"))
 _SOURCE_DATE_COLUMNS = (
     "total_mv_source_date",
     "avg_amount_source_date",
@@ -112,7 +110,7 @@ def _benchmarks(contract: object | None) -> dict[str, str]:
 
 def build_decision_calendar(
     open_dates: Iterable[object],
-    contract: object,
+    contract: AllCapContract,
 ) -> pd.DataFrame:
     """Return each strategy/sleeve's frozen decision sessions."""
 
@@ -121,17 +119,18 @@ def build_decision_calendar(
     if dates.duplicated().any() or dates.tolist() != sorted(dates.tolist()):
         raise ValueError("all_cap_decision_calendar_dates")
 
-    raw = _contract_raw(contract)
+    if not isinstance(contract, AllCapContract):
+        raise ValueError("all_cap_decision_calendar_contract")
+    raw = contract.raw
     candidates = raw.get("candidates")
     if not isinstance(candidates, Mapping):
         raise ValueError("all_cap_decision_calendar_contract")
     sleeve_names = tuple(_benchmarks(contract))
+    raw_sleeves = raw.get("sleeves")
     if (
-        set(candidates) != set(_FROZEN_DECISION_INTERVALS)
-        or any(
-            set(intervals) != set(sleeve_names)
-            for intervals in _FROZEN_DECISION_INTERVALS.values()
-        )
+        set(candidates) != _FROZEN_AGENT_IDS
+        or not isinstance(raw_sleeves, Mapping)
+        or set(raw_sleeves) != set(sleeve_names)
     ):
         raise ValueError("all_cap_decision_calendar_contract")
     rows: list[dict[str, object]] = []
@@ -139,9 +138,17 @@ def build_decision_calendar(
         candidate = candidates[agent]
         if not isinstance(agent, str) or not agent or not isinstance(candidate, Mapping):
             raise ValueError("all_cap_decision_calendar_contract")
-        intervals = _FROZEN_DECISION_INTERVALS[agent]
+        intervals = candidate.get("decision_interval_sessions")
+        if not isinstance(intervals, Mapping) or set(intervals) != set(sleeve_names):
+            raise ValueError("all_cap_decision_calendar_contract")
         for sleeve in sleeve_names:
             interval = intervals[sleeve]
+            if (
+                isinstance(interval, bool)
+                or not isinstance(interval, int)
+                or interval <= 0
+            ):
+                raise ValueError("all_cap_decision_calendar_contract")
             for session_index in range(0, len(dates), interval):
                 rows.append(
                     {
