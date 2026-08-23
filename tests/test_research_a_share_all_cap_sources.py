@@ -383,6 +383,22 @@ class AllCapSourceCollectorTests(unittest.TestCase):
             ).encode("utf-8")
         ).hexdigest()
 
+    def rewrite_manifest_publication_id(
+        self,
+        publication_dir: Path,
+        publication_id: str,
+    ) -> dict[str, object]:
+        manifest_path = publication_dir / "manifest.json"
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload["publication_id"] = publication_id
+        payload.pop("manifest_sha256", None)
+        payload["manifest_sha256"] = self._canonical_hash(payload)
+        manifest_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return payload
+
     def rehashed_staging(
         self,
         publication_dir: Path,
@@ -854,6 +870,46 @@ class AllCapSourceCollectorTests(unittest.TestCase):
                         self.rehashed_staging(verified.publication_dir, name, mutate),
                         root,
                     )
+
+    def test_publish_rejects_manifest_publication_id_outside_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.collect(root)
+            verified = load_verified_all_cap_sources(root)
+            staging = verified.publication_dir.parent / ".all-cap-sources-wrong-window"
+            shutil.copytree(verified.publication_dir, staging)
+            self.rewrite_manifest_publication_id(
+                staging,
+                "20230830_20240103_" + "a" * 32,
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "all_cap_source_manifest_contract",
+            ):
+                publish_all_cap_sources(staging, root)
+
+    def test_load_rejects_manifest_publication_id_outside_window(self) -> None:
+        from stock_analyze.research import a_share_all_cap_source_store as source_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.collect(root)
+            verified = load_verified_all_cap_sources(root)
+            wrong_id = "20230830_20240103_" + "b" * 32
+            wrong_publication = verified.publication_dir.parent / wrong_id
+            shutil.copytree(verified.publication_dir, wrong_publication)
+            payload = self.rewrite_manifest_publication_id(
+                wrong_publication,
+                wrong_id,
+            )
+            source_store.write_latest(root, payload)
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "all_cap_source_manifest_contract",
+            ):
+                load_verified_all_cap_sources(root)
 
     def test_rejects_rehashed_manifest_with_false_schema_or_compression(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

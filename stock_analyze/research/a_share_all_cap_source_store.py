@@ -695,12 +695,15 @@ def verify_publication(
     manifest_hash = payload.pop("manifest_sha256", None)
     if manifest_hash != canonical_hash(payload):
         raise ValueError("all_cap_source_checksum:manifest")
+    publication_id = str(manifest.get("publication_id") or "")
     if (
         manifest.get("schema_version") != SCHEMA_VERSION
         or manifest.get("contract_version") != CONTRACT_VERSION
         or manifest.get("status") != "complete"
         or manifest.get("reference_indexes") != dict(expected_reference_indexes)
-        or not _PUBLICATION_ID.fullmatch(str(manifest.get("publication_id") or ""))
+        or not _PUBLICATION_ID.fullmatch(publication_id)
+        or publication_id.split("_", 2)[:2]
+        != [manifest.get("start_date"), manifest.get("end_date")]
     ):
         raise ValueError("all_cap_source_manifest_contract")
     records = _validate_manifest_records(manifest)
