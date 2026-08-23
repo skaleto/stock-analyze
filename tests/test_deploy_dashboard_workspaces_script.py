@@ -40,6 +40,7 @@ EXPECTED_FILES = [
     "stock_analyze/research/a_share_all_cap_evaluation.py",
     "stock_analyze/research/a_share_all_cap_holdout.py",
     "stock_analyze/research/a_share_all_cap_contract.py",
+    "stock_analyze/research/a_share_all_cap_source_store.py",
     "stock_analyze/research/a_share_all_cap_sources.py",
     "stock_analyze/research/a_share_all_cap_universe.py",
     "stock_analyze/research/a_share_all_cap_universe_store.py",
@@ -111,6 +112,53 @@ EXPECTED_FILES = [
     "tests/test_system_audit_script.py",
     "docs/system-harness.md",
     "docs/system-overview.md",
+]
+EXPECTED_TEST_MODULES = [
+    "tests.test_backtest_data_prep",
+    "tests.test_dashboard_finance",
+    "tests.test_dashboard_http",
+    "tests.test_dashboard_multi_agent_research",
+    "tests.test_dashboard_resource_api",
+    "tests.test_dashboard_runtime",
+    "tests.test_dashboard_workspace_api",
+    "tests.test_cli_dashboard_routes",
+    "tests.test_cli_research",
+    "tests.test_cli_research_all_cap",
+    "tests.test_intelligence_factors",
+    "tests.test_dashboard_model_shadow",
+    "tests.test_model_iteration",
+    "tests.test_model_shadow",
+    "tests.test_markets_cn_qdii_etf_simulator",
+    "tests.test_research_activation",
+    "tests.test_research_a_share_all_cap_contract",
+    "tests.test_research_a_share_all_cap_sources",
+    "tests.test_research_a_share_all_cap_universe",
+    "tests.test_research_a_share_all_cap_features",
+    "tests.test_research_a_share_all_cap_campaign",
+    "tests.test_research_a_share_all_cap_evaluation",
+    "tests.test_research_a_share_all_cap_holdout",
+    "tests.test_research_classical_specs",
+    "tests.test_research_local_training",
+    "tests.test_research_models",
+    "tests.test_multi_agent_research",
+    "tests.test_research_pipeline",
+    "tests.test_research_portfolio_replay",
+    "tests.test_research_paper_candidate_gate",
+    "tests.test_research_paper_candidate_runtime",
+    "tests.test_research_qdii_global_context",
+    "tests.test_research_collectors",
+    "tests.test_research_source_features",
+    "tests.test_research_scenario_model",
+    "tests.test_research_shadow_admission",
+    "tests.test_research_storage",
+    "tests.test_research_strategy_campaign",
+    "tests.test_research_account_features",
+    "tests.test_research_tabular_forward",
+    "tests.test_research_a_share_prices",
+    "tests.test_research_otc_fund_nav",
+    "tests.test_research_universe",
+    "tests.test_research_universe_expansion",
+    "tests.test_system_audit_script",
 ]
 DEPLOY_VERSION_FILE = "DEPLOY_VERSION"
 EXPECTED_PREIMAGE_FILES = [DEPLOY_VERSION_FILE, *EXPECTED_FILES]
@@ -386,6 +434,18 @@ else:
 
         self.assertEqual(paths, EXPECTED_FILES)
         self.assertIn('readonly DASHBOARD_ASSET_TREE="reports/app"', source)
+
+    def test_remote_test_module_allowlist_is_exact(self) -> None:
+        source = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+        match = re.search(
+            r"readonly DASHBOARD_TEST_MODULES=\(\n(?P<body>.*?)\n\)",
+            source,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        modules = re.findall(r'^\s+"([^"]+)"$', match.group("body"), re.MULTILINE)
+
+        self.assertEqual(modules, EXPECTED_TEST_MODULES)
 
     def test_remote_configuration_rejects_shell_metacharacters_and_overlap(
         self,
