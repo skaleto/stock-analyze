@@ -262,6 +262,51 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="End date (YYYY-MM-DD).",
     )
+    all_cap_development = sub.add_parser(
+        "run-a-share-all-cap-development",
+        help=(
+            "Seal one fixture or persisted 2018-2024 all-cap development "
+            "evaluation without opening the holdout."
+        ),
+    )
+    all_cap_development.add_argument(
+        "--contract",
+        type=Path,
+        default=Path("configs/research/a_share_all_cap_v2.yaml"),
+    )
+    all_cap_development.add_argument(
+        "--evaluation-input",
+        type=Path,
+        default=Path(
+            "data/research/a_share_all_cap/v1/inputs/development.json"
+        ),
+    )
+    all_cap_holdout = sub.add_parser(
+        "run-a-share-all-cap-holdout",
+        help=(
+            "Open the bound all-cap holdout once and seal its immutable "
+            "evaluation."
+        ),
+    )
+    all_cap_holdout.add_argument(
+        "--contract",
+        type=Path,
+        default=Path("configs/research/a_share_all_cap_v2.yaml"),
+    )
+    all_cap_holdout.add_argument(
+        "--development-artifact",
+        type=Path,
+        required=True,
+    )
+    all_cap_holdout.add_argument(
+        "--development-sha256",
+        required=True,
+    )
+    all_cap_holdout.add_argument(
+        "--evaluation-input",
+        type=Path,
+        default=Path("data/research/a_share_all_cap/v1/inputs/holdout.json"),
+    )
 
     multi_agent_research = sub.add_parser(
         "run-multi-agent-research",
@@ -1758,6 +1803,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "refresh-a-share-all-cap-sources":
         ensure_dirs(args.logs_dir)
         return _command_refresh_a_share_all_cap_sources(args)
+    if args.command == "run-a-share-all-cap-development":
+        ensure_dirs(args.logs_dir)
+        return _command_run_a_share_all_cap_development(args)
+    if args.command == "run-a-share-all-cap-holdout":
+        ensure_dirs(args.logs_dir)
+        return _command_run_a_share_all_cap_holdout(args)
     if args.command == "run-multi-agent-research":
         ensure_dirs(args.logs_dir)
         return _command_run_multi_agent_research(args)
@@ -3721,6 +3772,59 @@ def _command_refresh_a_share_all_cap_sources(args: argparse.Namespace) -> int:
     except Exception as exc:  # noqa: BLE001 - collection must fail closed
         print(
             f"error: refresh-a-share-all-cap-sources failed: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _all_cap_cli_error(exc: Exception) -> str:
+    match = re.match(
+        r"^(all_cap_(?:artifact|development|holdout)"
+        r"(?::[a-z0-9_]+)?)",
+        str(exc),
+    )
+    return match.group(1) if match else "all_cap_command:failed"
+
+
+def _command_run_a_share_all_cap_development(
+    args: argparse.Namespace,
+) -> int:
+    from .research.a_share_all_cap_holdout import run_development_command
+
+    try:
+        result = run_development_command(
+            repo_root=Path.cwd(),
+            contract_path=args.contract,
+            evaluation_input_path=args.evaluation_input,
+        )
+    except Exception as exc:  # noqa: BLE001 - expose only bounded error codes
+        print(
+            "error: run-a-share-all-cap-development failed: "
+            f"{_all_cap_cli_error(exc)}",
+            file=sys.stderr,
+        )
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _command_run_a_share_all_cap_holdout(args: argparse.Namespace) -> int:
+    from .research.a_share_all_cap_holdout import run_holdout_command
+
+    try:
+        result = run_holdout_command(
+            repo_root=Path.cwd(),
+            contract_path=args.contract,
+            development_artifact_path=args.development_artifact,
+            development_sha256=args.development_sha256,
+            evaluation_input_path=args.evaluation_input,
+        )
+    except Exception as exc:  # noqa: BLE001 - expose only bounded error codes
+        print(
+            "error: run-a-share-all-cap-holdout failed: "
+            f"{_all_cap_cli_error(exc)}",
             file=sys.stderr,
         )
         return 2

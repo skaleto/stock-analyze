@@ -13,6 +13,111 @@ from stock_analyze.cli import main
 
 
 class CLIResearchAllCapTests(unittest.TestCase):
+    def test_dispatches_all_cap_development_without_reading_real_data(self) -> None:
+        expected = {
+            "status": "pass",
+            "artifact_sha256": "a" * 64,
+            "artifact_path": "development/a.json",
+        }
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "stock_analyze.cli.Path.cwd",
+            return_value=Path(tmp),
+        ), patch(
+            "stock_analyze.research.a_share_all_cap_holdout.run_development_command",
+            return_value=expected,
+        ) as run:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = main(
+                    [
+                        "run-a-share-all-cap-development",
+                        "--contract",
+                        "configs/research/a_share_all_cap_v2.yaml",
+                        "--evaluation-input",
+                        "data/research/a_share_all_cap/v1/inputs/dev.json",
+                    ]
+                )
+
+        self.assertEqual(code, 0)
+        run.assert_called_once_with(
+            repo_root=Path(tmp),
+            contract_path=Path("configs/research/a_share_all_cap_v2.yaml"),
+            evaluation_input_path=Path(
+                "data/research/a_share_all_cap/v1/inputs/dev.json"
+            ),
+        )
+        self.assertEqual(json.loads(output.getvalue()), expected)
+
+    def test_dispatches_all_cap_holdout_without_reading_real_data(self) -> None:
+        expected = {
+            "status": "fail",
+            "artifact_sha256": "b" * 64,
+            "artifact_path": "holdout/results/b.json",
+        }
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "stock_analyze.cli.Path.cwd",
+            return_value=Path(tmp),
+        ), patch(
+            "stock_analyze.research.a_share_all_cap_holdout.run_holdout_command",
+            return_value=expected,
+        ) as run:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = main(
+                    [
+                        "run-a-share-all-cap-holdout",
+                        "--contract",
+                        "configs/research/a_share_all_cap_v2.yaml",
+                        "--development-artifact",
+                        "data/research/a_share_all_cap/v1/development/a.json",
+                        "--development-sha256",
+                        "a" * 64,
+                        "--evaluation-input",
+                        "data/research/a_share_all_cap/v1/inputs/holdout.json",
+                    ]
+                )
+
+        self.assertEqual(code, 0)
+        run.assert_called_once_with(
+            repo_root=Path(tmp),
+            contract_path=Path("configs/research/a_share_all_cap_v2.yaml"),
+            development_artifact_path=Path(
+                "data/research/a_share_all_cap/v1/development/a.json"
+            ),
+            development_sha256="a" * 64,
+            evaluation_input_path=Path(
+                "data/research/a_share_all_cap/v1/inputs/holdout.json"
+            ),
+        )
+        self.assertEqual(json.loads(output.getvalue()), expected)
+
+    def test_all_cap_cli_error_is_nonzero_and_does_not_leak_path_or_secret(
+        self,
+    ) -> None:
+        with patch(
+            "stock_analyze.research.a_share_all_cap_holdout.run_holdout_command",
+            side_effect=ValueError(
+                "all_cap_holdout:development_checksum:"
+                "/private/tmp/secret-token-value"
+            ),
+        ):
+            error = io.StringIO()
+            with redirect_stderr(error):
+                code = main(
+                    [
+                        "run-a-share-all-cap-holdout",
+                        "--development-artifact",
+                        "data/research/a_share_all_cap/v1/development/a.json",
+                        "--development-sha256",
+                        "a" * 64,
+                    ]
+                )
+
+        self.assertEqual(code, 2)
+        self.assertIn("all_cap_holdout:development_checksum", error.getvalue())
+        self.assertNotIn("/private/tmp", error.getvalue())
+        self.assertNotIn("secret-token-value", error.getvalue())
+
     def test_dispatches_dates_cwd_and_provider_without_network(self) -> None:
         expected = {"status": "complete", "message": "参考数据已验证"}
         with tempfile.TemporaryDirectory() as tmp, patch(
