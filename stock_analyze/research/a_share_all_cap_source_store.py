@@ -89,6 +89,7 @@ ARROW_SCHEMAS = {
 }
 
 _PUBLICATION_ID = re.compile(r"^[0-9]{8}_[0-9]{8}_[a-f0-9]{32}$")
+_SHA256 = re.compile(r"^[a-f0-9]{64}$")
 _YEAR = re.compile(r"^[0-9]{4}$")
 
 
@@ -335,7 +336,15 @@ def read_record(root: Path, record: Mapping[str, object], dataset: str) -> pd.Da
 class JobStore:
     """Deterministic, resumable checkpoint store for one date interval."""
 
-    def __init__(self, repo_root: Path, start_key: str, end_key: str) -> None:
+    def __init__(
+        self,
+        repo_root: Path,
+        start_key: str,
+        end_key: str,
+        stock_master_sha256: str,
+    ) -> None:
+        if _SHA256.fullmatch(stock_master_sha256) is None:
+            raise ValueError("all_cap_source_job_stock_master")
         self.publications_root = publications_root(repo_root)
         self.publications_root.mkdir(parents=True, exist_ok=True)
         _assert_not_symlink(self.publications_root)
@@ -356,6 +365,7 @@ class JobStore:
             if (
                 not isinstance(publication_id, str)
                 or _PUBLICATION_ID.fullmatch(publication_id) is None
+                or publication_id.split("_", 2)[:2] != [start_key, end_key]
             ):
                 raise ValueError("all_cap_source_job_publication_id")
             if (
@@ -366,6 +376,8 @@ class JobStore:
                 or not isinstance(self.progress.get("checkpoints"), dict)
             ):
                 raise ValueError("all_cap_source_job_contract")
+            if self.progress.get("stock_master_sha256") != stock_master_sha256:
+                self._replace_stock_master(stock_master_sha256)
         else:
             self.progress = {
                 "schema_version": SCHEMA_VERSION,
@@ -373,9 +385,38 @@ class JobStore:
                 "start_date": start_key,
                 "end_date": end_key,
                 "publication_id": f"{start_key}_{end_key}_{uuid.uuid4().hex}",
+                "stock_master_sha256": stock_master_sha256,
                 "checkpoints": {},
             }
             self._write_progress()
+
+    def _replace_stock_master(self, stock_master_sha256: str) -> None:
+        checkpoints = self.progress["checkpoints"]
+        stale_paths: list[Path] = []
+        stale_keys = [
+            str(value)
+            for value in checkpoints
+            if str(value).startswith("stk_limit:")
+        ]
+        for key in stale_keys:
+            record = checkpoints.pop(key)
+            if not isinstance(record, Mapping):
+                continue
+            relative = _safe_relative(record.get("path"))
+            path = self.root.joinpath(*relative.parts)
+            _assert_contained(path, self.root, must_exist=False)
+            stale_paths.append(path)
+        self.progress["stock_master_sha256"] = stock_master_sha256
+        self.progress["publication_id"] = (
+            f"{self.progress['start_date']}_{self.progress['end_date']}_{uuid.uuid4().hex}"
+        )
+        self._write_progress()
+        for path in stale_paths:
+            if path.exists() or path.is_symlink():
+                _assert_contained(path, self.root)
+                if not path.is_file():
+                    raise ValueError("all_cap_source_job_checkpoint")
+                path.unlink()
 
     @property
     def publication_id(self) -> str:

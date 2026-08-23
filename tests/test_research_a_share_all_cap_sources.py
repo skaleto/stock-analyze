@@ -38,6 +38,12 @@ SLEEVE_INDEX_CODES = (
     "932000.CSI",
 )
 ALL_INDEX_CODES = (*SLEEVE_INDEX_CODES, "000985.CSI")
+INDEX_COMPONENT_COUNTS = {
+    "000300.SH": 300,
+    "000905.SH": 500,
+    "000852.SH": 1000,
+    "932000.CSI": 2000,
+}
 
 
 class FakePro:
@@ -54,6 +60,9 @@ class FakePro:
         future_index_weight: bool = False,
         empty_weight: tuple[str, str] | None = None,
         partial_stk_limit_date: str | None = None,
+        additional_stock_codes: tuple[str, ...] = (),
+        short_weight: tuple[str, str] | None = None,
+        bad_weight_sum: tuple[str, str] | None = None,
     ) -> None:
         self.malformed_index_daily = malformed_index_daily
         self.overlapping_membership = overlapping_membership
@@ -63,6 +72,9 @@ class FakePro:
         self.future_index_weight = future_index_weight
         self.empty_weight = empty_weight
         self.partial_stk_limit_date = partial_stk_limit_date
+        self.additional_stock_codes = additional_stock_codes
+        self.short_weight = short_weight
+        self.bad_weight_sum = bad_weight_sum
         self.index_weight_calls: list[dict[str, object]] = []
         self.index_daily_calls: list[dict[str, object]] = []
         self.index_member_calls: list[dict[str, object]] = []
@@ -102,20 +114,35 @@ class FakePro:
         }
         latest_date = reused_dates.get(snapshot_as_of, snapshot_as_of)
         latest = datetime.strptime(latest_date, "%Y%m%d").date()
+        component_count = INDEX_COMPONENT_COUNTS[index_code]
+        returned_count = (
+            component_count - 1
+            if self.short_weight == (index_code, snapshot_as_of)
+            else component_count
+        )
+        weight_total = (
+            99.0
+            if self.bad_weight_sum == (index_code, snapshot_as_of)
+            else 100.0
+        )
+        base = member_number * 100_000
         rows = [
             {
                 "index_code": index_code,
-                "con_code": f"{member_number:06d}.SZ",
+                "con_code": f"{base + number:06d}.SZ",
                 "trade_date": latest_date,
-                "weight": 100.0,
-            },
+                "weight": weight_total / returned_count,
+            }
+            for number in range(1, returned_count + 1)
+        ]
+        rows.append(
             {
                 "index_code": index_code,
-                "con_code": f"{member_number:06d}.SZ",
+                "con_code": f"{base + 1:06d}.SZ",
                 "trade_date": (latest - timedelta(days=7)).strftime("%Y%m%d"),
                 "weight": 99.0,
-            },
-        ]
+            }
+        )
         if self.future_index_weight:
             rows.append(
                 {
@@ -213,11 +240,12 @@ class FakePro:
     def stk_limit(self, **kwargs: object) -> pd.DataFrame:
         self.stk_limit_calls.append(dict(kwargs))
         trade_date = str(kwargs["trade_date"])
-        codes = ["000001.SZ", "510300.SH"]
+        codes = ["000001.SZ", "830001.BJ", "510300.SH"]
         if trade_date >= "20230901":
             codes.append("000002.SZ")
         if trade_date <= "20230901":
             codes.append("000003.SZ")
+        codes.extend(self.additional_stock_codes)
         if trade_date == self.partial_stk_limit_date:
             codes.remove("000001.SZ")
         return pd.DataFrame(
@@ -277,27 +305,50 @@ class AllCapSourceCollectorTests(unittest.TestCase):
 
     @staticmethod
     def write_stock_master(root: Path) -> Path:
-        path = root / "data/shared/backtest_cache/stock_basic.csv"
-        path.parent.mkdir(parents=True, exist_ok=True)
+        cache_root = root / "data/shared/backtest_cache"
+        path = cache_root / "stock_basic.csv"
+        cache_root.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(
             [
                 {
                     "ts_code": "000001.SZ",
                     "list_date": "19910403",
                     "delist_date": "",
+                    "list_status": "L",
                 },
                 {
                     "ts_code": "000002.SZ",
                     "list_date": "20230901",
                     "delist_date": "",
+                    "list_status": "L",
                 },
                 {
                     "ts_code": "000003.SZ",
                     "list_date": "20200101",
                     "delist_date": "20230901",
+                    "list_status": "D",
+                },
+                {
+                    "ts_code": "830001.BJ",
+                    "list_date": "20200101",
+                    "delist_date": "",
+                    "list_status": "L",
                 },
             ]
         ).to_csv(path, index=False)
+        (cache_root / "_meta.json").write_text(
+            json.dumps(
+                {
+                    "stock_basic_done": True,
+                    "stock_basic_statuses_done": ["D", "L", "P"],
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         return path
 
     def collect(
@@ -477,8 +528,14 @@ class AllCapSourceCollectorTests(unittest.TestCase):
         )
         micro = manifest.index_weights["932000.CSI"]
         self.assertEqual(
-            list(micro["snapshot_as_of"]),
-            ["20230901", "20231001", "20231101", "20231201", "20240101"],
+            micro.groupby("snapshot_as_of").size().to_dict(),
+            {
+                "20230901": 2000,
+                "20231001": 2000,
+                "20231101": 2000,
+                "20231201": 2000,
+                "20240101": 2000,
+            },
         )
         self.assertTrue((micro["trade_date"] >= "20230901").all())
         self.assertTrue(
@@ -526,10 +583,10 @@ class AllCapSourceCollectorTests(unittest.TestCase):
         reused = large.loc[
             large["snapshot_as_of"].isin(["20230831", "20230901"])
         ]
-        self.assertEqual(list(reused["trade_date"]), ["20230830", "20230830"])
+        self.assertEqual(set(reused["trade_date"]), {"20230830"})
         self.assertEqual(
-            list(reused["snapshot_as_of"]),
-            ["20230831", "20230901"],
+            set(reused["snapshot_as_of"]),
+            {"20230831", "20230901"},
         )
         self.assertFalse(
             large.duplicated(["index_code", "snapshot_as_of", "con_code"]).any()
@@ -567,8 +624,8 @@ class AllCapSourceCollectorTests(unittest.TestCase):
         september = manifest.index_weights["000300.SH"].loc[
             lambda frame: frame["snapshot_as_of"] == "20230901"
         ]
-        self.assertEqual(len(september), 1)
-        self.assertEqual(september.iloc[0]["trade_date"], "20230830")
+        self.assertEqual(len(september), 300)
+        self.assertEqual(set(september["trade_date"]), {"20230830"})
 
     def test_index_weight_rejects_future_rows_and_post_inception_empty(self) -> None:
         providers_and_errors = (
@@ -585,6 +642,87 @@ class AllCapSourceCollectorTests(unittest.TestCase):
             with self.subTest(error=error), tempfile.TemporaryDirectory() as tmp:
                 with self.assertRaisesRegex(ValueError, error):
                     self.collect(Path(tmp), provider)
+
+    def test_index_weight_manifest_records_complete_official_cross_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.collect(root)
+            manifest = load_verified_all_cap_sources(root)
+
+        completeness = manifest.metadata["index_weight_completeness"]
+        self.assertTrue(completeness)
+        for item in completeness:
+            with self.subTest(
+                index_code=item["index_code"],
+                snapshot_as_of=item["snapshot_as_of"],
+            ):
+                self.assertEqual(
+                    item["component_count"],
+                    {
+                        "000300.SH": 300,
+                        "000905.SH": 500,
+                        "000852.SH": 1000,
+                        "932000.CSI": 2000,
+                    }[item["index_code"]],
+                )
+                self.assertAlmostEqual(item["weight_sum"], 100.0, delta=0.1)
+                self.assertEqual(item["coverage_status"], "complete")
+
+    def test_index_weight_rejects_missing_component_and_bad_weight_sum(self) -> None:
+        providers = (
+            FakePro(short_weight=("000300.SH", "20230831")),
+            FakePro(bad_weight_sum=("000300.SH", "20230831")),
+        )
+        for provider in providers:
+            with self.subTest(provider=type(provider).__name__), tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "all_cap_source_index_weight",
+                ):
+                    self.collect(Path(tmp), provider)
+
+    def test_publish_recomputes_index_weight_component_count_and_sum(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.collect(root)
+            verified = load_verified_all_cap_sources(root)
+
+            def remove_component(frame: pd.DataFrame) -> pd.DataFrame:
+                return frame.drop(index=frame.index[0]).reset_index(drop=True)
+
+            def change_weight_sum(frame: pd.DataFrame) -> pd.DataFrame:
+                changed = frame.copy()
+                changed.loc[changed.index[0], "weight"] += 1.0
+                return changed
+
+            for name, mutate in (
+                ("weight-component", remove_component),
+                ("weight-sum", change_weight_sum),
+            ):
+                staging = self.resigned_parquet_staging(
+                    verified.publication_dir,
+                    name,
+                    "index_weights.parquet",
+                    mutate,
+                )
+                manifest_path = staging / "manifest.json"
+                payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+                payload["publication_id"] = (
+                    "20230831_20240103_"
+                    + hashlib.sha256(name.encode("utf-8")).hexdigest()[:32]
+                )
+                payload.pop("manifest_sha256", None)
+                payload["manifest_sha256"] = self._canonical_hash(payload)
+                manifest_path.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+                    + "\n",
+                    encoding="utf-8",
+                )
+                with self.subTest(name=name), self.assertRaisesRegex(
+                    ValueError,
+                    "all_cap_source.*index_weight",
+                ):
+                    publish_all_cap_sources(staging, root)
 
     def test_manifest_declares_schemas_bounds_paths_and_real_compression(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -831,13 +969,16 @@ class AllCapSourceCollectorTests(unittest.TestCase):
         self.assertIsInstance(manifest.stk_limit, Mapping)
         self.assertEqual(
             set(limits_2023.loc[limits_2023["trade_date"] == "20230831", "ts_code"]),
-            {"000001.SZ", "000003.SZ"},
+            {"000001.SZ", "000003.SZ", "830001.BJ"},
         )
         self.assertEqual(
             set(limits_2023.loc[limits_2023["trade_date"] == "20230901", "ts_code"]),
-            {"000001.SZ", "000002.SZ", "000003.SZ"},
+            {"000001.SZ", "000002.SZ", "000003.SZ", "830001.BJ"},
         )
-        self.assertEqual(set(limits_2024["ts_code"]), {"000001.SZ", "000002.SZ"})
+        self.assertEqual(
+            set(limits_2024["ts_code"]),
+            {"000001.SZ", "000002.SZ", "830001.BJ"},
+        )
         counts = {
             item["partition"]: (
                 item["expected_count"],
@@ -847,7 +988,7 @@ class AllCapSourceCollectorTests(unittest.TestCase):
             )
             for item in manifest.metadata["partitions"]["stk_limit"]
         }
-        self.assertEqual(counts, {"2023": (5, 7, 0, 2), "2024": (2, 3, 0, 1)})
+        self.assertEqual(counts, {"2023": (7, 9, 0, 2), "2024": (3, 4, 0, 1)})
         self.assertEqual(
             {
                 key: (
@@ -860,9 +1001,9 @@ class AllCapSourceCollectorTests(unittest.TestCase):
                 if key.startswith("stk_limit:")
             },
             {
-                "stk_limit:20230831": (2, 3, 0, 1),
-                "stk_limit:20230901": (3, 4, 0, 1),
-                "stk_limit:20240102": (2, 3, 0, 1),
+                "stk_limit:20230831": (3, 4, 0, 1),
+                "stk_limit:20230901": (4, 5, 0, 1),
+                "stk_limit:20240102": (3, 4, 0, 1),
             },
         )
         for key, record in progress["checkpoints"].items():
@@ -897,6 +1038,128 @@ class AllCapSourceCollectorTests(unittest.TestCase):
                 Path(tmp),
                 FakePro(partial_stk_limit_date="20230901"),
             )
+
+    def test_stock_master_requires_complete_meta_and_list_status(self) -> None:
+        cases = ("missing_meta", "incomplete_statuses", "missing_column", "bad_status")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                path = self.write_stock_master(root)
+                meta_path = path.parent / "_meta.json"
+                if case == "missing_meta":
+                    meta_path.unlink()
+                elif case == "incomplete_statuses":
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    meta["stock_basic_statuses_done"] = ["L", "D"]
+                    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+                else:
+                    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+                    if case == "missing_column":
+                        frame = frame.drop(columns=["list_status"])
+                    else:
+                        frame.loc[0, "list_status"] = "X"
+                    frame.to_csv(path, index=False)
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "all_cap_source_stock_master",
+                ):
+                    self.collect(root, write_stock_master=False)
+
+    def test_stock_master_filters_b_shares_and_keeps_bj_equities(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self.write_stock_master(root)
+            frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+            frame = pd.concat(
+                [
+                    frame,
+                    pd.DataFrame(
+                        [
+                            {
+                                "ts_code": "200001.SZ",
+                                "list_date": "20200101",
+                                "delist_date": "",
+                                "list_status": "L",
+                            },
+                            {
+                                "ts_code": "900901.SH",
+                                "list_date": "20200101",
+                                "delist_date": "",
+                                "list_status": "P",
+                            },
+                        ]
+                    ),
+                ],
+                ignore_index=True,
+            )
+            frame.to_csv(path, index=False)
+
+            self.collect(root, write_stock_master=False)
+            manifest = load_verified_all_cap_sources(root)
+            limits = pd.concat(
+                [manifest.load_stk_limit_year(year) for year in manifest.stk_limit],
+                ignore_index=True,
+            )
+
+        self.assertIn("830001.BJ", set(limits["ts_code"]))
+        self.assertTrue(set(limits["ts_code"]).isdisjoint({"200001.SZ", "900901.SH"}))
+
+    def test_master_change_does_not_reuse_publication_and_only_refetches_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.collect(root)
+            path = root / "data/shared/backtest_cache/stock_basic.csv"
+            frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+            frame = pd.concat(
+                [
+                    frame,
+                    pd.DataFrame(
+                        [
+                            {
+                                "ts_code": "000004.SZ",
+                                "list_date": "20200101",
+                                "delist_date": "",
+                                "list_status": "L",
+                            }
+                        ]
+                    ),
+                ],
+                ignore_index=True,
+            )
+            frame.to_csv(path, index=False)
+            current_master_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+
+            with patch("stock_analyze.research.a_share_all_cap_sources.time.sleep"):
+                with self.assertRaisesRegex(AssertionError, "provider must not be called"):
+                    self.collect(root, NoCallPro(), write_stock_master=False)
+
+            provider = FakePro(additional_stock_codes=("000004.SZ",))
+            result, _ = self.collect(
+                root,
+                provider,
+                write_stock_master=False,
+            )
+            manifest = load_verified_all_cap_sources(root)
+            limits = pd.concat(
+                [manifest.load_stk_limit_year(year) for year in manifest.stk_limit],
+                ignore_index=True,
+            )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(provider.index_weight_calls, [])
+        self.assertEqual(provider.index_daily_calls, [])
+        self.assertEqual(provider.index_member_calls, [])
+        self.assertEqual(provider.trade_cal_calls, [])
+        self.assertEqual(
+            [call["trade_date"] for call in provider.stk_limit_calls],
+            list(FakePro.OPEN_DATES),
+        )
+        self.assertIn("000004.SZ", set(limits["ts_code"]))
+        self.assertEqual(
+            manifest.metadata["stock_master_sha256"],
+            current_master_hash,
+        )
 
     def test_provider_retries_three_times_with_exponential_backoff(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, patch(
@@ -946,12 +1209,18 @@ class AllCapSourceCollectorTests(unittest.TestCase):
             "nested/publication",
             "/absolute/publication",
             "../../../../../../escaped-publication",
+            "20230830_20240103_" + "a" * 32,
         )
         for unsafe_id in unsafe_ids:
             with self.subTest(publication_id=unsafe_id), tempfile.TemporaryDirectory() as tmp:
                 sandbox = Path(tmp)
                 root = sandbox / "repo"
-                job = source_store.JobStore(root, "20230831", "20240103")
+                job = source_store.JobStore(
+                    root,
+                    "20230831",
+                    "20240103",
+                    "0" * 64,
+                )
                 progress = json.loads(job.progress_path.read_text(encoding="utf-8"))
                 progress["publication_id"] = unsafe_id
                 job.progress_path.write_text(
@@ -975,7 +1244,12 @@ class AllCapSourceCollectorTests(unittest.TestCase):
                     ValueError,
                     "all_cap_source_job_publication_id",
                 ):
-                    source_store.JobStore(root, "20230831", "20240103")
+                    source_store.JobStore(
+                        root,
+                        "20230831",
+                        "20240103",
+                        "0" * 64,
+                    )
 
                 outside_after = sorted(
                     path.relative_to(sandbox).as_posix()
@@ -1033,6 +1307,47 @@ class AllCapSourceCollectorTests(unittest.TestCase):
 
         self.assertTrue(year_path.name == "year=2023.parquet")
         self.assertEqual(set(year_frame["trade_date"]), {"20230831", "20230901"})
+
+    def test_loaded_frames_are_caller_owned_copies(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.collect(root)
+            manifest = load_verified_all_cap_sources(root)
+
+            daily = manifest.index_daily["000300.SH"]
+            original_close = float(daily.loc[daily.index[0], "close"])
+            daily.loc[daily.index[0], "close"] = -1.0
+
+            weights = manifest.index_weights["000300.SH"]
+            original_weight = float(weights.loc[weights.index[0], "weight"])
+            weights.loc[weights.index[0], "weight"] = -1.0
+
+            industry = manifest.industry_membership
+            original_code = str(industry.loc[industry.index[0], "ts_code"])
+            industry.loc[industry.index[0], "ts_code"] = "999999.SZ"
+
+            self.assertEqual(
+                float(
+                    manifest.index_daily["000300.SH"].loc[
+                        daily.index[0],
+                        "close",
+                    ]
+                ),
+                original_close,
+            )
+            self.assertEqual(
+                float(
+                    manifest.index_weights["000300.SH"].loc[
+                        weights.index[0],
+                        "weight",
+                    ]
+                ),
+                original_weight,
+            )
+            self.assertEqual(
+                str(manifest.industry_membership.loc[industry.index[0], "ts_code"]),
+                original_code,
+            )
 
     def test_identifier_and_date_columns_reload_as_explicit_strings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

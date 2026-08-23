@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import time
@@ -50,6 +51,15 @@ _SLEEVE_INDEXES = tuple(
     code for code, sleeve in REFERENCE_INDEXES.items() if sleeve != "all_share"
 )
 _A_SHARE_CODE = re.compile(r"^[0-9]{6}\.(?:SH|SZ|BJ)$")
+_STOCK_BASIC_STATUSES = frozenset({"L", "D", "P"})
+_INDEX_WEIGHT_COMPONENT_COUNTS = {
+    "000300.SH": 300,
+    "000905.SH": 500,
+    "000852.SH": 1000,
+    "932000.CSI": 2000,
+}
+_INDEX_WEIGHT_TOTAL = 100.0
+_INDEX_WEIGHT_TOTAL_TOLERANCE = 0.1
 _RETRY_ATTEMPTS = 3
 _RETRY_BASE_SECONDS = 0.35
 
@@ -60,10 +70,26 @@ class AllCapSourceManifest:
 
     metadata: Mapping[str, object]
     publication_dir: Path
-    index_daily: Mapping[str, pd.DataFrame]
-    index_weights: Mapping[str, pd.DataFrame]
-    industry_membership: pd.DataFrame
+    _index_daily: Mapping[str, pd.DataFrame]
+    _index_weights: Mapping[str, pd.DataFrame]
+    _industry_membership: pd.DataFrame
     stk_limit: Mapping[str, source_store.SourcePartition]
+
+    @property
+    def index_daily(self) -> Mapping[str, pd.DataFrame]:
+        return MappingProxyType(
+            {code: frame.copy(deep=True) for code, frame in self._index_daily.items()}
+        )
+
+    @property
+    def index_weights(self) -> Mapping[str, pd.DataFrame]:
+        return MappingProxyType(
+            {code: frame.copy(deep=True) for code, frame in self._index_weights.items()}
+        )
+
+    @property
+    def industry_membership(self) -> pd.DataFrame:
+        return self._industry_membership.copy(deep=True)
 
     def load_stk_limit_year(self, year: str | int) -> pd.DataFrame:
         key = str(year)
@@ -292,9 +318,52 @@ def _normalize_weight_snapshot(
     latest = latest[
         ["index_code", "snapshot_as_of", "con_code", "trade_date", "weight"]
     ]
-    return _normalize_identifier_dtypes(
+    normalized = _normalize_identifier_dtypes(
         latest.sort_values("con_code").reset_index(drop=True)
     )
+    _index_weight_completeness(
+        normalized,
+        code="all_cap_source_index_weight_completeness",
+    )
+    return normalized
+
+
+def _index_weight_completeness(
+    frame: pd.DataFrame,
+    *,
+    code: str,
+) -> list[dict[str, object]]:
+    completeness: list[dict[str, object]] = []
+    for (index_code, snapshot_as_of), snapshot in frame.groupby(
+        ["index_code", "snapshot_as_of"],
+        sort=True,
+    ):
+        index_key = str(index_code)
+        target_count = _INDEX_WEIGHT_COMPONENT_COUNTS.get(index_key)
+        component_count = len(snapshot)
+        weight_sum = math.fsum(float(value) for value in snapshot["weight"])
+        if (
+            target_count is None
+            or component_count != target_count
+            or abs(weight_sum - _INDEX_WEIGHT_TOTAL)
+            > _INDEX_WEIGHT_TOTAL_TOLERANCE
+        ):
+            raise ValueError(
+                f"{code}:{index_key}:{snapshot_as_of}:"
+                f"components={component_count}:weight_sum={weight_sum}"
+            )
+        completeness.append(
+            {
+                "index_code": index_key,
+                "snapshot_as_of": str(snapshot_as_of),
+                "component_count": component_count,
+                "weight_sum": weight_sum,
+                "coverage_status": "complete",
+            }
+        )
+    if not completeness:
+        raise ValueError(code)
+    return completeness
 
 
 def _validate_weight_values(frame: pd.DataFrame) -> None:
@@ -322,6 +391,7 @@ def _validate_weight_values(frame: pd.DataFrame) -> None:
         or (normalized["trade_date"] > normalized["snapshot_as_of"]).any()
     ):
         raise ValueError(code)
+    _index_weight_completeness(normalized, code=code)
 
 
 def _collect_weights(
@@ -665,7 +735,7 @@ def _collect_industry(
                         l1_code=l1_code,
                         is_new=is_new,
                     )
-                    if normalized.equals(frame):
+                    if normalized.astype("string").equals(frame.astype("string")):
                         continue
                 except ValueError:
                     pass
@@ -688,9 +758,29 @@ def _collect_industry(
 
 
 def _read_stock_master(repo_root: Path) -> tuple[pd.DataFrame, str]:
-    path = repo_root / "data/shared/backtest_cache/stock_basic.csv"
+    cache_root = repo_root / "data/shared/backtest_cache"
+    path = cache_root / "stock_basic.csv"
+    meta_path = cache_root / "_meta.json"
     if not path.is_file():
         raise ValueError("all_cap_source_stock_master_missing")
+    if not meta_path.is_file():
+        raise ValueError("all_cap_source_stock_master_meta")
+    if meta_path.is_symlink():
+        raise ValueError("all_cap_source_symlink:stock_master_meta")
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        statuses_done = meta.get("stock_basic_statuses_done")
+    except Exception as exc:  # noqa: BLE001 - malformed metadata fails closed
+        raise ValueError("all_cap_source_stock_master_meta") from exc
+    if (
+        not isinstance(meta, Mapping)
+        or meta.get("stock_basic_done") is not True
+        or not isinstance(statuses_done, list)
+        or not _STOCK_BASIC_STATUSES.issubset(
+            {str(value) for value in statuses_done}
+        )
+    ):
+        raise ValueError("all_cap_source_stock_master_meta")
     if path.is_symlink():
         raise ValueError("all_cap_source_symlink:stock_master")
     try:
@@ -700,12 +790,13 @@ def _read_stock_master(repo_root: Path) -> tuple[pd.DataFrame, str]:
                 "ts_code": "string",
                 "list_date": "string",
                 "delist_date": "string",
+                "list_status": "string",
             },
             keep_default_na=False,
         )
     except Exception as exc:  # noqa: BLE001 - malformed master fails closed
         raise ValueError("all_cap_source_stock_master_schema") from exc
-    required = ("ts_code", "list_date", "delist_date")
+    required = ("ts_code", "list_date", "delist_date", "list_status")
     try:
         frame = _select_columns(
             frame,
@@ -726,6 +817,10 @@ def _read_stock_master(repo_root: Path) -> tuple[pd.DataFrame, str]:
         )
     except ValueError as exc:
         raise ValueError("all_cap_source_stock_master_schema") from exc
+    if not set(frame["list_status"]).issubset(_STOCK_BASIC_STATUSES):
+        raise ValueError("all_cap_source_stock_master_status")
+    b_share = frame["ts_code"].str.startswith(("200", "900"), na=False)
+    frame = frame.loc[~b_share].reset_index(drop=True)
     if (
         frame.empty
         or frame["ts_code"].duplicated().any()
@@ -881,6 +976,10 @@ def _build_candidate(
     index_weights = index_weights.sort_values(
         ["index_code", "snapshot_as_of", "con_code"]
     ).reset_index(drop=True)
+    weight_completeness = _index_weight_completeness(
+        index_weights,
+        code="all_cap_source_manifest_index_weights",
+    )
     index_daily = _concat_checkpoints(job, daily_keys, "index_daily")
     index_daily = index_daily.sort_values(["ts_code", "trade_date"]).reset_index(
         drop=True
@@ -947,6 +1046,7 @@ def _build_candidate(
             for is_new in ("Y", "N")
         ],
         "pre_inception": _expected_pre_inception(start, end),
+        "index_weight_completeness": weight_completeness,
         "open_trade_dates": open_dates,
         "stock_master_sha256": stock_master_sha256,
         "stk_limit_completeness": daily_completeness,
@@ -1006,6 +1106,11 @@ def _validate_publication_values(
     )
     if start_key > end_key:
         raise ValueError("all_cap_source_manifest_dates")
+    if re.fullmatch(
+        r"[a-f0-9]{64}",
+        str(manifest.get("stock_master_sha256") or ""),
+    ) is None:
+        raise ValueError("all_cap_source_manifest_stock_master")
     start = datetime.strptime(start_key, "%Y%m%d").date()
     end = datetime.strptime(end_key, "%Y%m%d").date()
     open_dates_raw = manifest.get("open_trade_dates")
@@ -1039,6 +1144,11 @@ def _validate_publication_values(
     for _, snapshot in weights.groupby(["index_code", "snapshot_as_of"]):
         if snapshot["trade_date"].nunique() != 1:
             raise ValueError("all_cap_source_manifest_index_weights")
+    if manifest.get("index_weight_completeness") != _index_weight_completeness(
+        weights,
+        code="all_cap_source_manifest_index_weights",
+    ):
+        raise ValueError("all_cap_source_manifest_index_weights")
     if manifest.get("pre_inception") != _expected_pre_inception(start, end):
         raise ValueError("all_cap_source_manifest_pre_inception")
 
@@ -1126,6 +1236,7 @@ def _find_matching_publication(
     repo_root: Path,
     start: date,
     end: date,
+    stock_master_sha256: str,
 ) -> Path | None:
     start_key = start.strftime("%Y%m%d")
     end_key = end.strftime("%Y%m%d")
@@ -1136,6 +1247,7 @@ def _find_matching_publication(
         if (
             latest.manifest.get("start_date") == start_key
             and latest.manifest.get("end_date") == end_key
+            and latest.manifest.get("stock_master_sha256") == stock_master_sha256
         ):
             return (
                 source_store.publications_root(repo_root)
@@ -1165,6 +1277,7 @@ def _find_matching_publication(
         if (
             verified.manifest.get("start_date") == start_key
             and verified.manifest.get("end_date") == end_key
+            and verified.manifest.get("stock_master_sha256") == stock_master_sha256
         ):
             matches.append(verified)
     if not matches:
@@ -1204,13 +1317,13 @@ def load_verified_all_cap_sources(
     return AllCapSourceManifest(
         metadata=_deep_freeze(dict(verified.manifest)),
         publication_dir=publication_dir,
-        index_daily=MappingProxyType(
+        _index_daily=MappingProxyType(
             {
                 code: daily.loc[daily["ts_code"] == code].reset_index(drop=True).copy()
                 for code in REFERENCE_INDEXES
             }
         ),
-        index_weights=MappingProxyType(
+        _index_weights=MappingProxyType(
             {
                 code: weights.loc[weights["index_code"] == code]
                 .reset_index(drop=True)
@@ -1219,7 +1332,7 @@ def load_verified_all_cap_sources(
                 if code in set(weights["index_code"])
             }
         ),
-        industry_membership=_normalize_identifier_dtypes(
+        _industry_membership=_normalize_identifier_dtypes(
             verified.frames["industry_membership"]
         ),
         stk_limit=limit_partitions,
@@ -1244,15 +1357,25 @@ def collect_all_cap_sources(
     if any(not callable(getattr(pro_client, method, None)) for method in required_methods):
         raise ValueError("all_cap_source_client")
     repo_root = Path(repo_root).absolute()
-    existing = _find_matching_publication(repo_root, start, end)
+    master, master_hash = _read_stock_master(repo_root)
+    existing = _find_matching_publication(
+        repo_root,
+        start,
+        end,
+        master_hash,
+    )
     if existing is not None:
         return {"status": "complete", "manifest": str(existing)}
 
     caller = _ProviderCaller(request_interval_seconds)
-    master, master_hash = _read_stock_master(repo_root)
     start_key = start.strftime("%Y%m%d")
     end_key = end.strftime("%Y%m%d")
-    job = source_store.JobStore(repo_root, start_key, end_key)
+    job = source_store.JobStore(
+        repo_root,
+        start_key,
+        end_key,
+        master_hash,
+    )
     open_dates = _trade_calendar(job, caller, pro_client, start_key, end_key)
     _collect_weights(job, caller, pro_client, start, end)
     _collect_index_daily(
