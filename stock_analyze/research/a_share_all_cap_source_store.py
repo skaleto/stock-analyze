@@ -352,6 +352,12 @@ class JobStore:
                 missing_code="all_cap_source_job_missing",
                 root=self.root,
             )
+            publication_id = self.progress.get("publication_id")
+            if (
+                not isinstance(publication_id, str)
+                or _PUBLICATION_ID.fullmatch(publication_id) is None
+            ):
+                raise ValueError("all_cap_source_job_publication_id")
             if (
                 self.progress.get("schema_version") != SCHEMA_VERSION
                 or self.progress.get("contract_version") != CONTRACT_VERSION

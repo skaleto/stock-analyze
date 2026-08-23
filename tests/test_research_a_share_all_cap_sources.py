@@ -48,6 +48,7 @@ class FakePro:
         *,
         malformed_index_daily: bool = False,
         overlapping_membership: bool = False,
+        duplicate_membership_across_states: bool = False,
         missing_index_daily_date: str | None = None,
         extra_index_daily_date: str | None = None,
         future_index_weight: bool = False,
@@ -56,6 +57,7 @@ class FakePro:
     ) -> None:
         self.malformed_index_daily = malformed_index_daily
         self.overlapping_membership = overlapping_membership
+        self.duplicate_membership_across_states = duplicate_membership_across_states
         self.missing_index_daily_date = missing_index_daily_date
         self.extra_index_daily_date = extra_index_daily_date
         self.future_index_weight = future_index_weight
@@ -169,6 +171,10 @@ class FakePro:
             stock_number = 999999
             in_date = "20230101" if is_new == "Y" else "20220101"
             out_date = pd.NA if is_new == "Y" else "20240101"
+        if self.duplicate_membership_across_states and l1_code == SW2021_L1_CODES[0]:
+            stock_number = 888888
+            in_date = "20220101"
+            out_date = pd.NA
         return pd.DataFrame(
             [
                 {
@@ -932,6 +938,52 @@ class AllCapSourceCollectorTests(unittest.TestCase):
         self.assertEqual(provider.index_daily_calls.count(completed_daily_calls[1]), 1)
         self.assertEqual(len(provider.trade_cal_calls), 1)
 
+    def test_resume_rejects_resigned_progress_with_unsafe_publication_id(self) -> None:
+        from stock_analyze.research import a_share_all_cap_source_store as source_store
+
+        unsafe_ids = (
+            "..",
+            "nested/publication",
+            "/absolute/publication",
+            "../../../../../../escaped-publication",
+        )
+        for unsafe_id in unsafe_ids:
+            with self.subTest(publication_id=unsafe_id), tempfile.TemporaryDirectory() as tmp:
+                sandbox = Path(tmp)
+                root = sandbox / "repo"
+                job = source_store.JobStore(root, "20230831", "20240103")
+                progress = json.loads(job.progress_path.read_text(encoding="utf-8"))
+                progress["publication_id"] = unsafe_id
+                job.progress_path.write_text(
+                    json.dumps(
+                        progress,
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                sources = source_store.source_root(root)
+                outside_before = sorted(
+                    path.relative_to(sandbox).as_posix()
+                    for path in sandbox.rglob("*")
+                    if not path.is_relative_to(sources)
+                )
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "all_cap_source_job_publication_id",
+                ):
+                    source_store.JobStore(root, "20230831", "20240103")
+
+                outside_after = sorted(
+                    path.relative_to(sandbox).as_posix()
+                    for path in sandbox.rglob("*")
+                    if not path.is_relative_to(sources)
+                )
+                self.assertEqual(outside_after, outside_before)
+
     def test_marker_failure_preserves_latest_and_next_run_adopts_orphan(self) -> None:
         from stock_analyze.research import a_share_all_cap_source_store as source_store
 
@@ -1057,6 +1109,19 @@ class AllCapSourceCollectorTests(unittest.TestCase):
             root = Path(tmp)
             with self.assertRaisesRegex(ValueError, "all_cap_source_industry_overlap"):
                 self.collect(root, FakePro(overlapping_membership=True))
+
+            self.assertFalse(
+                (root / "data/research/a_share_all_cap/v1/sources/latest.json").exists()
+            )
+
+    def test_rejects_same_membership_interval_returned_by_y_and_n(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaisesRegex(ValueError, "all_cap_source_industry_overlap"):
+                self.collect(
+                    root,
+                    FakePro(duplicate_membership_across_states=True),
+                )
 
             self.assertFalse(
                 (root / "data/research/a_share_all_cap/v1/sources/latest.json").exists()

@@ -606,9 +606,12 @@ def _reject_industry_overlaps(frame: pd.DataFrame) -> None:
     for ts_code, stock in frame.groupby("ts_code", sort=False):
         for level in ("l1_code", "l2_code", "l3_code"):
             intervals = (
-                stock[[level, "in_date", "out_date"]]
+                stock[[level, "in_date", "out_date", "is_new"]]
                 .drop_duplicates()
-                .sort_values(["in_date", "out_date"], na_position="last")
+                .sort_values(
+                    ["in_date", "out_date", "is_new"],
+                    na_position="last",
+                )
             )
             latest_end = ""
             for row in intervals.itertuples(index=False, name=None):
