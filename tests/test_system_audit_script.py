@@ -153,7 +153,7 @@ class SystemAuditScriptTests(unittest.TestCase):
             "000001.SZ,L\n"
             "000002.SZ,D\n"
             "000003.SZ,P\n",
-            encoding="utf-8",
+            encoding="utf-8-sig",
         )
         ranges = [
             f"{code}:{START}:{END}"
@@ -177,7 +177,7 @@ class SystemAuditScriptTests(unittest.TestCase):
             for code in ("000001.SZ", "000002.SZ", "000003.SZ"):
                 (endpoint_dir / f"{code}.csv").write_text(
                     "ts_code,ann_date,end_date\n",
-                    encoding="utf-8",
+                    encoding="utf-8-sig",
                 )
         status_dir = cache / "baostock_status"
         status_dir.mkdir()

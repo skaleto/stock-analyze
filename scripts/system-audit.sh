@@ -148,7 +148,7 @@ def load_contract_window() -> tuple[str, str, float]:
 
 def csv_has_columns(path: Path, required: set[str]) -> bool:
     try:
-        with path.open("r", encoding="utf-8", newline="") as handle:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
             fields = csv.DictReader(handle).fieldnames
     except (OSError, UnicodeError, csv.Error):
         return False
@@ -164,7 +164,7 @@ def load_backtest_state() -> tuple[dict[str, object], list[dict[str, str]]]:
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     if not isinstance(meta, dict):
         raise ValueError("backtest_audit_meta")
-    with master_path.open("r", encoding="utf-8", newline="") as handle:
+    with master_path.open("r", encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
     if not rows or any(
         not row.get("ts_code") or row.get("list_status") not in {"L", "D", "P"}
