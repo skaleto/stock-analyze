@@ -1,0 +1,150 @@
+campaign_id: a_share_all_cap_v2
+contract_version: 1
+status: preregistered_data_pending
+market: a_share
+research_only: true
+
+windows:
+  development_start: "2018-01-02"
+  development_end: "2024-12-31"
+  holdout_start: "2025-01-01"
+  holdout_end: "2026-08-21"
+  holdout_policy: open_once_after_data_code_and_development_gates
+  walk_forward_folds: 4
+  label_execution: next_trading_day_open
+
+forbidden_inputs:
+  - event_features
+  - news_features
+  - announcement_features
+  - policy_features
+  - failed_event_family_interactions
+
+universe:
+  review_frequency: quarter_end
+  effective_lag_trading_days: 1
+  size_metric: pit_total_mv
+  size_rank_boundaries: [300, 800, 1800, 3800]
+  boundary_buffer_fraction: 0.10
+  liquidity_lookback_sessions: 252
+  maximum_non_trading_days: 60
+  new_entry_minimum_amount_percentile: 0.20
+  retention_minimum_amount_percentile: 0.10
+  listing_age:
+    main_board_days: 90
+    chinext_days: 90
+    star_days: 365
+    bse_days: 730
+  require_non_st: true
+  require_not_full_day_suspended: true
+  missing_status_policy: exclude
+  industry_contract: sw2021_asof_inclusive_exclusive
+
+sleeves:
+  large:
+    rank_min: 1
+    rank_max: 300
+    benchmark: 000300.SH
+    capital_weight: 0.35
+  mid:
+    rank_min: 301
+    rank_max: 800
+    benchmark: 000905.SH
+    capital_weight: 0.30
+  small:
+    rank_min: 801
+    rank_max: 1800
+    benchmark: 000852.SH
+    capital_weight: 0.25
+  micro:
+    rank_min: 1801
+    rank_max: 3800
+    benchmark: 932000.CSI
+    capital_weight: 0.10
+watch_scopes:
+  nano_watch:
+    rank_min: 3801
+    rank_max: null
+    capital_weight: 0.00
+aggregate_benchmark: 000985.CSI
+
+candidates:
+  claude:
+    strategy_source: configs/agents/claude_a_share.yaml
+    factor_weights_policy: unchanged
+    decision_interval_sessions:
+      large: 20
+      mid: 20
+      small: 20
+      micro: 20
+  codex:
+    strategy_source: configs/agents/codex_a_share.yaml
+    factor_weights_policy: unchanged
+    decision_interval_sessions:
+      large: 5
+      mid: 5
+      small: 10
+      micro: 20
+
+portfolio:
+  target_adjustment: partial_cost_aware
+  base_max_adv_fraction: 0.02
+  hard_max_adv_fraction: 0.05
+  missing_liquidity_policy: prohibit_new_position
+  sleeve_allocation_policy: fixed
+  dynamic_sleeve_rotation: false
+
+baselines:
+  - official_sleeve_index
+  - pit_sleeve_cap_weight
+  - pit_sleeve_equal_weight
+  - legacy_transparent_scope
+  - sleeve_router_only
+
+data_gates:
+  critical_membership_coverage: 1.00
+  daily_bar_coverage: 0.99
+  daily_basic_coverage: 0.99
+  adjustment_coverage: 0.98
+  core_factor_daily_coverage: 0.80
+  checksum_required: true
+  unbiased_universe_required: true
+  pit_required: true
+
+evaluation_gates:
+  minimum_oos_folds: 4
+  minimum_positive_oos_folds: 3
+  minimum_oos_dates: 252
+  minimum_completed_trades: 100
+  minimum_rank_ic: 0.02
+  minimum_icir: 0.30
+  minimum_sleeve_net_excess_return: 0.00
+  minimum_aggregate_annualized_net_excess_return: 0.02
+  minimum_double_cost_net_excess_return: 0.00
+  maximum_drawdown: 0.20
+  maximum_benchmark_drawdown_multiple: 1.20
+  minimum_target_fill_rate: 0.95
+  minimum_deflated_sharpe_probability: 0.95
+  maximum_probability_of_backtest_overfit: 0.50
+  minimum_positive_calendar_years: 4
+  maximum_single_year_positive_excess_share: 0.50
+  maximum_liquidation_days: 5
+  maximum_order_adv_fraction: 0.05
+  minimum_base_orders_within_adv_fraction: 0.99
+  capacity_aum_multipliers: [1, 5, 10, 20]
+  liquidation_stress_scenarios: [normal, half_volume, consecutive_limit_down]
+  require_simulator_parity: true
+  require_each_funded_sleeve_to_pass: true
+
+forward_gate:
+  minimum_trading_days: 60
+  minimum_complete_cycles: 12
+  require_positive_net_excess_return: true
+  active_transition: separate_review
+
+storage:
+  reuse_shared_backtest_cache: true
+  feature_rows: decision_dates_only
+  partitioning: year
+  minimum_filesystem_free_fraction_after_publish: 0.15
+  season_root_template: data/a_share/{agent}/seasons/{season_id}
