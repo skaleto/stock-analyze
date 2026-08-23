@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import shutil
 import tempfile
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -159,7 +160,17 @@ def universe_root(repo_root: str | Path) -> Path:
 
 
 def publications_root(repo_root: str | Path) -> Path:
-    return universe_root(repo_root) / "publications"
+    root = universe_root(repo_root)
+    target = root / "publications"
+    _assert_not_symlink(target)
+    try:
+        resolved_root = root.resolve(strict=False)
+        resolved_target = target.resolve(strict=False)
+    except OSError as exc:
+        raise ValueError("all_cap_universe_manifest_path") from exc
+    if not resolved_target.is_relative_to(resolved_root):
+        raise ValueError("all_cap_universe_manifest_path")
+    return target
 
 
 def canonical_hash(payload: Mapping[str, object]) -> str:
@@ -887,6 +898,27 @@ def _validate_record(
                 or (frame["eligible"] & ~populated).any()
             ):
                 raise ValueError("all_cap_universe_manifest_dates")
+        classified_industry = pd.Series(False, index=frame.index)
+        for column in ("industry_l1", "industry_l2", "industry_l3"):
+            values = frame[column].astype("string")
+            classified_industry |= (
+                values.notna()
+                & values.ne("")
+                & values.ne("unclassified")
+            )
+        industry_source_dates = frame["industry_source_date"].astype("string")
+        normalized_industry_dates = industry_source_dates.fillna("")
+        valid_industry_dates = (
+            normalized_industry_dates.str.fullmatch(r"[0-9]{8}", na=False)
+            & pd.to_datetime(
+                normalized_industry_dates,
+                format="%Y%m%d",
+                errors="coerce",
+            ).notna()
+            & normalized_industry_dates.le(review_dates)
+        )
+        if (classified_industry & ~valid_industry_dates).any():
+            raise ValueError("all_cap_universe_manifest_dates")
     elif not frame["hard_status_version"].eq(
         "a-share-all-cap-hard-status-v1"
     ).all():
@@ -1102,6 +1134,37 @@ def publish_latest_if_cache_unchanged(
                 _write_bytes_atomic(latest, previous)
             raise
     return path
+
+
+def remove_publication_if_unreferenced(
+    repo_root: str | Path,
+    publication_dir: str | Path,
+) -> bool:
+    root = assert_universe_root(repo_root, must_exist=True)
+    pubs = publications_root(repo_root)
+    publication = Path(publication_dir).absolute()
+    if (
+        publication.parent != pubs.absolute()
+        or _PUBLICATION_ID.fullmatch(publication.name) is None
+        or publication.is_symlink()
+    ):
+        raise ValueError("all_cap_universe_manifest_path")
+    _assert_contained(publication, pubs)
+    with _latest_publish_lock(root):
+        latest = root / "latest.json"
+        if latest.exists() or latest.is_symlink():
+            try:
+                marker = _read_json(
+                    latest,
+                    root=root,
+                    missing="all_cap_universe_manifest_missing",
+                )
+            except ValueError:
+                return False
+            if marker.get("publication") == f"publications/{publication.name}":
+                return False
+        shutil.rmtree(publication)
+        return True
 
 
 def _expected_cross_sections_from_cache(

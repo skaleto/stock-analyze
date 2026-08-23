@@ -925,8 +925,8 @@ class DailyHardStatusTests(unittest.TestCase):
                 self.assertFalse(row["buy_executable"])
                 self.assertFalse(row["sell_executable"])
 
-    def test_duplicate_keys_in_each_daily_source_are_rejected(self) -> None:
-        for source in ("daily", "stk_limit", "baostock_status", "suspend_d", "namechange"):
+    def test_duplicate_keys_in_each_single_row_daily_source_are_rejected(self) -> None:
+        for source in ("daily", "stk_limit", "baostock_status", "namechange"):
             with self.subTest(source=source):
                 inputs = _daily_status_inputs()
                 inputs[source] = pd.concat(
@@ -937,6 +937,57 @@ class DailyHardStatusTests(unittest.TestCase):
                         trade_date=self.trade_date,
                         **inputs,
                     )
+
+    def test_empty_suspend_timing_s_is_full_day(self) -> None:
+        inputs = _daily_status_inputs()
+        code = "000001.SZ"
+        inputs["suspend_d"] = pd.DataFrame(
+            [{
+                "ts_code": code,
+                "trade_date": self.trade_date,
+                "suspend_timing": "",
+                "suspend_type": "S",
+            }]
+        )
+        inputs["baostock_status"].loc[
+            inputs["baostock_status"]["ts_code"].eq(code),
+            "tradestatus",
+        ] = "0"
+        inputs["daily"] = inputs["daily"].loc[
+            ~inputs["daily"]["ts_code"].eq(code)
+        ].copy()
+
+        row = build_daily_hard_status(
+            trade_date=self.trade_date,
+            **inputs,
+        ).set_index("code").loc[code]
+
+        self.assertTrue(row["status_complete"])
+        self.assertTrue(row["suspended"])
+        self.assertFalse(row["buy_executable"])
+        self.assertFalse(row["sell_executable"])
+
+    def test_partial_suspension_covering_open_blocks_buy(self) -> None:
+        inputs = _daily_status_inputs()
+        code = "000001.SZ"
+        inputs["suspend_d"] = pd.DataFrame(
+            [{
+                "ts_code": code,
+                "trade_date": self.trade_date,
+                "suspend_timing": "09:30-10:30",
+                "suspend_type": "S",
+            }]
+        )
+
+        row = build_daily_hard_status(
+            trade_date=self.trade_date,
+            **inputs,
+        ).set_index("code").loc[code]
+
+        self.assertTrue(row["status_complete"])
+        self.assertFalse(row["status_conflict"])
+        self.assertFalse(row["buy_executable"])
+        self.assertTrue(row["prohibit_new_position"])
 
     def test_future_status_timestamps_are_rejected(self) -> None:
         inputs = _daily_status_inputs()
@@ -2133,6 +2184,66 @@ class UniverseMaterializationTests(unittest.TestCase):
             ).exists()
         )
 
+    def test_lazy_partition_read_rejects_aba_bytes(self) -> None:
+        target = (
+            self.repo_root
+            / "data/shared/backtest_cache/daily/2024-06-25.csv"
+        )
+        original_payload = target.read_bytes()
+        original_verify = universe_module.verify_shared_backtest_cache
+        original_load = universe_module._load_cache_partition
+        armed = False
+        swapped = False
+
+        def verify_then_arm(*args, **kwargs):
+            nonlocal armed
+            cache = original_verify(*args, **kwargs)
+            armed = True
+            return cache
+
+        def read_b_then_restore_a(value, dataset, *args, **kwargs):
+            nonlocal swapped
+            path = Path(value) if not isinstance(value, pd.DataFrame) else None
+            if armed and path == target and dataset == "daily" and not swapped:
+                swapped = True
+                changed = pd.read_csv(target, dtype=str, keep_default_na=False)
+                changed.loc[0, "amount"] = "999.0"
+                _write_csv(target, changed)
+                try:
+                    return original_load(value, dataset, *args, **kwargs)
+                finally:
+                    target.write_bytes(original_payload)
+            return original_load(value, dataset, *args, **kwargs)
+
+        with (
+            patch.object(
+                universe_module,
+                "load_verified_all_cap_sources",
+                return_value=self.sources,
+            ),
+            patch.object(
+                universe_module,
+                "verify_shared_backtest_cache",
+                side_effect=verify_then_arm,
+            ),
+            patch.object(
+                universe_module,
+                "_load_cache_partition",
+                side_effect=read_b_then_restore_a,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "all_cap_universe_cache_identity_mismatch",
+            ):
+                materialize_all_cap_universe(
+                    repo_root=self.repo_root,
+                    contract=self.contract,
+                )
+
+        self.assertTrue(swapped)
+        self.assertEqual(target.read_bytes(), original_payload)
+
     def test_cache_change_at_latest_publish_preserves_previous_latest(self) -> None:
         self._materialize()
         latest_path = (
@@ -2140,6 +2251,8 @@ class UniverseMaterializationTests(unittest.TestCase):
             / "data/research/a_share_all_cap/v1/universe/latest.json"
         )
         previous_latest = latest_path.read_bytes()
+        publications = latest_path.parent / "publications"
+        previous_publications = {path.name for path in publications.iterdir()}
         self.contract = _contract(
             start=date(2024, 6, 24),
             end=date(2024, 6, 28),
@@ -2180,6 +2293,46 @@ class UniverseMaterializationTests(unittest.TestCase):
                 )
 
         self.assertEqual(latest_path.read_bytes(), previous_latest)
+        self.assertEqual(
+            {path.name for path in publications.iterdir()},
+            previous_publications,
+        )
+
+    def test_same_day_suspend_and_resume_events_do_not_abort_batch(self) -> None:
+        suspend_path = (
+            self.repo_root
+            / "data/shared/backtest_cache/suspend_d/2024-06-25.csv"
+        )
+        _write_csv(
+            suspend_path,
+            pd.DataFrame(
+                [
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20240625",
+                        "suspend_timing": "09:30",
+                        "suspend_type": "S",
+                    },
+                    {
+                        "ts_code": "000001.SZ",
+                        "trade_date": "20240625",
+                        "suspend_timing": "10:30",
+                        "suspend_type": "R",
+                    },
+                ]
+            ),
+        )
+
+        self._materialize()
+        row = (
+            load_verified_all_cap_universe(self.repo_root)
+            .load_hard_status_year("2024")
+            .set_index(["trade_date", "code"])
+            .loc[("20240625", "000001.SZ")]
+        )
+
+        self.assertFalse(row["status_conflict"])
+        self.assertFalse(row["buy_executable"])
 
     def test_verified_cache_keeps_large_inputs_as_paths(self) -> None:
         cache = universe_module.verify_shared_backtest_cache(
@@ -2685,6 +2838,70 @@ class UniverseMaterializationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "all_cap_universe_manifest_dates"):
             load_verified_all_cap_universe(self.repo_root)
 
+    def test_resigned_invalid_classified_industry_source_date_is_rejected(self) -> None:
+        self._materialize()
+
+        def invalid_industry_source_date(
+            manifest: dict[str, object],
+            publication: Path,
+        ) -> None:
+            record = manifest["partitions"]["membership"][0]
+            path = publication / record["path"]
+            schema = pq.ParquetFile(path).schema_arrow
+            frame = pq.read_table(path).to_pandas(types_mapper=pd.ArrowDtype)
+            frame.loc[0, "industry_source_date"] = "20240230"
+            pq.write_table(
+                pa.Table.from_pandas(
+                    frame,
+                    schema=schema,
+                    preserve_index=False,
+                    safe=True,
+                ),
+                path,
+                compression="snappy",
+            )
+            record["bytes"] = path.stat().st_size
+            record["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+
+        _resign_manifest_and_latest(
+            self.repo_root,
+            invalid_industry_source_date,
+        )
+        with self.assertRaisesRegex(ValueError, "all_cap_universe_manifest_dates"):
+            load_verified_all_cap_universe(self.repo_root)
+
+    def test_resigned_future_classified_industry_source_date_is_rejected(self) -> None:
+        self._materialize()
+
+        def future_industry_source_date(
+            manifest: dict[str, object],
+            publication: Path,
+        ) -> None:
+            record = manifest["partitions"]["membership"][0]
+            path = publication / record["path"]
+            schema = pq.ParquetFile(path).schema_arrow
+            frame = pq.read_table(path).to_pandas(types_mapper=pd.ArrowDtype)
+            frame.loc[0, "industry_source_date"] = "20240701"
+            pq.write_table(
+                pa.Table.from_pandas(
+                    frame,
+                    schema=schema,
+                    preserve_index=False,
+                    safe=True,
+                ),
+                path,
+                compression="snappy",
+            )
+            record["bytes"] = path.stat().st_size
+            record["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+
+        _resign_manifest_and_latest(
+            self.repo_root,
+            future_industry_source_date,
+        )
+        with self.assertRaisesRegex(ValueError, "all_cap_universe_manifest_dates"):
+            load_verified_all_cap_universe(self.repo_root)
+
     def test_resigned_future_membership_source_date_is_rejected(self) -> None:
         self._materialize()
 
@@ -2905,10 +3122,13 @@ class UniverseMaterializationTests(unittest.TestCase):
             load_verified_all_cap_universe(self.repo_root)
 
     def test_writer_rejects_each_universe_output_symlink_ancestor(self) -> None:
+        original_writer = universe_module.universe_store.write_partition
         ancestors = (
             Path("data/research"),
             Path("data/research/a_share_all_cap"),
             Path("data/research/a_share_all_cap/v1"),
+            Path("data/research/a_share_all_cap/v1/universe"),
+            Path("data/research/a_share_all_cap/v1/universe/publications"),
         )
         for relative in ancestors:
             with self.subTest(ancestor=relative.as_posix()):
@@ -2918,10 +3138,17 @@ class UniverseMaterializationTests(unittest.TestCase):
                     ancestor = repo_root / relative
                     ancestor.parent.mkdir(parents=True, exist_ok=True)
                     ancestor.symlink_to(Path(outside), target_is_directory=True)
-                    with patch.object(
-                        universe_module,
-                        "load_verified_all_cap_sources",
-                        return_value=sources,
+                    with (
+                        patch.object(
+                            universe_module,
+                            "load_verified_all_cap_sources",
+                            return_value=sources,
+                        ),
+                        patch.object(
+                            universe_module.universe_store,
+                            "write_partition",
+                            wraps=original_writer,
+                        ) as writer,
                     ):
                         with self.assertRaisesRegex(
                             ValueError,
@@ -2931,6 +3158,8 @@ class UniverseMaterializationTests(unittest.TestCase):
                                 repo_root=repo_root,
                                 contract=contract,
                             )
+                    writer.assert_not_called()
+                    self.assertEqual(list(Path(outside).iterdir()), [])
 
     def test_loader_rejects_each_universe_output_symlink_ancestor(self) -> None:
         ancestors = (

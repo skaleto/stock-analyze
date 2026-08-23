@@ -785,11 +785,86 @@ def _hard_status_day_frame(
     return current.set_index("code", drop=False)
 
 
+def _suspension_event_class(raw_type: object) -> str:
+    value = str(raw_type or "").strip()
+    upper = value.upper()
+    if upper == "R" or "复牌" in value:
+        return "resume"
+    if upper == "S" or ("停牌" in value and "复牌" not in value):
+        return "suspend"
+    return "other"
+
+
+def _suspension_timing_flags(raw_timing: object) -> tuple[bool, bool]:
+    timing = str(raw_timing or "").strip().replace(" ", "")
+    if not timing or "全天" in timing or timing.upper() == "FULL_DAY":
+        return True, True
+    if timing in {"09:30-15:00", "09:30~15:00", "9:30-15:00"}:
+        return True, True
+    matches = re.findall(r"(?<![0-9])([0-9]{1,2}):([0-9]{2})(?![0-9])", timing)
+    minutes = [int(hour) * 60 + int(minute) for hour, minute in matches]
+    if not minutes or any(value < 0 or value >= 24 * 60 for value in minutes):
+        return False, True
+    market_open = 9 * 60 + 30
+    if len(minutes) == 1:
+        return False, minutes[0] <= market_open
+    return False, minutes[0] <= market_open < minutes[1]
+
+
 def _full_day_suspension(row: pd.Series | None) -> bool:
     if row is None:
         return False
-    timing = str(row.get("suspend_timing", "") or "").strip().replace(" ", "")
-    return timing in {"09:30-15:00", "09:30~15:00", "全天", "FULL_DAY"}
+    if "full_day_suspension" in row:
+        return bool(row["full_day_suspension"])
+    if _suspension_event_class(row.get("suspend_type")) != "suspend":
+        return False
+    return _suspension_timing_flags(row.get("suspend_timing"))[0]
+
+
+def _suspension_blocks_open(row: pd.Series | None) -> bool:
+    if row is None:
+        return False
+    if "blocks_open" in row:
+        return bool(row["blocks_open"])
+    if _suspension_event_class(row.get("suspend_type")) != "suspend":
+        return False
+    return _suspension_timing_flags(row.get("suspend_timing"))[1]
+
+
+def _suspension_day_frame(
+    frame: pd.DataFrame,
+    *,
+    trade_key: str,
+) -> pd.DataFrame:
+    normalized = _normalize_date_column(
+        frame,
+        "trade_date",
+        error="all_cap_hard_status_date:suspend_d",
+    )
+    if normalized["trade_date"].gt(trade_key).any():
+        raise ValueError("all_cap_hard_status_future:suspend_d")
+    current = normalized.loc[normalized["trade_date"].eq(trade_key)].copy()
+    rows: list[dict[str, object]] = []
+    for code, events in current.groupby("code", sort=True, dropna=False):
+        suspensions = events.loc[
+            events["suspend_type"].map(_suspension_event_class).eq("suspend")
+        ]
+        flags = [
+            _suspension_timing_flags(value)
+            for value in suspensions["suspend_timing"]
+        ]
+        rows.append(
+            {
+                "code": code,
+                "trade_date": trade_key,
+                "full_day_suspension": any(full_day for full_day, _ in flags),
+                "blocks_open": any(blocks_open for _, blocks_open in flags),
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=("code", "trade_date", "full_day_suspension", "blocks_open"),
+    ).set_index("code", drop=False)
 
 
 def _index_namechange_intervals(
@@ -954,8 +1029,9 @@ def build_daily_hard_status(
         "baostock_status": _hard_status_day_frame(
             status_frame, name="baostock_status", trade_key=trade_key
         ),
-        "suspend_d": _hard_status_day_frame(
-            suspension_frame, name="suspend_d", trade_key=trade_key
+        "suspend_d": _suspension_day_frame(
+            suspension_frame,
+            trade_key=trade_key,
         ),
     }
     namechange_index = (
@@ -990,6 +1066,7 @@ def build_daily_hard_status(
             else None
         )
         full_day_suspension = _full_day_suspension(suspension_row)
+        suspension_at_open = _suspension_blocks_open(suspension_row)
 
         missing: list[str] = []
         if limit_row is None:
@@ -1073,7 +1150,13 @@ def build_daily_hard_status(
                 or open_price < limit_down
             )
         )
-        fail_closed = not status_complete or status_conflict or suspended or not listed
+        fail_closed = (
+            not status_complete
+            or status_conflict
+            or suspended
+            or suspension_at_open
+            or not listed
+        )
         buy_executable = bool(
             not fail_closed and not st and not delisting and not at_limit_up
         )
@@ -1133,6 +1216,7 @@ class _VerifiedBacktestCache:
     coverage: Mapping[str, object]
     stock_master_sha256: str
     content_identity: Mapping[str, object]
+    raw_sha256_by_path: Mapping[str, str]
 
 
 def _cache_error(kind: str, relative: str) -> ValueError:
@@ -1146,6 +1230,7 @@ def _read_cache_csv(
     required: Sequence[str],
     identity_records: list[dict[str, object]] | None = None,
     raw_hashes: dict[str, str] | None = None,
+    expected_raw_sha256: str | None = None,
 ) -> pd.DataFrame:
     try:
         relative = path.relative_to(cache_root).as_posix()
@@ -1163,6 +1248,9 @@ def _read_cache_csv(
         )
     except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
         raise _cache_error("invalid", relative) from exc
+    raw_sha256 = hashlib.sha256(payload).hexdigest()
+    if expected_raw_sha256 is not None and raw_sha256 != expected_raw_sha256:
+        raise ValueError("all_cap_universe_cache_identity_mismatch")
     if set(required).difference(frame.columns):
         raise _cache_error("schema", relative)
     if identity_records is not None:
@@ -1170,7 +1258,7 @@ def _read_cache_csv(
             universe_store.cache_csv_identity_record(relative, frame)
         )
     if raw_hashes is not None:
-        raw_hashes[relative] = hashlib.sha256(payload).hexdigest()
+        raw_hashes[relative] = raw_sha256
     return frame
 
 
@@ -1218,6 +1306,8 @@ _CACHE_PARTITION_COLUMNS = {
 def _load_cache_partition(
     value: Path | pd.DataFrame,
     dataset: str,
+    *,
+    expected_raw_sha256: str | None = None,
 ) -> pd.DataFrame:
     if isinstance(value, pd.DataFrame):
         return value.copy()
@@ -1226,11 +1316,31 @@ def _load_cache_partition(
         path,
         cache_root=path.parents[1],
         required=_CACHE_PARTITION_COLUMNS[dataset],
+        expected_raw_sha256=expected_raw_sha256,
     )
     return _cache_date_frame(
         frame,
         date_column="trade_date",
         error=path.relative_to(path.parents[1]).as_posix(),
+    )
+
+
+def _load_frozen_cache_partition(
+    cache: _VerifiedBacktestCache,
+    value: Path | pd.DataFrame,
+    dataset: str,
+) -> pd.DataFrame:
+    if isinstance(value, pd.DataFrame):
+        return _load_cache_partition(value, dataset)
+    relative = value.relative_to(cache.cache_root).as_posix()
+    try:
+        expected_raw_sha256 = cache.raw_sha256_by_path[relative]
+    except KeyError as exc:
+        raise ValueError("all_cap_universe_cache_identity_manifest") from exc
+    return _load_cache_partition(
+        value,
+        dataset,
+        expected_raw_sha256=expected_raw_sha256,
     )
 
 
@@ -1245,6 +1355,7 @@ def _verify_daily_partition_coverage(
     baostock_suspended_by_date: Mapping[str, set[str]],
     minimum_daily_coverage: float,
     minimum_daily_basic_coverage: float,
+    raw_sha256_by_path: Mapping[str, str],
 ) -> tuple[dict[str, object], dict[str, dict[str, frozenset[str]]]]:
     coverage: dict[str, object] = {}
     missing: dict[str, dict[str, frozenset[str]]] = {
@@ -1268,9 +1379,13 @@ def _verify_daily_partition_coverage(
             }
             confirmed_suspended: set[str] = set()
             if trade_key in suspend_by_date:
+                suspension_path = suspend_by_date[trade_key]
                 suspension = _load_cache_partition(
-                    suspend_by_date[trade_key],
+                    suspension_path,
                     "suspend_d",
+                    expected_raw_sha256=raw_sha256_by_path[
+                        suspension_path.relative_to(cache_root).as_posix()
+                    ],
                 )
                 confirmed_suspended = baostock_suspended_by_date.get(
                     trade_key, set()
@@ -1280,9 +1395,13 @@ def _verify_daily_partition_coverage(
                     if _full_day_suspension(row)
                 )
             required = expected.difference(confirmed_suspended)
+            partition_path = partitions[trade_key]
             partition = _load_cache_partition(
-                partitions[trade_key],
+                partition_path,
                 dataset,
+                expected_raw_sha256=raw_sha256_by_path[
+                    partition_path.relative_to(cache_root).as_posix()
+                ],
             )
             observed = set(partition["ts_code"].astype(str)).intersection(required)
             missing_codes = frozenset(required.difference(observed))
@@ -1541,7 +1660,10 @@ def verify_shared_backtest_cache(
             )
             if (
                 (not frame.empty and set(frame["trade_date"].astype(str)) != {trade_key})
-                or frame.duplicated(["trade_date", "ts_code"], keep=False).any()
+                or (
+                    dataset != "suspend_d"
+                    and frame.duplicated(["trade_date", "ts_code"], keep=False).any()
+                )
             ):
                 raise _cache_error("partition", path.relative_to(cache_root).as_posix())
             targets[dataset][trade_key] = path
@@ -1751,6 +1873,7 @@ def verify_shared_backtest_cache(
         baostock_suspended_by_date=baostock_suspended_by_date,
         minimum_daily_coverage=float(minimum_daily_coverage),
         minimum_daily_basic_coverage=float(minimum_daily_basic_coverage),
+        raw_sha256_by_path=raw_hashes,
     )
     adjustment_coverage, missing_adjustment_by_date = _adjustment_coverage(
         master=master,
@@ -1787,6 +1910,7 @@ def verify_shared_backtest_cache(
         content_identity=universe_store.build_cache_identity_from_records(
             identity_records,
         ),
+        raw_sha256_by_path=dict(raw_hashes),
     )
 
 
@@ -1939,7 +2063,9 @@ def _hard_status_for_cache_year(
     for status_path in cache.baostock_status_by_code.values():
         if status_path is None:
             continue
-        status = _load_cache_partition(status_path, "baostock_status")
+        status = _load_frozen_cache_partition(
+            cache, status_path, "baostock_status"
+        )
         status = status.loc[status["trade_date"].str.startswith(year)].copy()
         if not status.empty:
             status_frames.append(status)
@@ -1963,7 +2089,8 @@ def _hard_status_for_cache_year(
             build_daily_hard_status(
                 trade_date=trade_key,
                 stock_master=cache.stock_master,
-                daily=_load_cache_partition(
+                daily=_load_frozen_cache_partition(
+                    cache,
                     cache.daily_by_date[trade_key],
                     "daily",
                 ),
@@ -1973,7 +2100,8 @@ def _hard_status_for_cache_year(
                 ),
                 baostock_status=status_by_date.get(trade_key, empty_status),
                 namechange=cache.namechange,
-                suspend_d=_load_cache_partition(
+                suspend_d=_load_frozen_cache_partition(
+                    cache,
                     cache.suspend_by_date[trade_key],
                     "suspend_d",
                 ),
@@ -2046,7 +2174,8 @@ def _membership_from_cache(
                 )
         daily = pd.concat(
             [
-                _load_cache_partition(
+                _load_frozen_cache_partition(
+                    cache,
                     cache.daily_by_date[trade_key],
                     "daily",
                 )
@@ -2065,7 +2194,8 @@ def _membership_from_cache(
             )
         daily_basic = pd.concat(
             [
-                _load_cache_partition(
+                _load_frozen_cache_partition(
+                    cache,
                     cache.daily_basic_by_date[trade_key],
                     "daily_basic",
                 )
@@ -2361,6 +2491,8 @@ def materialize_all_cap_universe(
         raise ValueError("all_cap_universe_staging_path")
     staging.mkdir()
     installed = False
+    published = False
+    destination: Path | None = None
     try:
         partitions: dict[str, list[dict[str, object]]] = {
             dataset: [] for dataset in universe_store.DATASETS
@@ -2470,6 +2602,7 @@ def materialize_all_cap_universe(
             start_date=contract.development_start.strftime("%Y%m%d"),
             end_date=contract.development_end.strftime("%Y%m%d"),
         )
+        published = True
         return _result_for_publication(
             verified,
             cache=cache,
@@ -2479,3 +2612,5 @@ def materialize_all_cap_universe(
     finally:
         if not installed and staging.exists() and not staging.is_symlink():
             shutil.rmtree(staging)
+        elif installed and not published and destination is not None:
+            universe_store.remove_publication_if_unreferenced(root, destination)
