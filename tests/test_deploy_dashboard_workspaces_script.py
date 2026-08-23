@@ -14,6 +14,7 @@ DEPLOY_SCRIPT = ROOT / "scripts" / "deploy-dashboard-workspaces-to-ecs.sh"
 LEGACY_SCRIPT = ROOT / "scripts" / "deploy-app-to-ecs.sh"
 
 EXPECTED_FILES = [
+    "configs/research/a_share_all_cap_v2.yaml",
     "configs/research/paper_candidate_gate_v1.yaml",
     "configs/research/production_paper_challengers_v1.yaml",
     "configs/research/qdii_global_context_v1.yaml",
@@ -34,6 +35,10 @@ EXPECTED_FILES = [
     "stock_analyze/markets/cn_qdii_etf/mechanics.py",
     "stock_analyze/markets/cn_qdii_etf/data_provider.py",
     "stock_analyze/research/activation.py",
+    "stock_analyze/research/a_share_all_cap_contract.py",
+    "stock_analyze/research/a_share_all_cap_sources.py",
+    "stock_analyze/research/a_share_all_cap_universe.py",
+    "stock_analyze/research/a_share_all_cap_universe_store.py",
     "stock_analyze/research/classical_specs.py",
     "stock_analyze/research/local_training.py",
     "stock_analyze/research/multi_agent_workflow.py",
@@ -66,6 +71,9 @@ EXPECTED_FILES = [
     "tests/test_model_shadow.py",
     "tests/test_markets_cn_qdii_etf_simulator.py",
     "tests/test_research_activation.py",
+    "tests/test_research_a_share_all_cap_contract.py",
+    "tests/test_research_a_share_all_cap_sources.py",
+    "tests/test_research_a_share_all_cap_universe.py",
     "tests/test_research_classical_specs.py",
     "tests/test_research_local_training.py",
     "tests/test_research_models.py",
@@ -87,8 +95,10 @@ EXPECTED_FILES = [
     "tests/test_research_a_share_prices.py",
     "tests/test_research_otc_fund_nav.py",
     "tests/test_research_universe_expansion.py",
+    "tests/test_cli_research_all_cap.py",
     "scripts/system-audit.sh",
     "scripts/check-ecs-timers.sh",
+    "tests/test_system_audit_script.py",
     "docs/system-harness.md",
     "docs/system-overview.md",
 ]
@@ -493,6 +503,23 @@ else:
         self.assertTrue(completed.stdout.startswith("FORMAT "))
         self.assertNotIn("fixture build log", completed.stdout)
         self.assertIn("fixture build log", completed.stderr)
+
+    def test_capture_release_input_covers_exact_deploy_allowlist(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = self._create_deploy_fixture(temporary_directory)
+
+            completed = self._run_fixture(
+                fixture,
+                "capture-release-input",
+            )
+
+        manifest_files = [
+            line.split(maxsplit=2)[2]
+            for line in completed.stdout.splitlines()
+            if line.startswith("FILE ")
+        ]
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(manifest_files, EXPECTED_FILES)
 
     def test_successful_release_writes_reviewed_commit_marker_and_manifest(
         self,
