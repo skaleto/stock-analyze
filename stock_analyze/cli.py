@@ -243,6 +243,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     refresh_otc_nav.add_argument("--repo-root", type=Path, default=Path("."))
 
+    refresh_all_cap_sources = sub.add_parser(
+        "refresh-a-share-all-cap-sources",
+        help=(
+            "Collect verified research-only all-cap reference indexes, "
+            "SW2021 membership, and daily limit prices."
+        ),
+    )
+    refresh_all_cap_sources.add_argument(
+        "--start",
+        type=_parse_iso_date,
+        required=True,
+        help="Start date (YYYY-MM-DD).",
+    )
+    refresh_all_cap_sources.add_argument(
+        "--end",
+        type=_parse_iso_date,
+        required=True,
+        help="End date (YYYY-MM-DD).",
+    )
+
     multi_agent_research = sub.add_parser(
         "run-multi-agent-research",
         help=(
@@ -1735,6 +1755,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "refresh-otc-fund-nav":
         ensure_dirs(args.logs_dir)
         return _command_refresh_otc_fund_nav(args)
+    if args.command == "refresh-a-share-all-cap-sources":
+        ensure_dirs(args.logs_dir)
+        return _command_refresh_a_share_all_cap_sources(args)
     if args.command == "run-multi-agent-research":
         ensure_dirs(args.logs_dir)
         return _command_run_multi_agent_research(args)
@@ -3671,6 +3694,28 @@ def _command_refresh_otc_fund_nav(args: argparse.Namespace) -> int:
         )
     except Exception as exc:  # noqa: BLE001 - collection must expose bounded failure
         print(f"error: refresh-otc-fund-nav failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _command_refresh_a_share_all_cap_sources(args: argparse.Namespace) -> int:
+    """Run the explicit, research-only all-cap reference collector."""
+    from .markets.a_share.backtest.data_prep import _make_pro_client
+    from .research.a_share_all_cap_sources import collect_all_cap_sources
+
+    try:
+        result = collect_all_cap_sources(
+            repo_root=Path.cwd(),
+            pro_client=_make_pro_client(),
+            start=args.start,
+            end=args.end,
+        )
+    except Exception as exc:  # noqa: BLE001 - collection must fail closed
+        print(
+            f"error: refresh-a-share-all-cap-sources failed: {exc}",
+            file=sys.stderr,
+        )
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
