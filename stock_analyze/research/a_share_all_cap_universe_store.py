@@ -19,7 +19,7 @@ import pyarrow.parquet as pq
 from ..utils import write_text_atomic
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 CONTRACT_VERSION = "a-share-all-cap-universe-v1"
 PARQUET_COMPRESSION = "SNAPPY"
 DATASETS = ("membership", "daily_hard_status")
@@ -136,7 +136,7 @@ def publications_root(repo_root: str | Path) -> Path:
 
 def canonical_hash(payload: Mapping[str, object]) -> str:
     encoded = json.dumps(
-        payload,
+        _deep_thaw(payload),
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
@@ -154,12 +154,226 @@ def _deep_freeze(value: object) -> object:
     return value
 
 
+def _deep_thaw(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _deep_thaw(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_deep_thaw(item) for item in value]
+    return value
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _normalized_csv_hash(path: Path) -> tuple[int, str]:
+    try:
+        frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
+        raise ValueError("all_cap_universe_cache_identity") from exc
+    columns = sorted(str(column) for column in frame.columns)
+    normalized = frame.loc[:, columns].astype(str)
+    if columns and not normalized.empty:
+        normalized = normalized.sort_values(columns, kind="stable")
+    digest = hashlib.sha256()
+    digest.update(
+        json.dumps(columns, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    )
+    digest.update(b"\n")
+    for row in normalized.itertuples(index=False, name=None):
+        digest.update(
+            json.dumps(row, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+        )
+        digest.update(b"\n")
+    return len(normalized), digest.hexdigest()
+
+
+def build_cache_identity(
+    cache_root: str | Path,
+    relative_paths: list[str] | tuple[str, ...],
+) -> dict[str, object]:
+    root = Path(cache_root).absolute()
+    records: list[dict[str, object]] = []
+    for raw_relative in sorted(set(relative_paths)):
+        relative = _safe_relative(raw_relative)
+        path = root.joinpath(*relative.parts)
+        assert_cache_path(path, root, must_exist=False)
+        if not path.exists() and not path.is_symlink():
+            records.append(
+                {
+                    "path": relative.as_posix(),
+                    "kind": "missing",
+                    "rows": 0,
+                    "sha256": canonical_hash(
+                        {"path": relative.as_posix(), "missing": True}
+                    ),
+                }
+            )
+            continue
+        _assert_contained(path, root)
+        if relative.as_posix() == "_meta.json":
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("all_cap_universe_cache_identity") from exc
+            record = {
+                "path": relative.as_posix(),
+                "kind": "json",
+                "rows": 1,
+                "sha256": hashlib.sha256(
+                    json.dumps(
+                        payload,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest(),
+            }
+        else:
+            rows, content_hash = _normalized_csv_hash(path)
+            record = {
+                "path": relative.as_posix(),
+                "kind": "csv",
+                "rows": rows,
+                "sha256": content_hash,
+            }
+        records.append(record)
+    identity: dict[str, object] = {
+        "version": "normalized-cache-v1",
+        "files": records,
+    }
+    identity["sha256"] = canonical_hash(identity)
+    return identity
+
+
+def _validate_cache_identity(identity: object) -> dict[str, object]:
+    if not isinstance(identity, Mapping):
+        raise ValueError("all_cap_universe_cache_identity_manifest")
+    thawed = _deep_thaw(identity)
+    if not isinstance(thawed, dict):
+        raise ValueError("all_cap_universe_cache_identity_manifest")
+    payload = dict(thawed)
+    identity_hash = payload.pop("sha256", None)
+    records = thawed.get("files")
+    if (
+        thawed.get("version") != "normalized-cache-v1"
+        or _SHA256.fullmatch(str(identity_hash or "")) is None
+        or identity_hash != canonical_hash(payload)
+        or not isinstance(records, (list, tuple))
+        or not records
+    ):
+        raise ValueError("all_cap_universe_cache_identity_manifest")
+    observed_paths: set[str] = set()
+    for record in records:
+        if (
+            not isinstance(record, Mapping)
+            or record.get("kind") not in {"csv", "json", "missing"}
+            or not isinstance(record.get("rows"), int)
+            or int(record["rows"]) < 0
+            or _SHA256.fullmatch(str(record.get("sha256") or "")) is None
+        ):
+            raise ValueError("all_cap_universe_cache_identity_manifest")
+        relative = _safe_relative(record.get("path")).as_posix()
+        if relative in observed_paths:
+            raise ValueError("all_cap_universe_cache_identity_manifest")
+        observed_paths.add(relative)
+    return thawed
+
+
+def _cache_date_key(value: object) -> str:
+    key = str(value or "").strip().replace("-", "")
+    if re.fullmatch(r"[0-9]{8}", key) is None:
+        raise ValueError("all_cap_universe_cache_identity")
+    return key
+
+
+def _supported_all_cap_code(code: str) -> bool:
+    match = re.fullmatch(r"([0-9]{6})\.(SH|SZ|BJ)", code)
+    if match is None:
+        raise ValueError("all_cap_universe_cache_identity")
+    symbol, exchange = match.groups()
+    if exchange == "BJ":
+        return symbol.startswith(("4", "8", "9"))
+    if exchange == "SH":
+        return symbol.startswith(("600", "601", "603", "605", "688"))
+    return symbol.startswith(("000", "001", "002", "003", "300", "301"))
+
+
+def _expected_cache_identity_paths(
+    cache_root: Path,
+    *,
+    start_date: object,
+    end_date: object,
+) -> set[str]:
+    start_key = _cache_date_key(start_date)
+    end_key = _cache_date_key(end_date)
+    if start_key > end_key:
+        raise ValueError("all_cap_universe_cache_identity")
+    calendar_path = cache_root / "trade_cal.csv"
+    master_path = cache_root / "stock_basic.csv"
+    for path in (calendar_path, master_path):
+        assert_cache_path(path, cache_root)
+    try:
+        calendar = pd.read_csv(calendar_path, dtype=str, keep_default_na=False)
+        master = pd.read_csv(master_path, dtype=str, keep_default_na=False)
+    except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
+        raise ValueError("all_cap_universe_cache_identity") from exc
+    if (
+        not {"cal_date", "is_open"}.issubset(calendar.columns)
+        or "ts_code" not in master.columns
+    ):
+        raise ValueError("all_cap_universe_cache_identity")
+    open_dates = sorted(
+        {
+            _cache_date_key(row.cal_date)
+            for row in calendar.itertuples(index=False)
+            if str(row.is_open).strip() in {"1", "True", "true"}
+            and start_key <= _cache_date_key(row.cal_date) <= end_key
+        }
+    )
+    if not open_dates:
+        raise ValueError("all_cap_universe_cache_identity")
+    expected = {"_meta.json", "trade_cal.csv", "stock_basic.csv"}
+    for trade_key in open_dates:
+        dashed = f"{trade_key[:4]}-{trade_key[4:6]}-{trade_key[6:]}"
+        for dataset in ("daily", "daily_basic", "suspend_d"):
+            expected.add(f"{dataset}/{dashed}.csv")
+    for raw_code in master["ts_code"]:
+        code = str(raw_code).strip()
+        if _supported_all_cap_code(code):
+            for dataset in ("baostock_status", "namechange", "adj_factor"):
+                expected.add(f"{dataset}/{code}.csv")
+    return expected
+
+
+def verify_cache_identity(
+    cache_root: str | Path,
+    identity: object,
+    *,
+    start_date: object,
+    end_date: object,
+) -> None:
+    validated = _validate_cache_identity(identity)
+    declared_paths = {
+        str(record["path"]) for record in validated["files"]
+    }
+    current = build_cache_identity(
+        cache_root,
+        sorted(declared_paths),
+    )
+    if current != validated:
+        raise ValueError("all_cap_universe_cache_identity_mismatch")
+    expected_paths = _expected_cache_identity_paths(
+        Path(cache_root).absolute(),
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if declared_paths != expected_paths:
+        raise ValueError("all_cap_universe_cache_identity_manifest")
 
 
 def schema_contract(dataset: str) -> dict[str, object]:
@@ -183,6 +397,42 @@ def _safe_relative(value: object) -> PurePosixPath:
 def _assert_not_symlink(path: Path) -> None:
     if path.is_symlink():
         raise ValueError(f"all_cap_universe_symlink:{path.name}")
+
+
+def assert_cache_root(cache_root: Path, repo_root: Path) -> None:
+    trusted = Path(repo_root).absolute()
+    target = Path(cache_root).absolute()
+    try:
+        relative = target.relative_to(trusted)
+    except ValueError as exc:
+        raise ValueError("all_cap_universe_cache_path") from exc
+    _assert_not_symlink(trusted)
+    current = trusted
+    for part in relative.parts:
+        current = current / part
+        _assert_not_symlink(current)
+    try:
+        resolved_trusted = trusted.resolve(strict=True)
+        resolved_target = target.resolve(strict=True)
+    except (FileNotFoundError, OSError) as exc:
+        raise ValueError("all_cap_universe_cache_path") from exc
+    if not resolved_target.is_relative_to(resolved_trusted):
+        raise ValueError("all_cap_universe_cache_path")
+
+
+def assert_cache_path(
+    path: Path,
+    cache_root: Path,
+    *,
+    must_exist: bool = True,
+) -> None:
+    try:
+        relative = path.relative_to(cache_root)
+    except ValueError as exc:
+        raise ValueError("all_cap_universe_cache_path") from exc
+    if ".." in relative.parts:
+        raise ValueError("all_cap_universe_cache_path")
+    _assert_contained(path, cache_root, must_exist=must_exist)
 
 
 def _assert_contained(path: Path, root: Path, *, must_exist: bool = True) -> None:
@@ -404,6 +654,36 @@ def _validate_record(
     return year, partition, len(frame)
 
 
+def _validate_readiness(
+    readiness: object,
+    cache_identity: Mapping[str, object],
+) -> None:
+    if not isinstance(readiness, Mapping):
+        raise ValueError("all_cap_universe_manifest_readiness")
+    prefixes = {
+        "missing_baostock_status_codes": "baostock_status/",
+        "missing_namechange_codes": "namechange/",
+        "missing_adj_factor_codes": "adj_factor/",
+    }
+    expected: dict[str, list[str]] = {field: [] for field in prefixes}
+    for record in cache_identity["files"]:
+        if record["kind"] != "missing":
+            continue
+        path = str(record["path"])
+        for field, prefix in prefixes.items():
+            if path.startswith(prefix) and path.endswith(".csv"):
+                expected[field].append(path.removeprefix(prefix).removesuffix(".csv"))
+    normalized = {
+        str(field): sorted(str(code) for code in codes)
+        for field, codes in readiness.items()
+        if isinstance(codes, (list, tuple))
+    }
+    for codes in expected.values():
+        codes.sort()
+    if normalized != expected:
+        raise ValueError("all_cap_universe_manifest_readiness")
+
+
 def verify_publication(publication_dir: str | Path) -> VerifiedAllCapUniverse:
     root = Path(publication_dir).absolute()
     pubs = root.parent
@@ -418,16 +698,22 @@ def verify_publication(publication_dir: str | Path) -> VerifiedAllCapUniverse:
     if manifest_hash != canonical_hash(payload):
         raise ValueError("all_cap_universe_checksum:manifest")
     publication_id = str(manifest.get("publication_id") or "")
+    if manifest.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError("all_cap_universe_manifest_schema")
     if (
-        manifest.get("schema_version") != SCHEMA_VERSION
-        or manifest.get("contract_version") != CONTRACT_VERSION
+        manifest.get("contract_version") != CONTRACT_VERSION
         or manifest.get("status") != "complete"
+        or _SHA256.fullmatch(
+            str(manifest.get("contract_sha256") or "")
+        ) is None
         or not _PUBLICATION_ID.fullmatch(publication_id)
         or publication_id != root.name.removeprefix(".all-cap-universe-")
         or publication_id.split("_", 2)[:2]
         != [manifest.get("start_date"), manifest.get("end_date")]
     ):
         raise ValueError("all_cap_universe_manifest_contract")
+    cache_identity = _validate_cache_identity(manifest.get("cache_identity"))
+    _validate_readiness(manifest.get("readiness"), cache_identity)
     partitions = manifest.get("partitions")
     row_counts = manifest.get("row_counts")
     schemas = manifest.get("dataset_schemas")
@@ -495,7 +781,10 @@ def write_latest(repo_root: str | Path, manifest: Mapping[str, object]) -> Path:
 
 
 def load_latest(repo_root: str | Path) -> VerifiedAllCapUniverse:
-    root = universe_root(repo_root)
+    repo = Path(repo_root).absolute()
+    cache_root = repo / "data/shared/backtest_cache"
+    assert_cache_root(cache_root, repo)
+    root = universe_root(repo)
     marker = _read_json(
         root / "latest.json",
         root=root,
@@ -505,9 +794,10 @@ def load_latest(repo_root: str | Path) -> VerifiedAllCapUniverse:
     marker_hash = payload.pop("marker_sha256", None)
     if marker_hash != canonical_hash(payload):
         raise ValueError("all_cap_universe_checksum:latest")
+    if marker.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError("all_cap_universe_manifest_schema")
     if (
-        marker.get("schema_version") != SCHEMA_VERSION
-        or marker.get("contract_version") != CONTRACT_VERSION
+        marker.get("contract_version") != CONTRACT_VERSION
         or marker.get("status") != "complete"
     ):
         raise ValueError("all_cap_universe_manifest_contract")
@@ -521,6 +811,12 @@ def load_latest(repo_root: str | Path) -> VerifiedAllCapUniverse:
         or publication_dir.name != verified.metadata.get("publication_id")
     ):
         raise ValueError("all_cap_universe_checksum:latest_manifest")
+    verify_cache_identity(
+        cache_root,
+        verified.metadata.get("cache_identity"),
+        start_date=verified.metadata.get("start_date"),
+        end_date=verified.metadata.get("end_date"),
+    )
     return verified
 
 

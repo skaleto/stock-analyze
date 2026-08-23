@@ -66,6 +66,10 @@ _FUNDED_SLEEVES = ("large", "mid", "small", "micro")
 _ALL_SLEEVES = (*_FUNDED_SLEEVES, "nano_watch")
 UNIVERSE_CONTRACT_VERSION = "a-share-all-cap-universe-v1"
 HARD_STATUS_VERSION = "a-share-all-cap-hard-status-v1"
+_REBUILDABLE_PUBLICATION_ERRORS = {
+    "all_cap_universe_cache_identity_mismatch",
+    "all_cap_universe_manifest_schema",
+}
 
 _MEMBERSHIP_TEXT_COLUMNS = (
     "review_date",
@@ -638,37 +642,28 @@ def build_review_membership(
         list_key = str(master_row.list_date)
         delist_key = None if pd.isna(master_row.delist_date) else str(master_row.delist_date)
         board = _board_for_code(code)
-        lifecycle_status_age_eligible = True
         if list_key > review_key:
             reasons.add("not_listed")
-            lifecycle_status_age_eligible = False
         if delist_key is not None and review_key > delist_key:
             reasons.add("delisted")
-            lifecycle_status_age_eligible = False
         if board is None:
             reasons.add("unsupported_board")
-            lifecycle_status_age_eligible = False
         elif list_key <= review_key:
             list_day = datetime.strptime(list_key, "%Y%m%d").date()
             if (review_day - list_day).days < age_by_board[board]:
                 reasons.add("listing_age")
-                lifecycle_status_age_eligible = False
         current_status = status_by_code[code]
         status_source: object = pd.NA
         if current_status is None:
             reasons.add("status_missing")
-            lifecycle_status_age_eligible = False
         else:
             status_source = current_status["status_source"]
             if current_status["is_st"]:
                 reasons.add("st")
-                lifecycle_status_age_eligible = False
             if current_status["is_delisting"]:
                 reasons.add("delisted")
-                lifecycle_status_age_eligible = False
             if current_status["suspended"]:
                 reasons.add("suspended")
-                lifecycle_status_age_eligible = False
 
         (
             average_amount,
@@ -684,8 +679,6 @@ def build_review_membership(
         )
         if non_trading_days > allowed_non_trading:
             reasons.add("non_trading_days")
-        if lifecycle_status_age_eligible and amount_valid:
-            base_liquidity.append((code, average_amount))
 
         total_mv, circ_mv, total_mv_source_date = caps_by_code[code]
         if not math.isfinite(total_mv) or total_mv <= 0:
@@ -699,6 +692,8 @@ def build_review_membership(
             industry_l1 = industry_l2 = industry_l3 = industry_source_date = pd.NA
         else:
             industry_l1, industry_l2, industry_l3, industry_source_date = industry_value
+        if not reasons:
+            base_liquidity.append((code, average_amount))
         rows[code] = {
             "review_date": review_key,
             "effective_date": effective_key,
@@ -784,13 +779,16 @@ def _full_day_suspension(row: pd.Series | None) -> bool:
     return timing in {"09:30-15:00", "09:30~15:00", "全天", "FULL_DAY"}
 
 
-def _namechange_st_by_code(
+def _index_namechange_intervals(
     frame: pd.DataFrame,
-    trade_key: str,
-    codes: Sequence[str],
-) -> dict[str, bool | None]:
+) -> Mapping[str, tuple[tuple[str, object, object, object], ...]]:
+    normalized = _input_frame(
+        {"namechange": frame},
+        "namechange",
+        required=("code", "name", "start_date", "end_date", "ann_date"),
+    )
     normalized = _normalize_date_column(
-        frame,
+        normalized,
         "start_date",
         error="all_cap_hard_status_date:namechange",
     )
@@ -804,18 +802,35 @@ def _namechange_st_by_code(
     identity = ["code", "name", "start_date", "end_date", "ann_date"]
     if normalized.duplicated(identity, keep=False).any():
         raise ValueError("all_cap_hard_status_duplicate:namechange")
-    visible = normalized.loc[
-        normalized["start_date"].le(trade_key)
-        & (normalized["end_date"].isna() | normalized["end_date"].ge(trade_key))
-        & (normalized["ann_date"].isna() | normalized["ann_date"].le(trade_key))
-    ]
+    indexed: dict[str, list[tuple[str, object, object, object]]] = {}
+    for row in normalized.itertuples(index=False):
+        indexed.setdefault(str(row.code), []).append(
+            (str(row.start_date), row.end_date, row.ann_date, row.name)
+        )
+    return {
+        code: tuple(sorted(intervals, key=lambda value: value[0]))
+        for code, intervals in indexed.items()
+    }
+
+
+def _namechange_st_by_code(
+    index: Mapping[str, tuple[tuple[str, object, object, object], ...]],
+    trade_key: str,
+    codes: Sequence[str],
+) -> dict[str, bool | None]:
     result: dict[str, bool | None] = {}
     for code in codes:
-        rows = visible.loc[visible["code"].eq(code)]
-        if len(rows) != 1:
+        intervals = [
+            interval
+            for interval in index.get(code, ())
+            if interval[0] <= trade_key
+            and (pd.isna(interval[1]) or str(interval[1]) >= trade_key)
+            and (pd.isna(interval[2]) or str(interval[2]) <= trade_key)
+        ]
+        if len(intervals) != 1:
             result[code] = None
         else:
-            raw_name = rows.iloc[0]["name"]
+            raw_name = intervals[0][3]
             name = "" if pd.isna(raw_name) else str(raw_name).strip().upper()
             if not name:
                 result[code] = None
@@ -852,6 +867,9 @@ def build_daily_hard_status(
     baostock_status: pd.DataFrame,
     namechange: pd.DataFrame,
     suspend_d: pd.DataFrame,
+    _namechange_index: Mapping[
+        str, tuple[tuple[str, object, object, object], ...]
+    ] | None = None,
 ) -> pd.DataFrame:
     """Build execution gates without changing quarterly sleeve membership."""
 
@@ -926,8 +944,13 @@ def build_daily_hard_status(
             suspension_frame, name="suspend_d", trade_key=trade_key
         ),
     }
+    namechange_index = (
+        _index_namechange_intervals(namechange_frame)
+        if _namechange_index is None
+        else _namechange_index
+    )
     namechange_st = _namechange_st_by_code(
-        namechange_frame,
+        namechange_index,
         trade_key,
         master["code"].astype(str).tolist(),
     )
@@ -1078,14 +1101,19 @@ def build_daily_hard_status(
 
 @dataclass(frozen=True)
 class _VerifiedBacktestCache:
+    cache_root: Path
     calendar: pd.DataFrame
     stock_master: pd.DataFrame
-    daily_by_date: Mapping[str, pd.DataFrame]
-    daily_basic_by_date: Mapping[str, pd.DataFrame]
-    suspend_by_date: Mapping[str, pd.DataFrame]
-    baostock_status: pd.DataFrame
+    daily_by_date: Mapping[str, Path]
+    daily_basic_by_date: Mapping[str, Path]
+    suspend_by_date: Mapping[str, Path]
+    baostock_status_by_code: Mapping[str, Path | None]
     namechange: pd.DataFrame
     open_dates: tuple[str, ...]
+    missing_baostock_status_codes: tuple[str, ...]
+    missing_namechange_codes: tuple[str, ...]
+    missing_adj_factor_codes: tuple[str, ...]
+    content_identity: Mapping[str, object]
 
 
 def _cache_error(kind: str, relative: str) -> ValueError:
@@ -1102,6 +1130,7 @@ def _read_cache_csv(
         relative = path.relative_to(cache_root).as_posix()
     except ValueError as exc:
         raise ValueError("all_cap_universe_cache_path") from exc
+    universe_store.assert_cache_path(path, cache_root, must_exist=False)
     if path.is_symlink() or not path.is_file():
         raise _cache_error("missing", relative)
     try:
@@ -1125,7 +1154,13 @@ def _cache_date_frame(
         error=f"all_cap_universe_cache_date:{error}",
     )
     if "ts_code" in normalized:
-        normalized["ts_code"] = normalized["ts_code"].astype("string[pyarrow]")
+        normalized["ts_code"] = (
+            normalized["ts_code"].astype("string[pyarrow]").str.strip()
+        )
+        if not normalized["ts_code"].str.fullmatch(
+            r"[0-9]{6}\.(?:SH|SZ|BJ)"
+        ).all():
+            raise ValueError("all_cap_universe_cache_code")
     return normalized
 
 
@@ -1134,15 +1169,48 @@ def _partition_path(cache_root: Path, dataset: str, trade_key: str) -> Path:
     return cache_root / dataset / f"{dashed}.csv"
 
 
+_CACHE_PARTITION_COLUMNS = {
+    "daily": ("ts_code", "trade_date", "open", "amount"),
+    "daily_basic": ("ts_code", "trade_date", "total_mv", "circ_mv"),
+    "suspend_d": ("ts_code", "trade_date", "suspend_timing", "suspend_type"),
+    "baostock_status": (
+        "ts_code",
+        "trade_date",
+        "tradestatus",
+        "is_st",
+        "st_source",
+    ),
+}
+
+
+def _load_cache_partition(
+    value: Path | pd.DataFrame,
+    dataset: str,
+) -> pd.DataFrame:
+    if isinstance(value, pd.DataFrame):
+        return value.copy()
+    path = Path(value)
+    frame = _read_cache_csv(
+        path,
+        cache_root=path.parents[1],
+        required=_CACHE_PARTITION_COLUMNS[dataset],
+    )
+    return _cache_date_frame(
+        frame,
+        date_column="trade_date",
+        error=path.relative_to(path.parents[1]).as_posix(),
+    )
+
+
 def _verify_daily_partition_coverage(
     *,
     cache_root: Path,
     master: pd.DataFrame,
     open_dates: Sequence[str],
-    daily_by_date: Mapping[str, pd.DataFrame],
-    basic_by_date: Mapping[str, pd.DataFrame],
-    suspend_by_date: Mapping[str, pd.DataFrame],
-    baostock_status: pd.DataFrame,
+    daily_by_date: Mapping[str, Path],
+    basic_by_date: Mapping[str, Path],
+    suspend_by_date: Mapping[str, Path],
+    baostock_suspended_by_date: Mapping[str, set[str]],
     minimum_daily_basic_coverage: float,
 ) -> None:
     for trade_key in open_dates:
@@ -1153,17 +1221,15 @@ def _verify_daily_partition_coverage(
             and (pd.isna(row.delist_date) or trade_key <= str(row.delist_date))
             and _board_for_code(str(row.ts_code)) is not None
         }
-        day_status = baostock_status.loc[
-            baostock_status["trade_date"].eq(trade_key)
-        ]
-        baostock_suspended = {
+        suspension = _load_cache_partition(
+            suspend_by_date[trade_key],
+            "suspend_d",
+        )
+        confirmed_suspended = baostock_suspended_by_date.get(
+            trade_key, set()
+        ).intersection(
             str(row.ts_code)
-            for row in day_status.itertuples(index=False)
-            if _flag(row.tradestatus) is False
-        }
-        confirmed_suspended = baostock_suspended.intersection(
-            str(row.ts_code)
-            for _, row in suspend_by_date[trade_key].iterrows()
+            for _, row in suspension.iterrows()
             if _full_day_suspension(row)
         )
         required = expected.difference(confirmed_suspended)
@@ -1171,7 +1237,11 @@ def _verify_daily_partition_coverage(
             ("daily", daily_by_date, 1.0),
             ("daily_basic", basic_by_date, minimum_daily_basic_coverage),
         ):
-            observed = set(partitions[trade_key]["ts_code"].astype(str))
+            partition = _load_cache_partition(
+                partitions[trade_key],
+                dataset,
+            )
+            observed = set(partition["ts_code"].astype(str))
             coverage = (
                 1.0
                 if not required
@@ -1207,6 +1277,7 @@ def verify_shared_backtest_cache(
     cache_root = root / "data/shared/backtest_cache"
     if cache_root.is_symlink() or not cache_root.is_dir():
         raise _cache_error("missing", "data/shared/backtest_cache")
+    universe_store.assert_cache_root(cache_root, root)
     meta_path = cache_root / "_meta.json"
     if meta_path.is_symlink() or not meta_path.is_file():
         raise _cache_error("missing", "_meta.json")
@@ -1223,6 +1294,7 @@ def verify_shared_backtest_cache(
         )
     ):
         raise _cache_error("stock_master_meta", "_meta.json")
+    identity_paths = ["_meta.json", "trade_cal.csv", "stock_basic.csv"]
 
     calendar = _read_cache_csv(
         cache_root / "trade_cal.csv",
@@ -1276,29 +1348,41 @@ def verify_shared_backtest_cache(
         or not set(master["list_status"]).issubset({"L", "D", "P"})
     ):
         raise _cache_error("stock_master", "stock_basic.csv")
+    if not master["ts_code"].str.fullmatch(r"[0-9]{6}\.(?:SH|SZ|BJ)").all():
+        raise ValueError("all_cap_universe_cache_code")
     supported_codes = {
         str(value)
         for value in master["ts_code"]
         if _board_for_code(str(value)) is not None
     }
+    producer_codes = {
+        code
+        for code in supported_codes
+        if code.endswith((".SH", ".SZ"))
+    }
     completed_namechanges = meta.get("namechange_codes_done")
     if (
         not isinstance(completed_namechanges, list)
-        or not supported_codes.issubset({str(value) for value in completed_namechanges})
+        or not producer_codes.issubset(
+            {str(value) for value in completed_namechanges}
+        )
     ):
         raise _cache_error("namechange_meta", "_meta.json")
+    completed_namechange_codes = {
+        str(value) for value in completed_namechanges
+    }
     for field in ("daily_dates_done", "daily_basic_dates_done"):
         completed = meta.get(field)
         if not isinstance(completed, list):
             raise _cache_error(f"{field}_meta", "_meta.json")
 
-    daily_by_date: dict[str, pd.DataFrame] = {}
-    basic_by_date: dict[str, pd.DataFrame] = {}
-    suspend_by_date: dict[str, pd.DataFrame] = {}
+    daily_by_date: dict[str, Path] = {}
+    basic_by_date: dict[str, Path] = {}
+    suspend_by_date: dict[str, Path] = {}
     partition_specs = {
-        "daily": ("ts_code", "trade_date", "open", "amount"),
-        "daily_basic": ("ts_code", "trade_date", "total_mv", "circ_mv"),
-        "suspend_d": ("ts_code", "trade_date", "suspend_timing", "suspend_type"),
+        dataset: columns
+        for dataset, columns in _CACHE_PARTITION_COLUMNS.items()
+        if dataset != "baostock_status"
     }
     targets = {
         "daily": daily_by_date,
@@ -1308,6 +1392,7 @@ def verify_shared_backtest_cache(
     for trade_key in open_dates:
         for dataset, required in partition_specs.items():
             path = _partition_path(cache_root, dataset, trade_key)
+            identity_paths.append(path.relative_to(cache_root).as_posix())
             frame = _read_cache_csv(
                 path,
                 cache_root=cache_root,
@@ -1323,38 +1408,76 @@ def verify_shared_backtest_cache(
                 or frame.duplicated(["trade_date", "ts_code"], keep=False).any()
             ):
                 raise _cache_error("partition", path.relative_to(cache_root).as_posix())
-            targets[dataset][trade_key] = frame
+            targets[dataset][trade_key] = path
 
-    status_frames: list[pd.DataFrame] = []
+    status_by_code: dict[str, Path | None] = {}
+    baostock_suspended_by_date: dict[str, set[str]] = {}
     namechange_frames: list[pd.DataFrame] = []
+    missing_baostock_status_codes: list[str] = []
+    missing_namechange_codes: list[str] = []
+    missing_adj_factor_codes: list[str] = []
     for row in master.itertuples(index=False):
         code = str(row.ts_code)
+        supported = code in supported_codes
         status_path = cache_root / "baostock_status" / f"{code}.csv"
-        status = _read_cache_csv(
-            status_path,
-            cache_root=cache_root,
-            required=("ts_code", "trade_date", "tradestatus", "is_st", "st_source"),
-        )
-        status = _cache_date_frame(
-            status,
-            date_column="trade_date",
-            error=status_path.relative_to(cache_root).as_posix(),
-        )
-        adjustment_path = cache_root / "adj_factor" / f"{code}.csv"
-        adjustment = _read_cache_csv(
-            adjustment_path,
-            cache_root=cache_root,
-            required=("ts_code", "trade_date", "adj_factor"),
-        )
-        adjustment = _cache_date_frame(
-            adjustment,
-            date_column="trade_date",
-            error=adjustment_path.relative_to(cache_root).as_posix(),
-        )
-        for dataset, frame, path in (
-            ("baostock_status", status, status_path),
-            ("adj_factor", adjustment, adjustment_path),
+        if supported:
+            identity_paths.append(status_path.relative_to(cache_root).as_posix())
+        if not supported or (
+            not status_path.exists() and not status_path.is_symlink()
         ):
+            if supported:
+                missing_baostock_status_codes.append(code)
+            status = pd.DataFrame(
+                columns=("ts_code", "trade_date", "tradestatus", "is_st", "st_source")
+            )
+            status["ts_code"] = status["ts_code"].astype("string[pyarrow]")
+            status["trade_date"] = status["trade_date"].astype("string[pyarrow]")
+            status_by_code[code] = None
+        else:
+            status = _read_cache_csv(
+                status_path,
+                cache_root=cache_root,
+                required=("ts_code", "trade_date", "tradestatus", "is_st", "st_source"),
+            )
+            status = _cache_date_frame(
+                status,
+                date_column="trade_date",
+                error=status_path.relative_to(cache_root).as_posix(),
+            )
+            status_by_code[code] = status_path
+        adjustment_path = cache_root / "adj_factor" / f"{code}.csv"
+        if supported:
+            identity_paths.append(adjustment_path.relative_to(cache_root).as_posix())
+        if not supported:
+            adjustment = pd.DataFrame(
+                columns=("ts_code", "trade_date", "adj_factor")
+            )
+        elif (
+            code not in producer_codes
+            and not adjustment_path.exists()
+            and not adjustment_path.is_symlink()
+        ):
+            missing_adj_factor_codes.append(code)
+            adjustment = pd.DataFrame(
+                columns=("ts_code", "trade_date", "adj_factor")
+            )
+        else:
+            adjustment = _read_cache_csv(
+                adjustment_path,
+                cache_root=cache_root,
+                required=("ts_code", "trade_date", "adj_factor"),
+            )
+            adjustment = _cache_date_frame(
+                adjustment,
+                date_column="trade_date",
+                error=adjustment_path.relative_to(cache_root).as_posix(),
+            )
+        verified_partitions: list[tuple[str, pd.DataFrame, Path]] = []
+        if supported and code not in missing_baostock_status_codes:
+            verified_partitions.append(("baostock_status", status, status_path))
+        if supported and code not in missing_adj_factor_codes:
+            verified_partitions.append(("adj_factor", adjustment, adjustment_path))
+        for dataset, frame, path in verified_partitions:
             if (
                 not frame.empty
                 and set(frame["ts_code"].astype(str)) != {code}
@@ -1370,9 +1493,25 @@ def verify_shared_backtest_cache(
             observed = set(frame["trade_date"].astype(str)).intersection(open_dates)
             if observed != lifecycle_dates:
                 raise _cache_error("partial", path.relative_to(cache_root).as_posix())
-        status_frames.append(status)
-        if code in supported_codes:
+        for status_row in status.itertuples(index=False):
+            if (
+                str(status_row.trade_date) in open_dates
+                and _flag(status_row.tradestatus) is False
+            ):
+                baostock_suspended_by_date.setdefault(
+                    str(status_row.trade_date),
+                    set(),
+                ).add(code)
+        if supported:
             namechange_path = cache_root / "namechange" / f"{code}.csv"
+            identity_paths.append(namechange_path.relative_to(cache_root).as_posix())
+            namechange_complete = (
+                code in completed_namechange_codes
+                and (namechange_path.exists() or namechange_path.is_symlink())
+            )
+            if not namechange_complete and code not in producer_codes:
+                missing_namechange_codes.append(code)
+                continue
             names = _read_cache_csv(
                 namechange_path,
                 cache_root=cache_root,
@@ -1414,7 +1553,6 @@ def verify_shared_backtest_cache(
     for field in ("daily_dates_done", "daily_basic_dates_done"):
         if not declared_open_iso.issubset({str(value) for value in meta[field]}):
             raise _cache_error(f"{field}_meta", "_meta.json")
-    all_status = pd.concat(status_frames, ignore_index=True)
     _verify_daily_partition_coverage(
         cache_root=cache_root,
         master=master,
@@ -1422,23 +1560,31 @@ def verify_shared_backtest_cache(
         daily_by_date=daily_by_date,
         basic_by_date=basic_by_date,
         suspend_by_date=suspend_by_date,
-        baostock_status=all_status,
+        baostock_suspended_by_date=baostock_suspended_by_date,
         minimum_daily_basic_coverage=float(minimum_daily_basic_coverage),
     )
 
     return _VerifiedBacktestCache(
+        cache_root=cache_root,
         calendar=calendar,
         stock_master=master,
         daily_by_date=daily_by_date,
         daily_basic_by_date=basic_by_date,
         suspend_by_date=suspend_by_date,
-        baostock_status=all_status,
+        baostock_status_by_code=status_by_code,
         namechange=(
             pd.concat(namechange_frames, ignore_index=True)
             if namechange_frames
             else pd.DataFrame(columns=("ts_code", "name", "start_date", "end_date", "ann_date"))
         ),
         open_dates=open_dates,
+        missing_baostock_status_codes=tuple(sorted(missing_baostock_status_codes)),
+        missing_namechange_codes=tuple(sorted(missing_namechange_codes)),
+        missing_adj_factor_codes=tuple(sorted(missing_adj_factor_codes)),
+        content_identity=universe_store.build_cache_identity(
+            cache_root,
+            identity_paths,
+        ),
     )
 
 
@@ -1575,27 +1721,63 @@ def _verify_source_limit_coverage(
             )
 
 
-def _hard_status_for_cache(
+def _hard_status_for_cache_year(
     cache: _VerifiedBacktestCache,
     limits: Mapping[str, pd.DataFrame],
+    year: str,
+    *,
+    namechange_index: Mapping[
+        str, tuple[tuple[str, object, object, object], ...]
+    ],
 ) -> pd.DataFrame:
+    trade_dates = [
+        trade_key for trade_key in cache.open_dates if trade_key.startswith(year)
+    ]
+    if not trade_dates:
+        raise ValueError("all_cap_universe_partition")
+    status_frames: list[pd.DataFrame] = []
+    for status_path in cache.baostock_status_by_code.values():
+        if status_path is None:
+            continue
+        status = _load_cache_partition(status_path, "baostock_status")
+        status = status.loc[status["trade_date"].str.startswith(year)].copy()
+        if not status.empty:
+            status_frames.append(status)
+    status_year = (
+        pd.concat(status_frames, ignore_index=True)
+        if status_frames
+        else pd.DataFrame(columns=_CACHE_PARTITION_COLUMNS["baostock_status"])
+    )
+    status_by_date = {
+        str(trade_key): frame.copy()
+        for trade_key, frame in status_year.groupby("trade_date", sort=False)
+    }
+    limit_by_date = {
+        str(trade_key): frame.copy()
+        for trade_key, frame in limits[year].groupby("trade_date", sort=False)
+    }
+    empty_status = status_year.iloc[0:0].copy()
     frames: list[pd.DataFrame] = []
-    for trade_key in cache.open_dates:
-        status = cache.baostock_status.loc[
-            cache.baostock_status["trade_date"].eq(trade_key)
-        ].copy()
-        limit = limits[trade_key[:4]].loc[
-            limits[trade_key[:4]]["trade_date"].eq(trade_key)
-        ].copy()
+    for trade_key in trade_dates:
         frames.append(
             build_daily_hard_status(
                 trade_date=trade_key,
                 stock_master=cache.stock_master,
-                daily=cache.daily_by_date[trade_key],
-                stk_limit=limit,
-                baostock_status=status,
+                daily=_load_cache_partition(
+                    cache.daily_by_date[trade_key],
+                    "daily",
+                ),
+                stk_limit=limit_by_date.get(
+                    trade_key,
+                    limits[year].iloc[0:0].copy(),
+                ),
+                baostock_status=status_by_date.get(trade_key, empty_status),
                 namechange=cache.namechange,
-                suspend_d=cache.suspend_by_date[trade_key],
+                suspend_d=_load_cache_partition(
+                    cache.suspend_by_date[trade_key],
+                    "suspend_d",
+                ),
+                _namechange_index=namechange_index,
             )
         )
     result = pd.concat(frames, ignore_index=True)
@@ -1611,13 +1793,35 @@ def _membership_from_cache(
     contract: AllCapContract,
 ) -> pd.DataFrame:
     reviews = _quarter_review_dates(cache.calendar, cache.open_dates)
-    daily = pd.concat(list(cache.daily_by_date.values()), ignore_index=True)
-    daily_basic = pd.concat(list(cache.daily_basic_by_date.values()), ignore_index=True)
+    lookback = int(_contract_universe(contract)["liquidity_lookback_sessions"])
     previous = pd.DataFrame(
         columns=("review_date", "code", "eligible", "stable_sleeve")
     )
     outputs: list[pd.DataFrame] = []
     for review_key in reviews:
+        review_sessions = [
+            trade_key for trade_key in cache.open_dates if trade_key <= review_key
+        ][-lookback:]
+        daily = pd.concat(
+            [
+                _load_cache_partition(
+                    cache.daily_by_date[trade_key],
+                    "daily",
+                )
+                for trade_key in review_sessions
+            ],
+            ignore_index=True,
+        )
+        daily_basic = pd.concat(
+            [
+                _load_cache_partition(
+                    cache.daily_basic_by_date[trade_key],
+                    "daily_basic",
+                )
+                for trade_key in review_sessions
+            ],
+            ignore_index=True,
+        )
         review_status = hard_status.loc[
             hard_status["trade_date"].eq(review_key)
             & hard_status["status_complete"]
@@ -1706,6 +1910,57 @@ def load_verified_all_cap_universe(
     return universe_store.load_latest(repo_root)
 
 
+def _result_for_publication(
+    verified: universe_store.VerifiedAllCapUniverse,
+    *,
+    cache: _VerifiedBacktestCache,
+    estimated_bytes: int,
+    reused: bool,
+) -> dict[str, object]:
+    return {
+        "status": "complete",
+        "publication_id": str(verified.metadata["publication_id"]),
+        "manifest": str(verified.publication_dir / "manifest.json"),
+        "membership_rows": int(verified.metadata["row_counts"]["membership"]),
+        "daily_hard_status_rows": int(
+            verified.metadata["row_counts"]["daily_hard_status"]
+        ),
+        "estimated_bytes": estimated_bytes,
+        "missing_baostock_status_codes": list(
+            cache.missing_baostock_status_codes
+        ),
+        "missing_namechange_codes": list(cache.missing_namechange_codes),
+        "missing_adj_factor_codes": list(cache.missing_adj_factor_codes),
+        "reused": reused,
+    }
+
+
+def _contract_hash(contract: AllCapContract) -> str:
+    return universe_store.canonical_hash(
+        {
+            "campaign_id": contract.campaign_id,
+            "development_start": contract.development_start.isoformat(),
+            "development_end": contract.development_end.isoformat(),
+            "holdout_start": contract.holdout_start.isoformat(),
+            "holdout_end": contract.holdout_end.isoformat(),
+            "holdout_policy": contract.holdout_policy,
+            "size_boundaries": list(contract.size_boundaries),
+            "boundary_buffer_fraction": contract.boundary_buffer_fraction,
+            "sleeves": [
+                {
+                    "name": sleeve.name,
+                    "rank_min": sleeve.rank_min,
+                    "rank_max": sleeve.rank_max,
+                    "benchmark": sleeve.benchmark,
+                    "capital_weight": sleeve.capital_weight,
+                }
+                for sleeve in contract.sleeves
+            ],
+            "raw": contract.raw,
+        }
+    )
+
+
 def materialize_all_cap_universe(
     *,
     repo_root: Path,
@@ -1736,27 +1991,63 @@ def materialize_all_cap_universe(
         cache=cache,
         contract=contract,
     )
+    contract_hash = _contract_hash(contract)
+    universe_root = universe_store.universe_root(root)
+    latest_path = universe_root / "latest.json"
+    _projected_space_check(
+        repo_root=root,
+        contract=contract,
+        estimated_bytes=0,
+    )
+    if latest_path.exists() or latest_path.is_symlink():
+        try:
+            existing = load_verified_all_cap_universe(root)
+        except ValueError as exc:
+            if str(exc) not in _REBUILDABLE_PUBLICATION_ERRORS:
+                raise
+        else:
+            metadata = existing.metadata
+            if (
+                metadata.get("campaign_id") == contract.campaign_id
+                and metadata.get("start_date")
+                == contract.development_start.strftime("%Y%m%d")
+                and metadata.get("end_date")
+                == contract.development_end.strftime("%Y%m%d")
+                and metadata.get("source_manifest_sha256") == source_hash
+                and metadata.get("contract_sha256") == contract_hash
+                and isinstance(metadata.get("cache_identity"), Mapping)
+                and metadata["cache_identity"].get("sha256")
+                == cache.content_identity.get("sha256")
+            ):
+                return _result_for_publication(
+                    existing,
+                    cache=cache,
+                    estimated_bytes=0,
+                    reused=True,
+                )
 
     limits = _load_source_limits(
         sources,
         [trade_key[:4] for trade_key in cache.open_dates],
     )
     _verify_source_limit_coverage(cache, limits)
-    hard_status = _hard_status_for_cache(cache, limits)
-    membership = _membership_from_cache(
-        cache,
-        hard_status,
-        industry,
-        contract,
-    )
-    estimated_bytes = (
-        universe_store.estimate_frame_bytes("membership", membership)
-        + universe_store.estimate_frame_bytes("daily_hard_status", hard_status)
-    )
-    universe_root = universe_store.universe_root(root)
-    latest_path = universe_root / "latest.json"
     if latest_path.exists() or latest_path.is_symlink():
-        load_verified_all_cap_universe(root)
+        try:
+            load_verified_all_cap_universe(root)
+        except ValueError as exc:
+            if str(exc) not in _REBUILDABLE_PUBLICATION_ERRORS:
+                raise
+    reviews = _quarter_review_dates(cache.calendar, cache.open_dates)
+    estimated_rows = len(cache.stock_master) * (len(cache.open_dates) + len(reviews))
+    estimated_bytes = max(
+        1,
+        estimated_rows
+        * (
+            len(DAILY_HARD_STATUS_COLUMNS)
+            + len(MEMBERSHIP_COLUMNS)
+        )
+        * 16,
+    )
     _projected_space_check(
         repo_root=root,
         contract=contract,
@@ -1778,16 +2069,60 @@ def materialize_all_cap_universe(
         partitions: dict[str, list[dict[str, object]]] = {
             dataset: [] for dataset in universe_store.DATASETS
         }
-        for dataset, frame, date_column in (
-            ("membership", membership, "review_date"),
-            ("daily_hard_status", hard_status, "trade_date"),
-        ):
-            years = frame[date_column].astype(str).str[:4]
-            for year in sorted(years.unique()):
-                partition = frame.loc[years.eq(year)].reset_index(drop=True)
-                partitions[dataset].append(
-                    universe_store.write_partition(staging, dataset, year, partition)
+        review_keys = set(reviews)
+        review_status_frames: list[pd.DataFrame] = []
+        namechange_index = _index_namechange_intervals(cache.namechange)
+        for year in sorted({trade_key[:4] for trade_key in cache.open_dates}):
+            hard_status_year = _hard_status_for_cache_year(
+                cache,
+                limits,
+                year,
+                namechange_index=namechange_index,
+            )
+            partitions["daily_hard_status"].append(
+                universe_store.write_partition(
+                    staging,
+                    "daily_hard_status",
+                    year,
+                    hard_status_year,
                 )
+            )
+            review_status_frames.append(
+                hard_status_year.loc[
+                    hard_status_year["trade_date"].isin(review_keys)
+                ].copy()
+            )
+        review_status = pd.concat(review_status_frames, ignore_index=True)
+        membership = _membership_from_cache(
+            cache,
+            review_status,
+            industry,
+            contract,
+        )
+        membership_years = membership["review_date"].astype(str).str[:4]
+        for year in sorted(membership_years.unique()):
+            partition = membership.loc[
+                membership_years.eq(year)
+            ].reset_index(drop=True)
+            partitions["membership"].append(
+                universe_store.write_partition(
+                    staging,
+                    "membership",
+                    year,
+                    partition,
+                )
+            )
+        estimated_bytes = sum(
+            int(record["bytes"])
+            for records in partitions.values()
+            for record in records
+        )
+        universe_store.verify_cache_identity(
+            cache.cache_root,
+            cache.content_identity,
+            start_date=contract.development_start.strftime("%Y%m%d"),
+            end_date=contract.development_end.strftime("%Y%m%d"),
+        )
         manifest: dict[str, object] = {
             "schema_version": universe_store.SCHEMA_VERSION,
             "contract_version": universe_store.CONTRACT_VERSION,
@@ -1798,6 +2133,15 @@ def materialize_all_cap_universe(
             "start_date": contract.development_start.strftime("%Y%m%d"),
             "end_date": contract.development_end.strftime("%Y%m%d"),
             "source_manifest_sha256": source_hash,
+            "contract_sha256": contract_hash,
+            "cache_identity": cache.content_identity,
+            "readiness": {
+                "missing_baostock_status_codes": list(
+                    cache.missing_baostock_status_codes
+                ),
+                "missing_namechange_codes": list(cache.missing_namechange_codes),
+                "missing_adj_factor_codes": list(cache.missing_adj_factor_codes),
+            },
             "dataset_schemas": {
                 dataset: universe_store.schema_contract(dataset)
                 for dataset in universe_store.DATASETS
@@ -1817,16 +2161,12 @@ def materialize_all_cap_universe(
         installed = True
         verified = universe_store.verify_publication(destination)
         universe_store.write_latest(root, verified.metadata)
-        return {
-            "status": "complete",
-            "publication_id": publication_id,
-            "manifest": str(destination / "manifest.json"),
-            "membership_rows": int(verified.metadata["row_counts"]["membership"]),
-            "daily_hard_status_rows": int(
-                verified.metadata["row_counts"]["daily_hard_status"]
-            ),
-            "estimated_bytes": estimated_bytes,
-        }
+        return _result_for_publication(
+            verified,
+            cache=cache,
+            estimated_bytes=estimated_bytes,
+            reused=False,
+        )
     finally:
         if not installed and staging.exists() and not staging.is_symlink():
             shutil.rmtree(staging)
