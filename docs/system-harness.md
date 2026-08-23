@@ -1,6 +1,6 @@
 # Stock Analyze Harness
 
-更新日期：2026-08-20
+更新日期：2026-08-23
 
 这份文档是开发、运行、部署和排障的唯一执行入口。系统事实优先级为：ECS 当前 service/timer 与账本 > 当前代码和测试 > 本文档 > 历史计划和归档。
 
@@ -128,6 +128,138 @@ curl -s 'http://127.0.0.1:8765/api/dashboard/research-universe-instrument.json?k
 有界结案逻辑并重试一次；日常任务不需要额外人工调用，且明显事件公告仍保持
 优先。独立命令用于加速历史 backlog 或审计路由分布。
 本地 artifact worker 的导出、执行、导入与状态命令以上述当前契约为准。
+
+### A 股全市场数据基础补齐
+
+以下命令只补 `data/shared/backtest_cache/` 和
+`data/research/a_share_all_cap/`，不得读取、复制、重写或清理正式账户账本。
+三个 collector 都按 `_meta.json` 或 publication progress 续跑，禁止使用 `--force`。
+缺口补齐前后都要记录根文件系统字节；空闲比例低于 15% 时立即
+停止，不能通过降低配置门槛继续。
+
+先登录 ECS 并执行一次磁盘硬门禁。环境文件位置从已部署 service 的 systemd
+配置读取，不在终端或 journal 中打印路径或凭据：
+
+```bash
+set -euo pipefail
+cd /opt/stock-analyze/app
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+RUN_PREFIX="all-cap-data-foundation-${RUN_ID}"
+ENV_FILE="$(
+  systemctl show stock-analyze-model-iteration.service \
+    --property=EnvironmentFiles --value | awk '{print $1}'
+)"
+test -n "$ENV_FILE" && test -r "$ENV_FILE"
+
+df -B1 --output=size,used,avail,pcent,target / \
+  | tee "/var/tmp/${RUN_PREFIX}-df-before.txt"
+FREE_FRACTION="$(
+  df -B1 --output=avail,size / \
+    | awk 'NR == 2 { printf "%.6f", $1 / $2 }'
+)"
+awk -v value="$FREE_FRACTION" 'BEGIN { exit !(value >= 0.15) }'
+```
+
+使用以下 helper 启动有唯一 unit 名的 transient service。`systemd-run --wait`
+的退出码必须为 0，同时保存完整 `journalctl`；失败后修复根因并用新
+`RUN_ID` 重跑相同命令，collector 会从已有进度继续。
+
+```bash
+run_transient() {
+  local unit="$1"
+  shift
+  set +e
+  systemd-run \
+    --unit="$unit" \
+    --collect \
+    --wait \
+    --pipe \
+    --property=Type=exec \
+    --property=WorkingDirectory=/opt/stock-analyze/app \
+    --property="EnvironmentFile=$ENV_FILE" \
+    "$@"
+  local rc=$?
+  set -e
+  journalctl -u "$unit" --no-pager --output=short-iso \
+    | tee "/var/tmp/${unit}-journal.txt"
+  return "$rc"
+}
+
+STATEMENTS_UNIT="stock-analyze-all-cap-statements-${RUN_ID}"
+run_transient "$STATEMENTS_UNIT" \
+  /opt/stock-analyze/venv/bin/python -m stock_analyze prepare-backtest-data \
+  --start 2018-01-02 --end 2026-08-21 --phases statements --code-scope all
+
+STATUS_UNIT="stock-analyze-all-cap-status-${RUN_ID}"
+run_transient "$STATUS_UNIT" \
+  /opt/stock-analyze/venv/bin/python -m stock_analyze prepare-backtest-data \
+  --start 2018-01-02 --end 2026-08-21 \
+  --phases status --code-scope all --status-provider baostock
+
+SOURCES_UNIT="stock-analyze-all-cap-sources-${RUN_ID}"
+run_transient "$SOURCES_UNIT" \
+  /opt/stock-analyze/venv/bin/python -m stock_analyze \
+  refresh-a-share-all-cap-sources \
+  --start 2018-01-02 --end 2024-12-31
+```
+
+服务成功不是数据完成。collector 结束后先调用正式 loader 校验 source
+publication 的 manifest、SHA-256、schema、分区和行数：
+
+```bash
+/opt/stock-analyze/venv/bin/python - <<'PY'
+from stock_analyze.research.a_share_all_cap_sources import (
+    load_verified_all_cap_sources,
+)
+
+verified = load_verified_all_cap_sources(".")
+counts = verified.metadata["row_counts"]
+print(
+    "source_manifest_verified",
+    f"datasets={len(counts)}",
+    f"rows={sum(int(value) for value in counts.values())}",
+    f"partition_years={len(verified.stk_limit)}",
+)
+PY
+```
+
+universe materializer 完成后，再用正式 loader 验证 membership 和每日硬状态
+publication，并运行 production 数据审计。任何 manifest/checksum、PIT status
+覆盖或 15% 磁盘门槛失败都必须停止后续研究：
+
+```bash
+/opt/stock-analyze/venv/bin/python - <<'PY'
+from stock_analyze.research.a_share_all_cap_universe import (
+    load_verified_all_cap_universe,
+)
+
+verified = load_verified_all_cap_universe(".")
+counts = verified.metadata["row_counts"]
+print(
+    "universe_manifest_verified",
+    f"membership_years={len(verified.membership)}",
+    f"membership_rows={int(counts['membership'])}",
+    f"status_years={len(verified.daily_hard_status)}",
+    f"status_rows={int(counts['daily_hard_status'])}",
+)
+PY
+
+SA_SYSTEM_AUDIT_DATA_ONLY=1 SA_SYSTEM_AUDIT_PRODUCTION=1 \
+  ./scripts/system-audit.sh
+
+df -B1 --output=size,used,avail,pcent,target / \
+  | tee "/var/tmp/${RUN_PREFIX}-df-after.txt"
+FREE_FRACTION="$(
+  df -B1 --output=avail,size / \
+    | awk 'NR == 2 { printf "%.6f", $1 / $2 }'
+)"
+awk -v value="$FREE_FRACTION" 'BEGIN { exit !(value >= 0.15) }'
+unset ENV_FILE
+```
+
+最终证据必须保留每个 unit 名、`systemd-run` 退出码、journal、run 前后
+`df -B1` 字节、六个稳定审计检查的 `PASS/WARN/FAIL` 和 loader 输出计数。
+不得把本地缺数据的 `WARN` 当作生产 `PASS`，也不得把文件名列表当作覆盖率。
 
 ## 5. 周度和月度人工动作
 
