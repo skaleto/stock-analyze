@@ -69,24 +69,46 @@ def _decorate(
     unbiased: bool,
     input_rows: int,
     reasons: list[str] | None = None,
+    contract_version: str = UNIVERSE_CONTRACT_VERSION,
 ) -> PointInTimeUniverseResult:
     result = frame
     quality = "available" if unbiased else "unavailable"
     result["universe_quality"] = quality
     result["unbiased_universe"] = bool(unbiased)
-    result["universe_contract_version"] = UNIVERSE_CONTRACT_VERSION
+    result["universe_contract_version"] = contract_version
     result["membership_source"] = source
     coverage = len(result) / max(input_rows, 1)
     return PointInTimeUniverseResult(result, {
         "quality": quality,
         "unbiased_universe": bool(unbiased),
         "membership_source": source,
-        "universe_contract_version": UNIVERSE_CONTRACT_VERSION,
+        "universe_contract_version": contract_version,
         "coverage": float(coverage),
         "input_rows": int(input_rows),
         "eligible_rows": int(len(result)),
         "quality_reasons": list(reasons or []),
     })
+
+
+def decorate_point_in_time_universe(
+    frame: pd.DataFrame,
+    *,
+    source: str,
+    unbiased: bool,
+    input_rows: int,
+    contract_version: str = UNIVERSE_CONTRACT_VERSION,
+    reasons: list[str] | None = None,
+) -> PointInTimeUniverseResult:
+    """Apply the shared research-universe result and metadata contract."""
+
+    return _decorate(
+        frame,
+        source=source,
+        unbiased=unbiased,
+        input_rows=input_rows,
+        reasons=reasons,
+        contract_version=contract_version,
+    )
 
 
 def _attach_a_share(
@@ -348,4 +370,5 @@ __all__ = [
     "PointInTimeUniverseResult",
     "UNIVERSE_CONTRACT_VERSION",
     "attach_point_in_time_universe",
+    "decorate_point_in_time_universe",
 ]
