@@ -6,12 +6,16 @@ from pathlib import Path
 from typing import Any
 
 
-def load_config(path: str | Path) -> dict[str, Any]:
-    """Load a config file and apply v1→v2 migration in place.
+def load_config(
+    path: str | Path,
+    *,
+    apply_migrations: bool = True,
+) -> dict[str, Any]:
+    """Load a config file, optionally applying v1→v2 migration in place.
 
     The default config is JSON syntax stored in a .yaml file so the project has
     no YAML parser dependency. If users later write real YAML, PyYAML is used
-    when installed.
+    when installed. Migrations remain enabled by default for compatibility.
     """
 
     config_path = Path(path)
@@ -28,7 +32,8 @@ def load_config(path: str | Path) -> dict[str, Any]:
         data = yaml.safe_load(text)
         if not isinstance(data, dict):
             raise ValueError(f"{config_path} must contain a mapping at the top level")
-    migrate_strategy_config(data)
+    if apply_migrations:
+        migrate_strategy_config(data)
     return data
 
 

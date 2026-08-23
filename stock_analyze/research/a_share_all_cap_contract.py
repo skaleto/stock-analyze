@@ -89,7 +89,7 @@ def _require_date(value: object) -> date:
 def _freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
         return MappingProxyType(
-            {key: _freeze(item) for key, item in value.items()}
+            {_freeze(key): _freeze(item) for key, item in value.items()}
         )
     if isinstance(value, (list, tuple)):
         return tuple(_freeze(item) for item in value)
@@ -97,7 +97,9 @@ def _freeze(value: Any) -> Any:
         return frozenset(_freeze(item) for item in value)
     if isinstance(value, bytearray):
         return bytes(value)
-    return value
+    if value is None or isinstance(value, (str, int, float, bool, bytes, date)):
+        return value
+    _invalid("raw_unsupported")
 
 
 def parse_all_cap_contract(payload: Mapping[str, Any]) -> AllCapContract:
@@ -211,4 +213,4 @@ def parse_all_cap_contract(payload: Mapping[str, Any]) -> AllCapContract:
 
 
 def load_all_cap_contract(path: str | Path) -> AllCapContract:
-    return parse_all_cap_contract(load_config(path))
+    return parse_all_cap_contract(load_config(path, apply_migrations=False))

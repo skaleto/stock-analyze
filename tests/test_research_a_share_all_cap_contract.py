@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import copy
 from dataclasses import FrozenInstanceError
 from datetime import date
@@ -10,6 +11,7 @@ import unittest
 
 import yaml
 
+from stock_analyze.config import load_config
 from stock_analyze.research.a_share_all_cap_contract import (
     load_all_cap_contract,
     parse_all_cap_contract,
@@ -20,11 +22,28 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "configs" / "research" / "a_share_all_cap_v2.yaml"
 
 
+class MutableLeaf:
+    def __init__(self) -> None:
+        self.values: list[str] = []
+
+
 class AllCapContractTests(unittest.TestCase):
     def valid_payload(self) -> dict[str, Any]:
         payload = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
         self.assertIsInstance(payload, dict)
         return copy.deepcopy(payload)
+
+    def plain_value(self, value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {
+                key: self.plain_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, tuple):
+            return [self.plain_value(item) for item in value]
+        if isinstance(value, frozenset):
+            return {self.plain_value(item) for item in value}
+        return value
 
     def payload_with_capital_weight_total(
         self,
@@ -62,6 +81,27 @@ class AllCapContractTests(unittest.TestCase):
             "open_once_after_data_code_and_development_gates",
         )
 
+    def test_loaded_raw_payload_exactly_matches_source_yaml(self) -> None:
+        source = yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+        contract = load_all_cap_contract(CONTRACT_PATH)
+
+        self.assertEqual(set(contract.raw), set(source))
+        self.assertNotIn("factors", contract.raw)
+        self.assertNotIn("version", contract.raw)
+        self.assertNotIn("factor_processing", contract.raw)
+        self.assertNotIn("portfolio_controls", contract.raw)
+        self.assertNotIn("performance", contract.raw)
+        self.assertEqual(self.plain_value(contract.raw), source)
+
+    def test_load_config_applies_migrations_by_default(self) -> None:
+        loaded = load_config(CONTRACT_PATH)
+
+        self.assertIn("factors", loaded)
+        self.assertEqual(loaded["version"], 2)
+        self.assertIn("factor_processing", loaded)
+        self.assertIn("portfolio_controls", loaded)
+        self.assertIn("performance", loaded)
+
     def test_contract_and_raw_payload_are_deeply_immutable(self) -> None:
         payload = self.valid_payload()
         contract = parse_all_cap_contract(payload)
@@ -79,6 +119,13 @@ class AllCapContractTests(unittest.TestCase):
             contract.raw["universe"]["size_rank_boundaries"],
             (300, 800, 1800, 3800),
         )
+
+    def test_rejects_unsupported_mutable_raw_leaf(self) -> None:
+        payload = self.valid_payload()
+        payload["unsafe_leaf"] = MutableLeaf()
+
+        with self.assertRaisesRegex(ValueError, "all_cap_contract:raw_unsupported"):
+            parse_all_cap_contract(payload)
 
     def test_sleeve_contract_is_frozen(self) -> None:
         sleeve = load_all_cap_contract(CONTRACT_PATH).sleeves[0]
