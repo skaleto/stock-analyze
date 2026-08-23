@@ -19,7 +19,7 @@ import pyarrow.parquet as pq
 from ..utils import write_text_atomic
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 CONTRACT_VERSION = "a-share-all-cap-universe-v1"
 PARQUET_COMPRESSION = "SNAPPY"
 DATASETS = ("membership", "daily_hard_status")
@@ -41,7 +41,9 @@ ARROW_SCHEMAS = {
             ("stable_sleeve", pa.string()),
             ("total_mv", pa.float64()),
             ("circ_mv", pa.float64()),
+            ("total_mv_source_date", pa.string()),
             ("avg_amount_252", pa.float64()),
+            ("avg_amount_source_date", pa.string()),
             ("non_trading_days_252", pa.int64()),
             ("industry_l1", pa.string()),
             ("industry_l2", pa.string()),
@@ -379,6 +381,16 @@ def _validate_record(
             raise ValueError("all_cap_universe_manifest_contract")
         if not frame["effective_date"].astype(str).gt(frame["review_date"].astype(str)).all():
             raise ValueError("all_cap_universe_manifest_dates")
+        review_dates = frame["review_date"].astype("string")
+        for column in ("total_mv_source_date", "avg_amount_source_date"):
+            source_dates = frame[column].astype("string")
+            populated = source_dates.notna() & source_dates.ne("")
+            if (
+                (populated & ~source_dates.str.fullmatch(r"[0-9]{8}", na=False)).any()
+                or (populated & source_dates.gt(review_dates)).any()
+                or (frame["eligible"] & ~populated).any()
+            ):
+                raise ValueError("all_cap_universe_manifest_dates")
     elif not frame["hard_status_version"].eq(
         "a-share-all-cap-hard-status-v1"
     ).all():
