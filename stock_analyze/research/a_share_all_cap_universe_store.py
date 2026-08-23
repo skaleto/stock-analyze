@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import tempfile
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 
+import fcntl
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -19,7 +22,7 @@ import pyarrow.parquet as pq
 from ..utils import write_text_atomic
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 CONTRACT_VERSION = "a-share-all-cap-universe-v1"
 PARQUET_COMPRESSION = "SNAPPY"
 DATASETS = ("membership", "daily_hard_status")
@@ -126,8 +129,33 @@ class VerifiedAllCapUniverse:
         return self.daily_hard_status[key].load()
 
 
+_UNIVERSE_RELATIVE = Path("data/research/a_share_all_cap/v1/universe")
+
+
+def assert_universe_root(
+    repo_root: str | Path,
+    *,
+    must_exist: bool = False,
+) -> Path:
+    trusted = Path(repo_root).absolute()
+    target = trusted / _UNIVERSE_RELATIVE
+    _assert_not_symlink(trusted)
+    current = trusted
+    for part in _UNIVERSE_RELATIVE.parts:
+        current = current / part
+        _assert_not_symlink(current)
+    try:
+        resolved_trusted = trusted.resolve(strict=True)
+        resolved_target = target.resolve(strict=must_exist)
+    except (FileNotFoundError, OSError) as exc:
+        raise ValueError("all_cap_universe_manifest_path") from exc
+    if not resolved_target.is_relative_to(resolved_trusted):
+        raise ValueError("all_cap_universe_manifest_path")
+    return target
+
+
 def universe_root(repo_root: str | Path) -> Path:
-    return Path(repo_root).absolute() / "data/research/a_share_all_cap/v1/universe"
+    return assert_universe_root(repo_root)
 
 
 def publications_root(repo_root: str | Path) -> Path:
@@ -175,6 +203,10 @@ def _normalized_csv_hash(path: Path) -> tuple[int, str]:
         frame = pd.read_csv(path, dtype=str, keep_default_na=False)
     except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
         raise ValueError("all_cap_universe_cache_identity") from exc
+    return _normalized_csv_frame_hash(frame)
+
+
+def _normalized_csv_frame_hash(frame: pd.DataFrame) -> tuple[int, str]:
     columns = sorted(str(column) for column in frame.columns)
     normalized = frame.loc[:, columns].astype(str)
     if columns and not normalized.empty:
@@ -192,6 +224,68 @@ def _normalized_csv_hash(path: Path) -> tuple[int, str]:
     return len(normalized), digest.hexdigest()
 
 
+def cache_csv_identity_record(
+    relative_path: str,
+    frame: pd.DataFrame,
+) -> dict[str, object]:
+    relative = _safe_relative(relative_path)
+    rows, content_hash = _normalized_csv_frame_hash(frame)
+    return {
+        "path": relative.as_posix(),
+        "kind": "csv",
+        "rows": rows,
+        "sha256": content_hash,
+    }
+
+
+def cache_json_identity_record(
+    relative_path: str,
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    relative = _safe_relative(relative_path)
+    return {
+        "path": relative.as_posix(),
+        "kind": "json",
+        "rows": 1,
+        "sha256": hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def missing_cache_identity_record(relative_path: str) -> dict[str, object]:
+    relative = _safe_relative(relative_path)
+    return {
+        "path": relative.as_posix(),
+        "kind": "missing",
+        "rows": 0,
+        "sha256": canonical_hash(
+            {"path": relative.as_posix(), "missing": True}
+        ),
+    }
+
+
+def build_cache_identity_from_records(
+    records: list[Mapping[str, object]],
+) -> dict[str, object]:
+    ordered = sorted(
+        (dict(record) for record in records),
+        key=lambda record: str(record.get("path") or ""),
+    )
+    identity: dict[str, object] = {
+        "version": "normalized-cache-v1",
+        "files": ordered,
+    }
+    _validate_cache_identity({**identity, "sha256": canonical_hash(identity)})
+    identity["sha256"] = canonical_hash(identity)
+    return identity
+
+
 def build_cache_identity(
     cache_root: str | Path,
     relative_paths: list[str] | tuple[str, ...],
@@ -203,16 +297,7 @@ def build_cache_identity(
         path = root.joinpath(*relative.parts)
         assert_cache_path(path, root, must_exist=False)
         if not path.exists() and not path.is_symlink():
-            records.append(
-                {
-                    "path": relative.as_posix(),
-                    "kind": "missing",
-                    "rows": 0,
-                    "sha256": canonical_hash(
-                        {"path": relative.as_posix(), "missing": True}
-                    ),
-                }
-            )
+            records.append(missing_cache_identity_record(relative.as_posix()))
             continue
         _assert_contained(path, root)
         if relative.as_posix() == "_meta.json":
@@ -220,19 +305,7 @@ def build_cache_identity(
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise ValueError("all_cap_universe_cache_identity") from exc
-            record = {
-                "path": relative.as_posix(),
-                "kind": "json",
-                "rows": 1,
-                "sha256": hashlib.sha256(
-                    json.dumps(
-                        payload,
-                        ensure_ascii=True,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                ).hexdigest(),
-            }
+            record = cache_json_identity_record(relative.as_posix(), payload)
         else:
             rows, content_hash = _normalized_csv_hash(path)
             record = {
@@ -242,12 +315,7 @@ def build_cache_identity(
                 "sha256": content_hash,
             }
         records.append(record)
-    identity: dict[str, object] = {
-        "version": "normalized-cache-v1",
-        "files": records,
-    }
-    identity["sha256"] = canonical_hash(identity)
-    return identity
+    return build_cache_identity_from_records(records)
 
 
 def _validate_cache_identity(identity: object) -> dict[str, object]:
@@ -324,7 +392,7 @@ def _expected_cache_identity_paths(
         raise ValueError("all_cap_universe_cache_identity") from exc
     if (
         not {"cal_date", "is_open"}.issubset(calendar.columns)
-        or "ts_code" not in master.columns
+        or not {"ts_code", "list_date", "delist_date"}.issubset(master.columns)
     ):
         raise ValueError("all_cap_universe_cache_identity")
     open_dates = sorted(
@@ -338,6 +406,56 @@ def _expected_cache_identity_paths(
     if not open_dates:
         raise ValueError("all_cap_universe_cache_identity")
     expected = {"_meta.json", "trade_cal.csv", "stock_basic.csv"}
+    all_open_dates = sorted(
+        {
+            _cache_date_key(row.cal_date)
+            for row in calendar.itertuples(index=False)
+            if str(row.is_open).strip() in {"1", "True", "true"}
+        }
+    )
+    next_by_date = {
+        current: following
+        for current, following in zip(all_open_dates, all_open_dates[1:])
+    }
+
+    def quarter(value: str) -> tuple[str, int]:
+        return value[:4], (int(value[4:6]) - 1) // 3 + 1
+
+    reviews = [
+        value
+        for value in open_dates
+        if value in next_by_date
+        and quarter(value) != quarter(next_by_date[value])
+    ]
+    if not reviews:
+        raise ValueError("all_cap_universe_cache_identity")
+    first_review = reviews[0]
+    first_review_window = [
+        _cache_date_key(row.cal_date)
+        for row in calendar.itertuples(index=False)
+        if str(row.is_open).strip() in {"1", "True", "true"}
+        and _cache_date_key(row.cal_date) <= first_review
+    ][-252:]
+    liquidity_dates = set(open_dates)
+    for row in master.itertuples(index=False):
+        code = str(row.ts_code).strip()
+        list_key = _cache_date_key(row.list_date)
+        delist_raw = str(row.delist_date).strip()
+        delist_key = _cache_date_key(delist_raw) if delist_raw else None
+        if (
+            _supported_all_cap_code(code)
+            and list_key <= first_review
+            and (delist_key is None or first_review <= delist_key)
+        ):
+            liquidity_dates.update(
+                value for value in first_review_window if value >= list_key
+            )
+    for trade_key in sorted(liquidity_dates):
+        if trade_key >= start_key:
+            continue
+        expected.add(
+            f"daily/{trade_key[:4]}-{trade_key[4:6]}-{trade_key[6:]}.csv"
+        )
     for trade_key in open_dates:
         dashed = f"{trade_key[:4]}-{trade_key[4:6]}-{trade_key[6:]}"
         for dataset in ("daily", "daily_basic", "suspend_d"):
@@ -385,6 +503,117 @@ def schema_contract(dataset: str) -> dict[str, object]:
             for field in schema
         ],
     }
+
+
+def _code_set_hash(codes: list[str] | tuple[str, ...]) -> str:
+    return canonical_hash({"codes": sorted(str(code) for code in codes)})
+
+
+def build_cross_section_contract(
+    *,
+    codes: list[str] | tuple[str, ...],
+    membership_dates: list[str] | tuple[str, ...],
+    daily_dates: list[str] | tuple[str, ...],
+) -> dict[str, object]:
+    normalized_codes = sorted(str(code) for code in codes)
+    if (
+        not normalized_codes
+        or len(normalized_codes) != len(set(normalized_codes))
+        or any(
+            re.fullmatch(r"[0-9]{6}\.(?:SH|SZ|BJ)", code) is None
+            for code in normalized_codes
+        )
+    ):
+        raise ValueError("all_cap_universe_cross_section")
+    code_hash = _code_set_hash(tuple(normalized_codes))
+    result: dict[str, object] = {}
+    for dataset, raw_dates in (
+        ("membership", membership_dates),
+        ("daily_hard_status", daily_dates),
+    ):
+        dates = sorted(str(value) for value in raw_dates)
+        if (
+            not dates
+            or len(dates) != len(set(dates))
+            or any(re.fullmatch(r"[0-9]{8}", value) is None for value in dates)
+        ):
+            raise ValueError("all_cap_universe_cross_section")
+        by_year: dict[str, object] = {}
+        for year in sorted({value[:4] for value in dates}):
+            year_dates = [value for value in dates if value.startswith(year)]
+            by_year[year] = {
+                "dates": year_dates,
+                "code_count": len(normalized_codes),
+                "codes_sha256": code_hash,
+                "rows": len(year_dates) * len(normalized_codes),
+            }
+        result[dataset] = by_year
+    return result
+
+
+def _validate_cross_sections(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping) or set(value) != set(DATASETS):
+        raise ValueError("all_cap_universe_cross_section")
+    normalized = _deep_thaw(value)
+    if not isinstance(normalized, dict):
+        raise ValueError("all_cap_universe_cross_section")
+    for dataset in DATASETS:
+        by_year = normalized[dataset]
+        if not isinstance(by_year, dict) or not by_year:
+            raise ValueError("all_cap_universe_cross_section")
+        for year, record in by_year.items():
+            if (
+                _YEAR.fullmatch(str(year)) is None
+                or not isinstance(record, dict)
+                or set(record)
+                != {"dates", "code_count", "codes_sha256", "rows"}
+                or not isinstance(record["dates"], list)
+                or not record["dates"]
+                or record["dates"] != sorted(set(record["dates"]))
+                or any(
+                    re.fullmatch(r"[0-9]{8}", str(value)) is None
+                    or not str(value).startswith(str(year))
+                    for value in record["dates"]
+                )
+                or not isinstance(record["code_count"], int)
+                or record["code_count"] <= 0
+                or _SHA256.fullmatch(str(record["codes_sha256"])) is None
+                or record["rows"]
+                != len(record["dates"]) * record["code_count"]
+            ):
+                raise ValueError("all_cap_universe_cross_section")
+    return normalized
+
+
+def _validate_coverage(value: object) -> None:
+    thresholds = {
+        "daily": 0.99,
+        "daily_basic": 0.99,
+        "adjustment": 0.98,
+    }
+    if not isinstance(value, Mapping) or set(value) != set(thresholds):
+        raise ValueError("all_cap_universe_manifest_coverage")
+    for dataset, threshold in thresholds.items():
+        record = value[dataset]
+        if not isinstance(record, Mapping):
+            raise ValueError("all_cap_universe_manifest_coverage")
+        try:
+            declared_threshold = float(record["threshold"])
+            minimum = float(record["minimum"])
+            expected_rows = int(record["expected_rows"])
+            observed_rows = int(record["observed_rows"])
+            missing_rows = int(record["missing_rows"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("all_cap_universe_manifest_coverage") from exc
+        if (
+            not math.isclose(declared_threshold, threshold, abs_tol=1e-12)
+            or not 0.0 <= minimum <= 1.0
+            or minimum + 1e-12 < threshold
+            or expected_rows < 0
+            or not 0 <= observed_rows <= expected_rows
+            or missing_rows != expected_rows - observed_rows
+        ):
+            raise ValueError("all_cap_universe_manifest_coverage")
 
 
 def _safe_relative(value: object) -> PurePosixPath:
@@ -587,6 +816,7 @@ def _validate_record(
     publication_dir: Path,
     dataset: str,
     record: Mapping[str, object],
+    cross_section: Mapping[str, object],
 ) -> tuple[str, UniversePartition, int]:
     year = str(record.get("partition") or "")
     relative = _safe_relative(record.get("path"))
@@ -626,6 +856,22 @@ def _validate_record(
         raise ValueError("all_cap_universe_manifest_dates")
     if frame.duplicated(list(KEY_COLUMNS[dataset]), keep=False).any():
         raise ValueError(f"all_cap_universe_duplicate:{dataset}")
+    actual_dates = sorted(frame[date_column].astype(str).unique().tolist())
+    if (
+        actual_dates != list(cross_section["dates"])
+        or len(frame) != int(cross_section["rows"])
+    ):
+        raise ValueError(f"all_cap_universe_cross_section:{dataset}:{year}")
+    for trade_key, rows_for_date in frame.groupby(date_column, sort=False):
+        codes = sorted(rows_for_date["code"].astype(str).tolist())
+        if (
+            len(codes) != int(cross_section["code_count"])
+            or len(codes) != len(set(codes))
+            or _code_set_hash(tuple(codes)) != cross_section["codes_sha256"]
+        ):
+            raise ValueError(
+                f"all_cap_universe_cross_section:{dataset}:{trade_key}"
+            )
     if dataset == "membership":
         if not frame["universe_contract_version"].eq(CONTRACT_VERSION).all():
             raise ValueError("all_cap_universe_manifest_contract")
@@ -714,6 +960,8 @@ def verify_publication(publication_dir: str | Path) -> VerifiedAllCapUniverse:
         raise ValueError("all_cap_universe_manifest_contract")
     cache_identity = _validate_cache_identity(manifest.get("cache_identity"))
     _validate_readiness(manifest.get("readiness"), cache_identity)
+    _validate_coverage(manifest.get("coverage"))
+    cross_sections = _validate_cross_sections(manifest.get("cross_sections"))
     partitions = manifest.get("partitions")
     row_counts = manifest.get("row_counts")
     schemas = manifest.get("dataset_schemas")
@@ -738,7 +986,14 @@ def verify_publication(publication_dir: str | Path) -> VerifiedAllCapUniverse:
         for raw_record in records:
             if not isinstance(raw_record, Mapping):
                 raise ValueError("all_cap_universe_manifest_malformed")
-            year, partition, rows = _validate_record(root, dataset, raw_record)
+            if str(raw_record.get("partition") or "") not in cross_sections[dataset]:
+                raise ValueError("all_cap_universe_cross_section")
+            year, partition, rows = _validate_record(
+                root,
+                dataset,
+                raw_record,
+                cross_sections[dataset][str(raw_record["partition"])],
+            )
             if year in loaded[dataset]:
                 raise ValueError("all_cap_universe_manifest_partition")
             loaded[dataset][year] = partition
@@ -746,6 +1001,8 @@ def verify_publication(publication_dir: str | Path) -> VerifiedAllCapUniverse:
             observed_rows += rows
         if observed_rows != int(row_counts[dataset]):
             raise ValueError(f"all_cap_universe_manifest_rows:{dataset}")
+        if set(loaded[dataset]) != set(cross_sections[dataset]):
+            raise ValueError("all_cap_universe_cross_section")
     actual_paths = {
         path.relative_to(root).as_posix()
         for path in root.rglob("*.parquet")
@@ -780,11 +1037,134 @@ def write_latest(repo_root: str | Path, manifest: Mapping[str, object]) -> Path:
     return path
 
 
+def _write_bytes_atomic(path: Path, payload: bytes) -> None:
+    temp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as handle:
+            temp_name = handle.name
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+        temp_name = None
+    finally:
+        if temp_name is not None:
+            Path(temp_name).unlink(missing_ok=True)
+
+
+@contextmanager
+def _latest_publish_lock(root: Path):
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / ".publish.lock"
+    with lock_path.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def publish_latest_if_cache_unchanged(
+    repo_root: str | Path,
+    manifest: Mapping[str, object],
+    *,
+    cache_root: str | Path,
+    cache_identity: object,
+    start_date: object,
+    end_date: object,
+) -> Path:
+    root = universe_root(repo_root)
+    latest = root / "latest.json"
+    with _latest_publish_lock(root):
+        previous = latest.read_bytes() if latest.is_file() else None
+        verify_cache_identity(
+            cache_root,
+            cache_identity,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        try:
+            path = write_latest(repo_root, manifest)
+            verify_cache_identity(
+                cache_root,
+                cache_identity,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        except Exception:
+            if previous is None:
+                latest.unlink(missing_ok=True)
+            else:
+                _write_bytes_atomic(latest, previous)
+            raise
+    return path
+
+
+def _expected_cross_sections_from_cache(
+    cache_root: Path,
+    *,
+    start_date: object,
+    end_date: object,
+) -> dict[str, object]:
+    start_key = _cache_date_key(start_date)
+    end_key = _cache_date_key(end_date)
+    try:
+        calendar = pd.read_csv(
+            cache_root / "trade_cal.csv",
+            dtype=str,
+            keep_default_na=False,
+        )
+        master = pd.read_csv(
+            cache_root / "stock_basic.csv",
+            dtype=str,
+            keep_default_na=False,
+        )
+    except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
+        raise ValueError("all_cap_universe_cross_section") from exc
+    if (
+        not {"cal_date", "is_open"}.issubset(calendar.columns)
+        or "ts_code" not in master.columns
+    ):
+        raise ValueError("all_cap_universe_cross_section")
+    all_open = sorted(
+        {
+            _cache_date_key(row.cal_date)
+            for row in calendar.itertuples(index=False)
+            if str(row.is_open).strip() in {"1", "True", "true"}
+        }
+    )
+    daily_dates = [
+        value for value in all_open if start_key <= value <= end_key
+    ]
+    next_by_date = {
+        current: following for current, following in zip(all_open, all_open[1:])
+    }
+
+    def quarter(value: str) -> tuple[str, int]:
+        return value[:4], (int(value[4:6]) - 1) // 3 + 1
+
+    membership_dates = [
+        value
+        for value in daily_dates
+        if value in next_by_date
+        and quarter(value) != quarter(next_by_date[value])
+    ]
+    return build_cross_section_contract(
+        codes=tuple(master["ts_code"].astype(str)),
+        membership_dates=tuple(membership_dates),
+        daily_dates=tuple(daily_dates),
+    )
+
+
 def load_latest(repo_root: str | Path) -> VerifiedAllCapUniverse:
     repo = Path(repo_root).absolute()
     cache_root = repo / "data/shared/backtest_cache"
     assert_cache_root(cache_root, repo)
-    root = universe_root(repo)
+    root = assert_universe_root(repo, must_exist=True)
     marker = _read_json(
         root / "latest.json",
         root=root,
@@ -817,6 +1197,16 @@ def load_latest(repo_root: str | Path) -> VerifiedAllCapUniverse:
         start_date=verified.metadata.get("start_date"),
         end_date=verified.metadata.get("end_date"),
     )
+    expected_cross_sections = _expected_cross_sections_from_cache(
+        cache_root,
+        start_date=verified.metadata.get("start_date"),
+        end_date=verified.metadata.get("end_date"),
+    )
+    if (
+        _deep_thaw(verified.metadata.get("cross_sections"))
+        != expected_cross_sections
+    ):
+        raise ValueError("all_cap_universe_cross_section")
     return verified
 
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import math
 import re
@@ -617,6 +619,17 @@ def build_review_membership(
         "previous_membership",
         required=("code", "review_date", "eligible", "stable_sleeve"),
     )
+    forced_raw = inputs.get("forced_exclusions", {})
+    if not isinstance(forced_raw, Mapping):
+        raise ValueError("all_cap_universe_inputs:forced_exclusions")
+    forced_exclusions: dict[str, set[str]] = {}
+    for code, reasons in forced_raw.items():
+        if not isinstance(reasons, (list, tuple, set, frozenset)):
+            raise ValueError("all_cap_universe_inputs:forced_exclusions")
+        normalized_reasons = {
+            str(reason).strip() for reason in reasons if str(reason).strip()
+        }
+        forced_exclusions[str(code)] = normalized_reasons
 
     status_by_code = _review_status(status, review_key, codes)
     liquidity_by_code = _daily_liquidity(
@@ -638,7 +651,7 @@ def build_review_membership(
     base_liquidity: list[tuple[str, float]] = []
     for master_row in master.itertuples(index=False):
         code = str(master_row.code)
-        reasons: set[str] = set()
+        reasons = set(forced_exclusions.get(code, set()))
         list_key = str(master_row.list_date)
         delist_key = None if pd.isna(master_row.delist_date) else str(master_row.delist_date)
         board = _board_for_code(code)
@@ -825,7 +838,8 @@ def _namechange_st_by_code(
             for interval in index.get(code, ())
             if interval[0] <= trade_key
             and (pd.isna(interval[1]) or str(interval[1]) >= trade_key)
-            and (pd.isna(interval[2]) or str(interval[2]) <= trade_key)
+            and not pd.isna(interval[2])
+            and str(interval[2]) <= trade_key
         ]
         if len(intervals) != 1:
             result[code] = None
@@ -1113,6 +1127,11 @@ class _VerifiedBacktestCache:
     missing_baostock_status_codes: tuple[str, ...]
     missing_namechange_codes: tuple[str, ...]
     missing_adj_factor_codes: tuple[str, ...]
+    missing_daily_by_date: Mapping[str, frozenset[str]]
+    missing_daily_basic_by_date: Mapping[str, frozenset[str]]
+    missing_adjustment_by_date: Mapping[str, frozenset[str]]
+    coverage: Mapping[str, object]
+    stock_master_sha256: str
     content_identity: Mapping[str, object]
 
 
@@ -1125,6 +1144,8 @@ def _read_cache_csv(
     *,
     cache_root: Path,
     required: Sequence[str],
+    identity_records: list[dict[str, object]] | None = None,
+    raw_hashes: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     try:
         relative = path.relative_to(cache_root).as_posix()
@@ -1134,11 +1155,22 @@ def _read_cache_csv(
     if path.is_symlink() or not path.is_file():
         raise _cache_error("missing", relative)
     try:
-        frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+        payload = path.read_bytes()
+        frame = pd.read_csv(
+            io.BytesIO(payload),
+            dtype=str,
+            keep_default_na=False,
+        )
     except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
         raise _cache_error("invalid", relative) from exc
     if set(required).difference(frame.columns):
         raise _cache_error("schema", relative)
+    if identity_records is not None:
+        identity_records.append(
+            universe_store.cache_csv_identity_record(relative, frame)
+        )
+    if raw_hashes is not None:
+        raw_hashes[relative] = hashlib.sha256(payload).hexdigest()
     return frame
 
 
@@ -1211,8 +1243,78 @@ def _verify_daily_partition_coverage(
     basic_by_date: Mapping[str, Path],
     suspend_by_date: Mapping[str, Path],
     baostock_suspended_by_date: Mapping[str, set[str]],
+    minimum_daily_coverage: float,
     minimum_daily_basic_coverage: float,
-) -> None:
+) -> tuple[dict[str, object], dict[str, dict[str, frozenset[str]]]]:
+    coverage: dict[str, object] = {}
+    missing: dict[str, dict[str, frozenset[str]]] = {
+        "daily": {},
+        "daily_basic": {},
+    }
+    for dataset, partitions, minimum_coverage in (
+        ("daily", daily_by_date, minimum_daily_coverage),
+        ("daily_basic", basic_by_date, minimum_daily_basic_coverage),
+    ):
+        expected_rows = observed_rows = 0
+        minimum = 1.0
+        dataset_dates = sorted(partitions)
+        for trade_key in dataset_dates:
+            expected = {
+                str(row.ts_code)
+                for row in master.itertuples(index=False)
+                if str(row.list_date) <= trade_key
+                and (pd.isna(row.delist_date) or trade_key <= str(row.delist_date))
+                and _board_for_code(str(row.ts_code)) is not None
+            }
+            confirmed_suspended: set[str] = set()
+            if trade_key in suspend_by_date:
+                suspension = _load_cache_partition(
+                    suspend_by_date[trade_key],
+                    "suspend_d",
+                )
+                confirmed_suspended = baostock_suspended_by_date.get(
+                    trade_key, set()
+                ).intersection(
+                    str(row.ts_code)
+                    for _, row in suspension.iterrows()
+                    if _full_day_suspension(row)
+                )
+            required = expected.difference(confirmed_suspended)
+            partition = _load_cache_partition(
+                partitions[trade_key],
+                dataset,
+            )
+            observed = set(partition["ts_code"].astype(str)).intersection(required)
+            missing_codes = frozenset(required.difference(observed))
+            missing[dataset][trade_key] = missing_codes
+            daily_coverage = (
+                1.0 if not required else len(observed) / len(required)
+            )
+            minimum = min(minimum, daily_coverage)
+            expected_rows += len(required)
+            observed_rows += len(observed)
+            if daily_coverage + 1e-12 < minimum_coverage:
+                raise _cache_error("coverage", f"{dataset}:{trade_key}")
+        coverage[dataset] = {
+            "threshold": minimum_coverage,
+            "minimum": minimum,
+            "expected_rows": expected_rows,
+            "observed_rows": observed_rows,
+            "missing_rows": expected_rows - observed_rows,
+        }
+    return coverage, missing
+
+
+def _adjustment_coverage(
+    *,
+    master: pd.DataFrame,
+    open_dates: Sequence[str],
+    observed_by_date: Mapping[str, set[str]],
+    minimum_coverage: float,
+) -> tuple[dict[str, object], dict[str, frozenset[str]]]:
+    expected_rows = observed_rows = 0
+    minimum = 1.0
+    missing: dict[str, frozenset[str]] = {}
     for trade_key in open_dates:
         expected = {
             str(row.ts_code)
@@ -1221,37 +1323,26 @@ def _verify_daily_partition_coverage(
             and (pd.isna(row.delist_date) or trade_key <= str(row.delist_date))
             and _board_for_code(str(row.ts_code)) is not None
         }
-        suspension = _load_cache_partition(
-            suspend_by_date[trade_key],
-            "suspend_d",
+        observed = expected.intersection(observed_by_date.get(trade_key, set()))
+        missing[trade_key] = frozenset(expected.difference(observed))
+        daily_coverage = (
+            1.0 if not expected else len(observed) / len(expected)
         )
-        confirmed_suspended = baostock_suspended_by_date.get(
-            trade_key, set()
-        ).intersection(
-            str(row.ts_code)
-            for _, row in suspension.iterrows()
-            if _full_day_suspension(row)
-        )
-        required = expected.difference(confirmed_suspended)
-        for dataset, partitions, minimum_coverage in (
-            ("daily", daily_by_date, 1.0),
-            ("daily_basic", basic_by_date, minimum_daily_basic_coverage),
-        ):
-            partition = _load_cache_partition(
-                partitions[trade_key],
-                dataset,
-            )
-            observed = set(partition["ts_code"].astype(str))
-            coverage = (
-                1.0
-                if not required
-                else len(required.intersection(observed)) / len(required)
-            )
-            if coverage + 1e-12 < minimum_coverage:
-                relative = _partition_path(
-                    cache_root, dataset, trade_key
-                ).relative_to(cache_root)
-                raise _cache_error("partial", relative.as_posix())
+        minimum = min(minimum, daily_coverage)
+        expected_rows += len(expected)
+        observed_rows += len(observed)
+        if daily_coverage + 1e-12 < minimum_coverage:
+            raise _cache_error("coverage", f"adjustment:{trade_key}")
+    return (
+        {
+            "threshold": minimum_coverage,
+            "minimum": minimum,
+            "expected_rows": expected_rows,
+            "observed_rows": observed_rows,
+            "missing_rows": expected_rows - observed_rows,
+        },
+        missing,
+    )
 
 
 def verify_shared_backtest_cache(
@@ -1259,7 +1350,10 @@ def verify_shared_backtest_cache(
     development_start: date,
     development_end: date,
     *,
+    minimum_daily_coverage: float = 0.99,
     minimum_daily_basic_coverage: float,
+    minimum_adjustment_coverage: float = 0.98,
+    liquidity_lookback_sessions: int = 252,
 ) -> _VerifiedBacktestCache:
     """Verify the existing full-market cache without provider fallbacks."""
 
@@ -1271,6 +1365,15 @@ def verify_shared_backtest_cache(
         or not isinstance(minimum_daily_basic_coverage, (int, float))
         or not math.isfinite(float(minimum_daily_basic_coverage))
         or not 0.0 <= float(minimum_daily_basic_coverage) <= 1.0
+        or isinstance(minimum_daily_coverage, bool)
+        or not isinstance(minimum_daily_coverage, (int, float))
+        or not 0.0 <= float(minimum_daily_coverage) <= 1.0
+        or isinstance(minimum_adjustment_coverage, bool)
+        or not isinstance(minimum_adjustment_coverage, (int, float))
+        or not 0.0 <= float(minimum_adjustment_coverage) <= 1.0
+        or isinstance(liquidity_lookback_sessions, bool)
+        or not isinstance(liquidity_lookback_sessions, int)
+        or liquidity_lookback_sessions <= 0
     ):
         raise ValueError("all_cap_universe_cache_window")
     root = Path(repo_root).absolute()
@@ -1282,7 +1385,8 @@ def verify_shared_backtest_cache(
     if meta_path.is_symlink() or not meta_path.is_file():
         raise _cache_error("missing", "_meta.json")
     try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta_payload = meta_path.read_bytes()
+        meta = json.loads(meta_payload.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise _cache_error("invalid", "_meta.json") from exc
     if (
@@ -1295,11 +1399,17 @@ def verify_shared_backtest_cache(
     ):
         raise _cache_error("stock_master_meta", "_meta.json")
     identity_paths = ["_meta.json", "trade_cal.csv", "stock_basic.csv"]
+    identity_records = [
+        universe_store.cache_json_identity_record("_meta.json", meta)
+    ]
+    raw_hashes: dict[str, str] = {}
 
     calendar = _read_cache_csv(
         cache_root / "trade_cal.csv",
         cache_root=cache_root,
         required=("cal_date", "is_open"),
+        identity_records=identity_records,
+        raw_hashes=raw_hashes,
     )
     calendar = _cache_date_frame(
         calendar,
@@ -1323,11 +1433,19 @@ def verify_shared_backtest_cache(
         raise _cache_error("calendar", "trade_cal.csv")
     if not any(value > end_key for value in all_open_dates):
         raise _cache_error("calendar_next_open", "trade_cal.csv")
+    first_review = _quarter_review_dates(calendar, open_dates)[0]
+    first_review_window = [
+        value
+        for value in all_open_dates
+        if value <= first_review
+    ][-liquidity_lookback_sessions:]
 
     master = _read_cache_csv(
         cache_root / "stock_basic.csv",
         cache_root=cache_root,
         required=("ts_code", "list_date", "delist_date", "list_status"),
+        identity_records=identity_records,
+        raw_hashes=raw_hashes,
     )
     master["ts_code"] = master["ts_code"].astype("string[pyarrow]").str.strip()
     master = _cache_date_frame(
@@ -1355,6 +1473,20 @@ def verify_shared_backtest_cache(
         for value in master["ts_code"]
         if _board_for_code(str(value)) is not None
     }
+    liquidity_dates = set(open_dates)
+    for row in master.itertuples(index=False):
+        code = str(row.ts_code)
+        if (
+            code in supported_codes
+            and str(row.list_date) <= first_review
+            and (pd.isna(row.delist_date) or first_review <= str(row.delist_date))
+        ):
+            liquidity_dates.update(
+                value
+                for value in first_review_window
+                if value >= str(row.list_date)
+            )
+    liquidity_dates = tuple(sorted(liquidity_dates))
     producer_codes = {
         code
         for code in supported_codes
@@ -1389,14 +1521,18 @@ def verify_shared_backtest_cache(
         "daily_basic": basic_by_date,
         "suspend_d": suspend_by_date,
     }
-    for trade_key in open_dates:
+    for trade_key in liquidity_dates:
         for dataset, required in partition_specs.items():
+            if dataset != "daily" and trade_key < start_key:
+                continue
             path = _partition_path(cache_root, dataset, trade_key)
             identity_paths.append(path.relative_to(cache_root).as_posix())
             frame = _read_cache_csv(
                 path,
                 cache_root=cache_root,
                 required=required,
+                identity_records=identity_records,
+                raw_hashes=raw_hashes,
             )
             frame = _cache_date_frame(
                 frame,
@@ -1416,6 +1552,7 @@ def verify_shared_backtest_cache(
     missing_baostock_status_codes: list[str] = []
     missing_namechange_codes: list[str] = []
     missing_adj_factor_codes: list[str] = []
+    adjustment_observed_by_date: dict[str, set[str]] = {}
     for row in master.itertuples(index=False):
         code = str(row.ts_code)
         supported = code in supported_codes
@@ -1427,6 +1564,11 @@ def verify_shared_backtest_cache(
         ):
             if supported:
                 missing_baostock_status_codes.append(code)
+                identity_records.append(
+                    universe_store.missing_cache_identity_record(
+                        status_path.relative_to(cache_root).as_posix()
+                    )
+                )
             status = pd.DataFrame(
                 columns=("ts_code", "trade_date", "tradestatus", "is_st", "st_source")
             )
@@ -1438,6 +1580,8 @@ def verify_shared_backtest_cache(
                 status_path,
                 cache_root=cache_root,
                 required=("ts_code", "trade_date", "tradestatus", "is_st", "st_source"),
+                identity_records=identity_records,
+                raw_hashes=raw_hashes,
             )
             status = _cache_date_frame(
                 status,
@@ -1452,12 +1596,13 @@ def verify_shared_backtest_cache(
             adjustment = pd.DataFrame(
                 columns=("ts_code", "trade_date", "adj_factor")
             )
-        elif (
-            code not in producer_codes
-            and not adjustment_path.exists()
-            and not adjustment_path.is_symlink()
-        ):
+        elif not adjustment_path.exists() and not adjustment_path.is_symlink():
             missing_adj_factor_codes.append(code)
+            identity_records.append(
+                universe_store.missing_cache_identity_record(
+                    adjustment_path.relative_to(cache_root).as_posix()
+                )
+            )
             adjustment = pd.DataFrame(
                 columns=("ts_code", "trade_date", "adj_factor")
             )
@@ -1466,6 +1611,8 @@ def verify_shared_backtest_cache(
                 adjustment_path,
                 cache_root=cache_root,
                 required=("ts_code", "trade_date", "adj_factor"),
+                identity_records=identity_records,
+                raw_hashes=raw_hashes,
             )
             adjustment = _cache_date_frame(
                 adjustment,
@@ -1475,8 +1622,6 @@ def verify_shared_backtest_cache(
         verified_partitions: list[tuple[str, pd.DataFrame, Path]] = []
         if supported and code not in missing_baostock_status_codes:
             verified_partitions.append(("baostock_status", status, status_path))
-        if supported and code not in missing_adj_factor_codes:
-            verified_partitions.append(("adj_factor", adjustment, adjustment_path))
         for dataset, frame, path in verified_partitions:
             if (
                 not frame.empty
@@ -1493,6 +1638,37 @@ def verify_shared_backtest_cache(
             observed = set(frame["trade_date"].astype(str)).intersection(open_dates)
             if observed != lifecycle_dates:
                 raise _cache_error("partial", path.relative_to(cache_root).as_posix())
+        if supported and code not in missing_adj_factor_codes:
+            if (
+                not adjustment.empty
+                and set(adjustment["ts_code"].astype(str)) != {code}
+                or adjustment.duplicated(
+                    ["trade_date", "ts_code"],
+                    keep=False,
+                ).any()
+            ):
+                raise _cache_error(
+                    "partition",
+                    adjustment_path.relative_to(cache_root).as_posix(),
+                )
+            valid_adjustment = pd.to_numeric(
+                adjustment["adj_factor"],
+                errors="coerce",
+            )
+            valid_rows = adjustment.loc[
+                valid_adjustment.gt(0.0)
+                & valid_adjustment.map(
+                    lambda value: math.isfinite(float(value))
+                    if not pd.isna(value)
+                    else False
+                )
+            ]
+            for trade_key in valid_rows["trade_date"].astype(str):
+                if trade_key in open_dates:
+                    adjustment_observed_by_date.setdefault(
+                        trade_key,
+                        set(),
+                    ).add(code)
         for status_row in status.itertuples(index=False):
             if (
                 str(status_row.trade_date) in open_dates
@@ -1511,6 +1687,11 @@ def verify_shared_backtest_cache(
             )
             if not namechange_complete and code not in producer_codes:
                 missing_namechange_codes.append(code)
+                identity_records.append(
+                    universe_store.missing_cache_identity_record(
+                        namechange_path.relative_to(cache_root).as_posix()
+                    )
+                )
                 continue
             names = _read_cache_csv(
                 namechange_path,
@@ -1523,6 +1704,8 @@ def verify_shared_backtest_cache(
                     "ann_date",
                     "change_reason",
                 ),
+                identity_records=identity_records,
+                raw_hashes=raw_hashes,
             )
             names = _cache_date_frame(
                 names,
@@ -1547,13 +1730,18 @@ def verify_shared_backtest_cache(
                 raise _cache_error("partition", namechange_path.relative_to(cache_root).as_posix())
             namechange_frames.append(names)
 
-    declared_open_iso = {
-        f"{value[:4]}-{value[4:6]}-{value[6:]}" for value in open_dates
+    declared_dates = {
+        "daily_dates_done": liquidity_dates,
+        "daily_basic_dates_done": open_dates,
     }
-    for field in ("daily_dates_done", "daily_basic_dates_done"):
+    for field, required_dates in declared_dates.items():
+        declared_open_iso = {
+            f"{value[:4]}-{value[4:6]}-{value[6:]}"
+            for value in required_dates
+        }
         if not declared_open_iso.issubset({str(value) for value in meta[field]}):
             raise _cache_error(f"{field}_meta", "_meta.json")
-    _verify_daily_partition_coverage(
+    coverage, missing_by_dataset = _verify_daily_partition_coverage(
         cache_root=cache_root,
         master=master,
         open_dates=open_dates,
@@ -1561,9 +1749,19 @@ def verify_shared_backtest_cache(
         basic_by_date=basic_by_date,
         suspend_by_date=suspend_by_date,
         baostock_suspended_by_date=baostock_suspended_by_date,
+        minimum_daily_coverage=float(minimum_daily_coverage),
         minimum_daily_basic_coverage=float(minimum_daily_basic_coverage),
     )
+    adjustment_coverage, missing_adjustment_by_date = _adjustment_coverage(
+        master=master,
+        open_dates=open_dates,
+        observed_by_date=adjustment_observed_by_date,
+        minimum_coverage=float(minimum_adjustment_coverage),
+    )
+    coverage["adjustment"] = adjustment_coverage
 
+    if {str(record["path"]) for record in identity_records} != set(identity_paths):
+        raise ValueError("all_cap_universe_cache_identity_manifest")
     return _VerifiedBacktestCache(
         cache_root=cache_root,
         calendar=calendar,
@@ -1581,9 +1779,13 @@ def verify_shared_backtest_cache(
         missing_baostock_status_codes=tuple(sorted(missing_baostock_status_codes)),
         missing_namechange_codes=tuple(sorted(missing_namechange_codes)),
         missing_adj_factor_codes=tuple(sorted(missing_adj_factor_codes)),
-        content_identity=universe_store.build_cache_identity(
-            cache_root,
-            identity_paths,
+        missing_daily_by_date=missing_by_dataset["daily"],
+        missing_daily_basic_by_date=missing_by_dataset["daily_basic"],
+        missing_adjustment_by_date=missing_adjustment_by_date,
+        coverage=coverage,
+        stock_master_sha256=raw_hashes["stock_basic.csv"],
+        content_identity=universe_store.build_cache_identity_from_records(
+            identity_records,
         ),
     )
 
@@ -1662,9 +1864,7 @@ def _verify_source_identity(
     master_hash = str(metadata.get("stock_master_sha256") or "")
     start_key = str(metadata.get("start_date") or "")
     end_key = str(metadata.get("end_date") or "")
-    expected_master_hash = universe_store.sha256(
-        repo_root / "data/shared/backtest_cache/stock_basic.csv"
-    )
+    expected_master_hash = cache.stock_master_sha256
     declared_open = metadata.get("open_trade_dates")
     if (
         re.fullmatch(r"[a-f0-9]{64}", source_hash) is None
@@ -1794,31 +1994,82 @@ def _membership_from_cache(
 ) -> pd.DataFrame:
     reviews = _quarter_review_dates(cache.calendar, cache.open_dates)
     lookback = int(_contract_universe(contract)["liquidity_lookback_sessions"])
+    calendar = _normalize_date_column(
+        cache.calendar,
+        "cal_date",
+        error="all_cap_universe_calendar",
+    )
+    calendar_open = sorted(
+        calendar.loc[
+            calendar["is_open"].astype(str).str.strip().isin({"1", "True", "true"}),
+            "cal_date",
+        ].astype(str)
+    )
+    list_dates = {
+        str(row.ts_code): str(row.list_date)
+        for row in cache.stock_master.itertuples(index=False)
+        if _board_for_code(str(row.ts_code)) is not None
+    }
     previous = pd.DataFrame(
         columns=("review_date", "code", "eligible", "stable_sleeve")
     )
     outputs: list[pd.DataFrame] = []
     for review_key in reviews:
         review_sessions = [
-            trade_key for trade_key in cache.open_dates if trade_key <= review_key
+            trade_key for trade_key in calendar_open if trade_key <= review_key
         ][-lookback:]
+        if not review_sessions:
+            raise ValueError(
+                "all_cap_universe_insufficient_data:liquidity_warmup"
+            )
+        earliest_session = review_sessions[0]
+        required_review_sessions: set[str] = set()
+        for code, list_key in list_dates.items():
+            if list_key > review_key:
+                continue
+            required_sessions = [
+                trade_key
+                for trade_key in review_sessions
+                if trade_key >= list_key
+            ]
+            required_review_sessions.update(required_sessions)
+            if (
+                len(review_sessions) < lookback
+                and list_key < earliest_session
+            ) or any(
+                trade_key not in cache.daily_by_date
+                for trade_key in required_sessions
+            ):
+                raise ValueError(
+                    "all_cap_universe_insufficient_data:"
+                    f"liquidity_warmup:{review_key}:{code}"
+                )
         daily = pd.concat(
             [
                 _load_cache_partition(
                     cache.daily_by_date[trade_key],
                     "daily",
                 )
-                for trade_key in review_sessions
+                for trade_key in sorted(required_review_sessions)
             ],
             ignore_index=True,
         )
+        basic_sessions = [
+            trade_key
+            for trade_key in cache.daily_basic_by_date
+            if trade_key <= review_key
+        ][-lookback:]
+        if not basic_sessions:
+            raise ValueError(
+                "all_cap_universe_insufficient_data:daily_basic"
+            )
         daily_basic = pd.concat(
             [
                 _load_cache_partition(
                     cache.daily_basic_by_date[trade_key],
                     "daily_basic",
                 )
-                for trade_key in review_sessions
+                for trade_key in basic_sessions
             ],
             ignore_index=True,
         )
@@ -1838,6 +2089,27 @@ def _membership_from_cache(
                 "status_source": review_status["status_source"],
             }
         )
+        forced_exclusions: dict[str, set[str]] = {}
+        missing_daily = getattr(cache, "missing_daily_by_date", {})
+        for trade_key in review_sessions:
+            for code in missing_daily.get(trade_key, frozenset()):
+                forced_exclusions.setdefault(code, set()).add(
+                    "daily_missing"
+                )
+        for code in getattr(cache, "missing_daily_basic_by_date", {}).get(
+            review_key,
+            frozenset(),
+        ):
+            forced_exclusions.setdefault(code, set()).add(
+                "daily_basic_missing"
+            )
+        for code in getattr(cache, "missing_adjustment_by_date", {}).get(
+            review_key,
+            frozenset(),
+        ):
+            forced_exclusions.setdefault(code, set()).add(
+                "adjustment_missing"
+            )
         membership = build_review_membership(
             {
                 "trade_calendar": cache.calendar,
@@ -1847,6 +2119,7 @@ def _membership_from_cache(
                 "status": status,
                 "industry_membership": industry,
                 "previous_membership": previous,
+                "forced_exclusions": forced_exclusions,
             },
             review_date=review_key,
             contract=contract,
@@ -1878,14 +2151,30 @@ def _minimum_free_fraction(contract: AllCapContract) -> float:
     return floor
 
 
-def _minimum_daily_basic_coverage(contract: AllCapContract) -> float:
+def _coverage_thresholds(contract: AllCapContract) -> dict[str, float]:
     try:
-        threshold = float(contract.raw["data_gates"]["daily_basic_coverage"])
+        gates = contract.raw["data_gates"]
+        thresholds = {
+            "membership": float(gates["critical_membership_coverage"]),
+            "daily": float(gates["daily_bar_coverage"]),
+            "daily_basic": float(gates["daily_basic_coverage"]),
+            "adjustment": float(gates["adjustment_coverage"]),
+        }
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("all_cap_universe_contract:data_gates") from exc
-    if not math.isfinite(threshold) or threshold < 0.99 or threshold > 1.0:
+    frozen = {
+        "membership": 1.0,
+        "daily": 0.99,
+        "daily_basic": 0.99,
+        "adjustment": 0.98,
+    }
+    if any(
+        not math.isfinite(value)
+        or not math.isclose(value, frozen[name], abs_tol=1e-12)
+        for name, value in thresholds.items()
+    ):
         raise ValueError("all_cap_universe_contract:data_gates")
-    return threshold
+    return thresholds
 
 
 def _projected_space_check(
@@ -1931,6 +2220,7 @@ def _result_for_publication(
         ),
         "missing_namechange_codes": list(cache.missing_namechange_codes),
         "missing_adj_factor_codes": list(cache.missing_adj_factor_codes),
+        "coverage": cache.coverage,
         "reused": reused,
     }
 
@@ -1975,11 +2265,17 @@ def materialize_all_cap_universe(
         sources = load_verified_all_cap_sources(root)
     except ValueError as exc:
         raise ValueError(f"all_cap_universe_insufficient_data:sources:{exc}") from exc
+    coverage_thresholds = _coverage_thresholds(contract)
     cache = verify_shared_backtest_cache(
         root,
         contract.development_start,
         contract.development_end,
-        minimum_daily_basic_coverage=_minimum_daily_basic_coverage(contract),
+        minimum_daily_coverage=coverage_thresholds["daily"],
+        minimum_daily_basic_coverage=coverage_thresholds["daily_basic"],
+        minimum_adjustment_coverage=coverage_thresholds["adjustment"],
+        liquidity_lookback_sessions=int(
+            _contract_universe(contract)["liquidity_lookback_sessions"]
+        ),
     )
     source_metadata = getattr(sources, "metadata", None)
     industry = getattr(sources, "industry_membership", None)
@@ -2142,6 +2438,12 @@ def materialize_all_cap_universe(
                 "missing_namechange_codes": list(cache.missing_namechange_codes),
                 "missing_adj_factor_codes": list(cache.missing_adj_factor_codes),
             },
+            "coverage": cache.coverage,
+            "cross_sections": universe_store.build_cross_section_contract(
+                codes=tuple(cache.stock_master["ts_code"].astype(str)),
+                membership_dates=tuple(reviews),
+                daily_dates=cache.open_dates,
+            ),
             "dataset_schemas": {
                 dataset: universe_store.schema_contract(dataset)
                 for dataset in universe_store.DATASETS
@@ -2160,7 +2462,14 @@ def materialize_all_cap_universe(
         destination = universe_store.install_publication(staging, publication_id)
         installed = True
         verified = universe_store.verify_publication(destination)
-        universe_store.write_latest(root, verified.metadata)
+        universe_store.publish_latest_if_cache_unchanged(
+            root,
+            verified.metadata,
+            cache_root=cache.cache_root,
+            cache_identity=cache.content_identity,
+            start_date=contract.development_start.strftime("%Y%m%d"),
+            end_date=contract.development_end.strftime("%Y%m%d"),
+        )
         return _result_for_publication(
             verified,
             cache=cache,

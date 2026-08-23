@@ -141,11 +141,12 @@ def _contract(
     start: date = date(2024, 6, 24),
     end: date = date(2024, 7, 1),
     boundaries: tuple[int, int, int, int] = (300, 800, 1800, 3800),
+    liquidity_lookback_sessions: int = 252,
 ) -> AllCapContract:
     raw = {
         "contract_version": 1,
         "universe": {
-            "liquidity_lookback_sessions": 252,
+            "liquidity_lookback_sessions": liquidity_lookback_sessions,
             "maximum_non_trading_days": 60,
             "new_entry_minimum_amount_percentile": 0.20,
             "retention_minimum_amount_percentile": 0.10,
@@ -156,7 +157,12 @@ def _contract(
                 "bse_days": 730,
             },
         },
-        "data_gates": {"daily_basic_coverage": 0.99},
+        "data_gates": {
+            "critical_membership_coverage": 1.00,
+            "daily_bar_coverage": 0.99,
+            "daily_basic_coverage": 0.99,
+            "adjustment_coverage": 0.98,
+        },
         "storage": {"minimum_filesystem_free_fraction_after_publish": 0.15},
     }
     return AllCapContract(
@@ -900,6 +906,25 @@ class DailyHardStatusTests(unittest.TestCase):
         self.assertFalse(row["status_complete"])
         self.assertFalse(row["buy_executable"])
 
+    def test_missing_namechange_announcement_date_is_not_pit_visible(self) -> None:
+        for missing in ("", pd.NA):
+            with self.subTest(missing=missing):
+                inputs = _daily_status_inputs()
+                inputs["namechange"].loc[
+                    inputs["namechange"]["ts_code"].eq("000001.SZ"),
+                    "ann_date",
+                ] = missing
+
+                row = build_daily_hard_status(
+                    trade_date=self.trade_date,
+                    **inputs,
+                ).set_index("code").loc["000001.SZ"]
+
+                self.assertFalse(row["status_complete"])
+                self.assertTrue(row["status_conflict"])
+                self.assertFalse(row["buy_executable"])
+                self.assertFalse(row["sell_executable"])
+
     def test_duplicate_keys_in_each_daily_source_are_rejected(self) -> None:
         for source in ("daily", "stk_limit", "baostock_status", "suspend_d", "namechange"):
             with self.subTest(source=source):
@@ -1113,7 +1138,11 @@ def _write_complete_cache(repo_root: Path) -> tuple[_FakeSources, AllCapContract
     sources.metadata["open_trade_dates"] = list(open_dates)
     return (
         sources,
-        _contract(start=date(2024, 6, 24), end=date(2024, 6, 28)),
+        _contract(
+            start=date(2024, 6, 24),
+            end=date(2024, 6, 28),
+            liquidity_lookback_sessions=5,
+        ),
     )
 
 
@@ -1137,6 +1166,177 @@ def _resign_manifest_and_latest(repo_root: Path, mutate) -> None:
         json.dumps(latest, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def _expand_complete_cache(
+    repo_root: Path,
+    sources: _FakeSources,
+    additional_codes: list[str],
+) -> None:
+    cache = repo_root / "data/shared/backtest_cache"
+    master_path = cache / "stock_basic.csv"
+    master = pd.read_csv(master_path, dtype=str, keep_default_na=False)
+    _write_csv(
+        master_path,
+        pd.concat(
+            [
+                master,
+                pd.DataFrame(
+                    [
+                        {
+                            "ts_code": code,
+                            "list_date": "20200101",
+                            "delist_date": "",
+                            "list_status": "L",
+                        }
+                        for code in additional_codes
+                    ]
+                ),
+            ],
+            ignore_index=True,
+        ),
+    )
+    meta_path = cache / "_meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["namechange_codes_done"] = sorted(
+        set(meta["namechange_codes_done"]).union(additional_codes)
+    )
+    meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
+    open_dates = list(sources.metadata["open_trade_dates"])
+    for trade_key in open_dates:
+        dashed = f"{trade_key[:4]}-{trade_key[4:6]}-{trade_key[6:]}"
+        daily_path = cache / "daily" / f"{dashed}.csv"
+        daily = pd.read_csv(daily_path, dtype=str, keep_default_na=False)
+        _write_csv(
+            daily_path,
+            pd.concat(
+                [
+                    daily,
+                    pd.DataFrame(
+                        [
+                            {
+                                "ts_code": code,
+                                "trade_date": trade_key,
+                                "open": 10.0,
+                                "amount": 100.0,
+                            }
+                            for code in additional_codes
+                        ]
+                    ),
+                ],
+                ignore_index=True,
+            ),
+        )
+        basic_path = cache / "daily_basic" / f"{dashed}.csv"
+        daily_basic = pd.read_csv(
+            basic_path,
+            dtype=str,
+            keep_default_na=False,
+        )
+        _write_csv(
+            basic_path,
+            pd.concat(
+                [
+                    daily_basic,
+                    pd.DataFrame(
+                        [
+                            {
+                                "ts_code": code,
+                                "trade_date": trade_key,
+                                "total_mv": 1_000.0,
+                                "circ_mv": 800.0,
+                            }
+                            for code in additional_codes
+                        ]
+                    ),
+                ],
+                ignore_index=True,
+            ),
+        )
+    for code in additional_codes:
+        _write_csv(
+            cache / "namechange" / f"{code}.csv",
+            pd.DataFrame(
+                [{
+                    "ts_code": code,
+                    "name": "测试股份",
+                    "start_date": "20200101",
+                    "end_date": "",
+                    "ann_date": "20200101",
+                    "change_reason": "更名",
+                }]
+            ),
+        )
+        _write_csv(
+            cache / "baostock_status" / f"{code}.csv",
+            pd.DataFrame(
+                [
+                    {
+                        "ts_code": code,
+                        "trade_date": trade_key,
+                        "tradestatus": "1",
+                        "is_st": "0",
+                        "st_source": "baostock_history_isST_v1",
+                    }
+                    for trade_key in open_dates
+                ]
+            ),
+        )
+        _write_csv(
+            cache / "adj_factor" / f"{code}.csv",
+            pd.DataFrame(
+                [
+                    {
+                        "ts_code": code,
+                        "trade_date": trade_key,
+                        "adj_factor": 1.0,
+                    }
+                    for trade_key in open_dates
+                ]
+            ),
+        )
+    sources._limits = pd.concat(
+        [
+            sources._limits,
+            pd.DataFrame(
+                [
+                    {
+                        "ts_code": code,
+                        "trade_date": trade_key,
+                        "pre_close": 10.0,
+                        "up_limit": 11.0,
+                        "down_limit": 9.0,
+                    }
+                    for trade_key in open_dates
+                    for code in additional_codes
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    sources.industry_membership = pd.concat(
+        [
+            sources.industry_membership,
+            pd.DataFrame(
+                [
+                    {
+                        "ts_code": code,
+                        "l1_code": "801010.SI",
+                        "l2_code": "801011.SI",
+                        "l3_code": "850111.SI",
+                        "in_date": "20200101",
+                        "out_date": "",
+                        "is_new": "Y",
+                    }
+                    for code in additional_codes
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    sources.metadata["stock_master_sha256"] = hashlib.sha256(
+        master_path.read_bytes()
+    ).hexdigest()
 
 
 class UniverseMaterializationTests(unittest.TestCase):
@@ -1202,12 +1402,13 @@ class UniverseMaterializationTests(unittest.TestCase):
 
     def test_quarterly_membership_reads_only_the_trailing_252_sessions(self) -> None:
         review_key = "20241231"
+        contract = _contract()
         all_dates = pd.bdate_range("2023-12-01", "2024-12-31").strftime("%Y%m%d").tolist()
         inputs = _review_inputs(["000001.SZ"], review=date(2024, 12, 31))
         template = build_review_membership(
             inputs,
             review_date=review_key,
-            contract=self.contract,
+            contract=contract,
         )
         daily_by_date = {
             trade_key: pd.DataFrame(
@@ -1231,7 +1432,12 @@ class UniverseMaterializationTests(unittest.TestCase):
             for trade_key in all_dates
         }
         cache = SimpleNamespace(
-            calendar=inputs["trade_calendar"],
+            calendar=pd.DataFrame(
+                [
+                    {"cal_date": trade_key, "is_open": "1"}
+                    for trade_key in [*all_dates, "20250102"]
+                ]
+            ),
             open_dates=tuple(all_dates),
             stock_master=inputs["stock_master"],
             daily_by_date=daily_by_date,
@@ -1278,11 +1484,247 @@ class UniverseMaterializationTests(unittest.TestCase):
                 cache,
                 hard_status,
                 inputs["industry_membership"],
-                self.contract,
+                contract,
             )
 
         expected = all_dates[-252:]
         self.assertEqual(observed_dates, [(expected, expected)])
+
+    def test_first_review_requires_full_warmup_for_an_old_stock(self) -> None:
+        review_key = "20240628"
+        contract = _contract()
+        inputs = _review_inputs(["000001.SZ"], review=date(2024, 6, 28))
+        development_dates = [
+            "20240624",
+            "20240625",
+            "20240626",
+            "20240627",
+            review_key,
+        ]
+        cache = SimpleNamespace(
+            calendar=inputs["trade_calendar"],
+            open_dates=tuple(development_dates),
+            stock_master=inputs["stock_master"],
+            daily_by_date={
+                trade_key: inputs["daily"].loc[
+                    inputs["daily"]["trade_date"].eq(trade_key)
+                ].copy()
+                for trade_key in development_dates
+            },
+            daily_basic_by_date={
+                trade_key: inputs["daily_basic"].copy()
+                for trade_key in development_dates
+            },
+        )
+        hard_status = pd.DataFrame(
+            [{
+                "trade_date": review_key,
+                "code": "000001.SZ",
+                "status_complete": True,
+                "status_conflict": False,
+                "st": False,
+                "suspended": False,
+                "delisting": False,
+                "status_source": "verified",
+            }]
+        )
+
+        with patch.object(
+            universe_module,
+            "_quarter_review_dates",
+            return_value=[review_key],
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "all_cap_universe_insufficient_data:liquidity_warmup",
+            ):
+                universe_module._membership_from_cache(
+                    cache,
+                    hard_status,
+                    inputs["industry_membership"],
+                    contract,
+                )
+
+    def test_first_review_scales_short_history_for_a_new_listing(self) -> None:
+        review_key = "20240628"
+        contract = _contract()
+        inputs = _review_inputs(
+            ["000001.SZ"],
+            review=date(2024, 6, 28),
+            list_dates={"000001.SZ": date(2024, 6, 24)},
+        )
+        development_dates = [
+            "20240624",
+            "20240625",
+            "20240626",
+            "20240627",
+            review_key,
+        ]
+        cache = SimpleNamespace(
+            calendar=inputs["trade_calendar"],
+            open_dates=tuple(development_dates),
+            stock_master=inputs["stock_master"],
+            daily_by_date={
+                trade_key: inputs["daily"].loc[
+                    inputs["daily"]["trade_date"].eq(trade_key)
+                ].copy()
+                for trade_key in development_dates
+            },
+            daily_basic_by_date={
+                trade_key: inputs["daily_basic"].copy()
+                for trade_key in development_dates
+            },
+        )
+        hard_status = pd.DataFrame(
+            [{
+                "trade_date": review_key,
+                "code": "000001.SZ",
+                "status_complete": True,
+                "status_conflict": False,
+                "st": False,
+                "suspended": False,
+                "delisting": False,
+                "status_source": "verified",
+            }]
+        )
+
+        with patch.object(
+            universe_module,
+            "_quarter_review_dates",
+            return_value=[review_key],
+        ):
+            membership = universe_module._membership_from_cache(
+                cache,
+                hard_status,
+                inputs["industry_membership"],
+                contract,
+            )
+
+        self.assertEqual(float(membership.iloc[0]["avg_amount_252"]), 100.0)
+        self.assertNotIn(
+            "amount_invalid",
+            str(membership.iloc[0]["exclusion_reasons"]),
+        )
+
+    def test_predevelopment_daily_cache_supplies_exact_252_session_warmup(self) -> None:
+        cache_root = self.repo_root / "data/shared/backtest_cache"
+        self.contract = _contract(
+            start=date(2024, 6, 24),
+            end=date(2024, 6, 28),
+            liquidity_lookback_sessions=252,
+        )
+        warmup_dates = (
+            pd.bdate_range(end="2024-06-21", periods=248)
+            .strftime("%Y%m%d")
+            .tolist()
+        )
+        calendar_path = cache_root / "trade_cal.csv"
+        calendar = pd.read_csv(calendar_path, dtype=str, keep_default_na=False)
+        _write_csv(
+            calendar_path,
+            pd.concat(
+                [
+                    pd.DataFrame(
+                        [
+                            {
+                                "exchange": "SSE",
+                                "cal_date": trade_key,
+                                "is_open": "1",
+                            }
+                            for trade_key in warmup_dates
+                        ]
+                    ),
+                    calendar,
+                ],
+                ignore_index=True,
+            ),
+        )
+        for index, trade_key in enumerate(warmup_dates):
+            dashed = f"{trade_key[:4]}-{trade_key[4:6]}-{trade_key[6:]}"
+            _write_csv(
+                cache_root / "daily" / f"{dashed}.csv",
+                pd.DataFrame(
+                    [{
+                        "ts_code": "000001.SZ",
+                        "trade_date": trade_key,
+                        "open": 10.0,
+                        "amount": 1_000_000.0 if index == 0 else 100.0,
+                    }]
+                ),
+            )
+        meta_path = cache_root / "_meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["daily_dates_done"] = sorted(
+            set(meta["daily_dates_done"]).union(
+                f"{value[:4]}-{value[4:6]}-{value[6:]}"
+                for value in warmup_dates
+            )
+        )
+        meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
+
+        result = self._materialize()
+        verified = load_verified_all_cap_universe(self.repo_root)
+        membership = verified.load_membership_year("2024")
+        identity_paths = {
+            record["path"] for record in verified.metadata["cache_identity"]["files"]
+        }
+        oldest = warmup_dates[0]
+        oldest_path = (
+            f"daily/{oldest[:4]}-{oldest[4:6]}-{oldest[6:]}.csv"
+        )
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(float(membership.iloc[0]["avg_amount_252"]), 100.0)
+        self.assertNotIn(oldest_path, identity_paths)
+
+    def test_new_listing_does_not_require_prelisting_warmup_files(self) -> None:
+        cache_root = self.repo_root / "data/shared/backtest_cache"
+        warmup_dates = (
+            pd.bdate_range(end="2024-06-21", periods=248)
+            .strftime("%Y%m%d")
+            .tolist()
+        )
+        calendar_path = cache_root / "trade_cal.csv"
+        calendar = pd.read_csv(calendar_path, dtype=str, keep_default_na=False)
+        _write_csv(
+            calendar_path,
+            pd.concat(
+                [
+                    pd.DataFrame(
+                        [
+                            {
+                                "exchange": "SSE",
+                                "cal_date": trade_key,
+                                "is_open": "1",
+                            }
+                            for trade_key in warmup_dates
+                        ]
+                    ),
+                    calendar,
+                ],
+                ignore_index=True,
+            ),
+        )
+        master_path = cache_root / "stock_basic.csv"
+        master = pd.read_csv(master_path, dtype=str, keep_default_na=False)
+        master.loc[0, "list_date"] = "20240624"
+        _write_csv(master_path, master)
+        self.sources.metadata["stock_master_sha256"] = hashlib.sha256(
+            master_path.read_bytes()
+        ).hexdigest()
+        self.contract = _contract(
+            start=date(2024, 6, 24),
+            end=date(2024, 6, 28),
+            liquidity_lookback_sessions=252,
+        )
+
+        result = self._materialize()
+        membership = load_verified_all_cap_universe(
+            self.repo_root
+        ).load_membership_year("2024")
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(float(membership.iloc[0]["avg_amount_252"]), 100.0)
 
     def test_daily_hard_status_is_built_and_written_one_year_at_a_time(self) -> None:
         cache = self.repo_root / "data/shared/backtest_cache"
@@ -1411,6 +1853,7 @@ class UniverseMaterializationTests(unittest.TestCase):
         self.contract = _contract(
             start=date(2023, 12, 29),
             end=date(2024, 6, 28),
+            liquidity_lookback_sessions=1,
         )
         events: list[tuple[str, str]] = []
         original_build = universe_module.build_daily_hard_status
@@ -1468,6 +1911,7 @@ class UniverseMaterializationTests(unittest.TestCase):
             start=date(2024, 6, 24),
             end=date(2024, 6, 28),
             boundaries=(1, 2, 3, 4),
+            liquidity_lookback_sessions=5,
         )
 
         second = self._materialize()
@@ -1510,7 +1954,7 @@ class UniverseMaterializationTests(unittest.TestCase):
 
         self.assertNotEqual(second["publication_id"], first["publication_id"])
         self.assertFalse(second["reused"])
-        self.assertEqual(verified.metadata["schema_version"], 3)
+        self.assertEqual(verified.metadata["schema_version"], 4)
 
     def test_manifest_binds_normalized_identity_of_every_consumed_cache_input(self) -> None:
         self._materialize()
@@ -1518,7 +1962,7 @@ class UniverseMaterializationTests(unittest.TestCase):
         identity = verified.metadata["cache_identity"]
         paths = {record["path"] for record in identity["files"]}
 
-        self.assertEqual(verified.metadata["schema_version"], 3)
+        self.assertEqual(verified.metadata["schema_version"], 4)
         self.assertEqual(identity["version"], "normalized-cache-v1")
         self.assertRegex(identity["sha256"], r"^[a-f0-9]{64}$")
         for expected in (
@@ -1645,6 +2089,98 @@ class UniverseMaterializationTests(unittest.TestCase):
             ).exists()
         )
 
+    def test_cache_identity_uses_the_same_bytes_that_were_parsed(self) -> None:
+        original_hash = universe_module.universe_store._normalized_csv_hash
+        changed = False
+
+        def mutate_master_before_late_hash(path: Path):
+            nonlocal changed
+            if path.name == "stock_basic.csv" and not changed:
+                changed = True
+                master = pd.read_csv(path, dtype=str, keep_default_na=False)
+                master.loc[0, "list_date"] = "20240628"
+                _write_csv(path, master)
+                self.sources.metadata["stock_master_sha256"] = hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+            return original_hash(path)
+
+        with (
+            patch.object(
+                universe_module,
+                "load_verified_all_cap_sources",
+                return_value=self.sources,
+            ),
+            patch.object(
+                universe_module.universe_store,
+                "_normalized_csv_hash",
+                side_effect=mutate_master_before_late_hash,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "all_cap_universe_cache_identity_mismatch",
+            ):
+                materialize_all_cap_universe(
+                    repo_root=self.repo_root,
+                    contract=self.contract,
+                )
+
+        self.assertFalse(
+            (
+                self.repo_root
+                / "data/research/a_share_all_cap/v1/universe/latest.json"
+            ).exists()
+        )
+
+    def test_cache_change_at_latest_publish_preserves_previous_latest(self) -> None:
+        self._materialize()
+        latest_path = (
+            self.repo_root
+            / "data/research/a_share_all_cap/v1/universe/latest.json"
+        )
+        previous_latest = latest_path.read_bytes()
+        self.contract = _contract(
+            start=date(2024, 6, 24),
+            end=date(2024, 6, 28),
+            boundaries=(1, 2, 3, 4),
+            liquidity_lookback_sessions=5,
+        )
+        original_write_latest = universe_module.universe_store.write_latest
+
+        def mutate_cache_then_write(repo_root, manifest):
+            path = (
+                self.repo_root
+                / "data/shared/backtest_cache/daily/2024-06-25.csv"
+            )
+            frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+            frame.loc[0, "amount"] = "101.0"
+            _write_csv(path, frame)
+            return original_write_latest(repo_root, manifest)
+
+        with (
+            patch.object(
+                universe_module,
+                "load_verified_all_cap_sources",
+                return_value=self.sources,
+            ),
+            patch.object(
+                universe_module.universe_store,
+                "write_latest",
+                side_effect=mutate_cache_then_write,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "all_cap_universe_cache_identity_mismatch",
+            ):
+                materialize_all_cap_universe(
+                    repo_root=self.repo_root,
+                    contract=self.contract,
+                )
+
+        self.assertEqual(latest_path.read_bytes(), previous_latest)
+
     def test_verified_cache_keeps_large_inputs_as_paths(self) -> None:
         cache = universe_module.verify_shared_backtest_cache(
             self.repo_root,
@@ -1714,7 +2250,10 @@ class UniverseMaterializationTests(unittest.TestCase):
             "load_verified_all_cap_sources",
             return_value=self.sources,
         ):
-            with self.assertRaisesRegex(ValueError, "partial:daily/2024-06-26.csv"):
+            with self.assertRaisesRegex(
+                ValueError,
+                "coverage:daily:20240626",
+            ):
                 materialize_all_cap_universe(
                     repo_root=self.repo_root,
                     contract=self.contract,
@@ -1730,7 +2269,89 @@ class UniverseMaterializationTests(unittest.TestCase):
             "load_verified_all_cap_sources",
             return_value=self.sources,
         ):
-            with self.assertRaisesRegex(ValueError, "partial:daily_basic/2024-06-26.csv"):
+            with self.assertRaisesRegex(
+                ValueError,
+                "coverage:daily_basic:20240626",
+            ):
+                materialize_all_cap_universe(
+                    repo_root=self.repo_root,
+                    contract=self.contract,
+                )
+
+    def test_frozen_daily_and_adjustment_coverage_boundaries_are_accepted(self) -> None:
+        additional_codes = [
+            f"{index:06d}.SZ" for index in range(2, 101)
+        ]
+        _expand_complete_cache(
+            self.repo_root,
+            self.sources,
+            additional_codes,
+        )
+        cache = self.repo_root / "data/shared/backtest_cache"
+        for trade_key in self.sources.metadata["open_trade_dates"]:
+            dashed = f"{trade_key[:4]}-{trade_key[4:6]}-{trade_key[6:]}"
+            for dataset, missing_code in (
+                ("daily", "000100.SZ"),
+                ("daily_basic", "000099.SZ"),
+            ):
+                path = cache / dataset / f"{dashed}.csv"
+                frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+                _write_csv(
+                    path,
+                    frame.loc[~frame["ts_code"].eq(missing_code)].copy(),
+                )
+        for code in ("000099.SZ", "000100.SZ"):
+            (cache / "adj_factor" / f"{code}.csv").unlink()
+
+        result = self._materialize()
+        verified = load_verified_all_cap_universe(self.repo_root)
+        coverage = verified.metadata["coverage"]
+        membership = verified.load_membership_year("2024").set_index("code")
+        hard_status = verified.load_hard_status_year("2024")
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(float(coverage["daily"]["minimum"]), 0.99)
+        self.assertEqual(float(coverage["daily_basic"]["minimum"]), 0.99)
+        self.assertEqual(float(coverage["adjustment"]["minimum"]), 0.98)
+        self.assertIn(
+            "daily_basic_missing",
+            membership.loc["000099.SZ", "exclusion_reasons"],
+        )
+        self.assertIn(
+            "adjustment_missing",
+            membership.loc["000100.SZ", "exclusion_reasons"],
+        )
+        self.assertIn(
+            "daily_missing",
+            membership.loc["000100.SZ", "exclusion_reasons"],
+        )
+        missing_daily = hard_status.loc[
+            hard_status["code"].eq("000100.SZ")
+        ]
+        self.assertFalse(missing_daily["status_complete"].any())
+
+    def test_adjustment_coverage_below_frozen_threshold_fails_closed(self) -> None:
+        additional_codes = [
+            f"{index:06d}.SZ" for index in range(2, 101)
+        ]
+        _expand_complete_cache(
+            self.repo_root,
+            self.sources,
+            additional_codes,
+        )
+        cache = self.repo_root / "data/shared/backtest_cache"
+        for code in ("000098.SZ", "000099.SZ", "000100.SZ"):
+            (cache / "adj_factor" / f"{code}.csv").unlink()
+
+        with patch.object(
+            universe_module,
+            "load_verified_all_cap_sources",
+            return_value=self.sources,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "all_cap_universe_insufficient_data:coverage:adjustment",
+            ):
                 materialize_all_cap_universe(
                     repo_root=self.repo_root,
                     contract=self.contract,
@@ -1935,6 +2556,11 @@ class UniverseMaterializationTests(unittest.TestCase):
 
     def test_bj_missing_producer_status_fails_closed_per_row_without_aborting(self) -> None:
         cache = self.repo_root / "data/shared/backtest_cache"
+        _expand_complete_cache(
+            self.repo_root,
+            self.sources,
+            [f"{index:06d}.SZ" for index in range(2, 50)],
+        )
         bj_code = "430001.BJ"
         master_path = cache / "stock_basic.csv"
         master = pd.read_csv(master_path, dtype=str, keep_default_na=False)
@@ -2114,6 +2740,47 @@ class UniverseMaterializationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "all_cap_universe_duplicate"):
             load_verified_all_cap_universe(self.repo_root)
 
+    def test_missing_cross_section_key_is_rejected_after_resigning(self) -> None:
+        _expand_complete_cache(
+            self.repo_root,
+            self.sources,
+            ["000002.SZ"],
+        )
+        self._materialize()
+
+        def remove_membership_row(
+            manifest: dict[str, object],
+            publication: Path,
+        ) -> None:
+            record = manifest["partitions"]["membership"][0]
+            path = publication / record["path"]
+            schema = pq.ParquetFile(path).schema_arrow
+            frame = pq.read_table(path).to_pandas(types_mapper=pd.ArrowDtype)
+            shortened = frame.iloc[1:].reset_index(drop=True)
+            pq.write_table(
+                pa.Table.from_pandas(
+                    shortened,
+                    schema=schema,
+                    preserve_index=False,
+                    safe=True,
+                ),
+                path,
+                compression="snappy",
+            )
+            record["rows"] = len(shortened)
+            record["bytes"] = path.stat().st_size
+            record["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            record["min_date"] = shortened["review_date"].astype(str).min()
+            record["max_date"] = shortened["review_date"].astype(str).max()
+            manifest["row_counts"]["membership"] = len(shortened)
+
+        _resign_manifest_and_latest(self.repo_root, remove_membership_row)
+        with self.assertRaisesRegex(
+            ValueError,
+            "all_cap_universe_cross_section",
+        ):
+            load_verified_all_cap_universe(self.repo_root)
+
     def test_low_projected_disk_preserves_old_verified_latest(self) -> None:
         self._materialize()
         latest_path = self.repo_root / "data/research/a_share_all_cap/v1/universe/latest.json"
@@ -2236,6 +2903,65 @@ class UniverseMaterializationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "all_cap_universe_symlink"):
             load_verified_all_cap_universe(self.repo_root)
+
+    def test_writer_rejects_each_universe_output_symlink_ancestor(self) -> None:
+        ancestors = (
+            Path("data/research"),
+            Path("data/research/a_share_all_cap"),
+            Path("data/research/a_share_all_cap/v1"),
+        )
+        for relative in ancestors:
+            with self.subTest(ancestor=relative.as_posix()):
+                with TemporaryDirectory() as repo_name, TemporaryDirectory() as outside:
+                    repo_root = Path(repo_name)
+                    sources, contract = _write_complete_cache(repo_root)
+                    ancestor = repo_root / relative
+                    ancestor.parent.mkdir(parents=True, exist_ok=True)
+                    ancestor.symlink_to(Path(outside), target_is_directory=True)
+                    with patch.object(
+                        universe_module,
+                        "load_verified_all_cap_sources",
+                        return_value=sources,
+                    ):
+                        with self.assertRaisesRegex(
+                            ValueError,
+                            "all_cap_universe_symlink",
+                        ):
+                            materialize_all_cap_universe(
+                                repo_root=repo_root,
+                                contract=contract,
+                            )
+
+    def test_loader_rejects_each_universe_output_symlink_ancestor(self) -> None:
+        ancestors = (
+            Path("data/research"),
+            Path("data/research/a_share_all_cap"),
+            Path("data/research/a_share_all_cap/v1"),
+        )
+        for relative in ancestors:
+            with self.subTest(ancestor=relative.as_posix()):
+                with TemporaryDirectory() as repo_name, TemporaryDirectory() as outside:
+                    repo_root = Path(repo_name)
+                    sources, contract = _write_complete_cache(repo_root)
+                    with patch.object(
+                        universe_module,
+                        "load_verified_all_cap_sources",
+                        return_value=sources,
+                    ):
+                        materialize_all_cap_universe(
+                            repo_root=repo_root,
+                            contract=contract,
+                        )
+                    ancestor = repo_root / relative
+                    moved = Path(outside) / ancestor.name
+                    ancestor.replace(moved)
+                    ancestor.symlink_to(moved, target_is_directory=True)
+
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "all_cap_universe_symlink",
+                    ):
+                        load_verified_all_cap_universe(repo_root)
 
 
 if __name__ == "__main__":
