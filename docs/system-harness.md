@@ -137,19 +137,18 @@ curl -s 'http://127.0.0.1:8765/api/dashboard/research-universe-instrument.json?k
 缺口补齐前后都要记录根文件系统字节；空闲比例低于 15% 时立即
 停止，不能通过降低配置门槛继续。
 
-先登录 ECS 并执行一次磁盘硬门禁。环境文件位置从已部署 service 的 systemd
-配置读取，不在终端或 journal 中打印路径或凭据：
+先登录 ECS 并执行一次磁盘硬门禁。环境文件默认使用
+`/etc/stock-analyze/secrets.env`，部署位置不同时通过 `SA_ECS_ENV_FILE`
+显式覆盖。只检查文件可读和 `TUSHARE_TOKEN` 变量存在，不打印路径或变量值：
 
 ```bash
 set -euo pipefail
 cd /opt/stock-analyze/app
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_PREFIX="all-cap-data-foundation-${RUN_ID}"
-ENV_FILE="$(
-  systemctl show stock-analyze-model-iteration.service \
-    --property=EnvironmentFiles --value | awk '{print $1}'
-)"
-test -n "$ENV_FILE" && test -r "$ENV_FILE"
+ENV_FILE="${SA_ECS_ENV_FILE:-/etc/stock-analyze/secrets.env}"
+test -r "$ENV_FILE"
+grep -Eq '^[[:space:]]*TUSHARE_TOKEN=' "$ENV_FILE"
 
 df -B1 --output=size,used,avail,pcent,target / \
   | tee "/var/tmp/${RUN_PREFIX}-df-before.txt"

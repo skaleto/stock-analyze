@@ -388,6 +388,29 @@ class SystemAuditScriptTests(unittest.TestCase):
     def test_harness_documents_resumable_production_backfills(self) -> None:
         harness = (ROOT / "docs" / "system-harness.md").read_text(encoding="utf-8")
 
+        self.assertIn(
+            'ENV_FILE="${SA_ECS_ENV_FILE:-/etc/stock-analyze/secrets.env}"',
+            harness,
+        )
+        self.assertIn('test -r "$ENV_FILE"', harness)
+        self.assertIn(
+            "grep -Eq '^[[:space:]]*TUSHARE_TOKEN=' \"$ENV_FILE\"",
+            harness,
+        )
+        self.assertNotIn(
+            "systemctl show stock-analyze-model-iteration.service",
+            harness,
+        )
+        self.assertNotIn("--property=EnvironmentFiles", harness)
+        for forbidden in (
+            'echo "$ENV_FILE"',
+            'printf "%s\\n" "$ENV_FILE"',
+            'cat "$ENV_FILE"',
+            'grep "TUSHARE_TOKEN" "$ENV_FILE"',
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, harness)
+
         for command in (
             "--phases statements --code-scope all",
             "--phases status --code-scope all --status-provider baostock",
