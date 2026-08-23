@@ -1019,6 +1019,65 @@ class PrepareBacktestDataTests(unittest.TestCase):
         self.assertEqual(summary['phases'], ['statements'])
         self.assertEqual(summary['batch_codes'], 1)
 
+    def test_all_scope_batches_only_a_share_stock_codes_including_current_bj(self):
+        stock_basic = _stock_basic([
+            ('000001.SZ', '深市主板', '19910403', None, '银行'),
+            ('600000.SH', '沪市主板', '19991110', None, '银行'),
+            ('430001.BJ', '北交所旧四号段', '20211115', None, '制造'),
+            ('830001.BJ', '北交所旧八三号段', '20211115', None, '制造'),
+            ('870001.BJ', '北交所旧八七号段', '20211115', None, '制造'),
+            ('920001.BJ', '北交所新号段', '20241001', None, '制造'),
+            ('200001.SZ', '深市B股', '19910403', None, '制造'),
+            ('900901.SH', '沪市B股', '19910403', None, '制造'),
+            ('510300.SH', '沪深300ETF', '20120528', None, '基金'),
+            ('159915.SZ', '创业板ETF', '20110920', None, '基金'),
+            ('T600018.SH', '历史临时代码', '19910403', None, '制造'),
+            ('92001.BJ', '位数错误', '20241001', None, '制造'),
+        ])
+        pro = _stub_pro()
+        pro.stock_basic.side_effect = [
+            stock_basic,
+            _stock_basic([]),
+            _stock_basic([]),
+        ]
+
+        with (
+            patch(
+                'stock_analyze.markets.a_share.backtest.data_prep._make_pro_client',
+                return_value=pro,
+            ),
+            patch('stock_analyze.markets.a_share.backtest.data_prep._throttle'),
+        ):
+            summary = data_prep.prepare_backtest_data(
+                start=date(2018, 1, 2),
+                end=date(2026, 8, 21),
+                cache_root=self.cache_root,
+                phases={'statements', 'status'},
+                code_scope='all',
+                status_provider='tushare',
+            )
+
+        expected = {
+            '000001.SZ',
+            '600000.SH',
+            '430001.BJ',
+            '830001.BJ',
+            '870001.BJ',
+            '920001.BJ',
+        }
+        for endpoint in ('income', 'balancesheet', 'cashflow'):
+            observed = {
+                call.kwargs['ts_code']
+                for call in getattr(pro, endpoint).call_args_list
+            }
+            self.assertEqual(observed, expected)
+        status_codes = {
+            call.kwargs['ts_code'] for call in pro.namechange.call_args_list
+        }
+        self.assertEqual(status_codes, expected)
+        self.assertEqual(summary['scope_codes'], len(expected))
+        self.assertEqual(summary['batch_codes'], len(expected))
+
     def test_namechange_ranges_merge_and_preserve_history(self):
         path = self.cache_root / 'namechange' / '000001.SZ.csv'
         path.parent.mkdir(parents=True, exist_ok=True)

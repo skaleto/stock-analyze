@@ -152,12 +152,19 @@ class SystemAuditScriptTests(unittest.TestCase):
             "ts_code,list_status\n"
             "000001.SZ,L\n"
             "000002.SZ,D\n"
-            "000003.SZ,P\n",
+            "000003.SZ,P\n"
+            "920001.BJ,L\n"
+            "200001.SZ,D\n"
+            "900901.SH,P\n"
+            "510300.SH,L\n"
+            "159915.SZ,L\n"
+            "T600018.SH,L\n"
+            "92001.BJ,L\n",
             encoding="utf-8-sig",
         )
         ranges = [
             f"{code}:{START}:{END}"
-            for code in ("000001.SZ", "000002.SZ", "000003.SZ")
+            for code in ("000001.SZ", "000002.SZ", "000003.SZ", "920001.BJ")
         ]
         meta = {
             "stock_basic_done": True,
@@ -174,14 +181,14 @@ class SystemAuditScriptTests(unittest.TestCase):
         for endpoint in ("income", "balancesheet", "cashflow"):
             endpoint_dir = cache / endpoint
             endpoint_dir.mkdir()
-            for code in ("000001.SZ", "000002.SZ", "000003.SZ"):
+            for code in ("000001.SZ", "000002.SZ", "000003.SZ", "920001.BJ"):
                 (endpoint_dir / f"{code}.csv").write_text(
                     "ts_code,ann_date,end_date\n",
                     encoding="utf-8-sig",
                 )
         status_dir = cache / "baostock_status"
         status_dir.mkdir()
-        for code in ("000001.SZ", "000002.SZ", "000003.SZ"):
+        for code in ("000001.SZ", "000002.SZ", "000003.SZ", "920001.BJ"):
             (status_dir / f"{code}.csv").write_text(
                 "ts_code,trade_date,tradestatus,is_st,st_source\n",
                 encoding="utf-8",
@@ -321,17 +328,17 @@ class SystemAuditScriptTests(unittest.TestCase):
         )
         self.assertIn(
             "PASS a_share_stock_master_counts "
-            "active=1 delisted=1 paused=1 total=3",
+            "active=2 delisted=1 paused=1 total=4",
             result.stdout,
         )
         self.assertIn(
             "PASS backtest_statement_code_coverage "
-            "completed_codes=3 total_codes=3 completed_ranges=9",
+            "completed_codes=4 total_codes=4 completed_ranges=12",
             result.stdout,
         )
         self.assertIn(
             "PASS backtest_status_code_coverage provider=baostock "
-            "completed_codes=3 total_codes=3 completed_ranges=3",
+            "completed_codes=4 total_codes=4 completed_ranges=4",
             result.stdout,
         )
         self.assertIn("PASS filesystem_free_fraction", result.stdout)
@@ -358,11 +365,15 @@ class SystemAuditScriptTests(unittest.TestCase):
         )
         self.assertIn("RESULT all_cap_data_foundation FAIL", result.stdout)
 
-    def test_production_missing_pit_status_fails(self) -> None:
+    def test_production_missing_current_bj_status_fails(self) -> None:
         self._write_complete_data()
         meta_path = self.repo / "data/shared/backtest_cache/_meta.json"
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        meta["baostock_status_code_ranges_done"] = []
+        meta["baostock_status_code_ranges_done"] = [
+            value
+            for value in meta["baostock_status_code_ranges_done"]
+            if not value.startswith("920001.BJ:")
+        ]
         meta_path.write_text(json.dumps(meta), encoding="utf-8")
 
         result = self._run(production=True)
@@ -370,7 +381,7 @@ class SystemAuditScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn(
             "FAIL backtest_status_code_coverage provider=baostock "
-            "completed_codes=0 total_codes=3 completed_ranges=0",
+            "completed_codes=3 total_codes=4 completed_ranges=3",
             result.stdout,
         )
 

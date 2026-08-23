@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
@@ -77,6 +78,12 @@ _FINANCIAL_STATEMENT_FIELDS = {
         "n_cashflow_act,free_cashflow"
     ),
 }
+
+_A_SHARE_STOCK_CODE = re.compile(
+    r"(?:(?:600|601|603|605|688|689)[0-9]{3}\.SH|"
+    r"(?:000|001|002|003|300|301)[0-9]{3}\.SZ|"
+    r"(?:43|83|87)[0-9]{4}\.BJ|920[0-9]{3}\.BJ)"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +178,10 @@ def _code_range_key(code: str, start: date, end: date) -> str:
     return f"{code}:{start.isoformat()}:{end.isoformat()}"
 
 
+def _is_a_share_stock_code(value: Any) -> bool:
+    return _A_SHARE_STOCK_CODE.fullmatch(str(value)) is not None
+
+
 def _normalize_phases(phases: Optional[set[str]]) -> set[str]:
     selected = set(DEFAULT_PHASES if phases is None else phases)
     unknown = selected - VALID_PHASES
@@ -220,8 +231,7 @@ def _historical_index_union(cache_root: Path, start: date, end: date) -> List[st
     return sorted(
         code
         for code in codes
-        if code.endswith((".SH", ".SZ"))
-        and not code.startswith(("200", "900"))
+        if _is_a_share_stock_code(code)
     )
 
 
@@ -870,19 +880,20 @@ def prepare_backtest_data(
         except pd.errors.EmptyDataError:
             sb_df = pd.DataFrame(columns=["ts_code"])
         if not sb_df.empty and "ts_code" in sb_df.columns:
+            valid_codes = [
+                code
+                for code in sb_df["ts_code"].dropna().astype(str)
+                if _is_a_share_stock_code(code)
+            ]
             code_lifecycles = {
                 str(row.ts_code): (
                     _optional_yyyymmdd_date(row.list_date),
                     _optional_yyyymmdd_date(row.delist_date),
                 )
                 for row in sb_df.itertuples(index=False)
+                if _is_a_share_stock_code(row.ts_code)
             }
-            all_codes = [
-                code
-                for code in sb_df["ts_code"].dropna().astype(str)
-                if code.endswith((".SH", ".SZ"))
-                and not code.startswith(("200", "900"))
-            ]
+            all_codes = valid_codes
     if code_scope == "historical-index-union":
         all_codes = _historical_index_union(cache_root, start, end)
         if not all_codes:

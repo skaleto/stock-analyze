@@ -37,6 +37,11 @@ import yaml
 root = Path(sys.argv[1]).resolve()
 production = sys.argv[2] == "1"
 results: list[str] = []
+_A_SHARE_STOCK_CODE = re.compile(
+    r"(?:(?:600|601|603|605|688|689)[0-9]{3}\.SH|"
+    r"(?:000|001|002|003|300|301)[0-9]{3}\.SZ|"
+    r"(?:43|83|87)[0-9]{4}\.BJ|920[0-9]{3}\.BJ)"
+)
 
 
 def emit(status: str, name: str, detail: str) -> None:
@@ -46,6 +51,10 @@ def emit(status: str, name: str, detail: str) -> None:
 
 def absent_status() -> str:
     return "FAIL" if production else "WARN"
+
+
+def is_a_share_stock_code(value: object) -> bool:
+    return _A_SHARE_STOCK_CODE.fullmatch(str(value)) is not None
 
 
 def reason_code(exc: Exception, prefix: str) -> str:
@@ -213,8 +222,9 @@ def backtest_checks(start: str, end: str) -> None:
             emit("FAIL", name, f"{detail} reason=invalid_cache_metadata")
         return
 
+    stock_rows = [row for row in rows if is_a_share_stock_code(row["ts_code"])]
     counts = {
-        status: sum(row["list_status"] == status for row in rows)
+        status: sum(row["list_status"] == status for row in stock_rows)
         for status in ("L", "D", "P")
     }
     statuses_done = {
@@ -230,10 +240,10 @@ def backtest_checks(start: str, end: str) -> None:
         master_level,
         "a_share_stock_master_counts",
         f"active={counts['L']} delisted={counts['D']} paused={counts['P']} "
-        f"total={len(rows)} collection_complete={int(master_complete)}",
+        f"total={len(stock_rows)} collection_complete={int(master_complete)}",
     )
 
-    codes = {str(row["ts_code"]) for row in rows}
+    codes = {str(row["ts_code"]) for row in stock_rows}
     cache = root / "data/shared/backtest_cache"
     statement_complete: set[str] = set(codes)
     statement_ranges = 0
