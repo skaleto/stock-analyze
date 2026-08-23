@@ -1219,6 +1219,33 @@ def _resign_manifest_and_latest(repo_root: Path, mutate) -> None:
     )
 
 
+def _resign_partition(
+    repo_root: Path,
+    dataset: str,
+    mutate,
+) -> None:
+    def rewrite(manifest: dict[str, object], publication: Path) -> None:
+        record = manifest["partitions"][dataset][0]
+        path = publication / record["path"]
+        schema = pq.ParquetFile(path).schema_arrow
+        frame = pq.read_table(path).to_pandas(types_mapper=pd.ArrowDtype)
+        mutate(frame)
+        pq.write_table(
+            pa.Table.from_pandas(
+                frame,
+                schema=schema,
+                preserve_index=False,
+                safe=True,
+            ),
+            path,
+            compression="snappy",
+        )
+        record["bytes"] = path.stat().st_size
+        record["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    _resign_manifest_and_latest(repo_root, rewrite)
+
+
 def _expand_complete_cache(
     repo_root: Path,
     sources: _FakeSources,
@@ -2376,6 +2403,53 @@ class UniverseMaterializationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "all_cap_universe_checksum"):
             verified.load_membership_year("2024")
 
+    def test_lazy_publication_load_parses_the_verified_payload_after_aba_swap(self) -> None:
+        self._materialize()
+        verified = load_verified_all_cap_universe(self.repo_root)
+        expected = verified.load_membership_year("2024")
+        partition = next(
+            (verified.publication_dir / "membership").glob("*.parquet")
+        )
+        schema = pq.ParquetFile(partition).schema_arrow
+        replacement = expected.copy()
+        replacement.loc[0, "total_mv"] = float(replacement.loc[0, "total_mv"]) + 1.0
+        with TemporaryDirectory() as temporary:
+            replacement_path = Path(temporary) / "replacement.parquet"
+            pq.write_table(
+                pa.Table.from_pandas(
+                    replacement,
+                    schema=schema,
+                    preserve_index=False,
+                    safe=True,
+                ),
+                replacement_path,
+                compression="snappy",
+            )
+            replacement_payload = replacement_path.read_bytes()
+
+        original_parquet_file = universe_module.universe_store.pq.ParquetFile
+        swapped = False
+
+        def swap_before_metadata(source, *args, **kwargs):
+            nonlocal swapped
+            if not swapped:
+                swapped = True
+                partition.write_bytes(replacement_payload)
+            return original_parquet_file(source, *args, **kwargs)
+
+        with patch.object(
+            universe_module.universe_store.pq,
+            "ParquetFile",
+            side_effect=swap_before_metadata,
+        ):
+            loaded = verified.load_membership_year("2024")
+
+        self.assertTrue(swapped)
+        self.assertEqual(
+            float(loaded.loc[0, "total_mv"]),
+            float(expected.loc[0, "total_mv"]),
+        )
+
     def test_missing_or_partial_cache_fails_closed(self) -> None:
         missing = self.repo_root / "data/shared/backtest_cache/daily_basic/2024-06-26.csv"
         missing.unlink()
@@ -2416,6 +2490,76 @@ class UniverseMaterializationTests(unittest.TestCase):
         path = self.repo_root / "data/shared/backtest_cache/daily_basic/2024-06-26.csv"
         frame = pd.read_csv(path, dtype=str, keep_default_na=False)
         _write_csv(path, frame.iloc[0:0])
+
+        with patch.object(
+            universe_module,
+            "load_verified_all_cap_sources",
+            return_value=self.sources,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "coverage:daily_basic:20240626",
+            ):
+                materialize_all_cap_universe(
+                    repo_root=self.repo_root,
+                    contract=self.contract,
+                )
+
+    def test_daily_coverage_rejects_complete_codes_with_too_many_invalid_values(self) -> None:
+        additional_codes = [
+            f"{index:06d}.SZ" for index in range(2, 101)
+        ]
+        _expand_complete_cache(
+            self.repo_root,
+            self.sources,
+            additional_codes,
+        )
+        path = (
+            self.repo_root
+            / "data/shared/backtest_cache/daily/2024-06-26.csv"
+        )
+        frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+        frame.loc[frame["ts_code"].eq("000099.SZ"), "open"] = "0"
+        frame.loc[frame["ts_code"].eq("000100.SZ"), "amount"] = "0"
+        _write_csv(path, frame)
+
+        with patch.object(
+            universe_module,
+            "load_verified_all_cap_sources",
+            return_value=self.sources,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "coverage:daily:20240626",
+            ):
+                materialize_all_cap_universe(
+                    repo_root=self.repo_root,
+                    contract=self.contract,
+                )
+
+    def test_daily_basic_coverage_rejects_complete_codes_with_too_many_invalid_values(self) -> None:
+        additional_codes = [
+            f"{index:06d}.SZ" for index in range(2, 101)
+        ]
+        _expand_complete_cache(
+            self.repo_root,
+            self.sources,
+            additional_codes,
+        )
+        path = (
+            self.repo_root
+            / "data/shared/backtest_cache/daily_basic/2024-06-26.csv"
+        )
+        frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+        frame.loc[
+            frame["ts_code"].eq("000099.SZ"),
+            "total_mv",
+        ] = "inf"
+        frame.loc[
+            frame["ts_code"].eq("000100.SZ"),
+            "circ_mv",
+        ] = "0"
+        _write_csv(path, frame)
 
         with patch.object(
             universe_module,
@@ -2813,6 +2957,110 @@ class UniverseMaterializationTests(unittest.TestCase):
         self.assertEqual(result["missing_baostock_status_codes"], [bj_code])
         self.assertEqual(result["missing_namechange_codes"], [bj_code])
         self.assertEqual(result["missing_adj_factor_codes"], [bj_code])
+
+    def test_resigned_membership_semantic_contradictions_are_rejected(self) -> None:
+        self._materialize()
+        latest_path = (
+            self.repo_root
+            / "data/research/a_share_all_cap/v1/universe/latest.json"
+        )
+        latest = json.loads(latest_path.read_text(encoding="utf-8"))
+        publication = (
+            self.repo_root
+            / "data/research/a_share_all_cap/v1/universe"
+            / latest["publication"]
+        )
+        manifest_path = publication / "manifest.json"
+        partition = next((publication / "membership").glob("*.parquet"))
+        original_latest = latest_path.read_bytes()
+        original_manifest = manifest_path.read_bytes()
+        original_partition = partition.read_bytes()
+
+        def eligible_with_reason(frame: pd.DataFrame) -> None:
+            frame.loc[0, "exclusion_reasons"] = "status_missing"
+
+        def raw_sleeve_outside_rank(frame: pd.DataFrame) -> None:
+            frame.loc[0, "raw_sleeve"] = "nano_watch"
+
+        def stable_sleeve_without_previous_assignment(frame: pd.DataFrame) -> None:
+            frame.loc[0, "stable_sleeve"] = "mid"
+
+        def invalid_eligible_market_cap(frame: pd.DataFrame) -> None:
+            frame.loc[0, "total_mv"] = 0.0
+
+        mutations = (
+            eligible_with_reason,
+            raw_sleeve_outside_rank,
+            stable_sleeve_without_previous_assignment,
+            invalid_eligible_market_cap,
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate.__name__):
+                latest_path.write_bytes(original_latest)
+                manifest_path.write_bytes(original_manifest)
+                partition.write_bytes(original_partition)
+                _resign_partition(self.repo_root, "membership", mutate)
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "all_cap_universe_manifest_semantics:membership",
+                ):
+                    load_verified_all_cap_universe(self.repo_root)
+
+    def test_resigned_hard_status_semantic_contradictions_are_rejected(self) -> None:
+        self._materialize()
+        latest_path = (
+            self.repo_root
+            / "data/research/a_share_all_cap/v1/universe/latest.json"
+        )
+        latest = json.loads(latest_path.read_text(encoding="utf-8"))
+        publication = (
+            self.repo_root
+            / "data/research/a_share_all_cap/v1/universe"
+            / latest["publication"]
+        )
+        manifest_path = publication / "manifest.json"
+        partition = next(
+            (publication / "daily_hard_status").glob("*.parquet")
+        )
+        original_latest = latest_path.read_bytes()
+        original_manifest = manifest_path.read_bytes()
+        original_partition = partition.read_bytes()
+
+        def suspended_but_executable(frame: pd.DataFrame) -> None:
+            frame.loc[0, "suspended"] = True
+
+        def missing_but_complete(frame: pd.DataFrame) -> None:
+            frame.loc[0, "status_source"] = (
+                str(frame.loc[0, "status_source"]) + ";missing:daily"
+            )
+
+        def conflict_but_complete(frame: pd.DataFrame) -> None:
+            frame.loc[0, "status_conflict"] = True
+
+        def limit_locked_but_buyable(frame: pd.DataFrame) -> None:
+            frame.loc[0, "at_limit_up"] = True
+
+        def prohibited_flag_disagrees_with_buy_gate(frame: pd.DataFrame) -> None:
+            frame.loc[0, "prohibit_new_position"] = True
+
+        mutations = (
+            suspended_but_executable,
+            missing_but_complete,
+            conflict_but_complete,
+            limit_locked_but_buyable,
+            prohibited_flag_disagrees_with_buy_gate,
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate.__name__):
+                latest_path.write_bytes(original_latest)
+                manifest_path.write_bytes(original_manifest)
+                partition.write_bytes(original_partition)
+                _resign_partition(self.repo_root, "daily_hard_status", mutate)
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "all_cap_universe_manifest_semantics:daily_hard_status",
+                ):
+                    load_verified_all_cap_universe(self.repo_root)
 
     def test_corrupt_partition_and_resigned_semantic_manifest_are_rejected(self) -> None:
         self._materialize()

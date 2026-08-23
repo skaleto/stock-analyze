@@ -83,6 +83,8 @@ ARROW_SCHEMAS = {
 _PUBLICATION_ID = re.compile(r"^[0-9]{8}_[0-9]{8}_[a-f0-9]{32}$")
 _YEAR = re.compile(r"^[0-9]{4}$")
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
+_SLEEVES = ("large", "mid", "small", "micro", "nano_watch")
+_SLEEVE_INDEX = {sleeve: index for index, sleeve in enumerate(_SLEEVES)}
 
 
 @dataclass(frozen=True)
@@ -95,18 +97,12 @@ class UniversePartition:
     def load(self) -> pd.DataFrame:
         relative = _safe_relative(self.record.get("path"))
         path = self.publication_dir.joinpath(*relative.parts)
-        _assert_contained(path, self.publication_dir)
-        if (
-            path.stat().st_size != int(self.record["bytes"])
-            or sha256(path) != self.record["sha256"]
-        ):
-            raise ValueError(
-                f"all_cap_universe_checksum:{relative.as_posix()}"
-            )
         return read_partition(
             path,
             self.dataset,
             root=self.publication_dir,
+            expected_bytes=int(self.record["bytes"]),
+            expected_sha256=str(self.record["sha256"]),
         )
 
 
@@ -787,9 +783,8 @@ def write_manifest(staging: Path, manifest: dict[str, object]) -> Path:
     return path
 
 
-def _parquet_metadata(path: Path, dataset: str) -> tuple[int, set[str]]:
+def _parquet_metadata(parquet: pq.ParquetFile, dataset: str) -> tuple[int, set[str]]:
     try:
-        parquet = pq.ParquetFile(path)
         if not parquet.schema_arrow.equals(
             ARROW_SCHEMAS[dataset],
             check_metadata=False,
@@ -809,13 +804,37 @@ def _parquet_metadata(path: Path, dataset: str) -> tuple[int, set[str]]:
         raise ValueError(f"all_cap_universe_parquet:{dataset}") from exc
 
 
-def read_partition(path: Path, dataset: str, *, root: Path) -> pd.DataFrame:
+def read_partition(
+    path: Path,
+    dataset: str,
+    *,
+    root: Path,
+    expected_bytes: int,
+    expected_sha256: str,
+) -> pd.DataFrame:
     _assert_contained(path, root)
-    rows, codecs = _parquet_metadata(path, dataset)
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"all_cap_universe_parquet:{dataset}") from exc
+    if (
+        len(payload) != expected_bytes
+        or hashlib.sha256(payload).hexdigest() != expected_sha256
+    ):
+        raise ValueError(
+            f"all_cap_universe_checksum:{path.relative_to(root).as_posix()}"
+        )
+    try:
+        parquet = pq.ParquetFile(pa.BufferReader(payload))
+        rows, codecs = _parquet_metadata(parquet, dataset)
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - corrupt parquet fails closed
+        raise ValueError(f"all_cap_universe_parquet:{dataset}") from exc
     if codecs != {PARQUET_COMPRESSION}:
         raise ValueError("all_cap_universe_manifest_compression")
     try:
-        frame = pq.read_table(path).to_pandas(types_mapper=pd.ArrowDtype)
+        frame = parquet.read().to_pandas(types_mapper=pd.ArrowDtype)
     except Exception as exc:  # noqa: BLE001 - corrupt parquet fails closed
         raise ValueError(f"all_cap_universe_parquet:{dataset}") from exc
     if len(frame) != rows:
@@ -823,12 +842,227 @@ def read_partition(path: Path, dataset: str, *, root: Path) -> pd.DataFrame:
     return frame
 
 
+def _semantic_error(dataset: str) -> None:
+    raise ValueError(f"all_cap_universe_manifest_semantics:{dataset}")
+
+
+def _valid_numeric(values: pd.Series, *, positive: bool) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce")
+    finite = numeric.notna() & numeric.map(
+        lambda value: math.isfinite(float(value)) if not pd.isna(value) else False
+    )
+    return finite & (numeric.gt(0.0) if positive else numeric.ge(0.0))
+
+
+def _membership_reason_sets(frame: pd.DataFrame) -> list[frozenset[str]]:
+    parsed: list[frozenset[str]] = []
+    for raw in frame["exclusion_reasons"]:
+        if pd.isna(raw):
+            _semantic_error("membership")
+        value = str(raw)
+        reasons = value.split(";") if value else []
+        if (
+            any(not reason for reason in reasons)
+            or len(reasons) != len(set(reasons))
+            or value != ";".join(sorted(reasons))
+        ):
+            _semantic_error("membership")
+        parsed.append(frozenset(reasons))
+    return parsed
+
+
+def _validate_membership_semantics(frame: pd.DataFrame) -> None:
+    if frame.empty or frame["eligible"].isna().any():
+        _semantic_error("membership")
+    reason_sets = _membership_reason_sets(frame)
+    eligible = frame["eligible"].astype(bool)
+    has_reasons = pd.Series(
+        [bool(reasons) for reasons in reason_sets],
+        index=frame.index,
+    )
+    populated_rank = frame["size_rank"].notna()
+    populated_raw = frame["raw_sleeve"].notna() & frame["raw_sleeve"].ne("")
+    populated_stable = (
+        frame["stable_sleeve"].notna() & frame["stable_sleeve"].ne("")
+    )
+    if (
+        (eligible & has_reasons).any()
+        or ((~eligible) & ~has_reasons).any()
+        or (eligible & ~(populated_rank & populated_raw & populated_stable)).any()
+        or ((~eligible) & (populated_rank | populated_raw | populated_stable)).any()
+    ):
+        _semantic_error("membership")
+
+    total_valid = _valid_numeric(frame["total_mv"], positive=True)
+    circ_valid = _valid_numeric(frame["circ_mv"], positive=True)
+    amount_valid = _valid_numeric(frame["avg_amount_252"], positive=False)
+    total_invalid_reason = pd.Series(
+        ["total_mv_invalid" in reasons for reasons in reason_sets],
+        index=frame.index,
+    )
+    circ_invalid_reason = pd.Series(
+        ["circ_mv_invalid" in reasons for reasons in reason_sets],
+        index=frame.index,
+    )
+    amount_invalid_reason = pd.Series(
+        ["amount_invalid" in reasons for reasons in reason_sets],
+        index=frame.index,
+    )
+    total_source = frame["total_mv_source_date"].notna() & frame[
+        "total_mv_source_date"
+    ].ne("")
+    amount_source = frame["avg_amount_source_date"].notna() & frame[
+        "avg_amount_source_date"
+    ].ne("")
+    status_source = frame["status_source"].notna() & frame["status_source"].ne("")
+    status_missing_reason = pd.Series(
+        ["status_missing" in reasons for reasons in reason_sets],
+        index=frame.index,
+    )
+    non_trading = pd.to_numeric(frame["non_trading_days_252"], errors="coerce")
+    if (
+        (total_invalid_reason != ~total_valid).any()
+        or (circ_invalid_reason != ~circ_valid).any()
+        or (amount_invalid_reason != ~amount_valid).any()
+        or (total_valid & ~total_source).any()
+        or (amount_valid & ~amount_source).any()
+        or (status_missing_reason != ~status_source).any()
+        or (eligible & ~(total_valid & circ_valid & amount_valid)).any()
+        or (
+            eligible
+            & pd.to_numeric(frame["avg_amount_252"], errors="coerce").le(0.0)
+        ).any()
+        or (
+            total_valid
+            & circ_valid
+            & pd.to_numeric(frame["circ_mv"], errors="coerce").gt(
+                pd.to_numeric(frame["total_mv"], errors="coerce")
+            )
+        ).any()
+        or non_trading.isna().any()
+        or non_trading.lt(0).any()
+    ):
+        _semantic_error("membership")
+
+    previous_sleeves: dict[str, str] = {}
+    for review_date in sorted(frame["review_date"].astype(str).unique()):
+        current = frame.loc[frame["review_date"].astype(str).eq(review_date)]
+        ranked = current.loc[current["eligible"]].copy()
+        if ranked.empty:
+            previous_sleeves = {}
+            continue
+        ranked["size_rank"] = pd.to_numeric(ranked["size_rank"], errors="coerce")
+        ranked = ranked.sort_values("size_rank", kind="stable")
+        if ranked["size_rank"].tolist() != list(range(1, len(ranked) + 1)):
+            _semantic_error("membership")
+        market_order = current.loc[current["eligible"]].sort_values(
+            ["total_mv", "code"],
+            ascending=[False, True],
+            kind="stable",
+        )
+        if (
+            ranked["code"].astype(str).tolist()
+            != market_order["code"].astype(str).tolist()
+        ):
+            _semantic_error("membership")
+        raw_sleeves = ranked["raw_sleeve"].astype(str).tolist()
+        if any(value not in _SLEEVE_INDEX for value in raw_sleeves):
+            _semantic_error("membership")
+        raw_indices = [_SLEEVE_INDEX[value] for value in raw_sleeves]
+        if (
+            raw_sleeves[0] != "large"
+            or raw_indices != sorted(raw_indices)
+            or any(
+                right - left > 1
+                for left, right in zip(raw_indices, raw_indices[1:])
+            )
+        ):
+            _semantic_error("membership")
+        current_sleeves: dict[str, str] = {}
+        for row in ranked.itertuples(index=False):
+            code = str(row.code)
+            raw_sleeve = str(row.raw_sleeve)
+            stable_sleeve = str(row.stable_sleeve)
+            if (
+                stable_sleeve not in _SLEEVE_INDEX
+                or (
+                    stable_sleeve != raw_sleeve
+                    and previous_sleeves.get(code) != stable_sleeve
+                )
+            ):
+                _semantic_error("membership")
+            current_sleeves[code] = stable_sleeve
+        previous_sleeves = current_sleeves
+
+
+def _validate_hard_status_semantics(frame: pd.DataFrame) -> None:
+    boolean_columns = (
+        "listed", "st", "delisting", "suspended", "at_limit_up",
+        "at_limit_down", "status_complete", "status_conflict",
+        "buy_executable", "sell_executable", "prohibit_new_position",
+    )
+    if frame.empty or any(frame[column].isna().any() for column in boolean_columns):
+        _semantic_error("daily_hard_status")
+    source = frame["status_source"].astype("string")
+    if source.isna().any() or source.eq("").any():
+        _semantic_error("daily_hard_status")
+    tokens = source.str.split(";")
+    status_missing = tokens.map(
+        lambda values: any(value.startswith("missing:") for value in values)
+    )
+    conflict_reason = tokens.map(
+        lambda values: any(value.startswith("conflict:") for value in values)
+    )
+    status_complete = frame["status_complete"].astype(bool)
+    status_conflict = frame["status_conflict"].astype(bool)
+    buy_executable = frame["buy_executable"].astype(bool)
+    sell_executable = frame["sell_executable"].astype(bool)
+    suspended = frame["suspended"].astype(bool)
+    listed = frame["listed"].astype(bool)
+    at_limit_up = frame["at_limit_up"].astype(bool)
+    at_limit_down = frame["at_limit_down"].astype(bool)
+    buy_blocked = (
+        ~status_complete
+        | status_conflict
+        | suspended
+        | ~listed
+        | frame["st"].astype(bool)
+        | frame["delisting"].astype(bool)
+        | at_limit_up
+    )
+    sell_blocked = (
+        ~status_complete
+        | status_conflict
+        | suspended
+        | ~listed
+        | at_limit_down
+    )
+    valid_limit_up = _valid_numeric(frame["limit_up"], positive=True)
+    valid_limit_down = _valid_numeric(frame["limit_down"], positive=True)
+    if (
+        (status_conflict != conflict_reason).any()
+        or (status_complete != ~(status_missing | status_conflict)).any()
+        or (status_complete & ~(valid_limit_up & valid_limit_down)).any()
+        or (
+            status_complete
+            & pd.to_numeric(frame["limit_up"], errors="coerce").le(
+                pd.to_numeric(frame["limit_down"], errors="coerce")
+            )
+        ).any()
+        or (at_limit_up & at_limit_down).any()
+        or (buy_blocked & buy_executable).any()
+        or (sell_blocked & sell_executable).any()
+        or (frame["prohibit_new_position"].astype(bool) != ~buy_executable).any()
+    ):
+        _semantic_error("daily_hard_status")
+
+
 def _validate_record(
     publication_dir: Path,
     dataset: str,
     record: Mapping[str, object],
     cross_section: Mapping[str, object],
-) -> tuple[str, UniversePartition, int]:
+) -> tuple[str, UniversePartition, int, pd.DataFrame]:
     year = str(record.get("partition") or "")
     relative = _safe_relative(record.get("path"))
     if (
@@ -840,15 +1074,18 @@ def _validate_record(
     ):
         raise ValueError("all_cap_universe_manifest_partition")
     path = publication_dir.joinpath(*relative.parts)
-    _assert_contained(path, publication_dir)
     if (
         not isinstance(record.get("bytes"), int)
-        or int(record["bytes"]) != path.stat().st_size
         or _SHA256.fullmatch(str(record.get("sha256") or "")) is None
-        or record["sha256"] != sha256(path)
     ):
         raise ValueError(f"all_cap_universe_checksum:{relative.as_posix()}")
-    frame = read_partition(path, dataset, root=publication_dir)
+    frame = read_partition(
+        path,
+        dataset,
+        root=publication_dir,
+        expected_bytes=int(record["bytes"]),
+        expected_sha256=str(record["sha256"]),
+    )
     try:
         rows = int(record["rows"])
     except (KeyError, TypeError, ValueError) as exc:
@@ -919,17 +1156,19 @@ def _validate_record(
         )
         if (classified_industry & ~valid_industry_dates).any():
             raise ValueError("all_cap_universe_manifest_dates")
-    elif not frame["hard_status_version"].eq(
-        "a-share-all-cap-hard-status-v1"
-    ).all():
-        raise ValueError("all_cap_universe_manifest_contract")
+    else:
+        if not frame["hard_status_version"].eq(
+            "a-share-all-cap-hard-status-v1"
+        ).all():
+            raise ValueError("all_cap_universe_manifest_contract")
+        _validate_hard_status_semantics(frame)
     partition = UniversePartition(
         publication_dir=publication_dir,
         dataset=dataset,
         year=year,
         record=_deep_freeze(dict(record)),
     )
-    return year, partition, len(frame)
+    return year, partition, len(frame), frame
 
 
 def _validate_readiness(
@@ -1009,6 +1248,7 @@ def verify_publication(publication_dir: str | Path) -> VerifiedAllCapUniverse:
     loaded: dict[str, dict[str, UniversePartition]] = {
         dataset: {} for dataset in DATASETS
     }
+    membership_frames: list[pd.DataFrame] = []
     declared_paths: set[str] = set()
     for dataset in DATASETS:
         records = partitions[dataset]
@@ -1020,7 +1260,7 @@ def verify_publication(publication_dir: str | Path) -> VerifiedAllCapUniverse:
                 raise ValueError("all_cap_universe_manifest_malformed")
             if str(raw_record.get("partition") or "") not in cross_sections[dataset]:
                 raise ValueError("all_cap_universe_cross_section")
-            year, partition, rows = _validate_record(
+            year, partition, rows, frame = _validate_record(
                 root,
                 dataset,
                 raw_record,
@@ -1031,10 +1271,15 @@ def verify_publication(publication_dir: str | Path) -> VerifiedAllCapUniverse:
             loaded[dataset][year] = partition
             declared_paths.add(str(raw_record["path"]))
             observed_rows += rows
+            if dataset == "membership":
+                membership_frames.append(frame)
         if observed_rows != int(row_counts[dataset]):
             raise ValueError(f"all_cap_universe_manifest_rows:{dataset}")
         if set(loaded[dataset]) != set(cross_sections[dataset]):
             raise ValueError("all_cap_universe_cross_section")
+    _validate_membership_semantics(
+        pd.concat(membership_frames, ignore_index=True)
+    )
     actual_paths = {
         path.relative_to(root).as_posix()
         for path in root.rglob("*.parquet")

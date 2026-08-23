@@ -1344,6 +1344,18 @@ def _load_frozen_cache_partition(
     )
 
 
+def _finite_numeric(values: pd.Series) -> tuple[pd.Series, pd.Series]:
+    numeric = pd.to_numeric(values, errors="coerce")
+    finite = numeric.notna() & numeric.map(
+        lambda value: (
+            math.isfinite(float(value))
+            if not pd.isna(value)
+            else False
+        )
+    )
+    return numeric, finite
+
+
 def _verify_daily_partition_coverage(
     *,
     cache_root: Path,
@@ -1403,7 +1415,27 @@ def _verify_daily_partition_coverage(
                     partition_path.relative_to(cache_root).as_posix()
                 ],
             )
-            observed = set(partition["ts_code"].astype(str)).intersection(required)
+            if dataset == "daily":
+                open_price, finite_open = _finite_numeric(partition["open"])
+                amount, finite_amount = _finite_numeric(partition["amount"])
+                valid = (
+                    finite_open
+                    & open_price.gt(0.0)
+                    & finite_amount
+                    & amount.gt(0.0)
+                )
+            else:
+                total_mv, finite_total_mv = _finite_numeric(partition["total_mv"])
+                circ_mv, finite_circ_mv = _finite_numeric(partition["circ_mv"])
+                valid = (
+                    finite_total_mv
+                    & total_mv.gt(0.0)
+                    & finite_circ_mv
+                    & circ_mv.gt(0.0)
+                )
+            observed = set(
+                partition.loc[valid, "ts_code"].astype(str)
+            ).intersection(required)
             missing_codes = frozenset(required.difference(observed))
             missing[dataset][trade_key] = missing_codes
             daily_coverage = (
