@@ -19,6 +19,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 from ..utils import write_text_atomic
 from .storage import ResearchStore
@@ -101,6 +102,18 @@ _IDENTIFIER_COLUMNS = frozenset(
 _DATASETS = frozenset(
     {"index_weights", "index_daily", "industry_membership", "stk_limit"}
 )
+_DATE_COLUMNS = {
+    "index_weights": "trade_date",
+    "index_daily": "trade_date",
+    "industry_membership": "in_date",
+    "stk_limit": "trade_date",
+}
+_SINGLE_FILE_PATHS = {
+    "index_weights": "index_weights.parquet",
+    "index_daily": "index_daily.parquet",
+    "industry_membership": "industry_membership.parquet",
+}
+_YEAR_PARTITION = re.compile(r"^[0-9]{4}$")
 
 
 @dataclass(frozen=True)
@@ -330,6 +343,7 @@ def _normalize_index_daily(
     index_code: str,
     start_key: str,
     end_key: str,
+    open_dates: tuple[str, ...],
 ) -> pd.DataFrame:
     code = "all_cap_source_index_daily_schema"
     frame = _source_frame(source, source_name="index_daily")
@@ -356,6 +370,8 @@ def _normalize_index_daily(
     frame = frame.drop_duplicates().reset_index(drop=True)
     if frame.duplicated(["ts_code", "trade_date"]).any():
         raise ValueError("all_cap_source_index_daily_duplicate")
+    if set(frame["trade_date"]) != set(open_dates):
+        raise ValueError("all_cap_source_index_daily_calendar")
     return frame
 
 
@@ -363,6 +379,7 @@ def _collect_index_daily(
     pro_client: object,
     start: date,
     end: date,
+    open_dates: list[str],
 ) -> pd.DataFrame:
     start_key = start.strftime("%Y%m%d")
     end_key = end.strftime("%Y%m%d")
@@ -376,6 +393,7 @@ def _collect_index_daily(
             index_code=index_code,
             start_key=start_key,
             end_key=end_key,
+            open_dates=tuple(open_dates),
         )
         for index_code in REFERENCE_INDEXES
     ]
@@ -552,10 +570,8 @@ def _normalize_stk_limit(source: object, *, trade_date: str) -> pd.DataFrame:
 
 def _collect_stk_limit(
     pro_client: object,
-    start: date,
-    end: date,
-) -> tuple[pd.DataFrame, list[str]]:
-    open_dates = _open_trade_dates(pro_client, start, end)
+    open_dates: list[str],
+) -> pd.DataFrame:
     pieces = [
         _normalize_stk_limit(
             pro_client.stk_limit(trade_date=trade_date),
@@ -565,7 +581,7 @@ def _collect_stk_limit(
     ]
     combined = pd.concat(pieces, ignore_index=True, sort=False)
     combined = combined.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
-    return _normalize_reloaded_identifiers(combined), open_dates
+    return _normalize_reloaded_identifiers(combined)
 
 
 def _sha256(path: Path) -> str:
@@ -586,6 +602,33 @@ def _canonical_hash(payload: Mapping[str, object]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _parquet_contract(path: Path) -> tuple[dict[str, object], str]:
+    try:
+        parquet = pq.ParquetFile(path)
+        schema = parquet.schema_arrow
+        codecs = {
+            parquet.metadata.row_group(row_group)
+            .column(column)
+            .compression.upper()
+            for row_group in range(parquet.metadata.num_row_groups)
+            for column in range(parquet.metadata.row_group(row_group).num_columns)
+        }
+    except Exception as exc:  # noqa: BLE001 - unreadable metadata fails closed
+        raise ValueError(f"all_cap_source_parquet:{path.name}") from exc
+    if len(codecs) != 1 or "UNCOMPRESSED" in codecs:
+        raise ValueError("all_cap_source_manifest_compression")
+    return (
+        {
+            "columns": list(schema.names),
+            "fields": [
+                {"name": field.name, "dtype": str(field.type)}
+                for field in schema
+            ],
+        },
+        next(iter(codecs)),
+    )
+
+
 def _file_record(
     staging_dir: Path,
     path: Path,
@@ -593,23 +636,21 @@ def _file_record(
     dataset: str,
     partition: str,
     frame: pd.DataFrame,
-) -> dict[str, object]:
-    date_column = "trade_date" if "trade_date" in frame.columns else None
-    return {
+) -> tuple[dict[str, object], dict[str, object]]:
+    date_column = _DATE_COLUMNS[dataset]
+    schema, compression = _parquet_contract(path)
+    record = {
         "path": path.relative_to(staging_dir).as_posix(),
         "dataset": dataset,
         "partition": partition,
         "rows": int(len(frame)),
         "bytes": int(path.stat().st_size),
         "sha256": _sha256(path),
-        "compression": "snappy",
-        "min_date": (
-            str(frame[date_column].min()) if date_column and not frame.empty else None
-        ),
-        "max_date": (
-            str(frame[date_column].max()) if date_column and not frame.empty else None
-        ),
+        "compression": compression,
+        "min_date": str(frame[date_column].min()),
+        "max_date": str(frame[date_column].max()),
     }
+    return record, schema
 
 
 def _write_source_files(
@@ -619,11 +660,15 @@ def _write_source_files(
     index_daily: pd.DataFrame,
     industry_membership: pd.DataFrame,
     stk_limit: pd.DataFrame,
-) -> dict[str, list[dict[str, object]]]:
+) -> tuple[
+    dict[str, list[dict[str, object]]],
+    dict[str, dict[str, object]],
+]:
     store = ResearchStore(staging_dir)
     partitions: dict[str, list[dict[str, object]]] = {
         dataset: [] for dataset in _DATASETS
     }
+    dataset_schemas: dict[str, dict[str, object]] = {}
     for dataset, frame in (
         ("index_weights", index_weights),
         ("index_daily", index_daily),
@@ -633,15 +678,15 @@ def _write_source_files(
             staging_dir / f"{dataset}.parquet",
             frame,
         )
-        partitions[dataset].append(
-            _file_record(
-                staging_dir,
-                path,
-                dataset=dataset,
-                partition="all",
-                frame=frame,
-            )
+        record, schema = _file_record(
+            staging_dir,
+            path,
+            dataset=dataset,
+            partition="all",
+            frame=frame,
         )
+        partitions[dataset].append(record)
+        dataset_schemas[dataset] = schema
     years = stk_limit["trade_date"].str.slice(0, 4)
     for year in sorted(set(years)):
         frame = stk_limit.loc[years == year].reset_index(drop=True)
@@ -649,16 +694,18 @@ def _write_source_files(
             staging_dir / "stk_limit" / f"year={year}.parquet",
             frame,
         )
-        partitions["stk_limit"].append(
-            _file_record(
-                staging_dir,
-                path,
-                dataset="stk_limit",
-                partition=str(year),
-                frame=frame,
-            )
+        record, schema = _file_record(
+            staging_dir,
+            path,
+            dataset="stk_limit",
+            partition=str(year),
+            frame=frame,
         )
-    return partitions
+        if "stk_limit" in dataset_schemas and dataset_schemas["stk_limit"] != schema:
+            raise ValueError("all_cap_source_manifest_schema")
+        partitions["stk_limit"].append(record)
+        dataset_schemas["stk_limit"] = schema
+    return partitions, dataset_schemas
 
 
 def _build_manifest(
@@ -668,6 +715,7 @@ def _build_manifest(
     start: date,
     end: date,
     partitions: Mapping[str, list[dict[str, object]]],
+    dataset_schemas: Mapping[str, dict[str, object]],
     pre_inception: list[dict[str, str]],
     industry_requests: list[dict[str, str]],
     open_dates: list[str],
@@ -689,6 +737,10 @@ def _build_manifest(
         "industry_requests": industry_requests,
         "pre_inception": pre_inception,
         "open_trade_dates": open_dates,
+        "dataset_schemas": {
+            dataset: dict(schema)
+            for dataset, schema in sorted(dataset_schemas.items())
+        },
         "row_counts": {
             dataset: sum(int(item["rows"]) for item in records)
             for dataset, records in partitions.items()
@@ -760,6 +812,124 @@ def _verify_manifest_shape(manifest: Mapping[str, object]) -> None:
         raise ValueError("all_cap_source_checksum:manifest")
 
 
+def _manifest_date(value: object) -> str:
+    raw = str(value or "")
+    if not re.fullmatch(r"[0-9]{8}", raw):
+        raise ValueError("all_cap_source_manifest_dates")
+    if _date_key(raw, code="all_cap_source_manifest_dates") != raw:
+        raise ValueError("all_cap_source_manifest_dates")
+    return raw
+
+
+def _manifest_schemas(
+    manifest: Mapping[str, object],
+) -> dict[str, dict[str, object]]:
+    schemas = manifest.get("dataset_schemas")
+    if not isinstance(schemas, Mapping) or set(schemas) != _DATASETS:
+        raise ValueError("all_cap_source_manifest_schema")
+    normalized: dict[str, dict[str, object]] = {}
+    for dataset in _DATASETS:
+        schema = schemas.get(dataset)
+        if not isinstance(schema, Mapping):
+            raise ValueError("all_cap_source_manifest_schema")
+        columns = schema.get("columns")
+        fields = schema.get("fields")
+        if (
+            not isinstance(columns, list)
+            or not columns
+            or not all(isinstance(column, str) and column for column in columns)
+            or not isinstance(fields, list)
+            or len(fields) != len(columns)
+        ):
+            raise ValueError("all_cap_source_manifest_schema")
+        normalized_fields: list[dict[str, str]] = []
+        for field in fields:
+            if not isinstance(field, Mapping):
+                raise ValueError("all_cap_source_manifest_schema")
+            name = field.get("name")
+            dtype = field.get("dtype")
+            if not isinstance(name, str) or not isinstance(dtype, str) or not dtype:
+                raise ValueError("all_cap_source_manifest_schema")
+            normalized_fields.append({"name": name, "dtype": dtype})
+        if columns != [field["name"] for field in normalized_fields]:
+            raise ValueError("all_cap_source_manifest_schema")
+        normalized[dataset] = {
+            "columns": list(columns),
+            "fields": normalized_fields,
+        }
+    return normalized
+
+
+def _validate_partition_records(
+    files: list[object],
+    partitions: Mapping[str, object],
+) -> dict[str, list[dict[str, object]]]:
+    normalized: dict[str, list[dict[str, object]]] = {}
+    for dataset in _DATASETS:
+        records = partitions.get(dataset)
+        if not isinstance(records, list) or not records:
+            raise ValueError(f"all_cap_source_manifest_incomplete:{dataset}")
+        dataset_records: list[dict[str, object]] = []
+        seen_partitions: set[str] = set()
+        for item in records:
+            if not isinstance(item, Mapping):
+                raise ValueError("all_cap_source_manifest_malformed")
+            record = dict(item)
+            partition = str(record.get("partition") or "")
+            relative = _safe_relative_path(record.get("path")).as_posix()
+            if str(record.get("dataset") or "") != dataset:
+                raise ValueError("all_cap_source_manifest_partition")
+            if dataset in _SINGLE_FILE_PATHS:
+                if (
+                    len(records) != 1
+                    or partition != "all"
+                    or relative != _SINGLE_FILE_PATHS[dataset]
+                ):
+                    raise ValueError("all_cap_source_manifest_partition")
+            elif (
+                not _YEAR_PARTITION.fullmatch(partition)
+                or relative != f"stk_limit/year={partition}.parquet"
+                or partition in seen_partitions
+            ):
+                raise ValueError("all_cap_source_manifest_partition")
+            seen_partitions.add(partition)
+            min_date = _manifest_date(record.get("min_date"))
+            max_date = _manifest_date(record.get("max_date"))
+            if min_date > max_date or (
+                dataset == "stk_limit"
+                and (min_date[:4] != partition or max_date[:4] != partition)
+            ):
+                raise ValueError("all_cap_source_manifest_dates")
+            compression = record.get("compression")
+            if (
+                not isinstance(compression, str)
+                or not compression
+                or compression != compression.upper()
+                or compression == "UNCOMPRESSED"
+            ):
+                raise ValueError("all_cap_source_manifest_compression")
+            dataset_records.append(record)
+        normalized[dataset] = dataset_records
+
+    file_records: dict[str, dict[str, object]] = {}
+    for item in files:
+        if not isinstance(item, Mapping):
+            raise ValueError("all_cap_source_manifest_malformed")
+        record = dict(item)
+        relative = _safe_relative_path(record.get("path")).as_posix()
+        if relative in file_records:
+            raise ValueError("all_cap_source_manifest_incomplete")
+        file_records[relative] = record
+    partition_records = {
+        str(record["path"]): record
+        for records in normalized.values()
+        for record in records
+    }
+    if file_records != partition_records:
+        raise ValueError("all_cap_source_manifest_incomplete:partitions")
+    return normalized
+
+
 def _read_verified_frames(
     publication_dir: Path,
     manifest: Mapping[str, object],
@@ -775,38 +945,54 @@ def _read_verified_frames(
         or set(row_counts) != _DATASETS
     ):
         raise ValueError("all_cap_source_manifest_incomplete")
+    schemas = _manifest_schemas(manifest)
+    partition_records = _validate_partition_records(files, partitions)
     by_dataset: dict[str, list[pd.DataFrame]] = {
         dataset: [] for dataset in _DATASETS
     }
     declared_paths: set[str] = set()
-    records_by_dataset: dict[str, list[str]] = {
-        dataset: [] for dataset in _DATASETS
-    }
-    for record in files:
-        if not isinstance(record, Mapping):
-            raise ValueError("all_cap_source_manifest_malformed")
-        relative = _safe_relative_path(record.get("path"))
-        relative_text = relative.as_posix()
-        dataset = str(record.get("dataset") or "")
-        if dataset not in _DATASETS or relative_text in declared_paths:
-            raise ValueError("all_cap_source_manifest_incomplete")
-        declared_paths.add(relative_text)
-        records_by_dataset[dataset].append(relative_text)
-        path = publication_dir.joinpath(*relative.parts)
-        if not path.is_file():
-            raise ValueError(f"all_cap_source_manifest_incomplete:{relative_text}")
-        if _sha256(path) != record.get("sha256"):
-            raise ValueError(f"all_cap_source_checksum:{relative_text}")
-        if path.stat().st_size != int(record.get("bytes") or -1):
-            raise ValueError(f"all_cap_source_checksum:{relative_text}:bytes")
-        try:
-            frame = pd.read_parquet(path, dtype_backend="pyarrow")
-        except Exception as exc:  # noqa: BLE001 - corrupt parquet fails closed
-            raise ValueError(f"all_cap_source_parquet:{relative_text}") from exc
-        frame = _normalize_reloaded_identifiers(frame)
-        if len(frame) != int(record.get("rows") or -1):
-            raise ValueError(f"all_cap_source_manifest_rows:{relative_text}")
-        by_dataset[dataset].append(frame)
+    for dataset in _DATASETS:
+        for record in partition_records[dataset]:
+            relative = _safe_relative_path(record.get("path"))
+            relative_text = relative.as_posix()
+            if relative_text in declared_paths:
+                raise ValueError("all_cap_source_manifest_incomplete")
+            declared_paths.add(relative_text)
+            path = publication_dir.joinpath(*relative.parts)
+            if not path.is_file():
+                raise ValueError(f"all_cap_source_manifest_incomplete:{relative_text}")
+            if _sha256(path) != record.get("sha256"):
+                raise ValueError(f"all_cap_source_checksum:{relative_text}")
+            try:
+                expected_bytes = int(record.get("bytes") or -1)
+                expected_rows = int(record.get("rows") or -1)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("all_cap_source_manifest_malformed") from exc
+            if path.stat().st_size != expected_bytes:
+                raise ValueError(f"all_cap_source_checksum:{relative_text}:bytes")
+            actual_schema, actual_compression = _parquet_contract(path)
+            if actual_schema != schemas[dataset]:
+                raise ValueError("all_cap_source_manifest_schema")
+            if actual_compression != record.get("compression"):
+                raise ValueError("all_cap_source_manifest_compression")
+            try:
+                frame = pd.read_parquet(path, dtype_backend="pyarrow")
+            except Exception as exc:  # noqa: BLE001 - corrupt parquet fails closed
+                raise ValueError(f"all_cap_source_parquet:{relative_text}") from exc
+            frame = _normalize_reloaded_identifiers(frame)
+            if len(frame) != expected_rows:
+                raise ValueError(f"all_cap_source_manifest_rows:{relative_text}")
+            date_column = _DATE_COLUMNS[dataset]
+            if date_column not in frame or frame.empty:
+                raise ValueError("all_cap_source_manifest_dates")
+            actual_min = _manifest_date(frame[date_column].min())
+            actual_max = _manifest_date(frame[date_column].max())
+            if (
+                actual_min != record.get("min_date")
+                or actual_max != record.get("max_date")
+            ):
+                raise ValueError("all_cap_source_manifest_dates")
+            by_dataset[dataset].append(frame)
     actual_paths = {
         path.relative_to(publication_dir).as_posix()
         for path in publication_dir.rglob("*.parquet")
@@ -815,18 +1001,12 @@ def _read_verified_frames(
     if actual_paths != declared_paths:
         raise ValueError("all_cap_source_manifest_incomplete:files")
     for dataset in _DATASETS:
-        records = partitions.get(dataset)
-        if not isinstance(records, list) or not records:
-            raise ValueError(f"all_cap_source_manifest_incomplete:{dataset}")
-        partition_paths = []
-        for record in records:
-            if not isinstance(record, Mapping):
-                raise ValueError("all_cap_source_manifest_malformed")
-            partition_paths.append(_safe_relative_path(record.get("path")).as_posix())
-        if sorted(partition_paths) != sorted(records_by_dataset[dataset]):
-            raise ValueError(f"all_cap_source_manifest_incomplete:{dataset}:partitions")
         observed_rows = sum(len(frame) for frame in by_dataset[dataset])
-        if observed_rows != int(row_counts.get(dataset) or -1):
+        try:
+            expected_rows = int(row_counts.get(dataset) or -1)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("all_cap_source_manifest_malformed") from exc
+        if observed_rows != expected_rows:
             raise ValueError(f"all_cap_source_manifest_rows:{dataset}")
     return by_dataset
 
@@ -853,11 +1033,37 @@ def _verify_loaded_semantics(
     index_weights = _combined(frames, "index_weights")
     membership = _combined(frames, "industry_membership")
     stk_limit = _combined(frames, "stk_limit")
+    raw_open_dates = manifest.get("open_trade_dates")
+    if not isinstance(raw_open_dates, list):
+        raise ValueError("all_cap_source_manifest_stk_limit")
+    try:
+        open_dates = [_manifest_date(value) for value in raw_open_dates]
+    except ValueError as exc:
+        raise ValueError("all_cap_source_manifest_stk_limit") from exc
+    if (
+        not open_dates
+        or open_dates != raw_open_dates
+        or sorted(set(open_dates)) != open_dates
+        or open_dates[0] < start_key
+        or open_dates[-1] > end_key
+    ):
+        raise ValueError("all_cap_source_manifest_stk_limit")
+    expected_open_dates = set(open_dates)
     if (
         set(index_daily.get("ts_code", [])) != set(REFERENCE_INDEXES)
         or index_daily.duplicated(["ts_code", "trade_date"]).any()
         or (index_daily["trade_date"] < start_key).any()
         or (index_daily["trade_date"] > end_key).any()
+        or any(
+            set(
+                index_daily.loc[
+                    index_daily["ts_code"] == index_code,
+                    "trade_date",
+                ]
+            )
+            != expected_open_dates
+            for index_code in REFERENCE_INDEXES
+        )
     ):
         raise ValueError("all_cap_source_manifest_index_daily")
     expected_weight_codes = set(_SLEEVE_INDEXES)
@@ -903,11 +1109,8 @@ def _verify_loaded_semantics(
     )
     if manifest.get("pre_inception") != expected_pre_inception:
         raise ValueError("all_cap_source_manifest_pre_inception")
-    open_dates = manifest.get("open_trade_dates")
     if (
-        not isinstance(open_dates, list)
-        or sorted(set(str(value) for value in open_dates)) != open_dates
-        or set(stk_limit.get("trade_date", [])) != set(open_dates)
+        set(stk_limit.get("trade_date", [])) != expected_open_dates
         or stk_limit.duplicated(["ts_code", "trade_date"]).any()
     ):
         raise ValueError("all_cap_source_manifest_stk_limit")
@@ -1063,15 +1266,21 @@ def collect_all_cap_sources(
         )
     )
     try:
+        open_dates = _open_trade_dates(pro_client, start, end)
         index_weights, pre_inception = _collect_index_weights(
             pro_client,
             start,
             end,
         )
-        index_daily = _collect_index_daily(pro_client, start, end)
+        index_daily = _collect_index_daily(
+            pro_client,
+            start,
+            end,
+            open_dates,
+        )
         membership, industry_requests = _collect_industry_membership(pro_client)
-        stk_limit, open_dates = _collect_stk_limit(pro_client, start, end)
-        partitions = _write_source_files(
+        stk_limit = _collect_stk_limit(pro_client, open_dates)
+        partitions, dataset_schemas = _write_source_files(
             staging,
             index_weights=index_weights,
             index_daily=index_daily,
@@ -1084,6 +1293,7 @@ def collect_all_cap_sources(
             start=start,
             end=end,
             partitions=partitions,
+            dataset_schemas=dataset_schemas,
             pre_inception=pre_inception,
             industry_requests=industry_requests,
             open_dates=open_dates,

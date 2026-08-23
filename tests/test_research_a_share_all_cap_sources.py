@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import tempfile
@@ -8,9 +9,9 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 from stock_analyze.research.a_share_all_cap_sources import (
-    REFERENCE_INDEXES,
     collect_all_cap_sources,
     load_verified_all_cap_sources,
     publish_all_cap_sources,
@@ -27,6 +28,14 @@ SW2021_L1_CODES = (
     "801980.SI",
 )
 
+SLEEVE_INDEX_CODES = (
+    "000300.SH",
+    "000905.SH",
+    "000852.SH",
+    "932000.CSI",
+)
+ALL_INDEX_CODES = (*SLEEVE_INDEX_CODES, "000985.CSI")
+
 
 class FakePro:
     OPEN_DATES = ("20230831", "20230901", "20240102")
@@ -36,12 +45,17 @@ class FakePro:
         *,
         malformed_index_daily: bool = False,
         overlapping_membership: bool = False,
+        missing_index_daily_date: str | None = None,
+        extra_index_daily_date: str | None = None,
     ) -> None:
         self.malformed_index_daily = malformed_index_daily
         self.overlapping_membership = overlapping_membership
+        self.missing_index_daily_date = missing_index_daily_date
+        self.extra_index_daily_date = extra_index_daily_date
         self.index_weight_calls: list[dict[str, object]] = []
         self.index_daily_calls: list[dict[str, object]] = []
         self.index_member_calls: list[dict[str, object]] = []
+        self.trade_cal_calls: list[dict[str, object]] = []
         self.stk_limit_calls: list[dict[str, object]] = []
 
     def index_classify(self, **kwargs: object) -> pd.DataFrame:
@@ -60,7 +74,7 @@ class FakePro:
         start_date = str(kwargs["start_date"])
         if index_code == "932000.CSI" and start_date < "20230901":
             raise AssertionError("CSI2000 pre-inception weights were requested")
-        member_number = list(REFERENCE_INDEXES).index(index_code) + 1
+        member_number = SLEEVE_INDEX_CODES.index(index_code) + 1
         return pd.DataFrame(
             [
                 {
@@ -75,25 +89,24 @@ class FakePro:
     def index_daily(self, **kwargs: object) -> pd.DataFrame:
         self.index_daily_calls.append(dict(kwargs))
         code = str(kwargs["ts_code"])
+        dates = [
+            value
+            for value in self.OPEN_DATES
+            if value != self.missing_index_daily_date
+        ]
+        if self.extra_index_daily_date:
+            dates.append(self.extra_index_daily_date)
         rows = [
             {
                 "ts_code": code,
-                "trade_date": "20230831",
-                "open": 100.0,
-                "high": 101.0,
-                "low": 99.0,
-                "close": 100.5,
-                "vol": 1000.0,
-            },
-            {
-                "ts_code": code,
-                "trade_date": "20240102",
-                "open": 101.0,
-                "high": 102.0,
-                "low": 100.0,
-                "close": 101.5,
-                "vol": 1100.0,
-            },
+                "trade_date": trade_date,
+                "open": 100.0 + number,
+                "high": 101.0 + number,
+                "low": 99.0 + number,
+                "close": 100.5 + number,
+                "vol": 1000.0 + number,
+            }
+            for number, trade_date in enumerate(dates)
         ]
         if self.malformed_index_daily:
             for row in rows:
@@ -136,7 +149,7 @@ class FakePro:
         )
 
     def trade_cal(self, **kwargs: object) -> pd.DataFrame:
-        self.trade_cal_call = kwargs
+        self.trade_cal_calls.append(dict(kwargs))
         start = str(kwargs["start_date"])
         end = str(kwargs["end_date"])
         return pd.DataFrame(
@@ -177,6 +190,36 @@ class AllCapSourceCollectorTests(unittest.TestCase):
         )
         return result, client
 
+    @staticmethod
+    def _canonical_hash(payload: dict[str, object]) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    def rehashed_staging(
+        self,
+        publication_dir: Path,
+        name: str,
+        mutate,
+    ) -> Path:
+        staging = publication_dir.parent / f".all-cap-sources-{name}"
+        shutil.copytree(publication_dir, staging)
+        manifest_path = staging / "manifest.json"
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        mutate(payload)
+        payload.pop("manifest_sha256", None)
+        payload["manifest_sha256"] = self._canonical_hash(payload)
+        manifest_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return staging
+
     def test_collects_reference_indexes_and_both_industry_states(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -184,7 +227,16 @@ class AllCapSourceCollectorTests(unittest.TestCase):
             manifest = load_verified_all_cap_sources(root)
 
         self.assertEqual(result["status"], "complete")
-        self.assertEqual(set(manifest.index_daily), set(REFERENCE_INDEXES))
+        self.assertEqual(
+            set(manifest.index_daily),
+            {
+                "000300.SH",
+                "000905.SH",
+                "000852.SH",
+                "932000.CSI",
+                "000985.CSI",
+            },
+        )
         self.assertEqual(
             set(manifest.industry_membership["is_new"].dropna()),
             {"Y", "N"},
@@ -234,6 +286,224 @@ class AllCapSourceCollectorTests(unittest.TestCase):
                 if call["index_code"] == "932000.CSI"
             )
         )
+        expected_periods = (
+            ("20230831", "20230831"),
+            ("20230901", "20230930"),
+            ("20231001", "20231031"),
+            ("20231101", "20231130"),
+            ("20231201", "20231231"),
+            ("20240101", "20240103"),
+        )
+        self.assertEqual(
+            client.index_weight_calls,
+            [
+                {
+                    "index_code": index_code,
+                    "start_date": period_start,
+                    "end_date": period_end,
+                }
+                for period_start, period_end in expected_periods
+                for index_code in SLEEVE_INDEX_CODES
+                if not (
+                    index_code == "932000.CSI" and period_end < "20230901"
+                )
+            ],
+        )
+        self.assertEqual(len(client.index_weight_calls), 23)
+        self.assertEqual(
+            client.index_daily_calls,
+            [
+                {
+                    "ts_code": index_code,
+                    "start_date": "20230831",
+                    "end_date": "20240103",
+                }
+                for index_code in ALL_INDEX_CODES
+            ],
+        )
+        self.assertEqual(len(client.index_daily_calls), 5)
+        self.assertEqual(
+            client.trade_cal_calls,
+            [
+                {
+                    "exchange": "",
+                    "start_date": "20230831",
+                    "end_date": "20240103",
+                    "is_open": "1",
+                }
+            ],
+        )
+
+    def test_manifest_declares_schemas_bounds_paths_and_real_compression(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.collect(root)
+            manifest = load_verified_all_cap_sources(root)
+            metadata = manifest.metadata
+            actual_codecs = {}
+            for record in metadata["files"]:
+                parquet = pq.ParquetFile(manifest.publication_dir / record["path"])
+                actual_codecs[record["path"]] = {
+                    parquet.metadata.row_group(row_group)
+                    .column(column)
+                    .compression.upper()
+                    for row_group in range(parquet.metadata.num_row_groups)
+                    for column in range(
+                        parquet.metadata.row_group(row_group).num_columns
+                    )
+                }
+
+        self.assertEqual(
+            set(metadata["dataset_schemas"]),
+            {"index_weights", "index_daily", "industry_membership", "stk_limit"},
+        )
+        for dataset, schema in metadata["dataset_schemas"].items():
+            with self.subTest(dataset=dataset):
+                self.assertEqual(
+                    schema["columns"],
+                    [field["name"] for field in schema["fields"]],
+                )
+                self.assertTrue(all(field["dtype"] for field in schema["fields"]))
+        self.assertEqual(
+            metadata["dataset_schemas"]["index_daily"]["fields"][0],
+            {"name": "ts_code", "dtype": "large_string"},
+        )
+
+        expected = {
+            "index_weights": [
+                ("all", "index_weights.parquet", "20230831", "20240101")
+            ],
+            "index_daily": [
+                ("all", "index_daily.parquet", "20230831", "20240102")
+            ],
+            "industry_membership": [
+                (
+                    "all",
+                    "industry_membership.parquet",
+                    "20200101",
+                    "20230101",
+                )
+            ],
+            "stk_limit": [
+                ("2023", "stk_limit/year=2023.parquet", "20230831", "20230901"),
+                ("2024", "stk_limit/year=2024.parquet", "20240102", "20240102"),
+            ],
+        }
+        for dataset, expected_records in expected.items():
+            observed = metadata["partitions"][dataset]
+            self.assertEqual(
+                [
+                    (
+                        item["partition"],
+                        item["path"],
+                        item["min_date"],
+                        item["max_date"],
+                    )
+                    for item in observed
+                ],
+                expected_records,
+            )
+            self.assertTrue(
+                all(item["compression"] != "UNCOMPRESSED" for item in observed)
+            )
+            for item in observed:
+                self.assertEqual(actual_codecs[item["path"]], {item["compression"]})
+                self.assertNotIn("UNCOMPRESSED", actual_codecs[item["path"]])
+        self.assertEqual(
+            {item["path"]: item for item in metadata["files"]},
+            {
+                item["path"]: item
+                for records in metadata["partitions"].values()
+                for item in records
+            },
+        )
+
+    def test_rejects_rehashed_manifest_with_false_partition_or_date_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.collect(root)
+            verified = load_verified_all_cap_sources(root)
+
+            def false_partition(payload):
+                collections = (
+                    payload["files"],
+                    payload["partitions"]["index_daily"],
+                )
+                for collection in collections:
+                    record = next(
+                        item
+                        for item in collection
+                        if item["dataset"] == "index_daily"
+                    )
+                    record["partition"] = "2023"
+
+            def false_bounds(payload):
+                collections = (
+                    payload["files"],
+                    payload["partitions"]["stk_limit"],
+                )
+                for collection in collections:
+                    record = next(
+                        item
+                        for item in collection
+                        if item["path"] == "stk_limit/year=2023.parquet"
+                    )
+                    record["max_date"] = "20231231"
+
+            for name, mutate, error in (
+                ("partition", false_partition, "all_cap_source_manifest_partition"),
+                ("bounds", false_bounds, "all_cap_source_manifest_dates"),
+            ):
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, error):
+                    publish_all_cap_sources(
+                        self.rehashed_staging(verified.publication_dir, name, mutate),
+                        root,
+                    )
+
+    def test_rejects_rehashed_manifest_with_false_schema_or_compression(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.collect(root)
+            verified = load_verified_all_cap_sources(root)
+
+            def false_schema(payload):
+                payload["dataset_schemas"]["index_daily"]["fields"][0]["dtype"] = "int64"
+
+            def false_compression(payload):
+                collections = (
+                    payload["files"],
+                    payload["partitions"]["index_daily"],
+                )
+                for collection in collections:
+                    record = next(
+                        item
+                        for item in collection
+                        if item["dataset"] == "index_daily"
+                    )
+                    record["compression"] = "GZIP"
+
+            for name, mutate, error in (
+                ("schema", false_schema, "all_cap_source_manifest_schema"),
+                ("compression", false_compression, "all_cap_source_manifest_compression"),
+            ):
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, error):
+                    publish_all_cap_sources(
+                        self.rehashed_staging(verified.publication_dir, name, mutate),
+                        root,
+                    )
+
+    def test_rejects_missing_or_extra_index_daily_trade_date(self) -> None:
+        for name, provider in (
+            ("missing", FakePro(missing_index_daily_date="20230901")),
+            ("extra", FakePro(extra_index_daily_date="20230904")),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "all_cap_source_index_daily_calendar",
+                ):
+                    self.collect(Path(tmp), provider)
+                self.assertEqual(len(provider.trade_cal_calls), 1)
 
     def test_identifier_and_date_columns_reload_as_explicit_strings(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
