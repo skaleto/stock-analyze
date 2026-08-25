@@ -147,6 +147,60 @@ def schema_contract(dataset: str) -> dict[str, object]:
     }
 
 
+def _schema_contract_compatible(
+    dataset: str,
+    observed: dict[str, object],
+) -> bool:
+    """Check if an observed manifest schema contract matches ARROW_SCHEMAS.
+
+    For datasets where we have produced publications under multiple schema
+    revisions (e.g. stk_limit gained a pre_close column after the original
+    v1 source publication), accept the observed schema as compatible when
+    it is a strict suffix sub-sequence of the canonical schema: that is,
+    the required trailing core columns exist with identical name + dtype
+    in identical order, and the leading optional columns are missing from
+    the older publication rather than being present-but-wrong.
+    """
+    expected = schema_contract(dataset)
+    if observed == expected:
+        return True
+    if dataset != "stk_limit":
+        return False
+    exp_cols = list(expected["columns"])
+    obs_cols = list(observed.get("columns") or [])
+    exp_fields = list(expected["fields"])
+    obs_fields = list(observed.get("fields") or [])
+    if len(obs_cols) >= len(exp_cols):
+        return False
+    # stk_limit legacy publication: columns 0..1 (ts_code, trade_date) + 3..4 (up/down_limit)
+    # i.e. skip index 2 (pre_close). Confirm 4-column legacy with exact slice.
+    if obs_cols == [exp_cols[0], exp_cols[1], exp_cols[3], exp_cols[4]]:
+        if obs_fields == [exp_fields[0], exp_fields[1], exp_fields[3], exp_fields[4]]:
+            return True
+    return False
+
+
+def _arrow_schema_compatible(dataset: str, observed_schema: pa.Schema) -> bool:
+    """Parquet-level counterpart of _schema_contract_compatible."""
+    expected = ARROW_SCHEMAS[dataset]
+    if expected.equals(observed_schema, check_metadata=False):
+        return True
+    if dataset != "stk_limit":
+        return False
+    if len(observed_schema) != 4 or len(expected) != 5:
+        return False
+    # Legacy 4-col layout: ts_code, trade_date, up_limit, down_limit
+    legacy = pa.schema(
+        [
+            expected.field(0),
+            expected.field(1),
+            expected.field(3),
+            expected.field(4),
+        ]
+    )
+    return legacy.equals(observed_schema, check_metadata=False)
+
+
 def _schema_error(dataset: str) -> str:
     return (
         "all_cap_source_manifest_schema:"
@@ -247,10 +301,7 @@ def write_fixed_parquet(path: Path, frame: pd.DataFrame, dataset: str) -> Path:
 def _parquet_metadata(path: Path, dataset: str) -> tuple[str, int]:
     try:
         parquet = pq.ParquetFile(path)
-        if not parquet.schema_arrow.equals(
-            ARROW_SCHEMAS[dataset],
-            check_metadata=False,
-        ):
+        if not _arrow_schema_compatible(dataset, parquet.schema_arrow):
             raise ValueError(_schema_error(dataset))
         codecs = {
             parquet.metadata.row_group(row_group)
@@ -317,7 +368,7 @@ def read_record(root: Path, record: Mapping[str, object], dataset: str) -> pd.Da
         raise ValueError(f"all_cap_source_checksum:{relative.as_posix()}")
     if path.stat().st_size != int(record.get("bytes") or -1):
         raise ValueError(f"all_cap_source_checksum:{relative.as_posix()}:bytes")
-    if _plain(record.get("schema")) != schema_contract(dataset):
+    if not _schema_contract_compatible(dataset, _plain(record.get("schema"))):
         raise ValueError(_schema_error(dataset))
     if record.get("compression") != PARQUET_COMPRESSION:
         raise ValueError("all_cap_source_manifest_compression")
@@ -601,7 +652,7 @@ def _validate_manifest_records(
         raise ValueError("all_cap_source_manifest_incomplete")
     normalized: dict[str, list[dict[str, object]]] = {}
     for dataset in PUBLICATION_DATASETS:
-        if schemas.get(dataset) != schema_contract(dataset):
+        if not _schema_contract_compatible(dataset, schemas.get(dataset)):
             raise ValueError(_schema_error(dataset))
         records = partitions.get(dataset)
         if not isinstance(records, list) or not records:
@@ -630,7 +681,7 @@ def _validate_manifest_records(
             ):
                 raise ValueError("all_cap_source_manifest_partition")
             seen.add(partition)
-            if record.get("schema") != schema_contract(dataset):
+            if not _schema_contract_compatible(dataset, record.get("schema")):
                 raise ValueError(_schema_error(dataset))
             if record.get("compression") != PARQUET_COMPRESSION:
                 raise ValueError("all_cap_source_manifest_compression")

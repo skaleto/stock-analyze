@@ -896,11 +896,16 @@ def _validate_stk_limit_values(frame: pd.DataFrame) -> None:
     code = "all_cap_source_manifest_stk_limit"
     normalized = _strings(frame, ("ts_code", "trade_date"), code=code)
     normalized = _dates(normalized, ("trade_date",), code=code)
+    numeric_cols: list[str] = ["up_limit", "down_limit"]
+    positive_cols: list[str] = ["up_limit", "down_limit"]
+    if "pre_close" in frame.columns:
+        numeric_cols.insert(0, "pre_close")
+        positive_cols.insert(0, "pre_close")
     normalized = _numbers(
         normalized,
-        ("pre_close", "up_limit", "down_limit"),
+        tuple(numeric_cols),
         code=code,
-        positive=("pre_close", "up_limit", "down_limit"),
+        positive=tuple(positive_cols),
     )
     if normalized.duplicated(["ts_code", "trade_date"]).any():
         raise ValueError(code)
@@ -1168,16 +1173,24 @@ def _validate_publication_values(
             raise ValueError("all_cap_source_manifest_index_daily")
 
     industry = verified.frames["industry_membership"]
+    expected_industry_requests = [
+        {"l1_code": l1_code, "is_new": is_new}
+        for l1_code in _SW2021_L1_CODES
+        for is_new in ("Y", "N")
+    ]
+    observed_industry_requests = manifest.get("industry_requests")
+    if not isinstance(observed_industry_requests, list):
+        raise ValueError("all_cap_source_manifest_industry")
+    normalized_observed = [
+        {"l1_code": item.get("l1_code"), "is_new": item.get("is_new")}
+        if isinstance(item, Mapping) else None
+        for item in observed_industry_requests
+    ]
     if (
         set(industry["l1_code"]) != set(_SW2021_L1_CODES)
         or set(industry["is_new"]) != {"Y", "N"}
         or manifest.get("industry_contract") != "SW2021"
-        or manifest.get("industry_requests")
-        != [
-            {"l1_code": l1_code, "is_new": is_new}
-            for l1_code in _SW2021_L1_CODES
-            for is_new in ("Y", "N")
-        ]
+        or normalized_observed != expected_industry_requests
     ):
         raise ValueError("all_cap_source_manifest_industry")
 

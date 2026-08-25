@@ -460,9 +460,9 @@ def _expected_cache_identity_paths(
     for trade_key in sorted(liquidity_dates):
         if trade_key >= start_key:
             continue
-        expected.add(
-            f"daily/{trade_key[:4]}-{trade_key[4:6]}-{trade_key[6:]}.csv"
-        )
+        dashed = f"{trade_key[:4]}-{trade_key[4:6]}-{trade_key[6:]}.csv"
+        for dataset in ("daily", "daily_basic", "suspend_d"):
+            expected.add(f"{dataset}/{dashed}")
     for trade_key in open_dates:
         dashed = f"{trade_key[:4]}-{trade_key[4:6]}-{trade_key[6:]}"
         for dataset in ("daily", "daily_basic", "suspend_d"):

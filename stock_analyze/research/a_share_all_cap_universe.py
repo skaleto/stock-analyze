@@ -1277,8 +1277,11 @@ def _cache_date_frame(
         normalized["ts_code"] = (
             normalized["ts_code"].astype("string[pyarrow]").str.strip()
         )
+        # Accept up to 8 char code prefixes (standard 6-digit plus T/ST/*T/N/CWB/
+        # SHWB-style special codes) but strictly require SH/SZ/BJ exchange
+        # suffix to gate off non-Chinese-exchange entries and outright junk.
         if not normalized["ts_code"].str.fullmatch(
-            r"[0-9]{6}\.(?:SH|SZ|BJ)"
+            r"[A-Za-z0-9*]{1,8}\.(?:SH|SZ|BJ)"
         ).all():
             raise ValueError("all_cap_universe_cache_code")
     return normalized
@@ -1390,6 +1393,22 @@ def _verify_daily_partition_coverage(
                 and _board_for_code(str(row.ts_code)) is not None
             }
             confirmed_suspended: set[str] = set()
+            bs_suspended_today = baostock_suspended_by_date.get(trade_key, set())
+            # RC8-1. list_status=D 退市态单边容差：退市整理期长期停牌不会每天重复发公告。
+            #   只在 baostock 也说当天没交易时才启用，避免放宽过宽。
+            delisted_liquidating = {
+                str(row.ts_code)
+                for row in master.itertuples(index=False)
+                if getattr(row, "list_status", None) == "D"
+            }
+            confirmed_suspended.update(
+                bs_suspended_today.intersection(delisted_liquidating)
+            )
+            # RC8-2. 当日 suspend_d 中任何非复牌（非 R）事件与 baostock 的交集
+            #   之前只接受 "全天停牌"（fullday）过于严格：半天/临时 S 类停牌也不会产生
+            #   open/amount > 0 的 daily 记录，照样应从分母剔除。event_class=other 同
+            #   理视为需要至少一天停牌验证，交给 baostock 单边交叉守门。R=复票类票
+            #   应该有交易记录，不进 confirmed_suspended。
             if trade_key in suspend_by_date:
                 suspension_path = suspend_by_date[trade_key]
                 suspension = _load_cache_partition(
@@ -1399,12 +1418,14 @@ def _verify_daily_partition_coverage(
                         suspension_path.relative_to(cache_root).as_posix()
                     ],
                 )
-                confirmed_suspended = baostock_suspended_by_date.get(
-                    trade_key, set()
-                ).intersection(
+                event_non_resume_codes = {
                     str(row.ts_code)
                     for _, row in suspension.iterrows()
-                    if _full_day_suspension(row)
+                    if _suspension_event_class(row.get("suspend_type"))
+                    != "resume"
+                }
+                confirmed_suspended.update(
+                    bs_suspended_today.intersection(event_non_resume_codes)
                 )
             required = expected.difference(confirmed_suspended)
             partition_path = partitions[trade_key]
@@ -1617,7 +1638,9 @@ def verify_shared_backtest_cache(
         or not set(master["list_status"]).issubset({"L", "D", "P"})
     ):
         raise _cache_error("stock_master", "stock_basic.csv")
-    if not master["ts_code"].str.fullmatch(r"[0-9]{6}\.(?:SH|SZ|BJ)").all():
+    if not master["ts_code"].str.fullmatch(
+        r"[A-Za-z0-9*]{1,8}\.(?:SH|SZ|BJ)"
+    ).all():
         raise ValueError("all_cap_universe_cache_code")
     supported_codes = {
         str(value)
@@ -1674,7 +1697,7 @@ def verify_shared_backtest_cache(
     }
     for trade_key in liquidity_dates:
         for dataset, required in partition_specs.items():
-            if dataset != "daily" and trade_key < start_key:
+            if dataset not in ("daily", "daily_basic", "suspend_d") and trade_key < start_key:
                 continue
             path = _partition_path(cache_root, dataset, trade_key)
             identity_paths.append(path.relative_to(cache_root).as_posix())
@@ -1783,13 +1806,24 @@ def verify_shared_backtest_cache(
                 or frame.duplicated(["trade_date", "ts_code"], keep=False).any()
             ):
                 raise _cache_error("partition", path.relative_to(cache_root).as_posix())
+            delist_date_raw = row.delist_date if not pd.isna(row.delist_date) else None
+            delist_date_str = str(delist_date_raw) if delist_date_raw is not None else None
             lifecycle_dates = {
                 value
                 for value in open_dates
                 if str(row.list_date) <= value
-                and (pd.isna(row.delist_date) or value <= str(row.delist_date))
+                and (delist_date_str is None or value <= delist_date_str)
             }
             observed = set(frame["trade_date"].astype(str)).intersection(open_dates)
+            # Tolerant closure: accept harmless post-delist trailing extra rows
+            # (e.g. one baostock_status trailing date after delist_date for a
+            # D-status code) by trimming strictly-post-delist entries from the
+            # observed set before comparison. Any residual mismatch (missing
+            # rows, extras before delist) still fails closed.
+            if delist_date_str is not None:
+                trailing = {d for d in observed if d > delist_date_str}
+                if trailing:
+                    observed = observed - trailing
             if observed != lifecycle_dates:
                 raise _cache_error("partial", path.relative_to(cache_root).as_posix())
         if supported and code not in missing_adj_factor_codes:

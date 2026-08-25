@@ -1731,14 +1731,32 @@ class UniverseMaterializationTests(unittest.TestCase):
                     }]
                 ),
             )
+            _write_csv(
+                cache_root / "daily_basic" / f"{dashed}.csv",
+                pd.DataFrame(
+                    [{
+                        "ts_code": "000001.SZ",
+                        "trade_date": trade_key,
+                        "total_mv": 1_000.0,
+                        "circ_mv": 800.0,
+                    }]
+                ),
+            )
+            _write_csv(
+                cache_root / "suspend_d" / f"{dashed}.csv",
+                pd.DataFrame(
+                    columns=("ts_code", "trade_date", "suspend_timing", "suspend_type")
+                ),
+            )
         meta_path = cache_root / "_meta.json"
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        meta["daily_dates_done"] = sorted(
-            set(meta["daily_dates_done"]).union(
-                f"{value[:4]}-{value[4:6]}-{value[6:]}"
-                for value in warmup_dates
+        for field in ("daily_dates_done", "daily_basic_dates_done"):
+            meta[field] = sorted(
+                set(meta[field]).union(
+                    f"{value[:4]}-{value[4:6]}-{value[6:]}"
+                    for value in warmup_dates
+                )
             )
-        )
         meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
 
         result = self._materialize()
