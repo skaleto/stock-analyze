@@ -19,7 +19,7 @@ import pyarrow.parquet as pq
 from ..utils import write_text_atomic
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 CONTRACT_VERSION = "a-share-all-cap-sources-v2"
 PARQUET_COMPRESSION = "SNAPPY"
 PUBLICATION_DATASETS = (
