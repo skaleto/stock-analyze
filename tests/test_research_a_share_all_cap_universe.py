@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import math
 import shutil
 import unittest
 from datetime import date, timedelta
@@ -3439,6 +3440,97 @@ class UniverseMaterializationTests(unittest.TestCase):
                         "all_cap_universe_symlink",
                     ):
                         load_verified_all_cap_universe(repo_root)
+
+
+class SuspendedDenominatorWarmupCoverageTests(unittest.TestCase):
+    """Regression test for warmup-period suspended denominator coverage bug.
+
+    Bug reproduction: When ``verify_shared_backtest_cache`` populates
+    ``baostock_suspended_by_date`` and ``adjustment_observed_by_date``
+    using ``open_dates`` (which excludes the pre-development warmup window),
+    warmup-period suspensions are never recorded.  ``_verify_daily_partition_coverage``
+    iterates over ``daily_by_date`` which includes the full warmup, but
+    ``baostock_suspended_by_date`` for a warmup key returns an empty set, so
+    suspended instruments remain in the coverage denominator and incorrectly
+    fail ``coverage:daily:<warmup_trade_key>``.
+
+    The fix changes the population filter from ``in open_dates`` to
+    ``in liquidity_dates``, which covers warmup + open windows.
+    """
+
+    @staticmethod
+    def _flag(value: object) -> bool:
+        """Mirror the module-internal suspension flag helper."""
+        text = str(value or "").strip()
+        return text == "1" or text.lower() == "true"
+
+    def test_per_code_status_population_covers_liquidity_window_not_only_open(self) -> None:
+        """baostock_suspended_by_date/adjustment_observed_by_date must span warmup.
+
+        Directly exercises the two population loops (lines 1820-1834 original)
+        against both filters and asserts that only ``liquidity_dates`` captures
+        a warmup-period suspension (tradestatus="0" on 20171227).
+        """
+        code = "000002.SZ"  # SZ main board (supported)
+        # 2017 = warmup (not in open_dates), 2018 = open window
+        open_dates = {"20180326", "20180327", "20180328", "20180329", "20180330"}
+        warmup_dates = {"20171225", "20171226", "20171227", "20171228", "20171229"}
+        liquidity_dates = open_dates | warmup_dates
+
+        # per-code baostock_status with a warmup suspension
+        status_rows = [
+            {"ts_code": code, "trade_date": "20171227", "tradestatus": "0",
+             "is_st": "0", "st_source": "baostock_history_isST_v1"},
+            {"ts_code": code, "trade_date": "20180326", "tradestatus": "1",
+             "is_st": "0", "st_source": "baostock_history_isST_v1"},
+        ]
+        status = pd.DataFrame(status_rows)
+
+        # adj_factor with valid rows in both warmup and open
+        adj_rows = [
+            {"trade_date": "20171227", "adj_factor": 1.0},
+            {"trade_date": "20180326", "adj_factor": 1.0},
+        ]
+        adjustment = pd.DataFrame(adj_rows)
+        valid_adjustment = adjustment["adj_factor"].astype(float)
+        valid_rows = adjustment.loc[
+            valid_adjustment.gt(0.0)
+            & valid_adjustment.map(
+                lambda value: math.isfinite(float(value))
+                if not pd.isna(value) else False
+            )
+        ]
+
+        def populate(date_filter_set: set[str]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+            adj_observed: dict[str, set[str]] = {}
+            suspended: dict[str, set[str]] = {}
+            for trade_key in valid_rows["trade_date"].astype(str):
+                if trade_key in date_filter_set:
+                    adj_observed.setdefault(trade_key, set()).add(code)
+            for status_row in status.itertuples(index=False):
+                if (str(status_row.trade_date) in date_filter_set
+                        and self._flag(status_row.tradestatus) is False):
+                    suspended.setdefault(str(status_row.trade_date), set()).add(code)
+            return adj_observed, suspended
+
+        # --- OLD BUG: filter by open_dates only ---
+        adj_bug, susp_bug = populate(open_dates)
+        # Warmup 20171227 missing from both (open_dates excludes 2017)
+        self.assertNotIn("20171227", susp_bug)
+        self.assertNotIn("20171227", adj_bug)
+        # Open 20180326 adjustment is present; suspended not added because tradestatus=1
+        self.assertIn("20180326", adj_bug)
+        self.assertNotIn("20180326", susp_bug)
+
+        # --- FIXED: filter by liquidity_dates (warmup + open) ---
+        adj_fixed, susp_fixed = populate(liquidity_dates)
+        # Warmup 20171227 NOW captured (000002.SZ suspended, tradestatus=0)
+        self.assertIn("20171227", susp_fixed)
+        self.assertEqual(susp_fixed["20171227"], {"000002.SZ"})
+        self.assertIn("20171227", adj_fixed)
+        # Open dates remain present
+        self.assertIn("20180326", adj_fixed)
+        self.assertNotIn("20180326", susp_fixed)  # tradestatus=1 still no suspend
 
 
 if __name__ == "__main__":

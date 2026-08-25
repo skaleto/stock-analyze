@@ -1818,14 +1818,14 @@ def verify_shared_backtest_cache(
                 )
             ]
             for trade_key in valid_rows["trade_date"].astype(str):
-                if trade_key in open_dates:
+                if trade_key in liquidity_dates:
                     adjustment_observed_by_date.setdefault(
                         trade_key,
                         set(),
                     ).add(code)
         for status_row in status.itertuples(index=False):
             if (
-                str(status_row.trade_date) in open_dates
+                str(status_row.trade_date) in liquidity_dates
                 and _flag(status_row.tradestatus) is False
             ):
                 baostock_suspended_by_date.setdefault(
