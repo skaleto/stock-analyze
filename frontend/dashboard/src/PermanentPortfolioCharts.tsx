@@ -316,7 +316,7 @@ function SeriesChart({
       <svg
         className={`permanent-chart${isPanning ? " is-panning" : ""}`}
         viewBox="0 0 1000 220"
-        preserveAspectRatio="none"
+        preserveAspectRatio="xMidYMid meet"
         role="img"
         aria-label={ariaLabel}
         data-start-date={firstDate}
@@ -330,7 +330,7 @@ function SeriesChart({
         onMouseMove={handleMouseMove}
         onMouseLeave={() => setHoveredDate(null)}
       >
-        <title>滚轮缩放，拖动平移，双击恢复全部历史</title>
+        <title>按住 Ctrl 或 Command 后滚轮缩放，拖动平移，双击恢复全部历史</title>
         {boundaryX !== null ? (
           <>
             <rect
@@ -403,12 +403,9 @@ function SeriesChart({
           />
         )) : null}
         {markers.map((marker) => (
-          <circle
+          <g
             key={`${marker.strategy}:${marker.date}:${marker.side}`}
-            cx={marker.x}
-            cy={marker.y}
-            r="4.5"
-            className={`chart-trade-marker ${marker.side}`}
+            className={`chart-trade-point ${marker.side}`}
             role="button"
             tabIndex={0}
             aria-label={`${marker.side === "buy" ? "买入" : "卖出"}调仓 ${
@@ -420,7 +417,20 @@ function SeriesChart({
               setHoveredDate(marker.date);
             }}
             onFocus={() => setHoveredDate(marker.date)}
-          />
+          >
+            <circle
+              cx={marker.x}
+              cy={marker.y}
+              r="8"
+              className="chart-trade-hit-area"
+            />
+            <circle
+              cx={marker.x}
+              cy={marker.y}
+              r="2.4"
+              className="chart-trade-marker"
+            />
+          </g>
         ))}
         <text x={PLOT_LEFT} y="214" className="chart-date-label">
           {firstDate}
@@ -552,6 +562,9 @@ export function PermanentPortfolioCharts({
   }
 
   function handleWheel(event: WheelEvent<SVGSVGElement>) {
+    if (!event.ctrlKey && !event.metaKey) {
+      return;
+    }
     event.preventDefault();
     const bounds = event.currentTarget.getBoundingClientRect();
     const width = bounds.width || 1000;
@@ -634,24 +647,32 @@ export function PermanentPortfolioCharts({
     label: string;
     title: string;
     ariaLabel: string;
+    explanationTitle: string;
+    explanation: string;
   }> = [
     {
       key: "normalized_nav",
       label: "净值走势",
       title: "归一化净值",
       ariaLabel: "永久组合净值对比图",
+      explanationTitle: "净值走势怎么看",
+      explanation: "以起点净值 1.0000 为基准，1.50 表示组合累计增长到起点的 1.5 倍；曲线越平稳，持有体验通常越稳定。",
     },
     {
       key: "drawdown",
       label: "回撤路径",
       title: "回撤",
       ariaLabel: "永久组合回撤图",
+      explanationTitle: "回撤不是单日跌幅",
+      explanation: "它表示当前净值相对此前历史最高净值的跌幅。0% 代表正在创新高，-8% 表示距离此前高点仍低 8%；路径越深、恢复越久，持有压力越大。",
     },
     {
       key: "volatility_63d",
       label: "63日波动",
       title: "63 日滚动波动",
       ariaLabel: "永久组合滚动波动图",
+      explanationTitle: "观察最近三个月的波动强度",
+      explanation: "用最近约三个月（63 个交易日）的日收益计算并年化。数值越高代表价格摆动越剧烈、短期不确定性越大；它不代表涨跌方向。",
     },
   ];
   const selectedMetric = metricOptions.find((item) => item.key === metric)
@@ -712,6 +733,10 @@ export function PermanentPortfolioCharts({
           {visibleStart} 至 {visibleEnd}
         </output>
       </div>
+      <aside className="permanent-chart-explainer" role="note">
+        <strong>{selectedMetric.explanationTitle}</strong>
+        <span>{selectedMetric.explanation}</span>
+      </aside>
       <SeriesChart
         title={selectedMetric.title}
         ariaLabel={selectedMetric.ariaLabel}

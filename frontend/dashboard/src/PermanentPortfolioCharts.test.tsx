@@ -133,7 +133,17 @@ describe("PermanentPortfolioCharts", () => {
         toJSON: () => ({}),
       }),
     });
+    const originalStart = chart.getAttribute("data-start-date");
+    const originalEnd = chart.getAttribute("data-end-date");
     fireEvent.wheel(chart, { clientX: 500, deltaY: -100 });
+    expect(chart).toHaveAttribute("data-start-date", originalStart);
+    expect(chart).toHaveAttribute("data-end-date", originalEnd);
+
+    fireEvent.wheel(chart, {
+      clientX: 500,
+      deltaY: -100,
+      ctrlKey: true,
+    });
 
     const zoomedStart = chart.getAttribute("data-start-date");
     const zoomedEnd = chart.getAttribute("data-end-date");
@@ -169,7 +179,7 @@ describe("PermanentPortfolioCharts", () => {
     render(<PermanentPortfolioCharts series={{ fixed, dynamic }} />);
 
     const chart = screen.getByLabelText("永久组合净值对比图");
-    fireEvent.wheel(chart, { clientX: 500, deltaY: -100 });
+    fireEvent.wheel(chart, { clientX: 500, deltaY: -100, ctrlKey: true });
     const start = chart.getAttribute("data-start-date");
     const end = chart.getAttribute("data-end-date");
 
@@ -245,6 +255,10 @@ describe("PermanentPortfolioCharts", () => {
     });
     expect(buy).toHaveClass("buy");
     expect(sell).toHaveClass("sell");
+    expect(document.querySelector(".chart-trade-marker"))
+      .toHaveAttribute("r", "2.4");
+    expect(document.querySelector(".chart-trade-hit-area"))
+      .toHaveAttribute("r", "8");
 
     fireEvent.mouseEnter(buy);
     fireEvent.mouseMove(buy);
@@ -252,5 +266,31 @@ describe("PermanentPortfolioCharts", () => {
     expect(screen.getByRole("tooltip")).toHaveTextContent("510300.SH");
     expect(screen.getByRole("tooltip")).toHaveTextContent("100份");
     expect(screen.getByRole("tooltip")).toHaveTextContent("4.20");
+  });
+
+  it("keeps chart typography proportional and explains risk metrics", () => {
+    render(<PermanentPortfolioCharts series={{ fixed, dynamic }} />);
+
+    const chart = screen.getByLabelText("永久组合净值对比图");
+    expect(chart).toHaveAttribute("preserveAspectRatio", "xMidYMid meet");
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "以起点净值 1.0000 为基准",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "回撤路径" }));
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "相对此前历史最高净值的跌幅",
+    );
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "-8% 表示距离此前高点仍低 8%",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "63日波动" }));
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "最近约三个月（63 个交易日）",
+    );
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "不代表涨跌方向",
+    );
   });
 });

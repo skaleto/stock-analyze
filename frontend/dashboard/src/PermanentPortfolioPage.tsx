@@ -452,7 +452,7 @@ export function PermanentPortfolioPage({ refreshToken }: { refreshToken: number 
           <section className="permanent-card permanent-chart-card">
             <div className="permanent-card-heading">
               <div><span>历史路径</span><h3>收益与风险如何演变</h3></div>
-              <span>滚轮缩放 · 拖动平移 · 双击复位</span>
+              <span>普通滚动页面 · Ctrl/⌘ + 滚轮缩放 · 拖动平移 · 双击复位</span>
             </div>
             <PermanentPortfolioCharts
               series={chartSeries}

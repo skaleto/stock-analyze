@@ -4331,18 +4331,24 @@ a:hover { text-decoration: underline; }
 }
 .chart-line-benchmark.benchmark-1 { stroke: #a17fc4; }
 .chart-line-benchmark.benchmark-2 { stroke: #779bb5; }
+.chart-trade-point { cursor: pointer; }
+.chart-trade-hit-area {
+  fill: transparent;
+  stroke: none;
+  pointer-events: all;
+}
 .chart-trade-marker {
   stroke: var(--panel-2);
-  stroke-width: 1.5;
+  stroke-width: 1;
   vector-effect: non-scaling-stroke;
-  cursor: pointer;
+  pointer-events: none;
 }
-.chart-trade-marker.buy { fill: #4da3ff; }
-.chart-trade-marker.sell { fill: #f1c94f; }
-.chart-trade-marker:focus {
-  outline: none;
+.chart-trade-point.buy .chart-trade-marker { fill: #4da3ff; }
+.chart-trade-point.sell .chart-trade-marker { fill: #f1c94f; }
+.chart-trade-point:focus { outline: none; }
+.chart-trade-point:focus .chart-trade-marker {
   stroke: var(--text);
-  stroke-width: 2.5;
+  stroke-width: 1.75;
 }
 .permanent-chart-tooltip {
   position: absolute;
@@ -4649,14 +4655,40 @@ a:hover { text-decoration: underline; }
   text-align: right;
 }
 
+.permanent-chart-explainer {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.22fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  margin: 0 0 10px;
+  padding: 9px 11px;
+  border-left: 2px solid rgba(49, 191, 211, 0.48);
+  background: rgba(49, 191, 211, 0.045);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+.permanent-chart-explainer strong {
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 600;
+}
+
 .permanent-chart-card .permanent-chart-panel {
   padding: 0;
   border: 0;
   background: transparent;
+  overflow-x: auto;
 }
 .permanent-chart-card .permanent-chart-heading { min-height: 32px; padding: 0 2px 6px; }
 .permanent-chart-card .permanent-chart-heading h3 { font-size: 11px; }
-.permanent-chart-card .permanent-chart { height: 330px; border-radius: 7px; background: rgba(17, 26, 37, 0.7); }
+.permanent-chart-card .permanent-chart {
+  min-width: 760px;
+  height: auto;
+  aspect-ratio: 1000 / 220;
+  border-radius: 7px;
+  background: rgba(17, 26, 37, 0.7);
+}
 .permanent-chart-card .chart-line-fixed { stroke-width: 2.4; }
 .permanent-chart-card .chart-line-dynamic { stroke-width: 1.55; opacity: 0.82; }
 .permanent-chart-card .chart-line-benchmark { opacity: 0.46; }
@@ -4801,7 +4833,8 @@ a:hover { text-decoration: underline; }
   .permanent-chart-metrics,
   .permanent-chart-ranges { width: 100%; margin-left: 0; overflow-x: auto; }
   .permanent-chart-range { width: 100%; text-align: left; }
-  .permanent-chart-card .permanent-chart { height: 250px; }
+  .permanent-chart-explainer { grid-template-columns: 1fr; gap: 3px; }
+  .permanent-chart-card .permanent-chart { height: auto; }
   .permanent-account-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .permanent-account-strip > div:nth-child(2) { border-right: 0; }
   .permanent-account-strip > div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
