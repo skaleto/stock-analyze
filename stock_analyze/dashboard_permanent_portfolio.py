@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
+import tempfile
 from typing import Any
 
 from .research.permanent_portfolio.contract import canonical_hash
@@ -12,6 +14,9 @@ from .research.permanent_portfolio.contract import canonical_hash
 
 ARTIFACT_RELATIVE = Path(
     "reports/research/permanent_portfolio/v1/dashboard.json"
+)
+PUBLIC_ARTIFACT_RELATIVE = Path(
+    "reports/app/data/permanent-portfolio.json"
 )
 ROW_LIMITS = {
     "series": 800,
@@ -238,6 +243,37 @@ def _unavailable(error: str) -> dict[str, Any]:
     return payload
 
 
+def _load_public_snapshot(root: Path) -> dict[str, Any]:
+    path = root / PUBLIC_ARTIFACT_RELATIVE
+    if not path.is_file():
+        return _unavailable("artifact_missing")
+    try:
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return _unavailable("public_artifact_unreadable")
+    payload = snapshot.get("payload") if isinstance(snapshot, dict) else None
+    if (
+        not isinstance(snapshot, dict)
+        or snapshot.get("schema_version") != 1
+        or not isinstance(payload, dict)
+        or snapshot.get("payload_sha256") != canonical_hash(payload)
+    ):
+        return _unavailable("public_artifact_checksum")
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    if (
+        payload.get("schemaVersion") != 1
+        or payload.get("status") not in {"available", "unavailable"}
+        or len(encoded) > RESPONSE_LIMIT_BYTES
+    ):
+        return _unavailable("public_artifact_schema")
+    return payload
+
+
 def build_dashboard_permanent_portfolio_data(
     *,
     repo_root: str | Path | None = None,
@@ -245,7 +281,7 @@ def build_dashboard_permanent_portfolio_data(
     root = Path(repo_root or ".").resolve()
     path = root / ARTIFACT_RELATIVE
     if not path.is_file():
-        return _unavailable("artifact_missing")
+        return _load_public_snapshot(root)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
@@ -316,3 +352,47 @@ def build_dashboard_permanent_portfolio_data(
     if len(encoded) > RESPONSE_LIMIT_BYTES:
         return _unavailable("artifact_too_large")
     return payload
+
+
+def write_dashboard_permanent_portfolio_public_snapshot(
+    *,
+    repo_root: str | Path | None = None,
+) -> Path:
+    root = Path(repo_root or ".").resolve()
+    payload = build_dashboard_permanent_portfolio_data(repo_root=root)
+    if payload.get("status") != "available":
+        raise ValueError("permanent_portfolio_public_snapshot_unavailable")
+    snapshot = {
+        "schema_version": 1,
+        "payload_sha256": canonical_hash(payload),
+        "payload": payload,
+    }
+    encoded = (
+        json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        + "\n"
+    )
+    path = root / PUBLIC_ARTIFACT_RELATIVE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        dir=path.parent,
+        text=True,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as destination:
+            destination.write(encoded)
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.replace(temporary_name, path)
+    except Exception:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
+    return path

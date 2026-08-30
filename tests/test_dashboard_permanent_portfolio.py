@@ -7,6 +7,7 @@ import unittest
 
 from stock_analyze.dashboard_permanent_portfolio import (
     build_dashboard_permanent_portfolio_data,
+    write_dashboard_permanent_portfolio_public_snapshot,
 )
 from stock_analyze.research.permanent_portfolio.contract import canonical_hash
 
@@ -209,6 +210,70 @@ class PermanentPortfolioDashboardTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "unavailable")
             self.assertEqual(result["errors"], ["artifact_checksum"])
+
+    def test_public_snapshot_serves_when_research_report_is_not_deployed(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_path = _write_dashboard(
+                root,
+                {
+                    "schema_version": 1,
+                    "generated_at": "2026-08-30T12:00:00+00:00",
+                    "study": {
+                        "status": "holdout_complete",
+                        "holdout_sha256": "holdout",
+                    },
+                    "historical": {
+                        "start_date": "20180101",
+                        "end_date": "20260828",
+                        "portfolios": {},
+                    },
+                    "forward": {"status": "unavailable"},
+                },
+            )
+            expected = build_dashboard_permanent_portfolio_data(repo_root=root)
+
+            public_path = write_dashboard_permanent_portfolio_public_snapshot(
+                repo_root=root
+            )
+            report_path.unlink()
+            actual = build_dashboard_permanent_portfolio_data(repo_root=root)
+
+            self.assertEqual(actual, expected)
+            self.assertEqual(
+                public_path,
+                (
+                    root / "reports/app/data/permanent-portfolio.json"
+                ).resolve(),
+            )
+            self.assertLess(public_path.stat().st_size, 750_000)
+
+    def test_tampered_public_snapshot_fails_closed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report_path = _write_dashboard(
+                root,
+                {
+                    "schema_version": 1,
+                    "study": {"status": "holdout_complete"},
+                    "historical": {"portfolios": {}},
+                    "forward": {"status": "unavailable"},
+                },
+            )
+            public_path = write_dashboard_permanent_portfolio_public_snapshot(
+                repo_root=root
+            )
+            report_path.unlink()
+            snapshot = json.loads(public_path.read_text(encoding="utf-8"))
+            snapshot["payload"]["study"]["status"] = "forward_ready"
+            public_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+            actual = build_dashboard_permanent_portfolio_data(repo_root=root)
+
+            self.assertEqual(actual["status"], "unavailable")
+            self.assertEqual(actual["errors"], ["public_artifact_checksum"])
 
 
 if __name__ == "__main__":

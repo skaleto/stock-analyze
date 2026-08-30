@@ -34,6 +34,10 @@ class DeployAppScriptTests(unittest.TestCase):
         self.assertIn("npm run build", script)
         self.assertIn("npm audit --omit=dev", script)
         self.assertIn("reports/app/index.html", script)
+        self.assertIn(
+            "write_dashboard_permanent_portfolio_public_snapshot",
+            script,
+        )
 
     def test_legacy_deploy_entrypoint_delegates_to_dashboard_only_release(
         self,
