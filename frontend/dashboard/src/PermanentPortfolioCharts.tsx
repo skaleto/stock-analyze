@@ -491,7 +491,7 @@ export function PermanentPortfolioCharts({
   const [startDate, setStartDate] = useState(minimumDate);
   const [endDate, setEndDate] = useState(maximumDate);
   const [metric, setMetric] = useState<MetricKey>("normalized_nav");
-  const [showBenchmarks, setShowBenchmarks] = useState(false);
+  const [selectedBenchmarkId, setSelectedBenchmarkId] = useState("");
   const [isPanning, setIsPanning] = useState(false);
   const dragState = useRef<{
     pointerId: number;
@@ -517,11 +517,13 @@ export function PermanentPortfolioCharts({
     [endDate, series.dynamic, startDate],
   );
   const visibleBenchmarks = useMemo(
-    () => (showBenchmarks ? benchmarks : []).map((benchmark) => ({
-      ...benchmark,
-      series: filterSeries(benchmark.series, startDate, endDate),
-    })),
-    [benchmarks, endDate, showBenchmarks, startDate],
+    () => benchmarks
+      .filter((benchmark) => benchmark.id === selectedBenchmarkId)
+      .map((benchmark) => ({
+        ...benchmark,
+        series: filterSeries(benchmark.series, startDate, endDate),
+      })),
+    [benchmarks, endDate, selectedBenchmarkId, startDate],
   );
   const visibleTrades = useMemo(() => (
     Object.fromEntries(
@@ -719,14 +721,21 @@ export function PermanentPortfolioCharts({
             近1年
           </button>
           {benchmarks.length > 0 && metric === "normalized_nav" ? (
-            <button
-              type="button"
-              className="permanent-benchmark-toggle"
-              aria-pressed={showBenchmarks}
-              onClick={() => setShowBenchmarks((value) => !value)}
-            >
-              {showBenchmarks ? "隐藏基准" : "显示基准"}
-            </button>
+            <label className="permanent-benchmark-select">
+              <span>对比</span>
+              <select
+                aria-label="选择对比基准"
+                value={selectedBenchmarkId}
+                onChange={(event) => setSelectedBenchmarkId(event.target.value)}
+              >
+                <option value="">不显示基准</option>
+                {benchmarks.map((benchmark) => (
+                  <option key={benchmark.id} value={benchmark.id}>
+                    {benchmark.name}
+                  </option>
+                ))}
+              </select>
+            </label>
           ) : null}
         </div>
         <output className="permanent-chart-range" aria-live="polite">

@@ -4643,10 +4643,30 @@ a:hover { text-decoration: underline; }
   background: var(--panel-3);
   color: var(--text);
 }
-.permanent-chart-ranges .permanent-benchmark-toggle {
+.permanent-benchmark-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   margin-left: 4px;
-  border-color: rgba(49, 191, 211, 0.25);
+  padding-left: 7px;
+  border-left: 1px solid var(--line);
   color: var(--accent);
+  font-size: 9px;
+}
+.permanent-benchmark-select select {
+  max-width: 152px;
+  min-height: 28px;
+  padding: 0 24px 0 7px;
+  border: 1px solid rgba(49, 191, 211, 0.25);
+  border-radius: 5px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: 9px "SF Mono", Menlo, monospace;
+  cursor: pointer;
+}
+.permanent-benchmark-select select:focus-visible {
+  outline: 2px solid rgba(49, 191, 211, 0.42);
+  outline-offset: 1px;
 }
 .permanent-chart-range {
   min-width: 155px;
@@ -4691,7 +4711,10 @@ a:hover { text-decoration: underline; }
 }
 .permanent-chart-card .chart-line-fixed { stroke-width: 2.4; }
 .permanent-chart-card .chart-line-dynamic { stroke-width: 1.55; opacity: 0.82; }
-.permanent-chart-card .chart-line-benchmark { opacity: 0.46; }
+.permanent-chart-card .chart-line-benchmark {
+  stroke-width: 1.65;
+  opacity: 0.78;
+}
 
 .permanent-detail-grid {
   min-width: 0;

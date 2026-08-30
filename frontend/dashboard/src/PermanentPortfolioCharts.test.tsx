@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { PermanentPortfolioCharts } from "./PermanentPortfolioCharts";
 
@@ -209,7 +209,7 @@ describe("PermanentPortfolioCharts", () => {
       .toHaveAttribute("aria-pressed", "true");
   });
 
-  it("shows benchmark lines, colored rebalance points, and hover details", () => {
+  it("shows only the selected benchmark with colored rebalance points and hover details", () => {
     render(
       <PermanentPortfolioCharts
         series={{ fixed, dynamic }}
@@ -217,6 +217,16 @@ describe("PermanentPortfolioCharts", () => {
           {
             id: "equity_buy_hold",
             name: "沪深300买入持有",
+            series: fixed,
+          },
+          {
+            id: "equal_weight_buy_hold",
+            name: "四资产等权买入持有",
+            series: dynamic,
+          },
+          {
+            id: "cash_buy_hold",
+            name: "现金ETF买入持有",
             series: fixed,
           },
         ]}
@@ -241,11 +251,23 @@ describe("PermanentPortfolioCharts", () => {
       />,
     );
 
-    expect(screen.queryByText("沪深300买入持有")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "显示基准" }));
-    expect(screen.getByText("沪深300买入持有")).toBeInTheDocument();
+    const legend = screen.getByLabelText("归一化净值图例");
+    expect(within(legend).queryByText("沪深300买入持有")).not.toBeInTheDocument();
+    expect(document.querySelectorAll(".chart-line-benchmark")).toHaveLength(0);
+    fireEvent.change(screen.getByRole("combobox", { name: "选择对比基准" }), {
+      target: { value: "equity_buy_hold" },
+    });
+    expect(within(legend).getByText("沪深300买入持有")).toBeInTheDocument();
+    expect(within(legend).queryByText("四资产等权买入持有")).not.toBeInTheDocument();
     expect(screen.getByText("买入")).toHaveClass("buy");
     expect(screen.getByText("卖出")).toHaveClass("sell");
+    expect(document.querySelectorAll(".chart-line-benchmark")).toHaveLength(1);
+
+    fireEvent.change(screen.getByRole("combobox", { name: "选择对比基准" }), {
+      target: { value: "equal_weight_buy_hold" },
+    });
+    expect(within(legend).queryByText("沪深300买入持有")).not.toBeInTheDocument();
+    expect(within(legend).getByText("四资产等权买入持有")).toBeInTheDocument();
     expect(document.querySelectorAll(".chart-line-benchmark")).toHaveLength(1);
     const buy = screen.getByRole("button", {
       name: "买入调仓 固定永久组合 2025-01-02",
