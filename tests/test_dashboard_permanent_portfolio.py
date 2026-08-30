@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
 import unittest
+from unittest.mock import patch
 
 from stock_analyze.dashboard_permanent_portfolio import (
     build_dashboard_permanent_portfolio_data,
@@ -274,6 +275,37 @@ class PermanentPortfolioDashboardTests(unittest.TestCase):
 
             self.assertEqual(actual["status"], "unavailable")
             self.assertEqual(actual["errors"], ["public_artifact_checksum"])
+
+    def test_public_snapshot_is_byte_stable_for_equivalent_mapping_order(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = {
+                "schemaVersion": 1,
+                "status": "available",
+                "study": {"status": "holdout_complete", "name": "永久组合"},
+            }
+            second = {
+                "study": {"name": "永久组合", "status": "holdout_complete"},
+                "status": "available",
+                "schemaVersion": 1,
+            }
+            with patch(
+                "stock_analyze.dashboard_permanent_portfolio."
+                "build_dashboard_permanent_portfolio_data",
+                side_effect=[first, second],
+            ):
+                path = write_dashboard_permanent_portfolio_public_snapshot(
+                    repo_root=root
+                )
+                first_bytes = path.read_bytes()
+                write_dashboard_permanent_portfolio_public_snapshot(
+                    repo_root=root
+                )
+                second_bytes = path.read_bytes()
+
+            self.assertEqual(first_bytes, second_bytes)
 
 
 if __name__ == "__main__":

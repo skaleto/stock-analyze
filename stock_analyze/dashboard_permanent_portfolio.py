@@ -373,6 +373,7 @@ def write_dashboard_permanent_portfolio_public_snapshot(
             ensure_ascii=False,
             separators=(",", ":"),
             allow_nan=False,
+            sort_keys=True,
         )
         + "\n"
     )
