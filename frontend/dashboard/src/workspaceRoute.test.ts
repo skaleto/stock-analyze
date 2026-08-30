@@ -47,6 +47,9 @@ const canonicalRouteCases = [
   ["multi-agent research", {
     view: "multi-agent-research",
   }, "view=multi-agent-research"],
+  ["permanent portfolio", {
+    view: "permanent-portfolio",
+  }, "view=permanent-portfolio"],
   ["data intelligence", {
     view: "data-intelligence",
   }, "view=data-intelligence"],

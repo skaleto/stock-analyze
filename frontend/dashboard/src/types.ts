@@ -1,5 +1,109 @@
 export type AgentId = string;
 
+export type PermanentPortfolioMetricSet = {
+  cumulative_return?: number | null;
+  annualized_return?: number | null;
+  annualized_volatility?: number | null;
+  sharpe_vs_cash?: number | null;
+  sortino_vs_cash?: number | null;
+  max_drawdown?: number | null;
+  calmar?: number | null;
+  annualized_turnover?: number | null;
+  total_cost?: number | null;
+};
+
+export type PermanentPortfolioSeriesPoint = {
+  date: string;
+  normalized_nav?: number | null;
+  drawdown?: number | null;
+  volatility_63d?: number | null;
+};
+
+export type PermanentPortfolioNav = {
+  date?: string;
+  cash?: number;
+  market_value?: number;
+  total_value?: number;
+  strategy?: string;
+};
+
+export type PermanentPortfolioPosition = {
+  strategy?: string;
+  role?: string;
+  code?: string;
+  shares?: number;
+  last_price?: number;
+  market_value?: number;
+};
+
+export type PermanentPortfolioTarget = {
+  strategy?: string;
+  role?: string;
+  signal_date?: string;
+  target_weight?: number;
+  reason?: string;
+};
+
+export type PermanentPortfolioTrade = {
+  signal_date?: string;
+  trade_date?: string;
+  strategy?: string;
+  role?: string;
+  code?: string;
+  side?: string;
+  shares?: number;
+  price?: number;
+  commission?: number;
+  slippage_cost?: number;
+};
+
+export type PermanentPortfolioResult = {
+  metrics?: PermanentPortfolioMetricSet;
+  series?: PermanentPortfolioSeriesPoint[];
+  nav?: PermanentPortfolioNav[];
+  trades?: PermanentPortfolioTrade[];
+  targets?: PermanentPortfolioTarget[];
+  positions?: PermanentPortfolioPosition[];
+  pending?: PermanentPortfolioTarget[];
+};
+
+export type PermanentPortfolioWindow = {
+  status: string;
+  start_date?: string;
+  end_date?: string;
+  stage_boundaries?: Array<{
+    date?: string;
+    before_label?: string;
+    after_label?: string;
+  }>;
+  portfolios?: Record<string, PermanentPortfolioResult>;
+};
+
+export type PermanentPortfolioData = {
+  schemaVersion: 1;
+  generatedAt: string | null;
+  status: string;
+  study: {
+    studyId: string;
+    status: string;
+    initialCash: number;
+    contractSha256?: string | null;
+    dataSha256?: string | null;
+    developmentSha256?: string | null;
+    holdoutSha256?: string | null;
+    holdoutEnd?: string | null;
+    forwardAsOf?: string | null;
+  };
+  assets: Array<{ role: string; code: string; name: string }>;
+  strategies: Array<{ id: string; name: string }>;
+  benchmarks: Array<{ id: string; name: string }>;
+  windows: {
+    historical: PermanentPortfolioWindow;
+    forward: PermanentPortfolioWindow;
+  };
+  errors: string[];
+};
+
 export type TaskStatus = {
   status?: string;
   started_at?: string | null;

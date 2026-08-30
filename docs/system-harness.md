@@ -103,18 +103,46 @@ python3 -m stock_analyze refresh-otc-fund-nav --as-of 2026-08-22 --repo-root .
 python3 -m stock_analyze --market a_share run-multi-agent-research \
   --code 000001.SZ --as-of 2026-08-22 --model glm-5.3 --repo-root .
 
+# A 股永久投资组合研究。严格按采集、开发封存、单次盲测、前向纸面的顺序执行
+python3 -m stock_analyze prepare-permanent-portfolio-data \
+  --contract configs/research/permanent_portfolio_v1.yaml \
+  --end 2026-08-28 --repo-root .
+python3 -m stock_analyze run-permanent-portfolio-development \
+  --contract configs/research/permanent_portfolio_v1.yaml --repo-root .
+python3 -m stock_analyze open-permanent-portfolio-holdout \
+  --contract configs/research/permanent_portfolio_v1.yaml \
+  --development-artifact PATH \
+  --development-sha256 SHA256 \
+  --repo-root .
+python3 -m stock_analyze run-permanent-portfolio-paper \
+  --paper-as-of 2026-08-31 \
+  --contract configs/research/permanent_portfolio_v1.yaml \
+  --repo-root .
+
 # 决策/风控/归因证据
 curl -s 'http://127.0.0.1:8765/api/dashboard/governance.json?market=a_share&agent=codex'
 curl -s 'http://127.0.0.1:8765/api/dashboard/multi-agent-research.json'
 curl -s 'http://127.0.0.1:8765/api/dashboard/research-universe.json?kind=a_share&page=1&page_size=50'
 curl -s 'http://127.0.0.1:8765/api/dashboard/research-universe.json?kind=exchange_fund&query=%E7%BA%B3%E6%96%AF&page=1&page_size=50'
 curl -s 'http://127.0.0.1:8765/api/dashboard/research-universe-instrument.json?kind=a_share&code=000001.SZ'
+curl -s 'http://127.0.0.1:8765/api/dashboard/permanent-portfolio.json'
 ```
 
 `run-daily` 顺序固定为执行到期订单、更新净值、生成下一交易日目标。`run-weekly` 不下单。
 候选模型在四个正式 daily 账本全部成功后由 `stock-analyze-model-iteration.service`
 独立运行；即使候选预测缺失或
 模型组合失败，四个正式账户仍会按 Active 模型或固定规则路径继续执行。
+
+永久组合命令只操作
+`data/research/permanent_portfolio/v1/`、
+`reports/research/permanent_portfolio/v1/` 和
+`data/research/paper_portfolios/permanent_{fixed,dynamic}_v1/`。开发命令只
+打开 development 数据分区；盲测命令先验证开发产物内容及声明的 SHA-256，
+再独占创建开启标记并读取 holdout 分区。不要为了重跑删除开启标记，也不要
+根据盲测收益修改冻结配置。它不读写正式账户、模型 Registry 或四账户
+Challenger。Dashboard 入口为
+`http://127.0.0.1:8765/app.html?view=permanent-portfolio`，HTTP 请求处理器
+只读取有界报告，不调用数据 provider 或运行回放。
 
 历史公告 PDF 下载和解析可以交给本机有界 worker，但 ECS SQLite 始终是唯一
 权威库。本机不需要 OSS 或 LLM 凭据。worker 单次默认最多 10 批/1 小时，
@@ -309,6 +337,7 @@ npm run build
 - PDF 回填以退出码 75 且 `Result=success` 结束，表示 reconcile 锁占用了 worker 槽位，页面显示为“已跳过”。
 - 运行中心最多读取 20 行运行账本，不读取完整 journal；模型研究、数据与情报、运行中心三个接口的 UTF-8 JSON 都必须小于 250 KB。
 - 单个资源读取失败只写入稳定的 `errors[].resource/reason`，其余有效阶段、矩阵、计划和历史继续展示；异常文本、文件路径与凭据不得进入响应。
+- 永久组合资源只读取 `reports/research/permanent_portfolio/v1/dashboard.json`；状态早于 `holdout_complete` 时必须将整个 holdout 对象压缩为 `{"status":"sealed"}`，不得泄漏指标、序列或交易。
 
 ## Baseline-First Classical Model Contract
 

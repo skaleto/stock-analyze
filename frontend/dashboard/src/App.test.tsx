@@ -63,6 +63,16 @@ vi.mock("./DataIntelligencePage", () => ({
     );
   },
 }));
+vi.mock("./PermanentPortfolioPage", () => ({
+  PermanentPortfolioPage: ({ refreshToken }: { refreshToken: number }) => {
+    requests.push("/api/dashboard/permanent-portfolio.json");
+    return (
+      <div data-testid="workspace-page">
+        永久投资组合页面 刷新{refreshToken}
+      </div>
+    );
+  },
+}));
 vi.mock("./OperationsPage", () => ({
   OperationsPage: ({
     scope,
@@ -114,6 +124,11 @@ describe("Dashboard app workspace integration", () => {
       "?view=model-research",
       "模型研究页面 global",
       "/api/dashboard/model-research/global",
+    ],
+    [
+      "?view=permanent-portfolio",
+      "永久投资组合页面",
+      "/api/dashboard/permanent-portfolio.json",
     ],
     [
       "?view=data-intelligence",

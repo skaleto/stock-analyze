@@ -12,6 +12,7 @@ import type {
   IntelligenceEventDetail,
   IntelligenceSummary,
   InstrumentDetail,
+  PermanentPortfolioData,
   SystemOverviewData,
 } from "./types";
 import type {
@@ -3054,6 +3055,81 @@ export function fetchSystemOverview(signal?: AbortSignal): Promise<SystemOvervie
     SYSTEM_OVERVIEW_RESPONSE_LIMIT,
     "System overview",
   ).then(validateSystemOverview);
+}
+
+const PERMANENT_PORTFOLIO_RESPONSE_LIMIT = 750_000;
+
+function validatePermanentPortfolio(value: unknown): PermanentPortfolioData {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Invalid permanent portfolio response");
+  }
+  const data = value as Record<string, unknown>;
+  if (
+    data.schemaVersion !== 1
+    || typeof data.status !== "string"
+    || !Array.isArray(data.assets)
+    || data.assets.length > 10
+    || !Array.isArray(data.strategies)
+    || data.strategies.length > 10
+    || !Array.isArray(data.benchmarks)
+    || data.benchmarks.length > 10
+    || !Array.isArray(data.errors)
+    || data.errors.some((item) => typeof item !== "string")
+  ) {
+    throw new Error("Invalid permanent portfolio response");
+  }
+  const study = data.study;
+  const windows = data.windows;
+  if (
+    study === null
+    || typeof study !== "object"
+    || Array.isArray(study)
+    || windows === null
+    || typeof windows !== "object"
+    || Array.isArray(windows)
+  ) {
+    throw new Error("Invalid permanent portfolio response");
+  }
+  const studyRecord = study as Record<string, unknown>;
+  if (
+    studyRecord.studyId !== "permanent_portfolio_v1"
+    || typeof studyRecord.status !== "string"
+    || typeof studyRecord.initialCash !== "number"
+    || !Number.isFinite(studyRecord.initialCash)
+  ) {
+    throw new Error("Invalid permanent portfolio response");
+  }
+  const windowRecord = windows as Record<string, unknown>;
+  const windowKeys = Object.keys(windowRecord);
+  if (
+    windowKeys.length !== 2
+    || windowKeys.some((key) => !["historical", "forward"].includes(key))
+  ) {
+    throw new Error("Invalid permanent portfolio response");
+  }
+  for (const key of ["historical", "forward"]) {
+    const window = windowRecord[key];
+    if (
+      window === null
+      || typeof window !== "object"
+      || Array.isArray(window)
+      || typeof (window as Record<string, unknown>).status !== "string"
+    ) {
+      throw new Error("Invalid permanent portfolio response");
+    }
+  }
+  return data as unknown as PermanentPortfolioData;
+}
+
+export function fetchPermanentPortfolio(
+  signal?: AbortSignal,
+): Promise<PermanentPortfolioData> {
+  return fetchJson<unknown>(
+    "/api/dashboard/permanent-portfolio.json",
+    signal,
+    PERMANENT_PORTFOLIO_RESPONSE_LIMIT,
+    "Permanent portfolio",
+  ).then(validatePermanentPortfolio);
 }
 
 export function fetchDetail(

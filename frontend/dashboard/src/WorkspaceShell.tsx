@@ -8,6 +8,7 @@ import {
   Gauge,
   GitCompareArrows,
   Layers3,
+  Landmark,
   RadioTower,
   RefreshCcw,
   ShieldCheck,
@@ -53,6 +54,9 @@ function defaultRoute(
     return { view };
   }
   if (view === "multi-agent-research") {
+    return { view };
+  }
+  if (view === "permanent-portfolio") {
     return { view };
   }
   if (view === "data-intelligence") {
@@ -147,6 +151,21 @@ export function WorkspaceShell({
             >
               <BookOpenText size={17} aria-hidden="true" />
               <strong>多角色投研</strong>
+            </button>
+            <button
+              type="button"
+              className={route.view === "permanent-portfolio"
+                ? "rail-nav-item active"
+                : "rail-nav-item"}
+              aria-current={currentPage(
+                route.view === "permanent-portfolio",
+              )}
+              onClick={() => onNavigate(
+                defaultRoute("permanent-portfolio", marketContext),
+              )}
+            >
+              <Landmark size={17} aria-hidden="true" />
+              <strong>永久投资组合</strong>
             </button>
             <button
               type="button"

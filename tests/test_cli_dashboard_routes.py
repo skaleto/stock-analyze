@@ -105,6 +105,7 @@ class DashboardRoutesTableTests(unittest.TestCase):
             "research-universe",
             "data-intelligence",
             "operations-center",
+            "permanent-portfolio",
             "overview",
             "performance",
             "portfolio",
@@ -242,6 +243,23 @@ class HandlerRewriteTests(unittest.TestCase):
                 Path(tmp),
                 "",
                 path="/api/dashboard/multi-agent-research.json",
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, expected)
+        builder.assert_called_once_with(repo_root=Path(tmp).resolve())
+
+    def test_permanent_portfolio_api_reads_completed_artifacts_only(self) -> None:
+        expected = {"status": "available", "windows": {}}
+        with TemporaryDirectory() as tmp, mock.patch(
+            "stock_analyze.dashboard_permanent_portfolio."
+            "build_dashboard_permanent_portfolio_data",
+            return_value=expected,
+        ) as builder:
+            status, payload = self._serve_api(
+                Path(tmp),
+                "",
+                path="/api/dashboard/permanent-portfolio.json",
             )
 
         self.assertEqual(status, 200)

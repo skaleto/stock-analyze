@@ -7,6 +7,7 @@ export type WorkspaceView =
   | "strategy"
   | "model-research"
   | "multi-agent-research"
+  | "permanent-portfolio"
   | "data-intelligence"
   | "operations";
 
@@ -26,6 +27,7 @@ export type WorkspaceRoute =
     }
   | { view: "model-research"; focus?: DashboardMarket }
   | { view: "multi-agent-research" }
+  | { view: "permanent-portfolio" }
   | { view: "data-intelligence"; focus?: DashboardMarket }
   | { view: "operations"; scope: WorkspaceScope };
 
@@ -101,6 +103,9 @@ export function parseWorkspaceRoute(search: string): WorkspaceRoute {
   }
   if (rawView === "multi-agent-research") {
     return { view: "multi-agent-research" };
+  }
+  if (rawView === "permanent-portfolio") {
+    return { view: "permanent-portfolio" };
   }
   if (rawView === "data-intelligence" || rawView === "intelligence") {
     const focus = isMarket(params.get("focus"))

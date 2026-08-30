@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchModelResearch,
+  fetchPermanentPortfolio,
   fetchResearchUniverseInstrument,
   fetchResearchUniverse,
   fetchSystemOverview,
@@ -109,6 +110,77 @@ function jsonResponse(value: unknown): Response {
     headers: { "content-type": "application/json; charset=utf-8" },
   });
 }
+
+describe("permanent portfolio API", () => {
+  it("loads continuous history and the forward paper window", async () => {
+    const payload = {
+      schemaVersion: 1,
+      generatedAt: "2026-08-30T12:00:00+00:00",
+      status: "available",
+      study: {
+        studyId: "permanent_portfolio_v1",
+        status: "development_complete",
+        initialCash: 200000,
+        contractSha256: "a",
+        dataSha256: "b",
+      },
+      assets: [],
+      strategies: [],
+      benchmarks: [],
+      windows: {
+        historical: {
+          status: "complete",
+          start_date: "20180101",
+          end_date: "20260828",
+          stage_boundaries: [{
+            date: "20250101",
+            before_label: "开发期",
+            after_label: "盲测期",
+          }],
+          portfolios: {},
+        },
+        forward: { status: "unavailable" },
+      },
+      errors: [],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(payload))),
+    );
+
+    await expect(fetchPermanentPortfolio()).resolves.toEqual(payload);
+  });
+
+  it("rejects the retired development and holdout window contract", async () => {
+    const payload = {
+      schemaVersion: 1,
+      generatedAt: null,
+      status: "available",
+      study: {
+        studyId: "permanent_portfolio_v1",
+        status: "development_complete",
+        initialCash: 200000,
+      },
+      assets: [],
+      strategies: [],
+      benchmarks: [],
+      windows: {
+        development: { status: "complete", portfolios: {} },
+        holdout: { status: "complete", portfolios: {} },
+        forward: { status: "unavailable" },
+      },
+      errors: [],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(payload))),
+    );
+
+    await expect(fetchPermanentPortfolio()).rejects.toThrow(
+      "Invalid permanent portfolio response",
+    );
+  });
+});
 
 function validResearchUniversePage() {
   return {

@@ -134,9 +134,24 @@ Nasdaq、标普和恒生等指数画像仅用于识别跨境 ETF 的底层暴露
 
 多角色投研只读取既有的点时特征快照、研究目录和已落盘情报：市场、基本面、事件、多空、风控和简报各自生成审计记录。模型调用只能由显式 CLI 命令发起；JSON 无效或调用失败时，报告降级并保留缺失原因。产物位于 `reports/research/multi_agent/`，Dashboard 只读展示最新已完成产物，不会在请求中采集数据或调用模型。
 
+### A 股永久投资组合研究
+
+`permanent_portfolio_v1` 是独立的四资产 ETF 研究，不属于正式
+`a_share` 或 `cn_qdii_etf` 策略。固定组合与动态组合各使用一笔独立的
+20 万元研究资金，只读取冻结的股票、长期国债、现金和黄金 ETF。它们不读取
+或修改正式账户、模型 Registry、Champion、Active 或
+`production-paper-challengers-v1`。
+
+市场数据发布在 `data/research/permanent_portfolio/v1/market_data/`，
+开发分区只包含 2018-2024 研究窗口；盲测分区包含 2025 年起的收益区间及计算
+动量所需的只读预热数据。开发产物和一次性盲测产物分别使用不可变目录与
+SHA-256 绑定，盲测开启标记通过独占创建写入，不能重复开启。盲测完成后，
+两个前向纸面账户只写入
+`data/research/paper_portfolios/permanent_{fixed,dynamic}_v1/`。
+
 ## 4. Dashboard 能回答什么
 
-Dashboard 以六个稳定工作区组织观察路径，市场范围与工作区导航彼此独立。首屏只呈现当前状态，点击流程节点再查看真实数据、模型、计划与运行证据。
+Dashboard 以七个稳定工作区组织观察路径，市场范围与工作区导航彼此独立。首屏只呈现当前状态，点击流程节点再查看真实数据、模型、计划与运行证据。
 
 | 工作区 | 回答的问题 | 首屏接口 |
 | --- | --- | --- |
@@ -146,6 +161,7 @@ Dashboard 以六个稳定工作区组织观察路径，市场范围与工作区�
 | **多角色投研** | 项目内证据如何被多角色审阅、哪些输出降级、研究目录扩展到哪里 | `multi-agent-research.json` |
 | **数据与情报** | 传统因子和情报因子来自哪里，被谁实际使用 | `data-intelligence.json` |
 | **运行中心** | 今天跑到哪里，下次何时，是否需要人工 | `operations-center.json` |
+| **永久投资组合** | 两套四资产规则在开发、盲测和前向阶段的收益、波动、回撤、交易与证据绑定如何 | `permanent-portfolio.json` |
 
 `等待计划时间`、`等待上游`、零入选和正常历史回填不是故障。只有运行中心 `interventions` 中的项目，才表示系统无法自动恢复或已经达到人工决策门槛。单个读取段不可用时，页面显示“部分状态不可用”，其余有效流程、矩阵、计划和历史仍继续呈现。
 
@@ -157,7 +173,7 @@ Dashboard 以六个稳定工作区组织观察路径，市场范围与工作区�
 | **买卖点是否合理** | 三年真实 K 线，默认一个月，叠加均线、成交量、MACD 和成交标记 | 指标开关、缩放、联动十字线、悬浮详情 |
 | **任务有没有正常跑** | 按资源展示新鲜度、成功状态、失败摘要和通知情况 | 仅在运维页查看，不干扰分析主流程 |
 
-Dashboard 由 React 18、TypeScript、Vite、TanStack Table、TradingView Lightweight Charts 和 Lucide 构建。策略工作台继续按 `overview`、`performance`、`portfolio`、`predictions`、`research`、`operations`、`governance` 拆分资源；模型研究、数据与情报、运行中心各有独立首屏接口，配合语义 ETag、限量缓存和严格载荷上限渐进加载。`governance` 仍独立承载决策漏斗、风险压力、归因、漂移、实验和情报因子证据。
+Dashboard 由 React 18、TypeScript、Vite、TanStack Table、TradingView Lightweight Charts 和 Lucide 构建。策略工作台继续按 `overview`、`performance`、`portfolio`、`predictions`、`research`、`operations`、`governance` 拆分资源；模型研究、数据与情报、运行中心及永久投资组合各有独立首屏接口，配合语义 ETag、限量缓存和严格载荷上限渐进加载。永久组合入口为 `?view=permanent-portfolio`，只读取 `/api/dashboard/permanent-portfolio.json` 的有界落盘产物；未完成盲测时，整个盲测结果对象固定为 sealed 状态。`governance` 仍独立承载决策漏斗、风险压力、归因、漂移、实验和情报因子证据。
 
 ## 5. 自动任务与人工动作
 

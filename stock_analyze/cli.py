@@ -307,6 +307,83 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("data/research/a_share_all_cap/v1/inputs/holdout.json"),
     )
+    permanent_data = sub.add_parser(
+        "prepare-permanent-portfolio-data",
+        help="Collect and publish verified total-return ETF history.",
+    )
+    permanent_data.add_argument(
+        "--contract",
+        type=Path,
+        default=Path("configs/research/permanent_portfolio_v1.yaml"),
+    )
+    permanent_data.add_argument("--end", required=True)
+    permanent_data.add_argument("--repo-root", type=Path, default=Path("."))
+    permanent_development = sub.add_parser(
+        "run-permanent-portfolio-development",
+        help="Run and seal the frozen 2018-2024 permanent-portfolio study.",
+    )
+    permanent_development.add_argument(
+        "--contract",
+        type=Path,
+        default=Path("configs/research/permanent_portfolio_v1.yaml"),
+    )
+    permanent_development.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+    )
+    permanent_holdout = sub.add_parser(
+        "open-permanent-portfolio-holdout",
+        help="Open the bound 2025-2026 holdout exactly once.",
+    )
+    permanent_holdout.add_argument(
+        "--contract",
+        type=Path,
+        default=Path("configs/research/permanent_portfolio_v1.yaml"),
+    )
+    permanent_holdout.add_argument(
+        "--development-artifact",
+        type=Path,
+        required=True,
+    )
+    permanent_holdout.add_argument(
+        "--development-sha256",
+        required=True,
+    )
+    permanent_holdout.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+    )
+    permanent_paper = sub.add_parser(
+        "run-permanent-portfolio-paper",
+        help="Update the two isolated permanent-portfolio paper accounts.",
+    )
+    permanent_paper.add_argument("--paper-as-of", required=True)
+    permanent_paper.add_argument(
+        "--contract",
+        type=Path,
+        default=Path("configs/research/permanent_portfolio_v1.yaml"),
+    )
+    permanent_paper.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+    )
+    permanent_history = sub.add_parser(
+        "rebuild-permanent-portfolio-history",
+        help="Replay development and holdout as one continuous Dashboard history.",
+    )
+    permanent_history.add_argument(
+        "--contract",
+        type=Path,
+        default=Path("configs/research/permanent_portfolio_v1.yaml"),
+    )
+    permanent_history.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path("."),
+    )
 
     multi_agent_research = sub.add_parser(
         "run-multi-agent-research",
@@ -1809,6 +1886,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run-a-share-all-cap-holdout":
         ensure_dirs(args.logs_dir)
         return _command_run_a_share_all_cap_holdout(args)
+    if args.command == "prepare-permanent-portfolio-data":
+        ensure_dirs(args.logs_dir)
+        return _command_prepare_permanent_portfolio_data(args)
+    if args.command == "run-permanent-portfolio-development":
+        ensure_dirs(args.logs_dir)
+        return _command_run_permanent_portfolio_development(args)
+    if args.command == "open-permanent-portfolio-holdout":
+        ensure_dirs(args.logs_dir)
+        return _command_open_permanent_portfolio_holdout(args)
+    if args.command == "run-permanent-portfolio-paper":
+        ensure_dirs(args.logs_dir)
+        return _command_run_permanent_portfolio_paper(args)
+    if args.command == "rebuild-permanent-portfolio-history":
+        ensure_dirs(args.logs_dir)
+        return _command_rebuild_permanent_portfolio_history(args)
     if args.command == "run-multi-agent-research":
         ensure_dirs(args.logs_dir)
         return _command_run_multi_agent_research(args)
@@ -3832,6 +3924,119 @@ def _command_run_a_share_all_cap_holdout(args: argparse.Namespace) -> int:
     return 0
 
 
+def _command_prepare_permanent_portfolio_data(
+    args: argparse.Namespace,
+) -> int:
+    from .markets.a_share.backtest.data_prep import _make_pro_client
+    from .research.permanent_portfolio.contract import load_contract
+    from .research.permanent_portfolio.data import materialize_market_data
+
+    try:
+        contract = load_contract(args.contract)
+        result = materialize_market_data(
+            provider=_make_pro_client(),
+            codes=tuple(asset.code for asset in contract.assets),
+            source_start=contract.source_start,
+            end_date=str(args.end).replace("-", ""),
+            output_root=(
+                args.repo_root
+                / "data/research/permanent_portfolio/v1/market_data"
+            ),
+            holdout_start=contract.holdout_start,
+        )
+    except Exception as exc:  # noqa: BLE001 - fail closed on source defects
+        print(
+            f"error: prepare-permanent-portfolio-data failed: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _command_run_permanent_portfolio_development(
+    args: argparse.Namespace,
+) -> int:
+    from .research.permanent_portfolio.workflow import run_development
+
+    try:
+        result = run_development(
+            repo_root=args.repo_root,
+            contract_path=args.contract,
+        )
+    except Exception as exc:  # noqa: BLE001 - immutable research fails closed
+        print(
+            f"error: run-permanent-portfolio-development failed: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _command_open_permanent_portfolio_holdout(
+    args: argparse.Namespace,
+) -> int:
+    from .research.permanent_portfolio.workflow import run_holdout
+
+    try:
+        result = run_holdout(
+            repo_root=args.repo_root,
+            contract_path=args.contract,
+            development_artifact_path=args.development_artifact,
+            expected_development_sha256=args.development_sha256,
+        )
+    except Exception as exc:  # noqa: BLE001 - immutable research fails closed
+        print(
+            f"error: open-permanent-portfolio-holdout failed: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _command_run_permanent_portfolio_paper(
+    args: argparse.Namespace,
+) -> int:
+    from .research.permanent_portfolio.paper import run_paper_day
+
+    try:
+        result = run_paper_day(
+            args.repo_root,
+            as_of=args.paper_as_of,
+            contract_path=args.contract,
+        )
+    except Exception as exc:  # noqa: BLE001 - paper evidence fails closed
+        print(
+            f"error: run-permanent-portfolio-paper failed: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _command_rebuild_permanent_portfolio_history(
+    args: argparse.Namespace,
+) -> int:
+    from .permanent_portfolio_history import rebuild_historical_dashboard
+
+    try:
+        result = rebuild_historical_dashboard(
+            repo_root=args.repo_root,
+            contract_path=args.contract,
+        )
+    except Exception as exc:  # noqa: BLE001 - bounded local artifact rebuild
+        print(
+            f"error: rebuild-permanent-portfolio-history failed: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _command_run_multi_agent_research(args: argparse.Namespace) -> int:
     """Run a user-invoked model workflow; never part of Dashboard serving."""
     from .research.multi_agent_workflow import (
@@ -4423,6 +4628,7 @@ def _is_dashboard_api_path(path: str) -> bool:
         "/api/dashboard/research-universe-instrument.json",
         "/api/dashboard/data-intelligence.json",
         "/api/dashboard/operations-center.json",
+        "/api/dashboard/permanent-portfolio.json",
         "/api/dashboard/overview.json",
         "/api/dashboard/performance.json",
         "/api/dashboard/portfolio.json",
@@ -4589,6 +4795,14 @@ class _DashboardRequestHandler(http.server.SimpleHTTPRequestHandler):
                         repo_root=repo_root,
                         kind=(params.get("kind") or ["a_share"])[0],
                         code=(params.get("code") or [""])[0],
+                    )
+                if canonical_path == "/api/dashboard/permanent-portfolio.json":
+                    from .dashboard_permanent_portfolio import (
+                        build_dashboard_permanent_portfolio_data,
+                    )
+
+                    return build_dashboard_permanent_portfolio_data(
+                        repo_root=repo_root,
                     )
                 market = (params.get("market") or ["a_share"])[0]
                 agent = (params.get("agent") or ["codex"])[0]

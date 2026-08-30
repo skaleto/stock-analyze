@@ -30,6 +30,7 @@ describe("WorkspaceShell", () => {
     const topLevelLabels = [
       "决策总览",
       "模型研究",
+      "永久投资组合",
       "数据与情报",
       "运行中心",
       "策略工作台",

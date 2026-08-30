@@ -32,6 +32,11 @@ const MultiAgentResearchPage = lazy(() => (
     default: module.MultiAgentResearchPage,
   }))
 ));
+const PermanentPortfolioPage = lazy(() => (
+  import("./PermanentPortfolioPage").then((module) => ({
+    default: module.PermanentPortfolioPage,
+  }))
+));
 const DataIntelligencePage = lazy(() => (
   import("./DataIntelligencePage").then((module) => ({
     default: module.DataIntelligencePage,
@@ -55,6 +60,7 @@ function workspaceTitle(route: WorkspaceRoute): string {
   if (route.view === "system") return "投研决策总览";
   if (route.view === "model-research") return "模型研究";
   if (route.view === "multi-agent-research") return "多角色投研";
+  if (route.view === "permanent-portfolio") return "永久投资组合";
   if (route.view === "data-intelligence") return "数据与情报";
   if (route.view === "operations") return "运行中心";
   if (route.mode === "compare") return "双策略竞技场";
@@ -68,6 +74,7 @@ function workspaceSubtitle(route: WorkspaceRoute): string {
   if (route.view === "operations") return "全部任务 · 当前运行状态";
   if (route.view === "model-research") return "跨市场 · 训练、验收、模拟与采用";
   if (route.view === "multi-agent-research") return "项目证据 · 角色协作 · 审计留痕";
+  if (route.view === "permanent-portfolio") return "四资产 · 固定配置与趋势倾斜";
   if (route.view === "data-intelligence") return "全链路 · 数据供给与实际使用";
   const marketLabel = route.market === "a_share" ? "A股" : "跨境ETF";
   if (route.view === "strategy") return `${marketLabel} · 正式模拟策略`;
@@ -183,6 +190,8 @@ export default function App() {
     );
   } else if (route.view === "multi-agent-research") {
     page = <MultiAgentResearchPage refreshToken={refreshToken} />;
+  } else if (route.view === "permanent-portfolio") {
+    page = <PermanentPortfolioPage refreshToken={refreshToken} />;
   } else if (route.view === "data-intelligence") {
     page = (
       <DataIntelligencePage
