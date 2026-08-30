@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PermanentPortfolioPage } from "./PermanentPortfolioPage";
 import { fetchPermanentPortfolio } from "./api";
@@ -40,8 +40,10 @@ const payload = {
         fixed: {
           metrics: {
             cumulative_return: 0.1,
+            annualized_return: 0.074,
             annualized_volatility: 0.08,
             max_drawdown: -0.06,
+            sharpe_vs_cash: 0.8,
           },
           series: [],
           nav: [{
@@ -67,10 +69,31 @@ const payload = {
         dynamic: {
           metrics: {
             cumulative_return: 0.12,
+            annualized_return: 0.082,
             annualized_volatility: 0.1,
             max_drawdown: -0.08,
+            sharpe_vs_cash: 0.7,
           },
           series: [],
+          nav: [{
+            date: "20241231",
+            cash: 8000,
+            market_value: 212000,
+            total_value: 220000,
+          }],
+          positions: [{
+            role: "equity",
+            code: "510300.SH",
+            shares: 18000,
+            last_price: 4,
+            market_value: 72000,
+          }],
+          targets: [{
+            role: "equity",
+            signal_date: "20241231",
+            target_weight: 0.4,
+          }],
+          pending: [],
         },
       },
     },
@@ -97,24 +120,48 @@ describe("PermanentPortfolioPage", () => {
       .not.toBeInTheDocument();
   });
 
-  it("shows the continuous historical return and risk comparison", async () => {
+  it("leads with the selected strategy outcome and risk summary", async () => {
     render(<PermanentPortfolioPage refreshToken={0} />);
 
-    expect(
-      await screen.findByRole("heading", { name: "收益与波动" }),
-    ).toBeInTheDocument();
-    expect(screen.getAllByText("固定永久组合").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("动态永久组合").length).toBeGreaterThan(0);
+    expect(await screen.findByRole("heading", { name: "固定永久组合" }))
+      .toBeInTheDocument();
+    const summary = screen.getByLabelText("固定永久组合核心指标");
+    expect(within(summary).getByText("年化收益")).toBeInTheDocument();
+    expect(within(summary).getByText("7.40%")).toBeInTheDocument();
+    expect(within(summary).getByText("最大回撤")).toBeInTheDocument();
+    expect(within(summary).getByText("-6.00%")).toBeInTheDocument();
+    expect(within(summary).getByText("现金超额 Sharpe"))
+      .toBeInTheDocument();
   });
 
-  it("shows executable holdings and timing", async () => {
+  it("switches the decision context instead of mixing both strategies", async () => {
     render(<PermanentPortfolioPage refreshToken={0} />);
 
-    expect(
-      await screen.findByRole("heading", { name: /历史期末持仓与目标/ }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("510300.SH")).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "固定永久组合" });
     expect(screen.getByText("12,000")).toBeInTheDocument();
     expect(screen.getByText("每日收盘检查阈值")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "查看动态永久组合" }));
+
+    expect(screen.getByRole("heading", { name: "动态永久组合" }))
+      .toBeInTheDocument();
+    expect(screen.getByText("18,000")).toBeInTheDocument();
+    expect(screen.getByText("每月末检查动量排名")).toBeInTheDocument();
+    expect(screen.queryByText("12,000")).not.toBeInTheDocument();
+  });
+
+  it("keeps comparison and evidence available without dominating the page", async () => {
+    render(<PermanentPortfolioPage refreshToken={0} />);
+
+    await screen.findByRole("heading", { name: "固定永久组合" });
+    const comparison = screen.getByRole("button", { name: "展开完整策略对比" });
+    expect(comparison).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("table", { name: "完整策略指标对比" }))
+      .not.toBeInTheDocument();
+
+    fireEvent.click(comparison);
+    expect(screen.getByRole("table", { name: "完整策略指标对比" }))
+      .toBeInTheDocument();
+    expect(screen.getByText("研究证据与校验哈希")).toBeInTheDocument();
   });
 });

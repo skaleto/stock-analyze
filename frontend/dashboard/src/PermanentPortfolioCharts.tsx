@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -53,13 +54,6 @@ function subtractYears(value: string, years: number): string {
     date.setUTCDate(0);
   }
   return date.toISOString().slice(0, 10);
-}
-
-function initialWindowStart(minimum: string, maximum: string): string {
-  if (!minimum || !maximum) {
-    return "";
-  }
-  return [minimum, subtractYears(maximum, 3)].sort()[1];
 }
 
 function filterSeries(
@@ -336,7 +330,7 @@ function SeriesChart({
         onMouseMove={handleMouseMove}
         onMouseLeave={() => setHoveredDate(null)}
       >
-        <title>滚轮缩放，拖动平移，双击恢复最近3年</title>
+        <title>滚轮缩放，拖动平移，双击恢复全部历史</title>
         {boundaryX !== null ? (
           <>
             <rect
@@ -484,10 +478,10 @@ export function PermanentPortfolioCharts({
   );
   const minimumDate = availableDates[0] ?? "";
   const maximumDate = availableDates[availableDates.length - 1] ?? "";
-  const [startDate, setStartDate] = useState(
-    () => initialWindowStart(minimumDate, maximumDate),
-  );
+  const [startDate, setStartDate] = useState(minimumDate);
   const [endDate, setEndDate] = useState(maximumDate);
+  const [metric, setMetric] = useState<MetricKey>("normalized_nav");
+  const [showBenchmarks, setShowBenchmarks] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const dragState = useRef<{
     pointerId: number;
@@ -496,6 +490,13 @@ export function PermanentPortfolioCharts({
     end: number;
     width: number;
   } | null>(null);
+
+  useEffect(() => {
+    setStartDate(minimumDate);
+    setEndDate(maximumDate);
+    setIsPanning(false);
+    dragState.current = null;
+  }, [maximumDate, minimumDate]);
 
   const fixed = useMemo(
     () => filterSeries(series.fixed, startDate, endDate),
@@ -506,11 +507,11 @@ export function PermanentPortfolioCharts({
     [endDate, series.dynamic, startDate],
   );
   const visibleBenchmarks = useMemo(
-    () => benchmarks.map((benchmark) => ({
+    () => (showBenchmarks ? benchmarks : []).map((benchmark) => ({
       ...benchmark,
       series: filterSeries(benchmark.series, startDate, endDate),
     })),
-    [benchmarks, endDate, startDate],
+    [benchmarks, endDate, showBenchmarks, startDate],
   );
   const visibleTrades = useMemo(() => (
     Object.fromEntries(
@@ -615,63 +616,118 @@ export function PermanentPortfolioCharts({
   }
 
   function resetWindow() {
-    setStartDate(initialWindowStart(minimumDate, maximumDate));
+    setStartDate(minimumDate);
     setEndDate(maximumDate);
   }
+
+  function selectRange(years: number | null) {
+    if (years === null) {
+      resetWindow();
+      return;
+    }
+    setStartDate([minimumDate, subtractYears(maximumDate, years)].sort()[1]);
+    setEndDate(maximumDate);
+  }
+
+  const metricOptions: Array<{
+    key: MetricKey;
+    label: string;
+    title: string;
+    ariaLabel: string;
+  }> = [
+    {
+      key: "normalized_nav",
+      label: "净值走势",
+      title: "归一化净值",
+      ariaLabel: "永久组合净值对比图",
+    },
+    {
+      key: "drawdown",
+      label: "回撤路径",
+      title: "回撤",
+      ariaLabel: "永久组合回撤图",
+    },
+    {
+      key: "volatility_63d",
+      label: "63日波动",
+      title: "63 日滚动波动",
+      ariaLabel: "永久组合滚动波动图",
+    },
+  ];
+  const selectedMetric = metricOptions.find((item) => item.key === metric)
+    ?? metricOptions[0];
+  const fullRange = startDate === minimumDate && endDate === maximumDate;
+  const threeYearStart = [minimumDate, subtractYears(maximumDate, 3)].sort()[1];
+  const oneYearStart = [minimumDate, subtractYears(maximumDate, 1)].sort()[1];
 
   return (
     <div className="permanent-chart-region">
       <div className="permanent-chart-controls">
+        <div className="permanent-chart-metrics" aria-label="图表指标">
+          {metricOptions.map((option) => (
+            <button
+              key={option.key}
+              type="button"
+              aria-pressed={metric === option.key}
+              onClick={() => setMetric(option.key)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        <div className="permanent-chart-ranges" aria-label="图表时间范围">
+          <button
+            type="button"
+            aria-pressed={fullRange}
+            onClick={() => selectRange(null)}
+          >
+            全部
+          </button>
+          <button
+            type="button"
+            aria-pressed={startDate === threeYearStart && endDate === maximumDate}
+            onClick={() => selectRange(3)}
+          >
+            近3年
+          </button>
+          <button
+            type="button"
+            aria-pressed={startDate === oneYearStart && endDate === maximumDate}
+            onClick={() => selectRange(1)}
+          >
+            近1年
+          </button>
+          {benchmarks.length > 0 && metric === "normalized_nav" ? (
+            <button
+              type="button"
+              className="permanent-benchmark-toggle"
+              aria-pressed={showBenchmarks}
+              onClick={() => setShowBenchmarks((value) => !value)}
+            >
+              {showBenchmarks ? "隐藏基准" : "显示基准"}
+            </button>
+          ) : null}
+        </div>
         <output className="permanent-chart-range" aria-live="polite">
           {visibleStart} 至 {visibleEnd}
         </output>
       </div>
-      <div className="permanent-chart-grid">
-        <SeriesChart
-          title="归一化净值"
-          ariaLabel="永久组合净值对比图"
-          metric="normalized_nav"
-          fixed={fixed}
-          dynamic={dynamic}
-          benchmarks={visibleBenchmarks}
-          trades={visibleTrades}
-          stageBoundary={stageBoundary}
-          isPanning={isPanning}
-          onWheelWindow={handleWheel}
-          onPointerDownWindow={handlePointerDown}
-          onPointerMoveWindow={handlePointerMove}
-          onPointerUpWindow={handlePointerUp}
-          onResetWindow={resetWindow}
-        />
-        <SeriesChart
-          title="回撤"
-          ariaLabel="永久组合回撤图"
-          metric="drawdown"
-          fixed={fixed}
-          dynamic={dynamic}
-          stageBoundary={stageBoundary}
-          isPanning={isPanning}
-          onWheelWindow={handleWheel}
-          onPointerDownWindow={handlePointerDown}
-          onPointerMoveWindow={handlePointerMove}
-          onPointerUpWindow={handlePointerUp}
-          onResetWindow={resetWindow}
-        />
-        <SeriesChart
-          title="63 日滚动波动"
-          ariaLabel="永久组合滚动波动图"
-          metric="volatility_63d"
-          fixed={fixed}
-          dynamic={dynamic}
-          stageBoundary={stageBoundary}
-          isPanning={isPanning}
-          onWheelWindow={handleWheel}
-          onPointerDownWindow={handlePointerDown}
-          onPointerMoveWindow={handlePointerMove}
-          onPointerUpWindow={handlePointerUp}
-          onResetWindow={resetWindow}
-        />
-      </div>
+      <SeriesChart
+        title={selectedMetric.title}
+        ariaLabel={selectedMetric.ariaLabel}
+        metric={metric}
+        fixed={fixed}
+        dynamic={dynamic}
+        benchmarks={visibleBenchmarks}
+        trades={visibleTrades}
+        stageBoundary={stageBoundary}
+        isPanning={isPanning}
+        onWheelWindow={handleWheel}
+        onPointerDownWindow={handlePointerDown}
+        onPointerMoveWindow={handlePointerMove}
+        onPointerUpWindow={handlePointerUp}
+        onResetWindow={resetWindow}
+      />
     </div>
   );
 }

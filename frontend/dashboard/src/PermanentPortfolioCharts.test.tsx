@@ -45,7 +45,7 @@ describe("PermanentPortfolioCharts", () => {
     expect(screen.getByText("暂无可展示的历史序列")).toBeInTheDocument();
   });
 
-  it("renders stable chart surfaces for complete series", () => {
+  it("uses one focused chart with metric tabs", () => {
     render(
       <PermanentPortfolioCharts
         series={{
@@ -86,18 +86,19 @@ describe("PermanentPortfolioCharts", () => {
       />,
     );
 
-    expect(
-      screen.getByLabelText("永久组合净值对比图"),
-    ).toBeInTheDocument();
+    expect(screen.getAllByRole("img")).toHaveLength(1);
+    expect(screen.getByLabelText("永久组合净值对比图")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "净值走势" }))
+      .toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "回撤路径" }));
     expect(screen.getByLabelText("永久组合回撤图")).toBeInTheDocument();
-    expect(
-      screen.getByLabelText("永久组合滚动波动图"),
-    ).toBeInTheDocument();
-    expect(screen.getAllByText("开发期")).toHaveLength(3);
-    expect(screen.getAllByText("盲测期")).toHaveLength(3);
+    expect(screen.queryByLabelText("永久组合净值对比图"))
+      .not.toBeInTheDocument();
+    expect(screen.getAllByText("开发期")).toHaveLength(1);
+    expect(screen.getAllByText("盲测期")).toHaveLength(1);
   });
 
-  it("zooms, pans, and resets the shared chart window directly", () => {
+  it("starts with the full evidence window and supports range presets", () => {
     render(
       <PermanentPortfolioCharts
         series={{ fixed, dynamic }}
@@ -109,11 +110,14 @@ describe("PermanentPortfolioCharts", () => {
       />,
     );
 
+    expect(screen.getByText("2018-01-02 至 2026-08-30"))
+      .toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "全部" }))
+      .toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "近3年" }));
     expect(screen.getByText("2023-08-30 至 2026-08-30"))
       .toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "最近3年" }))
-      .not.toBeInTheDocument();
-    expect(screen.queryByLabelText("图表开始日期")).not.toBeInTheDocument();
 
     const chart = screen.getByLabelText("永久组合净值对比图");
     Object.defineProperty(chart, "getBoundingClientRect", {
@@ -131,14 +135,9 @@ describe("PermanentPortfolioCharts", () => {
     });
     fireEvent.wheel(chart, { clientX: 500, deltaY: -100 });
 
-    const zoomedCharts = screen.getAllByRole("img");
-    const zoomedStart = zoomedCharts[0].getAttribute("data-start-date");
-    const zoomedEnd = zoomedCharts[0].getAttribute("data-end-date");
+    const zoomedStart = chart.getAttribute("data-start-date");
+    const zoomedEnd = chart.getAttribute("data-end-date");
     expect(zoomedStart).not.toBe("2023-08-30");
-    expect(zoomedCharts.every((item) => (
-      item.getAttribute("data-start-date") === zoomedStart
-      && item.getAttribute("data-end-date") === zoomedEnd
-    ))).toBe(true);
 
     fireEvent(chart, Object.assign(new Event("pointerdown", { bubbles: true }), {
       button: 0,
@@ -162,25 +161,42 @@ describe("PermanentPortfolioCharts", () => {
     expect(chart).not.toHaveClass("is-panning");
 
     fireEvent.doubleClick(chart);
-    for (const item of screen.getAllByRole("img")) {
-      expect(item).toHaveAttribute("data-start-date", "2023-08-30");
-      expect(item).toHaveAttribute("data-end-date", "2026-08-30");
-    }
+    expect(chart).toHaveAttribute("data-start-date", "2018-01-02");
+    expect(chart).toHaveAttribute("data-end-date", "2026-08-30");
   });
 
-  it("keeps the same zoomed window on every chart", () => {
+  it("keeps the chosen window when the displayed metric changes", () => {
     render(<PermanentPortfolioCharts series={{ fixed, dynamic }} />);
 
-    const chart = screen.getByLabelText("永久组合回撤图");
+    const chart = screen.getByLabelText("永久组合净值对比图");
     fireEvent.wheel(chart, { clientX: 500, deltaY: -100 });
+    const start = chart.getAttribute("data-start-date");
+    const end = chart.getAttribute("data-end-date");
 
-    const charts = screen.getAllByRole("img");
-    const start = charts[0].getAttribute("data-start-date");
-    const end = charts[0].getAttribute("data-end-date");
-    expect(charts.every((item) => (
-      item.getAttribute("data-start-date") === start
-      && item.getAttribute("data-end-date") === end
-    ))).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "63日波动" }));
+    const volatility = screen.getByLabelText("永久组合滚动波动图");
+    expect(volatility).toHaveAttribute("data-start-date", start);
+    expect(volatility).toHaveAttribute("data-end-date", end);
+  });
+
+  it("resets the visible range when a different stage series arrives", () => {
+    const { rerender } = render(
+      <PermanentPortfolioCharts series={{ fixed, dynamic }} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "近1年" }));
+
+    const forward = [
+      { date: "2026-09-01", normalized_nav: 1, drawdown: 0, volatility_63d: 0.08 },
+      { date: "2027-02-01", normalized_nav: 1.03, drawdown: -0.01, volatility_63d: 0.09 },
+    ];
+    rerender(
+      <PermanentPortfolioCharts series={{ fixed: forward, dynamic: forward }} />,
+    );
+
+    expect(screen.getByText("2026-09-01 至 2027-02-01"))
+      .toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "全部" }))
+      .toHaveAttribute("aria-pressed", "true");
   });
 
   it("shows benchmark lines, colored rebalance points, and hover details", () => {
@@ -215,6 +231,8 @@ describe("PermanentPortfolioCharts", () => {
       />,
     );
 
+    expect(screen.queryByText("沪深300买入持有")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "显示基准" }));
     expect(screen.getByText("沪深300买入持有")).toBeInTheDocument();
     expect(screen.getByText("买入")).toHaveClass("buy");
     expect(screen.getByText("卖出")).toHaveClass("sell");

@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  ArrowRight,
   CalendarClock,
+  ChevronDown,
   Database,
+  ShieldCheck,
   WalletCards,
 } from "lucide-react";
 import { fetchPermanentPortfolio } from "./api";
@@ -10,9 +13,11 @@ import { PermanentPortfolioCharts } from "./PermanentPortfolioCharts";
 import type {
   PermanentPortfolioData,
   PermanentPortfolioMetricSet,
+  PermanentPortfolioResult,
 } from "./types";
 
 type Stage = "historical" | "forward";
+type StrategyId = "fixed" | "dynamic";
 
 const stageLabels: Record<Stage, string> = {
   historical: "历史数据回测",
@@ -32,6 +37,23 @@ const roleLabels: Record<string, string> = {
   bond: "长期国债",
   cash: "现金ETF",
   gold: "黄金",
+};
+
+const strategyCopy: Record<StrategyId, {
+  eyebrow: string;
+  summary: string;
+  cadence: string;
+}> = {
+  fixed: {
+    eyebrow: "防守核心",
+    summary: "四类资产长期均衡，仅在权重越过 15% / 35% 阈值时再平衡。",
+    cadence: "每日收盘检查阈值",
+  },
+  dynamic: {
+    eyebrow: "趋势增强",
+    summary: "保留四资产分散基础，按月用双周期动量把权重倾斜至强势资产。",
+    cadence: "每月末检查动量排名",
+  },
 };
 
 function percent(value: number | null | undefined): string {
@@ -61,24 +83,47 @@ function quantity(value: number | null | undefined): string {
     : "—";
 }
 
-function latestCompleteStage(data: PermanentPortfolioData): Stage {
-  if (["complete", "available"].includes(data.windows.forward.status)) {
-    return "forward";
-  }
-  return "historical";
+function formatDate(value: string | null | undefined): string {
+  const compact = String(value ?? "").split("-").join("").slice(0, 8);
+  return /^\d{8}$/.test(compact)
+    ? `${compact.slice(0, 4)}-${compact.slice(4, 6)}-${compact.slice(6, 8)}`
+    : value || "—";
 }
 
-function MetricsTable({
-  portfolios,
-}: {
-  portfolios: NonNullable<
-    PermanentPortfolioData["windows"]["historical"]["portfolios"]
-  >;
+function latestCompleteStage(data: PermanentPortfolioData): Stage {
+  return ["complete", "available"].includes(data.windows.forward.status)
+    ? "forward"
+    : "historical";
+}
+
+function latestNav(portfolio: PermanentPortfolioResult | undefined) {
+  const values = portfolio?.nav ?? [];
+  return values[values.length - 1];
+}
+
+function latestTargets(portfolio: PermanentPortfolioResult | undefined) {
+  const signalDate = (portfolio?.targets ?? []).reduce(
+    (latest, target) => String(target.signal_date ?? "") > latest
+      ? String(target.signal_date)
+      : latest,
+    "",
+  );
+  return {
+    signalDate,
+    values: new Map(
+      (portfolio?.targets ?? [])
+        .filter((target) => String(target.signal_date ?? "") === signalDate)
+        .map((target) => [target.role ?? "", target.target_weight]),
+    ),
+  };
+}
+
+function MetricsTable({ portfolios }: {
+  portfolios: Record<string, PermanentPortfolioResult>;
 }) {
-  const rows = Object.entries(portfolios);
   return (
     <div className="permanent-table-wrap">
-      <table className="permanent-table">
+      <table className="permanent-table" aria-label="完整策略指标对比">
         <thead>
           <tr>
             <th>组合</th>
@@ -86,19 +131,17 @@ function MetricsTable({
             <th>年化收益</th>
             <th>年化波动</th>
             <th>最大回撤</th>
-            <th>Sharpe</th>
+            <th>现金超额 Sharpe</th>
             <th>Calmar</th>
-            <th>换手</th>
-            <th>成本</th>
+            <th>年化换手</th>
+            <th>累计成本</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map(([key, portfolio]) => {
-            const metrics: PermanentPortfolioMetricSet = (
-              portfolio.metrics ?? {}
-            );
+          {Object.entries(portfolios).map(([key, portfolio]) => {
+            const metrics = portfolio.metrics ?? {};
             return (
-              <tr key={key}>
+              <tr key={key} className={key === "fixed" ? "is-primary" : ""}>
                 <th>{portfolioLabels[key] ?? key}</th>
                 <td>{percent(metrics.cumulative_return)}</td>
                 <td>{percent(metrics.annualized_return)}</td>
@@ -107,9 +150,7 @@ function MetricsTable({
                 <td>{ratio(metrics.sharpe_vs_cash)}</td>
                 <td>{ratio(metrics.calmar)}</td>
                 <td>{percent(metrics.annualized_turnover)}</td>
-                <td>{typeof metrics.total_cost === "number"
-                  ? `¥${metrics.total_cost.toFixed(2)}`
-                  : "—"}</td>
+                <td>{money(metrics.total_cost)}</td>
               </tr>
             );
           })}
@@ -119,152 +160,187 @@ function MetricsTable({
   );
 }
 
-function HoldingsTable({
-  portfolios,
-  assets,
+function StrategyHero({
+  strategy,
+  portfolio,
+  startDate,
+  endDate,
 }: {
-  portfolios: NonNullable<
-    PermanentPortfolioData["windows"]["historical"]["portfolios"]
-  >;
-  assets: PermanentPortfolioData["assets"];
+  strategy: StrategyId;
+  portfolio: PermanentPortfolioResult;
+  startDate?: string;
+  endDate?: string;
 }) {
-  const names = new Map(assets.map((asset) => [asset.code, asset.name]));
-  const strategies = ["fixed", "dynamic"].flatMap((strategy) => {
-    const portfolio = portfolios[strategy];
-    const navRows = portfolio?.nav ?? [];
-    const nav = navRows[navRows.length - 1];
-    if (!portfolio || !nav) return [];
-    const latestSignal = (portfolio.targets ?? []).reduce(
-      (latest, target) => (
-        String(target.signal_date ?? "") > latest ? String(target.signal_date) : latest
-      ),
-      "",
-    );
-    const targets = new Map(
-      (portfolio.targets ?? [])
-        .filter((target) => String(target.signal_date ?? "") === latestSignal)
-        .map((target) => [target.role, target.target_weight]),
-    );
-    return [{
-      strategy,
-      portfolio,
-      nav,
-      latestSignal,
-      targets,
-    }];
-  });
-
+  const metrics: PermanentPortfolioMetricSet = portfolio.metrics ?? {};
   return (
-    <>
-      <div className="permanent-execution-grid">
-        {strategies.map(({ strategy, portfolio, nav, latestSignal }) => {
-          const pending = portfolio.pending ?? [];
-          return (
-            <div className="permanent-execution-row" key={strategy}>
-              <div>
-                <strong>{portfolioLabels[strategy]}</strong>
-                <span>账本日期 {nav.date ?? "—"}</span>
-              </div>
-              <div>
-                <span>账户总值</span>
-                <strong>{money(nav.total_value)}</strong>
-              </div>
-              <div>
-                <span>可用现金</span>
-                <strong>{money(nav.cash)}</strong>
-              </div>
-              <div>
-                <span>下一动作</span>
-                <strong>
-                  {pending.length > 0
-                    ? "下一交易日 09:30 执行"
-                    : strategy === "fixed"
-                      ? "每日收盘检查阈值"
-                      : "下月末收盘生成信号"}
-                </strong>
-                {pending.length > 0 ? <span>信号日 {latestSignal}</span> : null}
-              </div>
-            </div>
-          );
-        })}
+    <section className="permanent-hero">
+      <div className="permanent-hero-copy">
+        <span className="permanent-kicker">{strategyCopy[strategy].eyebrow}</span>
+        <h2>{portfolioLabels[strategy]}</h2>
+        <p>{strategyCopy[strategy].summary}</p>
+        <div className="permanent-period">
+          <CalendarClock size={14} aria-hidden="true" />
+          {formatDate(startDate)} — {formatDate(endDate)}
+        </div>
       </div>
-      <div className="permanent-table-wrap">
-        <table className="permanent-table permanent-holdings-table">
-          <thead>
-            <tr>
-              <th>组合</th>
-              <th>资产</th>
-              <th>代码</th>
-              <th>持有份额</th>
-              <th>参考价</th>
-              <th>市值</th>
-              <th>实际权重</th>
-              <th>最新目标</th>
-            </tr>
-          </thead>
-          <tbody>
-            {strategies.flatMap(({ strategy, portfolio, nav, targets }) => {
-              const rows = (portfolio.positions ?? []).map((position) => {
-                const marketValue = position.market_value;
-                const actualWeight = (
-                  typeof marketValue === "number"
-                  && typeof nav.total_value === "number"
-                  && nav.total_value > 0
-                ) ? marketValue / nav.total_value : null;
-                return (
-                  <tr key={`${strategy}-${position.code}`}>
-                    <th>{portfolioLabels[strategy]}</th>
-                    <td>{roleLabels[position.role ?? ""] ?? position.role ?? "—"}</td>
-                    <td>
-                      <strong>{position.code ?? "—"}</strong>
-                      <span className="permanent-instrument-name">
-                        {names.get(position.code ?? "") ?? ""}
-                      </span>
-                    </td>
-                    <td>{quantity(position.shares)}</td>
-                    <td>{money(position.last_price)}</td>
-                    <td>{money(marketValue)}</td>
-                    <td>{percent(actualWeight)}</td>
-                    <td>{percent(targets.get(position.role))}</td>
-                  </tr>
-                );
-              });
-              rows.push(
-                <tr key={`${strategy}-account-cash`}>
-                  <th>{portfolioLabels[strategy]}</th>
-                  <td>账户现金</td>
-                  <td>—</td>
-                  <td>—</td>
-                  <td>—</td>
-                  <td>{money(nav.cash)}</td>
-                  <td>{percent(
-                    typeof nav.cash === "number"
-                    && typeof nav.total_value === "number"
-                    && nav.total_value > 0
-                      ? nav.cash / nav.total_value
-                      : null,
-                  )}</td>
-                  <td>—</td>
-                </tr>,
-              );
-              return rows;
-            })}
-            {strategies.length === 0 ? (
-              <tr><td colSpan={8}>暂无账本持仓</td></tr>
-            ) : null}
-          </tbody>
-        </table>
+      <div
+        className="permanent-kpi-grid"
+        aria-label={`${portfolioLabels[strategy]}核心指标`}
+      >
+        <article>
+          <span>年化收益</span>
+          <strong>{percent(metrics.annualized_return)}</strong>
+          <small>累计 {percent(metrics.cumulative_return)}</small>
+        </article>
+        <article>
+          <span>最大回撤</span>
+          <strong className="risk">{percent(metrics.max_drawdown)}</strong>
+          <small>越接近 0 风险越低</small>
+        </article>
+        <article>
+          <span>年化波动</span>
+          <strong>{percent(metrics.annualized_volatility)}</strong>
+          <small>收益路径稳定度</small>
+        </article>
+        <article>
+          <span>现金超额 Sharpe</span>
+          <strong>{ratio(metrics.sharpe_vs_cash)}</strong>
+          <small>相对现金ETF</small>
+        </article>
       </div>
-    </>
+    </section>
   );
 }
 
-export function PermanentPortfolioPage({
-  refreshToken,
+function AllocationPanel({
+  strategy,
+  portfolio,
+  assets,
 }: {
-  refreshToken: number;
+  strategy: StrategyId;
+  portfolio: PermanentPortfolioResult;
+  assets: PermanentPortfolioData["assets"];
 }) {
+  const nav = latestNav(portfolio);
+  const targets = latestTargets(portfolio);
+  const names = new Map(assets.map((asset) => [asset.code, asset.name]));
+  const pending = portfolio.pending ?? [];
+  const rows = portfolio.positions ?? [];
+
+  return (
+    <section className="permanent-card permanent-allocation-card">
+      <div className="permanent-card-heading">
+        <div>
+          <span>当前账本</span>
+          <h3>资产配置与下一步</h3>
+        </div>
+        <span className={`permanent-action-status ${pending.length ? "pending" : "idle"}`}>
+          {pending.length ? "待执行调仓" : "无需调仓"}
+        </span>
+      </div>
+      <div className="permanent-account-strip">
+        <div><span>账户总值</span><strong>{money(nav?.total_value)}</strong></div>
+        <div><span>可用现金</span><strong>{money(nav?.cash)}</strong></div>
+        <div><span>账本日期</span><strong>{formatDate(nav?.date)}</strong></div>
+        <div>
+          <span>检查节奏</span>
+          <strong>{strategyCopy[strategy].cadence}</strong>
+        </div>
+      </div>
+      <div className="permanent-allocation-list">
+        {rows.map((position) => {
+          const actualWeight = typeof position.market_value === "number"
+            && typeof nav?.total_value === "number"
+            && nav.total_value > 0
+            ? position.market_value / nav.total_value
+            : null;
+          const targetWeight = targets.values.get(position.role ?? "");
+          return (
+            <article key={position.code} className="permanent-allocation-row">
+              <div className="permanent-asset-identity">
+                <span className={`permanent-asset-dot ${position.role ?? ""}`} />
+                <div>
+                  <strong>{roleLabels[position.role ?? ""] ?? position.role}</strong>
+                  <small>{names.get(position.code ?? "") ?? position.code}</small>
+                </div>
+              </div>
+              <div className="permanent-allocation-bar" aria-hidden="true">
+                <span style={{ width: percent(actualWeight) }} />
+                {typeof targetWeight === "number" ? (
+                  <i style={{ left: percent(targetWeight) }} />
+                ) : null}
+              </div>
+              <div className="permanent-weight-pair">
+                <strong>{percent(actualWeight)}</strong>
+                <span>目标 {percent(targetWeight)}</span>
+              </div>
+              <div className="permanent-position-detail">
+                <strong>{money(position.market_value)}</strong>
+                <span><b>{quantity(position.shares)}</b> 份 · {position.code}</span>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      <p className="permanent-execution-note">
+        <ArrowRight size={14} aria-hidden="true" />
+        信号在收盘后生成，下一交易日开盘按 100 份整手成交；图中实线为当前权重，刻度为目标权重。
+      </p>
+    </section>
+  );
+}
+
+function RecentTrades({
+  strategy,
+  portfolio,
+}: {
+  strategy: StrategyId;
+  portfolio: PermanentPortfolioResult;
+}) {
+  const trades = [...(portfolio.trades ?? [])]
+    .sort((left, right) => String(right.trade_date ?? "")
+      .localeCompare(String(left.trade_date ?? "")))
+    .slice(0, 12);
+  return (
+    <section className="permanent-card permanent-trades-card">
+      <div className="permanent-card-heading">
+        <div>
+          <span>执行记录</span>
+          <h3>最近调仓</h3>
+        </div>
+        <span>仅显示 {portfolioLabels[strategy]}</span>
+      </div>
+      <div className="permanent-table-wrap">
+        <table className="permanent-table permanent-trade-table">
+          <thead>
+            <tr><th>日期</th><th>资产</th><th>方向</th><th>份额</th><th>成交价</th><th>成本</th></tr>
+          </thead>
+          <tbody>
+            {trades.map((trade, index) => {
+              const side = String(trade.side ?? "").toLowerCase();
+              return (
+                <tr key={`${trade.trade_date}-${trade.code}-${index}`}>
+                  <td>{formatDate(trade.trade_date)}</td>
+                  <td><strong>{trade.code ?? "—"}</strong><span>{roleLabels[trade.role ?? ""] ?? trade.role}</span></td>
+                  <td><span className={`permanent-side ${side}`}>{side === "buy" ? "买入" : "卖出"}</span></td>
+                  <td>{quantity(trade.shares)}</td>
+                  <td>{money(trade.price)}</td>
+                  <td>{money(trade.commission)}</td>
+                </tr>
+              );
+            })}
+            {trades.length === 0 ? <tr><td colSpan={6}>暂无调仓记录</td></tr> : null}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+export function PermanentPortfolioPage({ refreshToken }: { refreshToken: number }) {
   const [stage, setStage] = useState<Stage>("historical");
+  const [strategy, setStrategy] = useState<StrategyId>("fixed");
+  const [comparisonOpen, setComparisonOpen] = useState(false);
   const [data, setData] = useState<PermanentPortfolioData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -286,6 +362,7 @@ export function PermanentPortfolioPage({
 
   const selected = data?.windows[stage];
   const portfolios = selected?.portfolios ?? {};
+  const selectedPortfolio = portfolios[strategy];
   const chartSeries = useMemo(() => ({
     fixed: portfolios.fixed?.series ?? [],
     dynamic: portfolios.dynamic?.series ?? [],
@@ -300,28 +377,17 @@ export function PermanentPortfolioPage({
     fixed: portfolios.fixed?.trades ?? [],
     dynamic: portfolios.dynamic?.trades ?? [],
   }), [portfolios]);
-  const trades = useMemo<Array<Record<string, unknown> & { portfolio: string }>>(() => (
-    Object.entries(portfolios).flatMap(([portfolio, value]) => (
-      (value.trades ?? []).map((trade) => ({ portfolio, ...trade }))
-    )).slice(-100)
-  ), [portfolios]);
 
   if (error) {
     return (
       <div className="workspace-page permanent-portfolio-page">
-        <div className="error-banner">
-          <AlertTriangle size={17} aria-hidden="true" />
-          {error}
-        </div>
+        <div className="error-banner"><AlertTriangle size={17} aria-hidden="true" />{error}</div>
       </div>
     );
   }
   if (!data) {
     return (
-      <div
-        className="workspace-page permanent-portfolio-page skeleton-grid"
-        aria-label="永久组合加载中"
-      >
+      <div className="workspace-page permanent-portfolio-page skeleton-grid" aria-label="永久组合加载中">
         <div /><div /><div /><div />
       </div>
     );
@@ -329,123 +395,103 @@ export function PermanentPortfolioPage({
 
   return (
     <div className="workspace-page permanent-portfolio-page">
-      <div className="permanent-stage-control" aria-label="研究阶段">
-        {(Object.keys(stageLabels) as Stage[]).map((value) => (
-          <button
-            key={value}
-            type="button"
-            className={stage === value ? "active" : ""}
-            aria-pressed={stage === value}
-            onClick={() => setStage(value)}
-          >
-            {stageLabels[value]}
-          </button>
-        ))}
-      </div>
+      <header className="permanent-toolbar">
+        <div className="permanent-stage-control" aria-label="研究阶段">
+          {(Object.keys(stageLabels) as Stage[]).map((value) => (
+            <button
+              key={value}
+              type="button"
+              className={stage === value ? "active" : ""}
+              aria-pressed={stage === value}
+              onClick={() => setStage(value)}
+            >
+              {stageLabels[value]}
+            </button>
+          ))}
+        </div>
+        <div className="permanent-study-status">
+          <ShieldCheck size={15} aria-hidden="true" />
+          {data.study.status === "holdout_complete" ? "开发与盲测已封存" : data.study.status}
+        </div>
+      </header>
 
-      {selected?.status === "unavailable" ? (
+      {selected?.status === "unavailable" || !selectedPortfolio ? (
         <section className="permanent-sealed">
           <Database size={22} aria-hidden="true" />
-          <div>
-            <h2>该阶段尚无可用产物</h2>
-            <p>最近一次完整运行结束后自动显示。</p>
-          </div>
+          <div><h2>该阶段尚无可用产物</h2><p>最近一次完整运行结束后自动显示。</p></div>
         </section>
       ) : (
         <>
-          <section className="permanent-section">
-            <div className="section-heading">
-              <div>
-                <p>模拟执行账本</p>
-                <h2>
-                  <WalletCards size={18} aria-hidden="true" />
-                  {stage === "historical" ? "历史期末持仓与目标" : "当前持仓与目标"}
-                </h2>
-              </div>
-              <span>
-                <CalendarClock size={14} aria-hidden="true" />
-                信号收盘后生成，下一交易日开盘执行
-              </span>
-            </div>
-            <HoldingsTable portfolios={portfolios} assets={data.assets} />
-          </section>
+          <nav className="permanent-strategy-switcher" aria-label="组合策略">
+            {(["fixed", "dynamic"] as StrategyId[]).map((value) => {
+              const metrics = portfolios[value]?.metrics ?? {};
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  className={strategy === value ? "active" : ""}
+                  aria-pressed={strategy === value}
+                  aria-label={`查看${portfolioLabels[value]}`}
+                  onClick={() => setStrategy(value)}
+                >
+                  <span>{strategyCopy[value].eyebrow}</span>
+                  <strong>{portfolioLabels[value]}</strong>
+                  <small>年化 {percent(metrics.annualized_return)} · 回撤 {percent(metrics.max_drawdown)}</small>
+                </button>
+              );
+            })}
+          </nav>
 
-          <section className="permanent-section">
-            <div className="section-heading">
-              <div>
-                <p>{stageLabels[stage]}</p>
-                <h2>收益与波动</h2>
-              </div>
-              <span>{selected?.start_date ?? "—"} 至 {selected?.end_date ?? "—"}</span>
-            </div>
-            <MetricsTable portfolios={portfolios} />
-          </section>
+          <StrategyHero
+            strategy={strategy}
+            portfolio={selectedPortfolio}
+            startDate={selected?.start_date}
+            endDate={selected?.end_date}
+          />
 
-          <section className="permanent-section">
-            <div className="section-heading">
-              <div>
-                <p>风险路径</p>
-                <h2>净值、回撤与滚动波动</h2>
-              </div>
+          <section className="permanent-card permanent-chart-card">
+            <div className="permanent-card-heading">
+              <div><span>历史路径</span><h3>收益与风险如何演变</h3></div>
+              <span>滚轮缩放 · 拖动平移 · 双击复位</span>
             </div>
             <PermanentPortfolioCharts
               series={chartSeries}
               benchmarks={chartBenchmarks}
               trades={chartTrades}
-              stageBoundary={stage === "historical"
-                ? selected?.stage_boundaries?.[0]
-                : undefined}
+              stageBoundary={stage === "historical" ? selected?.stage_boundaries?.[0] : undefined}
             />
           </section>
 
-          <section className="permanent-section">
-            <div className="section-heading">
-              <div>
-                <p>执行证据</p>
-                <h2>最近调仓</h2>
-              </div>
-            </div>
-            <div className="permanent-table-wrap">
-              <table className="permanent-table">
-                <thead>
-                  <tr>
-                    <th>日期</th>
-                    <th>组合</th>
-                    <th>资产</th>
-                    <th>方向</th>
-                    <th>份额</th>
-                    <th>成交价</th>
-                    <th>成本</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {trades.map((trade, index) => (
-                    <tr key={`${String(trade.trade_date)}-${index}`}>
-                      <td>{String(trade.trade_date ?? "—")}</td>
-                      <td>{portfolioLabels[trade.portfolio] ?? trade.portfolio}</td>
-                      <td>{String(trade.code ?? trade.role ?? "—")}</td>
-                      <td>{String(trade.side ?? "—")}</td>
-                      <td>{String(trade.shares ?? "—")}</td>
-                      <td>{String(trade.price ?? "—")}</td>
-                      <td>{String(trade.commission ?? "—")}</td>
-                    </tr>
-                  ))}
-                  {trades.length === 0 ? (
-                    <tr><td colSpan={7}>暂无调仓记录</td></tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
+          <div className="permanent-detail-grid">
+            <AllocationPanel strategy={strategy} portfolio={selectedPortfolio} assets={data.assets} />
+            <RecentTrades strategy={strategy} portfolio={selectedPortfolio} />
+          </div>
+
+          <section className="permanent-comparison">
+            <button
+              type="button"
+              className="permanent-comparison-toggle"
+              aria-expanded={comparisonOpen}
+              aria-label={comparisonOpen ? "收起完整策略对比" : "展开完整策略对比"}
+              onClick={() => setComparisonOpen((value) => !value)}
+            >
+              <span><WalletCards size={16} aria-hidden="true" />完整策略与基准对比</span>
+              <span>{comparisonOpen ? "收起" : "展开完整策略对比"}<ChevronDown size={16} aria-hidden="true" /></span>
+            </button>
+            {comparisonOpen ? <MetricsTable portfolios={portfolios} /> : null}
           </section>
         </>
       )}
 
-      <section className="permanent-evidence">
-        <span>状态 {data.study.status}</span>
-        <span>规则 {data.study.contractSha256 ?? "—"}</span>
-        <span>开发 {data.study.developmentSha256 ?? "—"}</span>
-        <span>盲测 {data.study.holdoutSha256 ?? "—"}</span>
-      </section>
+      <details className="permanent-evidence">
+        <summary>研究证据与校验哈希</summary>
+        <div>
+          <span>状态<strong>{data.study.status}</strong></span>
+          <span>规则<strong>{data.study.contractSha256 ?? "—"}</strong></span>
+          <span>开发<strong>{data.study.developmentSha256 ?? "—"}</strong></span>
+          <span>盲测<strong>{data.study.holdoutSha256 ?? "—"}</strong></span>
+        </div>
+      </details>
     </div>
   );
 }
