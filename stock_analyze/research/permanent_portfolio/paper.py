@@ -15,10 +15,11 @@ from .contract import canonical_hash, load_contract
 from .engine import ReplayResult, replay_strategy
 from .signals import dynamic_target_weights, fixed_target_weights
 from .workflow import (
-    REPORT_RELATIVE,
+    _assert_market_accounting,
     _code_evidence,
     _latest_market_with_evidence,
     _momentum_observations,
+    _report_relative,
     _study_root,
 )
 
@@ -41,11 +42,18 @@ ACCOUNT_FILES = (
 )
 
 
-def account_paths(repo_root: str | Path) -> dict[str, Path]:
+def account_paths(
+    repo_root: str | Path,
+    *,
+    study_id: str = "permanent_portfolio_v1",
+) -> dict[str, Path]:
+    if study_id not in {"permanent_portfolio_v1", "permanent_portfolio_v2"}:
+        raise ValueError("permanent_portfolio_study_id")
+    version = study_id.rsplit("_", 1)[-1]
     root = Path(repo_root).resolve() / "data/research/paper_portfolios"
     return {
-        "fixed": root / "permanent_fixed_v1",
-        "dynamic": root / "permanent_dynamic_v1",
+        "fixed": root / f"permanent_fixed_{version}",
+        "dynamic": root / f"permanent_dynamic_{version}",
     }
 
 
@@ -378,9 +386,10 @@ def run_paper_day(
     fixture_mode: bool = False,
     contract_path: str | Path = "configs/research/permanent_portfolio_v1.yaml",
 ) -> dict[str, Any]:
+    contract = load_contract(contract_path)
     as_of_key = _date_key(as_of)
     run_id = f"permanent-portfolio-{as_of_key}"
-    paths = account_paths(repo_root)
+    paths = account_paths(repo_root, study_id=contract.study_id)
     if fixture_mode and all(
         _completed(path, run_id) for path in paths.values()
     ):
@@ -403,8 +412,7 @@ def run_paper_day(
             )
         return {"run_id": run_id, "as_of": as_of_key, "status": "complete"}
 
-    contract = load_contract(contract_path)
-    study_root = _study_root(repo_root)
+    study_root = _study_root(repo_root, contract=contract)
     state_path = study_root / "manifests" / "state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     holdout_end = _date_key(str(state["holdout_end"]))
@@ -412,13 +420,14 @@ def run_paper_day(
         study_root,
         partition="holdout",
     )
+    _assert_market_accounting(contract, market_evidence)
     _verify_paper_gate(
         state=state,
         contract=contract,
         study_root=study_root,
         market_bundle_sha256=market_evidence["market_bundle_sha256"],
     )
-    report_path = Path(repo_root).resolve() / REPORT_RELATIVE
+    report_path = Path(repo_root).resolve() / _report_relative(contract)
     dashboard = json.loads(report_path.read_text(encoding="utf-8"))
     unsigned_dashboard = dict(dashboard)
     recorded_dashboard_sha256 = unsigned_dashboard.pop(

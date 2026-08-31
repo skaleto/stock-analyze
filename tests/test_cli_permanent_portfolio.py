@@ -41,6 +41,38 @@ class PermanentPortfolioCliTests(unittest.TestCase):
         )
 
     @mock.patch(
+        "stock_analyze.research.permanent_portfolio.data.materialize_market_data"
+    )
+    @mock.patch(
+        "stock_analyze.markets.a_share.backtest.data_prep._make_pro_client"
+    )
+    def test_prepare_v2_writes_only_to_v2_market_root(
+        self,
+        make_client: mock.Mock,
+        materialize: mock.Mock,
+    ) -> None:
+        make_client.return_value = object()
+        materialize.return_value = {"status": "complete"}
+
+        exit_code = cli.main(
+            [
+                "prepare-permanent-portfolio-data",
+                "--contract",
+                "configs/research/permanent_portfolio_v2.yaml",
+                "--end",
+                "2026-08-28",
+                "--repo-root",
+                ".",
+            ]
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            str(materialize.call_args.kwargs["output_root"]),
+            "data/research/permanent_portfolio/v2/market_data",
+        )
+
+    @mock.patch(
         "stock_analyze.research.permanent_portfolio.workflow.run_development"
     )
     def test_development_command_uses_frozen_contract(

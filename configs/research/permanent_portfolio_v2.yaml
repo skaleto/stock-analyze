@@ -1,0 +1,33 @@
+{
+  "schema_version": 2,
+  "study_id": "permanent_portfolio_v2",
+  "accounting_version": "cash_distributions_v2",
+  "evidence_class": "bug_corrected_sealed_retest",
+  "source_start": "2016-12-01",
+  "development_start": "2018-09-03",
+  "development_end": "2024-12-31",
+  "holdout_start": "2025-01-01",
+  "initial_cash": 200000.0,
+  "assets": [
+    {"role": "equity", "code": "510300.SH", "name": "华泰柏瑞沪深300ETF"},
+    {"role": "bond", "code": "511260.SH", "name": "国泰上证10年期国债ETF"},
+    {"role": "cash", "code": "511880.SH", "name": "银华日利ETF"},
+    {"role": "gold", "code": "518880.SH", "name": "华安黄金ETF"}
+  ],
+  "fixed": {"lower_band": 0.15, "upper_band": 0.35, "target_weight": 0.25},
+  "dynamic": {
+    "rebalance_frequency": "monthly",
+    "lookbacks_months": [6, 12],
+    "skip_recent_months": 1,
+    "rank_weights": [0.40, 0.30, 0.20, 0.10],
+    "tie_break_order": ["cash", "bond", "gold", "equity"]
+  },
+  "trading": {
+    "lot_size": 100,
+    "commission_rate": 0.0003,
+    "minimum_commission": 5.0,
+    "slippage_rate": 0.0005,
+    "stamp_tax_rate": 0.0
+  },
+  "benchmarks": ["equity_buy_hold", "equal_weight_buy_hold", "cash_buy_hold"]
+}

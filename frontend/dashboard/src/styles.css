@@ -4454,6 +4454,25 @@ a:hover { text-decoration: underline; }
   font-size: 10px;
 }
 
+.permanent-correction-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid rgba(236, 177, 83, 0.24);
+  border-radius: 7px;
+  background: rgba(236, 177, 83, 0.07);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.permanent-correction-note svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--permanent-gold);
+}
+
 .permanent-strategy-switcher {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

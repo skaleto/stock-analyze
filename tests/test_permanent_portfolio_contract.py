@@ -54,6 +54,28 @@ class PermanentPortfolioContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "development_window"):
             contract.assert_development_date("20250101")
 
+    def test_v2_contract_changes_only_accounting_and_development_start(self) -> None:
+        v1 = load_contract("configs/research/permanent_portfolio_v1.yaml")
+        v2 = load_contract("configs/research/permanent_portfolio_v2.yaml")
+
+        self.assertEqual(v2.study_id, "permanent_portfolio_v2")
+        self.assertEqual(v2.accounting_version, "cash_distributions_v2")
+        self.assertEqual(v2.development_start, "20180903")
+        self.assertEqual(v2.development_end, v1.development_end)
+        self.assertEqual(v2.holdout_start, v1.holdout_start)
+        self.assertEqual(v2.initial_cash, v1.initial_cash)
+        self.assertEqual(v2.assets, v1.assets)
+        self.assertEqual(v2.lower_band, v1.lower_band)
+        self.assertEqual(v2.upper_band, v1.upper_band)
+        self.assertEqual(v2.fixed_target_weight, v1.fixed_target_weight)
+        self.assertEqual(v2.dynamic_rank_weights, v1.dynamic_rank_weights)
+        self.assertEqual(v2.tie_break_order, v1.tie_break_order)
+        self.assertEqual(v2.lot_size, v1.lot_size)
+        self.assertEqual(v2.commission_rate, v1.commission_rate)
+        self.assertEqual(v2.minimum_commission, v1.minimum_commission)
+        self.assertEqual(v2.slippage_rate, v1.slippage_rate)
+        self.assertEqual(v2.stamp_tax_rate, v1.stamp_tax_rate)
+
 
 if __name__ == "__main__":
     unittest.main()

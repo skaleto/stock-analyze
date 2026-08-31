@@ -56,13 +56,18 @@ def _market(*forward_dates: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _prepare_paper_gate(root: Path) -> dict[str, str]:
-    contract = load_contract("configs/research/permanent_portfolio_v1.yaml")
+def _prepare_paper_gate(
+    root: Path,
+    *,
+    contract_path: str = "configs/research/permanent_portfolio_v1.yaml",
+) -> dict[str, object]:
+    contract = load_contract(contract_path)
+    version = contract.study_id.rsplit("_", 1)[-1]
     code_evidence = _code_evidence()
     market_bundle_sha256 = "c" * 64
     development_sha256 = "d" * 64
     holdout_marker_sha256 = "e" * 64
-    study_root = root / "data/research/permanent_portfolio/v1"
+    study_root = root / f"data/research/permanent_portfolio/{version}"
     holdout_payload = {
         "status": "holdout_complete",
         "contract_sha256": canonical_hash(contract.raw),
@@ -86,7 +91,7 @@ def _prepare_paper_gate(root: Path) -> dict[str, str]:
         encoding="utf-8",
     )
     state = {
-        "schema_version": 1,
+        "schema_version": int(contract.raw.get("schema_version") or 1),
         "status": "holdout_complete",
         "holdout_end": "20180101",
         "holdout_artifact": str(holdout_path.resolve()),
@@ -105,17 +110,24 @@ def _prepare_paper_gate(root: Path) -> dict[str, str]:
         encoding="utf-8",
     )
     dashboard = {
-        "schema_version": 1,
+        "schema_version": int(contract.raw.get("schema_version") or 1),
         "study": state,
         "development": {},
         "holdout": {},
         "forward": {"status": "unavailable"},
     }
     dashboard["dashboard_sha256"] = canonical_hash(dashboard)
-    report = root / "reports/research/permanent_portfolio/v1/dashboard.json"
+    report = (
+        root
+        / f"reports/research/permanent_portfolio/{version}/dashboard.json"
+    )
     report.parent.mkdir(parents=True)
     report.write_text(json.dumps(dashboard), encoding="utf-8")
-    return {"market_bundle_sha256": market_bundle_sha256}
+    return {
+        "market_bundle_sha256": market_bundle_sha256,
+        "schema_version": int(contract.raw.get("schema_version") or 1),
+        "accounting_version": contract.accounting_version,
+    }
 
 
 class PermanentPortfolioPaperTests(unittest.TestCase):
@@ -133,6 +145,53 @@ class PermanentPortfolioPaperTests(unittest.TestCase):
                     "data/research/paper_portfolios/permanent_dynamic_v1"
                 )
             )
+
+    def test_v2_accounts_do_not_reuse_v1_ledgers(self) -> None:
+        with TemporaryDirectory() as tmp:
+            v1 = account_paths(Path(tmp))
+            v2 = account_paths(
+                Path(tmp), study_id="permanent_portfolio_v2"
+            )
+
+            self.assertNotEqual(v2, v1)
+            self.assertTrue(str(v2["fixed"]).endswith("permanent_fixed_v2"))
+            self.assertTrue(str(v2["dynamic"]).endswith("permanent_dynamic_v2"))
+
+    def test_v2_paper_rejects_legacy_market_accounting_before_mutation(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            evidence = _prepare_paper_gate(
+                root,
+                contract_path="configs/research/permanent_portfolio_v2.yaml",
+            )
+            evidence["schema_version"] = 1
+            evidence["accounting_version"] = None
+
+            with (
+                mock.patch(
+                    "stock_analyze.research.permanent_portfolio.paper._latest_market_with_evidence",
+                    return_value=(
+                        _market("2018-01-02", "2018-01-03"),
+                        evidence,
+                    ),
+                ),
+                self.assertRaisesRegex(ValueError, "market_accounting"),
+            ):
+                run_paper_day(
+                    root,
+                    as_of="2018-01-03",
+                    contract_path=(
+                        "configs/research/permanent_portfolio_v2.yaml"
+                    ),
+                )
+
+            for path in account_paths(
+                root,
+                study_id="permanent_portfolio_v2",
+            ).values():
+                self.assertFalse((path / "runs.csv").exists())
 
     def test_same_day_run_is_idempotent(self) -> None:
         with TemporaryDirectory() as tmp:

@@ -7,12 +7,19 @@ import unittest
 
 import pandas as pd
 
-from stock_analyze.permanent_portfolio_history import merge_historical_market
+import stock_analyze.permanent_portfolio_history as history_module
+from stock_analyze.permanent_portfolio_history import (
+    merge_historical_market,
+    rebuild_historical_dashboard,
+)
 from stock_analyze.research.permanent_portfolio.contract import (
     canonical_hash,
     load_contract,
 )
 from stock_analyze.research.permanent_portfolio.workflow import (
+    _assert_market_accounting,
+    _momentum_observations,
+    _study_root,
     evaluate_window,
     open_holdout_once,
     run_development,
@@ -100,7 +107,194 @@ def _market_history() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _v2_market_history() -> pd.DataFrame:
+    dates = list(
+        pd.date_range(
+            "2017-08-31",
+            "2018-08-31",
+            freq=pd.offsets.BusinessMonthEnd(),
+        )
+    ) + list(pd.date_range("2018-09-03", "2018-09-05", freq="B"))
+    rows: list[dict[str, object]] = []
+    for index, day in enumerate(dates):
+        for role, code in ROLE_CODES.items():
+            close = 10.0 + index * 0.1
+            rows.append(
+                {
+                    "trade_date": day.strftime("%Y%m%d"),
+                    "role": role,
+                    "code": code,
+                    "open": close,
+                    "high": close,
+                    "low": close,
+                    "close": close,
+                    "vol": 100000.0,
+                    "amount": close * 100000.0,
+                    "adj_factor": 1.0,
+                    "adjusted_close": close,
+                    "distribution_cash_per_share": 0.0,
+                    "is_open": True,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 class PermanentPortfolioWorkflowTests(unittest.TestCase):
+    def test_v2_history_rebuild_stays_in_v2_and_labels_corrected_retest(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            contract = load_contract(
+                "configs/research/permanent_portfolio_v2.yaml"
+            )
+            study_root = (
+                root / "data/research/permanent_portfolio/v2"
+            )
+            state = {
+                "schema_version": 2,
+                "study_id": contract.study_id,
+                "status": "holdout_complete",
+                "holdout_end": "20180905",
+                "market_bundle_sha256": "b" * 64,
+            }
+            state["state_sha256"] = canonical_hash(state)
+            manifests = study_root / "manifests"
+            manifests.mkdir(parents=True)
+            (manifests / "state.json").write_text(
+                json.dumps(state),
+                encoding="utf-8",
+            )
+            report = (
+                root
+                / "reports/research/permanent_portfolio/v2/dashboard.json"
+            )
+            report.parent.mkdir(parents=True)
+            existing = {
+                "schema_version": 2,
+                "study": state,
+                "forward": {"status": "unavailable"},
+            }
+            existing["dashboard_sha256"] = canonical_hash(existing)
+            report.write_text(json.dumps(existing), encoding="utf-8")
+            market = _v2_market_history()
+            evidence = {
+                "market_bundle_sha256": "b" * 64,
+                "partition_data_sha256": "d" * 64,
+                "schema_version": 2,
+                "accounting_version": "cash_distributions_v2",
+            }
+
+            with (
+                unittest.mock.patch.object(
+                    history_module,
+                    "_market_index",
+                    return_value=({}, "b" * 64),
+                ),
+                unittest.mock.patch.object(
+                    history_module,
+                    "_latest_market_with_evidence",
+                    side_effect=[(market, evidence), (market, evidence)],
+                ),
+            ):
+                result = rebuild_historical_dashboard(
+                    repo_root=root,
+                    contract_path=(
+                        "configs/research/permanent_portfolio_v2.yaml"
+                    ),
+                )
+
+            rebuilt = json.loads(report.read_text(encoding="utf-8"))
+            self.assertEqual(
+                Path(result["dashboard"]),
+                report.resolve(),
+            )
+            self.assertEqual(rebuilt["schema_version"], 2)
+            self.assertEqual(
+                rebuilt["historical"]["stage_boundaries"][0][
+                    "after_label"
+                ],
+                "纠错封存复测期",
+            )
+
+    def test_v2_development_artifact_declares_corrected_accounting(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = run_development(
+                repo_root=root,
+                contract_path="configs/research/permanent_portfolio_v2.yaml",
+                market_frame_fixture=_v2_market_history(),
+            )
+            artifact = json.loads(
+                Path(state["development_artifact"]).read_text(
+                    encoding="utf-8"
+                )
+            )
+
+            self.assertEqual(state["schema_version"], 2)
+            self.assertEqual(state["study_id"], "permanent_portfolio_v2")
+            self.assertEqual(
+                state["accounting_version"], "cash_distributions_v2"
+            )
+            self.assertEqual(
+                artifact["evidence_class"],
+                "bug_corrected_sealed_retest",
+            )
+            self.assertIn(
+                "data/research/permanent_portfolio/v2/results/development",
+                state["development_artifact"],
+            )
+    def test_v2_rejects_legacy_market_accounting(self) -> None:
+        contract = load_contract("configs/research/permanent_portfolio_v2.yaml")
+
+        with self.assertRaisesRegex(ValueError, "market_accounting"):
+            _assert_market_accounting(
+                contract,
+                {"schema_version": 1, "accounting_version": None},
+            )
+    def test_v2_uses_a_separate_study_root(self) -> None:
+        contract = load_contract("configs/research/permanent_portfolio_v2.yaml")
+        with TemporaryDirectory() as tmp:
+            root = _study_root(Path(tmp), contract=contract)
+
+            self.assertEqual(
+                root,
+                Path(tmp).resolve() / "data/research/permanent_portfolio/v2",
+            )
+
+    def test_momentum_ignores_non_open_prelisting_placeholders(self) -> None:
+        rows: list[dict[str, object]] = []
+        for role, code in ROLE_CODES.items():
+            rows.extend(
+                [
+                    {
+                        "trade_date": "20170103",
+                        "role": role,
+                        "code": code,
+                        "adjusted_close": 10.0,
+                        "is_open": role != "bond",
+                    },
+                    {
+                        "trade_date": "20180103",
+                        "role": role,
+                        "code": code,
+                        "adjusted_close": 11.0,
+                        "is_open": True,
+                    },
+                ]
+            )
+
+        observations = _momentum_observations(
+            pd.DataFrame(rows),
+            as_of="20180103",
+        )
+
+        bond_lookbacks = set(
+            observations.loc[
+                observations["role"].eq("bond"), "months_ago"
+            ]
+        )
+        self.assertNotIn(12, bond_lookbacks)
     def test_history_merge_uses_development_before_boundary_and_holdout_after(
         self,
     ) -> None:

@@ -15,6 +15,7 @@ def _row(
     open_price: float | None = 4.0,
     close: float = 4.0,
     is_open: bool = True,
+    distribution_cash_per_share: float = 0.0,
 ) -> dict[str, object]:
     return {
         "trade_date": trade_date,
@@ -24,6 +25,7 @@ def _row(
         "close": close,
         "adjusted_close": close,
         "adj_factor": 1.0,
+        "distribution_cash_per_share": distribution_cash_per_share,
         "is_open": is_open,
     }
 
@@ -57,24 +59,90 @@ class PermanentPortfolioEngineTests(unittest.TestCase):
         self.assertGreaterEqual(trade["commission"], 5.0)
         self.assertGreaterEqual(result.nav.iloc[-1]["cash"], 0.0)
 
-    def test_fill_uses_raw_open_when_adjustment_factor_changes(self) -> None:
+    def test_factor_change_does_not_create_phantom_wealth_for_same_day_buyer(self) -> None:
         first = _row("20180102")
-        second = _row("20180103", open_price=2.05, close=2.10)
+        second = _row("20180103", open_price=2.0, close=2.0)
         second["adj_factor"] = 2.0
-        second["adjusted_close"] = 4.20
+        second["adjusted_close"] = 4.0
 
         result = replay_strategy(
             pd.DataFrame([first, second]),
             strategy="fixed",
             initial_cash=200000.0,
             target_schedule={"20180102": {"equity": 1.0}},
-            slippage_rate=0.0005,
+            lot_size=1,
+            commission_rate=0.0,
+            minimum_commission=0.0,
+            slippage_rate=0.0,
         )
 
-        self.assertAlmostEqual(
-            result.trades.iloc[0]["price"],
-            2.05 * 1.0005,
+        self.assertEqual(result.trades.iloc[0]["price"], 2.0)
+        self.assertEqual(result.nav.iloc[-1]["total_value"], 200000.0)
+
+    def test_distribution_is_credited_to_pre_open_holders_once(self) -> None:
+        first = _row("20180102", open_price=10.0, close=10.0)
+        second = _row(
+            "20180103",
+            open_price=9.0,
+            close=9.0,
+            distribution_cash_per_share=1.0,
         )
+        second["adj_factor"] = 10.0 / 9.0
+        second["adjusted_close"] = 10.0
+
+        result = replay_strategy(
+            pd.DataFrame([first, second]),
+            strategy="fixed",
+            initial_cash=100.0,
+            initial_positions={"equity": 100},
+            target_schedule={},
+            commission_rate=0.0,
+            minimum_commission=0.0,
+            slippage_rate=0.0,
+        )
+
+        self.assertEqual(result.nav.iloc[-1]["cash"], 200.0)
+        self.assertEqual(result.nav.iloc[-1]["cash_distribution"], 100.0)
+        self.assertEqual(result.nav.iloc[-1]["market_value"], 900.0)
+        self.assertEqual(result.nav.iloc[-1]["total_value"], 1100.0)
+
+    def test_distribution_survives_later_sale_without_double_counting(
+        self,
+    ) -> None:
+        market = pd.DataFrame(
+            [
+                _row("20180102", open_price=10.0, close=10.0),
+                _row(
+                    "20180103",
+                    open_price=9.0,
+                    close=9.0,
+                    distribution_cash_per_share=1.0,
+                ),
+                _row("20180104", open_price=9.0, close=9.0),
+            ]
+        )
+
+        result = replay_strategy(
+            market,
+            strategy="fixed",
+            initial_cash=1.0,
+            initial_positions={"equity": 100},
+            target_schedule={"20180102": {"equity": 0.0}},
+            lot_size=1,
+            commission_rate=0.0,
+            minimum_commission=0.0,
+            slippage_rate=0.0,
+            stamp_tax_rate=0.0,
+        )
+
+        self.assertEqual(result.trades.iloc[0]["side"], "SELL")
+        self.assertEqual(result.trades.iloc[0]["trade_date"], "20180103")
+        self.assertEqual(
+            result.nav["cash_distribution"].tolist(),
+            [0.0, 100.0, 0.0],
+        )
+        self.assertEqual(result.nav.iloc[-1]["cash"], 1001.0)
+        self.assertEqual(result.nav.iloc[-1]["total_value"], 1001.0)
 
     def test_same_close_signal_never_executes_same_day(self) -> None:
         market = pd.DataFrame([_row("20180102")])

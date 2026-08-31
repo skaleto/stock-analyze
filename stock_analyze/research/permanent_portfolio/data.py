@@ -29,6 +29,9 @@ REQUIRED_COLUMNS = (
     "adjusted_close",
     "is_open",
 )
+ACCOUNTING_COLUMN = "distribution_cash_per_share"
+DISTRIBUTION_ERROR_COLUMN = "distribution_reference_error"
+DISTRIBUTION_REFERENCE_TOLERANCE = 0.005
 PRICE_COLUMNS = ("open", "high", "low", "close", "adjusted_close")
 
 
@@ -84,6 +87,8 @@ def _file_sha256(path: Path) -> str:
 def build_total_return_frame(
     daily: pd.DataFrame,
     adjustment: pd.DataFrame,
+    *,
+    require_distribution_reference: bool = False,
 ) -> pd.DataFrame:
     left = daily.copy()
     right = adjustment.copy()
@@ -104,6 +109,50 @@ def build_total_return_frame(
         merged["adj_factor"],
         errors="coerce",
     )
+    merged = merged.sort_values(["ts_code", "trade_date"]).reset_index(
+        drop=True
+    )
+    if merged["adj_factor"].isna().any() or (merged["adj_factor"] <= 0).any():
+        raise ValueError("permanent_portfolio_market_adjustment")
+    previous_factor = merged.groupby("ts_code", sort=False)[
+        "adj_factor"
+    ].shift(1)
+    previous_close = merged.groupby("ts_code", sort=False)["close"].shift(1)
+    factor_change = merged["adj_factor"] / previous_factor
+    if factor_change.dropna().lt(1.0 - 1e-10).any():
+        raise ValueError("permanent_portfolio_distribution_factor")
+    distributions = previous_close * (
+        1.0 - previous_factor / merged["adj_factor"]
+    )
+    merged[ACCOUNTING_COLUMN] = distributions.where(
+        factor_change.gt(1.0 + 1e-10),
+        0.0,
+    ).fillna(0.0)
+    changed = factor_change.gt(1.0 + 1e-10)
+    if "pre_close" in merged.columns:
+        pre_close = pd.to_numeric(merged["pre_close"], errors="coerce")
+        implied_reference = previous_close - merged[ACCOUNTING_COLUMN]
+        reference_error = (implied_reference - pre_close).abs()
+        merged[DISTRIBUTION_ERROR_COLUMN] = reference_error.where(
+            changed,
+            0.0,
+        )
+        if (
+            merged.loc[changed, DISTRIBUTION_ERROR_COLUMN].isna().any()
+            or merged.loc[
+                changed, DISTRIBUTION_ERROR_COLUMN
+            ].gt(DISTRIBUTION_REFERENCE_TOLERANCE + 1e-12).any()
+        ):
+            raise ValueError("permanent_portfolio_distribution_reference")
+    else:
+        merged[DISTRIBUTION_ERROR_COLUMN] = 0.0
+        if require_distribution_reference and changed.any():
+            raise ValueError("permanent_portfolio_distribution_reference")
+    if (
+        merged[ACCOUNTING_COLUMN].lt(-1e-10).any()
+        or ~merged[ACCOUNTING_COLUMN].map(math.isfinite).all()
+    ):
+        raise ValueError("permanent_portfolio_distribution_amount")
     merged["adjusted_close"] = (
         pd.to_numeric(merged["close"], errors="coerce")
         * merged["adj_factor"]
@@ -156,7 +205,12 @@ def validate_market_frame(
         raise ValueError(
             f"permanent_portfolio_market_schema:{','.join(missing)}"
         )
-    clean = frame.loc[:, REQUIRED_COLUMNS].copy()
+    columns = list(REQUIRED_COLUMNS)
+    if ACCOUNTING_COLUMN in frame.columns:
+        columns.append(ACCOUNTING_COLUMN)
+    if DISTRIBUTION_ERROR_COLUMN in frame.columns:
+        columns.append(DISTRIBUTION_ERROR_COLUMN)
+    clean = frame.loc[:, columns].copy()
     clean["ts_code"] = clean["ts_code"].astype(str)
     clean["trade_date"] = clean["trade_date"].map(_date_key)
     if clean.duplicated(["ts_code", "trade_date"]).any():
@@ -167,6 +221,27 @@ def validate_market_frame(
         raise ValueError("permanent_portfolio_market_codes")
     for column in (*PRICE_COLUMNS, "vol", "amount", "adj_factor"):
         clean[column] = pd.to_numeric(clean[column], errors="coerce")
+    if ACCOUNTING_COLUMN in clean.columns:
+        clean[ACCOUNTING_COLUMN] = pd.to_numeric(
+            clean[ACCOUNTING_COLUMN], errors="coerce"
+        )
+        if (
+            clean[ACCOUNTING_COLUMN].isna().any()
+            or (clean[ACCOUNTING_COLUMN] < -1e-10).any()
+        ):
+            raise ValueError("permanent_portfolio_distribution_amount")
+    if DISTRIBUTION_ERROR_COLUMN in clean.columns:
+        clean[DISTRIBUTION_ERROR_COLUMN] = pd.to_numeric(
+            clean[DISTRIBUTION_ERROR_COLUMN], errors="coerce"
+        )
+        if (
+            clean[DISTRIBUTION_ERROR_COLUMN].isna().any()
+            or (clean[DISTRIBUTION_ERROR_COLUMN] < 0).any()
+            or clean[DISTRIBUTION_ERROR_COLUMN].gt(
+                DISTRIBUTION_REFERENCE_TOLERANCE + 1e-12
+            ).any()
+        ):
+            raise ValueError("permanent_portfolio_distribution_reference")
     clean["is_open"] = clean["is_open"].astype(bool)
     if clean[["close", "adjusted_close", "adj_factor"]].isna().any().any():
         raise ValueError("permanent_portfolio_market_adjustment")
@@ -190,6 +265,7 @@ def write_market_publication(
     *,
     source_start: str,
     end_date: str,
+    source_manifest_sha256: str | None = None,
 ) -> dict[str, object]:
     destination_root = Path(root)
     destination_root.mkdir(parents=True, exist_ok=True)
@@ -210,8 +286,9 @@ def write_market_publication(
         validated.to_parquet(data_path, index=False)
         data_sha256 = _file_sha256(data_path)
         publication_id = f"{_date_key(end_date)}-{data_sha256[:16]}"
+        schema_version = 2 if ACCOUNTING_COLUMN in validated.columns else 1
         manifest: dict[str, object] = {
-            "schema_version": 1,
+            "schema_version": schema_version,
             "status": "complete",
             "publication_id": publication_id,
             "source_start": _date_key(source_start),
@@ -221,6 +298,60 @@ def write_market_publication(
             "data_file": "market.parquet",
             "data_sha256": data_sha256,
         }
+        if source_manifest_sha256 is not None:
+            source_sha256 = str(source_manifest_sha256).lower()
+            if len(source_sha256) != 64 or any(
+                value not in "0123456789abcdef" for value in source_sha256
+            ):
+                raise ValueError("permanent_portfolio_source_manifest")
+            manifest["source_manifest_sha256"] = source_sha256
+        if schema_version == 2:
+            distributions = validated.loc[
+                validated[ACCOUNTING_COLUMN].gt(0),
+                ["ts_code", "trade_date", ACCOUNTING_COLUMN],
+            ]
+            manifest["accounting_version"] = "cash_distributions_v2"
+            manifest["distribution_count"] = int(len(distributions))
+            manifest["distribution_cash_per_share_sum"] = float(
+                distributions[ACCOUNTING_COLUMN].sum()
+            )
+            manifest["distribution_reference_tolerance"] = (
+                DISTRIBUTION_REFERENCE_TOLERANCE
+            )
+            manifest["distribution_reference_max_error"] = float(
+                validated.get(
+                    DISTRIBUTION_ERROR_COLUMN,
+                    pd.Series([0.0]),
+                ).max()
+            )
+            evidence: dict[str, object] = {}
+            for code in sorted(validated["ts_code"].unique()):
+                code_rows = distributions.loc[
+                    distributions["ts_code"].eq(code)
+                ].sort_values("trade_date")
+                records = [
+                    {
+                        "trade_date": str(row.trade_date),
+                        "cash_per_share": float(
+                            row.distribution_cash_per_share
+                        ),
+                    }
+                    for row in code_rows.itertuples(index=False)
+                ]
+                evidence[str(code)] = {
+                    "count": len(records),
+                    "cash_per_share_sum": float(
+                        code_rows[ACCOUNTING_COLUMN].sum()
+                    ),
+                    "first_date": (
+                        records[0]["trade_date"] if records else None
+                    ),
+                    "last_date": (
+                        records[-1]["trade_date"] if records else None
+                    ),
+                    "records_sha256": canonical_hash({"records": records}),
+                }
+            manifest["distribution_evidence"] = evidence
         manifest["manifest_sha256"] = canonical_hash(manifest)
         manifest_path = staging / "manifest.json"
         manifest_path.write_text(
@@ -302,6 +433,7 @@ def materialize_market_data(
     end_date: str,
     output_root: str | Path,
     holdout_start: str | None = None,
+    source_manifest_sha256: str | None = None,
 ) -> dict[str, object]:
     start_key = _date_key(source_start)
     end_key = _date_key(end_date)
@@ -314,7 +446,7 @@ def materialize_market_data(
     open_dates = calendar.loc[
         pd.to_numeric(calendar["is_open"], errors="coerce").eq(1),
         ["trade_date"],
-    ].drop_duplicates()
+    ].drop_duplicates().sort_values("trade_date").reset_index(drop=True)
     if open_dates.empty:
         raise ValueError("permanent_portfolio_market_calendar")
     collected: list[pd.DataFrame] = []
@@ -330,7 +462,11 @@ def materialize_market_data(
             start_date=start_key,
             end_date=end_key,
         )
-        total_return = build_total_return_frame(daily, adjustment)
+        total_return = build_total_return_frame(
+            daily,
+            adjustment,
+            require_distribution_reference=True,
+        )
         if total_return.empty:
             raise ValueError(f"permanent_portfolio_missing_open_date:{code}:all")
         first_observed = str(total_return["trade_date"].min())
@@ -384,7 +520,10 @@ def materialize_market_data(
             raise ValueError(
                 f"permanent_portfolio_missing_open_date:{code}:{missing_dates[0]}"
             )
-        merged = open_dates.merge(
+        code_dates = open_dates.loc[
+            open_dates["trade_date"].ge(first_observed)
+        ].copy()
+        merged = code_dates.merge(
             total_return,
             on="trade_date",
             how="left",
@@ -393,11 +532,18 @@ def materialize_market_data(
         merged["ts_code"] = merged["ts_code"].fillna(code).astype(str)
         observed = merged["close"].notna()
         merged["is_open"] = observed
+        merged = merged.sort_values("trade_date").reset_index(drop=True)
         for column in ("close", "adjusted_close", "adj_factor"):
             merged[column] = pd.to_numeric(
                 merged[column],
                 errors="coerce",
             ).ffill()
+        merged[ACCOUNTING_COLUMN] = pd.to_numeric(
+            merged.get(ACCOUNTING_COLUMN), errors="coerce"
+        ).fillna(0.0)
+        merged[DISTRIBUTION_ERROR_COLUMN] = pd.to_numeric(
+            merged.get(DISTRIBUTION_ERROR_COLUMN), errors="coerce"
+        ).fillna(0.0)
         collected.append(merged)
     frame = pd.concat(collected, ignore_index=True)
     validated = validate_market_frame(
@@ -413,12 +559,14 @@ def materialize_market_data(
             source_start=start_key,
             end_date=end_key,
             holdout_start=holdout_start,
+            source_manifest_sha256=source_manifest_sha256,
         )
     return write_market_publication(
         output_root,
         validated,
         source_start=start_key,
         end_date=end_key,
+        source_manifest_sha256=source_manifest_sha256,
     )
 
 
@@ -429,6 +577,7 @@ def write_partitioned_market_publication(
     source_start: str,
     end_date: str,
     holdout_start: str,
+    source_manifest_sha256: str | None = None,
 ) -> dict[str, object]:
     destination = Path(root)
     destination.mkdir(parents=True, exist_ok=True)
@@ -446,20 +595,32 @@ def write_partitioned_market_publication(
         development_frame,
         source_start=source_start,
         end_date=str(development_frame["trade_date"].max()),
+        source_manifest_sha256=source_manifest_sha256,
     )
     holdout = write_market_publication(
         destination / "holdout",
         holdout_frame,
         source_start=str(holdout_frame["trade_date"].min()),
         end_date=end_date,
+        source_manifest_sha256=source_manifest_sha256,
+    )
+    schema_version = max(
+        int(development.get("schema_version") or 1),
+        int(holdout.get("schema_version") or 1),
     )
     manifest: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": schema_version,
         "status": "complete",
         "holdout_start": holdout_key,
         "development": development,
         "holdout": holdout,
     }
+    if schema_version == 2:
+        manifest["accounting_version"] = "cash_distributions_v2"
+    if source_manifest_sha256 is not None:
+        manifest["source_manifest_sha256"] = str(
+            source_manifest_sha256
+        ).lower()
     manifest["manifest_sha256"] = canonical_hash(manifest)
     latest_tmp = destination / ".latest.json.tmp"
     latest_tmp.write_text(

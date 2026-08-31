@@ -15,6 +15,9 @@ from .research.permanent_portfolio.contract import canonical_hash
 ARTIFACT_RELATIVE = Path(
     "reports/research/permanent_portfolio/v1/dashboard.json"
 )
+ARTIFACT_RELATIVE_V2 = Path(
+    "reports/research/permanent_portfolio/v2/dashboard.json"
+)
 PUBLIC_ARTIFACT_RELATIVE = Path(
     "reports/app/data/permanent-portfolio.json"
 )
@@ -279,14 +282,26 @@ def build_dashboard_permanent_portfolio_data(
     repo_root: str | Path | None = None,
 ) -> dict[str, Any]:
     root = Path(repo_root or ".").resolve()
-    path = root / ARTIFACT_RELATIVE
+    v2_path = root / ARTIFACT_RELATIVE_V2
+    v1_path = root / ARTIFACT_RELATIVE
+    if v2_path.is_file():
+        path = v2_path
+        study_id = "permanent_portfolio_v2"
+        expected_schema = 2
+    else:
+        path = v1_path
+        study_id = "permanent_portfolio_v1"
+        expected_schema = 1
     if not path.is_file():
         return _load_public_snapshot(root)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return _unavailable("artifact_unreadable")
-    if not isinstance(raw, dict) or raw.get("schema_version") != 1:
+    if (
+        not isinstance(raw, dict)
+        or raw.get("schema_version") != expected_schema
+    ):
         return _unavailable("artifact_schema")
     unsigned = dict(raw)
     recorded_dashboard_sha256 = unsigned.pop("dashboard_sha256", None)
@@ -322,9 +337,28 @@ def build_dashboard_permanent_portfolio_data(
         ),
     }
     public_study = {
-        "studyId": "permanent_portfolio_v1",
+        "studyId": study_id,
         "status": status,
         "initialCash": 200000.0,
+        "validity": (
+            "corrected_retest" if study_id.endswith("_v2") else "invalidated"
+        ),
+        "accountingVersion": (
+            study.get("accounting_version")
+            or (
+                "cash_distributions_v2"
+                if study_id.endswith("_v2")
+                else "adjusted_valuation_v1"
+            )
+        ),
+        "evidenceClass": (
+            study.get("evidence_class")
+            or (
+                "bug_corrected_sealed_retest"
+                if study_id.endswith("_v2")
+                else "invalidated_historical_evidence"
+            )
+        ),
         "contractSha256": study.get("contract_sha256"),
         "dataSha256": study.get("market_bundle_sha256"),
         "developmentSha256": study.get("development_sha256"),
@@ -341,6 +375,18 @@ def build_dashboard_permanent_portfolio_data(
         "strategies": list(STRATEGIES),
         "benchmarks": list(BENCHMARKS),
         "windows": windows,
+        "correction": {
+            "v1Status": "invalidated",
+            "reason": (
+                "v1混用了原始成交价与复权估值，并包含上市前反向填充；"
+                "v2使用原始价格估值并显式计入现金分红。"
+            ),
+            "holdoutLabel": (
+                "纠错封存复测"
+                if study_id.endswith("_v2")
+                else "结果已失效，等待v2"
+            ),
+        },
         "errors": [],
     }
     encoded = json.dumps(

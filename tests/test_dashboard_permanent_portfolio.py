@@ -13,18 +13,94 @@ from stock_analyze.dashboard_permanent_portfolio import (
 from stock_analyze.research.permanent_portfolio.contract import canonical_hash
 
 
-def _write_dashboard(root: Path, payload: dict[str, object]) -> Path:
+def _write_dashboard(
+    root: Path,
+    payload: dict[str, object],
+    *,
+    version: str = "v1",
+) -> Path:
     study = dict(payload["study"])
     study["state_sha256"] = canonical_hash(study)
     signed = {**payload, "study": study}
     signed["dashboard_sha256"] = canonical_hash(signed)
-    path = root / "reports/research/permanent_portfolio/v1/dashboard.json"
+    path = root / f"reports/research/permanent_portfolio/{version}/dashboard.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(signed), encoding="utf-8")
     return path
 
 
 class PermanentPortfolioDashboardTests(unittest.TestCase):
+    def test_v2_report_is_preferred_and_labeled_as_corrected_retest(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_dashboard(
+                root,
+                {
+                    "schema_version": 1,
+                    "study": {"status": "holdout_complete"},
+                    "historical": {"portfolios": {}},
+                    "forward": {"status": "unavailable"},
+                },
+            )
+            _write_dashboard(
+                root,
+                {
+                    "schema_version": 2,
+                    "study": {
+                        "study_id": "permanent_portfolio_v2",
+                        "status": "holdout_complete",
+                        "accounting_version": "cash_distributions_v2",
+                        "evidence_class": "bug_corrected_sealed_retest",
+                    },
+                    "historical": {"portfolios": {}},
+                    "forward": {"status": "unavailable"},
+                },
+                version="v2",
+            )
+
+            payload = build_dashboard_permanent_portfolio_data(repo_root=root)
+
+            self.assertEqual(payload["study"]["studyId"], "permanent_portfolio_v2")
+            self.assertEqual(payload["study"]["validity"], "corrected_retest")
+            self.assertEqual(
+                payload["study"]["evidenceClass"],
+                "bug_corrected_sealed_retest",
+            )
+            self.assertEqual(payload["correction"]["v1Status"], "invalidated")
+
+    def test_invalid_v2_does_not_fallback_to_v1(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_dashboard(
+                root,
+                {
+                    "schema_version": 1,
+                    "study": {"status": "holdout_complete"},
+                    "historical": {"portfolios": {}},
+                    "forward": {"status": "unavailable"},
+                },
+            )
+            v2_path = _write_dashboard(
+                root,
+                {
+                    "schema_version": 2,
+                    "study": {
+                        "study_id": "permanent_portfolio_v2",
+                        "status": "holdout_complete",
+                    },
+                    "historical": {"portfolios": {}},
+                    "forward": {"status": "unavailable"},
+                },
+                version="v2",
+            )
+            tampered = json.loads(v2_path.read_text(encoding="utf-8"))
+            tampered["study"]["status"] = "forward_ready"
+            v2_path.write_text(json.dumps(tampered), encoding="utf-8")
+
+            payload = build_dashboard_permanent_portfolio_data(repo_root=root)
+
+            self.assertEqual(payload["status"], "unavailable")
+            self.assertEqual(payload["errors"], ["artifact_checksum"])
     def test_resource_exposes_only_historical_and_forward_windows(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

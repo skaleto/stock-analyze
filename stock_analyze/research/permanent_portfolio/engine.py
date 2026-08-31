@@ -29,6 +29,7 @@ TRADE_COLUMNS = (
 NAV_COLUMNS = (
     "date",
     "strategy",
+    "cash_distribution",
     "cash",
     "market_value",
     "total_value",
@@ -104,14 +105,26 @@ def _prepare_market(market: pd.DataFrame) -> pd.DataFrame:
         )
     else:
         frame["adj_factor"] = frame["adjusted_close"] / frame["close"]
+    if "distribution_cash_per_share" not in frame.columns:
+        frame["distribution_cash_per_share"] = 0.0
+    frame["distribution_cash_per_share"] = pd.to_numeric(
+        frame["distribution_cash_per_share"], errors="coerce"
+    )
     if (
-        frame[["close", "adjusted_close", "adj_factor"]].isna().any().any()
+        frame[
+            [
+                "close",
+                "adjusted_close",
+                "adj_factor",
+                "distribution_cash_per_share",
+            ]
+        ].isna().any().any()
         or (frame[["close", "adjusted_close", "adj_factor"]] <= 0).any().any()
+        or (frame["distribution_cash_per_share"] < 0).any()
     ):
         raise ValueError("permanent_portfolio_replay_price")
     frame["is_open"] = frame["is_open"].astype(bool)
-    base_factor = frame.groupby("role", sort=False)["adj_factor"].transform("first")
-    frame["economic_close"] = frame["adjusted_close"] / base_factor
+    frame["economic_close"] = frame["close"]
     frame["economic_open"] = frame["open"]
     return frame.sort_values(["trade_date", "role"]).reset_index(drop=True)
 
@@ -198,7 +211,13 @@ def replay_strategy(
             str(row.role): row
             for row in day_frame.itertuples(index=False)
         }
+        cash_distribution = 0.0
         for role, row in rows.items():
+            distribution = float(row.distribution_cash_per_share)
+            if distribution > 0 and positions[role] > 0:
+                credited = positions[role] * distribution
+                cash += credited
+                cash_distribution += credited
             latest_close[role] = float(row.economic_close)
 
         eligible = sorted(
@@ -343,6 +362,7 @@ def replay_strategy(
             {
                 "date": trade_date,
                 "strategy": strategy,
+                "cash_distribution": cash_distribution,
                 "cash": cash,
                 "market_value": market_value,
                 "total_value": total_value,

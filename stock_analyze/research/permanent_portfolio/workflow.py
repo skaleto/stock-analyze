@@ -97,6 +97,8 @@ def _momentum_observations(
     timestamp = pd.Timestamp(as_of)
     rows: list[dict[str, Any]] = []
     dated = market.copy()
+    if "is_open" in dated.columns:
+        dated = dated.loc[dated["is_open"].astype(bool)].copy()
     dated["_date"] = pd.to_datetime(dated["trade_date"], format="%Y%m%d")
     for months_ago in (12, 6, 1, 0):
         cutoff = timestamp - pd.DateOffset(months=months_ago)
@@ -266,10 +268,39 @@ def evaluate_window(
     }
 
 
-def _study_root(repo_root: str | Path) -> Path:
-    root = Path(repo_root).resolve() / STORE_RELATIVE
+def _study_version(contract: PermanentPortfolioContract) -> str:
+    prefix = "permanent_portfolio_"
+    if not contract.study_id.startswith(prefix):
+        raise ValueError("permanent_portfolio_study_id")
+    version = contract.study_id[len(prefix):]
+    if version not in {"v1", "v2"}:
+        raise ValueError("permanent_portfolio_study_id")
+    return version
+
+
+def _study_root(
+    repo_root: str | Path,
+    *,
+    contract: PermanentPortfolioContract | None = None,
+) -> Path:
+    relative = (
+        STORE_RELATIVE
+        if contract is None
+        else Path(
+            "data/research/permanent_portfolio"
+        ) / _study_version(contract)
+    )
+    root = Path(repo_root).resolve() / relative
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _report_relative(contract: PermanentPortfolioContract) -> Path:
+    return (
+        Path("reports/research/permanent_portfolio")
+        / _study_version(contract)
+        / "dashboard.json"
+    )
 
 
 def _market_index(root: Path) -> tuple[dict[str, Any], str]:
@@ -288,7 +319,7 @@ def _latest_market_with_evidence(
     *,
     partition: str,
     market_index: Mapping[str, Any] | None = None,
-) -> tuple[pd.DataFrame, dict[str, str]]:
+) -> tuple[pd.DataFrame, dict[str, Any]]:
     market_root = root / "market_data"
     if market_index is None:
         latest, bundle_sha256 = _market_index(root)
@@ -316,6 +347,8 @@ def _latest_market_with_evidence(
         "market_bundle_sha256": bundle_sha256,
         "partition_manifest_sha256": str(manifest["manifest_sha256"]),
         "partition_data_sha256": str(manifest["data_sha256"]),
+        "schema_version": int(manifest.get("schema_version") or 1),
+        "accounting_version": manifest.get("accounting_version"),
     }
 
 
@@ -327,13 +360,34 @@ def _latest_market(root: Path, *, partition: str) -> pd.DataFrame:
     return frame
 
 
-def _fixture_market_evidence(market: pd.DataFrame) -> dict[str, str]:
+def _fixture_market_evidence(market: pd.DataFrame) -> dict[str, Any]:
     digest = canonical_hash({"records": _records(market)})
     return {
         "market_bundle_sha256": digest,
         "partition_manifest_sha256": digest,
         "partition_data_sha256": digest,
+        "schema_version": (
+            2 if "distribution_cash_per_share" in market.columns else 1
+        ),
+        "accounting_version": (
+            "cash_distributions_v2"
+            if "distribution_cash_per_share" in market.columns
+            else None
+        ),
     }
+
+
+def _assert_market_accounting(
+    contract: PermanentPortfolioContract,
+    evidence: Mapping[str, Any],
+) -> None:
+    if contract.accounting_version != "cash_distributions_v2":
+        return
+    if (
+        int(evidence.get("schema_version") or 0) != 2
+        or evidence.get("accounting_version") != "cash_distributions_v2"
+    ):
+        raise ValueError("permanent_portfolio_market_accounting")
 
 
 def _code_evidence() -> dict[str, str]:
@@ -397,7 +451,7 @@ def run_development(
     market_frame_fixture: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     contract = load_contract(contract_path)
-    root = _study_root(repo_root)
+    root = _study_root(repo_root, contract=contract)
     if market_frame_fixture is not None:
         market = market_frame_fixture.copy()
         market_evidence = _fixture_market_evidence(market)
@@ -406,6 +460,7 @@ def run_development(
             root,
             partition="development",
         )
+    _assert_market_accounting(contract, market_evidence)
     code_evidence = _code_evidence()
     if "trade_date" not in market.columns:
         raise ValueError("permanent_portfolio_development_window")
@@ -425,9 +480,12 @@ def run_development(
         end_date=contract.development_end,
         cost_multiplier=2.0,
     )
+    schema_version = int(contract.raw.get("schema_version") or 1)
     payload = {
-        "schema_version": 1,
+        "schema_version": schema_version,
         "study_id": contract.study_id,
+        "accounting_version": contract.accounting_version,
+        "evidence_class": contract.evidence_class,
         "status": "development_complete",
         "contract_sha256": canonical_hash(contract.raw),
         "market_bundle_sha256": market_evidence["market_bundle_sha256"],
@@ -444,7 +502,10 @@ def run_development(
         payload=payload,
     )
     state = {
-        "schema_version": 1,
+        "schema_version": schema_version,
+        "study_id": contract.study_id,
+        "accounting_version": contract.accounting_version,
+        "evidence_class": contract.evidence_class,
         "status": "development_complete",
         "development_artifact": str(artifact_path.resolve()),
         "development_sha256": artifact_sha256,
@@ -568,7 +629,7 @@ def run_holdout(
     market_frame_fixture: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     contract = load_contract(contract_path)
-    root = _study_root(repo_root)
+    root = _study_root(repo_root, contract=contract)
     contract_sha256 = canonical_hash(contract.raw)
     code_evidence = _code_evidence()
     if market_frame_fixture is not None:
@@ -600,6 +661,7 @@ def run_holdout(
         )
     else:
         holdout_evidence = market_evidence
+    _assert_market_accounting(contract, holdout_evidence)
     dates = market["trade_date"].map(_date_key)
     holdout_dates = dates.loc[dates.ge(contract.holdout_start)]
     if holdout_dates.empty:
@@ -618,9 +680,12 @@ def run_holdout(
         end_date=holdout_end,
         cost_multiplier=2.0,
     )
+    schema_version = int(contract.raw.get("schema_version") or 1)
     payload = {
-        "schema_version": 1,
+        "schema_version": schema_version,
         "study_id": contract.study_id,
+        "accounting_version": contract.accounting_version,
+        "evidence_class": contract.evidence_class,
         "status": "holdout_complete",
         "contract_sha256": contract_sha256,
         "market_bundle_sha256": market_evidence["market_bundle_sha256"],
@@ -645,6 +710,10 @@ def run_holdout(
     state.pop("state_sha256", None)
     state.update(
         {
+            "schema_version": schema_version,
+            "study_id": contract.study_id,
+            "accounting_version": contract.accounting_version,
+            "evidence_class": contract.evidence_class,
             "status": "holdout_complete",
             "holdout_end": holdout_end,
             "holdout_artifact": str(artifact_path),
@@ -662,7 +731,7 @@ def run_holdout(
         Path(development_artifact_path).read_text(encoding="utf-8")
     )
     dashboard = {
-        "schema_version": 1,
+        "schema_version": schema_version,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "study": state,
         "development": development.get("evaluation"),
@@ -670,7 +739,7 @@ def run_holdout(
         "forward": {"status": "unavailable"},
     }
     dashboard["dashboard_sha256"] = canonical_hash(dashboard)
-    report_path = Path(repo_root).resolve() / REPORT_RELATIVE
+    report_path = Path(repo_root).resolve() / _report_relative(contract)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     write_text_atomic(
         report_path,

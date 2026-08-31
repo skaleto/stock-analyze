@@ -11,9 +11,10 @@ import pandas as pd
 
 from .research.permanent_portfolio.contract import canonical_hash, load_contract
 from .research.permanent_portfolio.workflow import (
-    REPORT_RELATIVE,
+    _assert_market_accounting,
     _latest_market_with_evidence,
     _market_index,
+    _report_relative,
     _study_root,
     evaluate_window,
 )
@@ -54,7 +55,7 @@ def rebuild_historical_dashboard(
     """Replay development and holdout as one account and replace Dashboard views."""
     root = Path(repo_root).resolve()
     contract = load_contract(contract_path)
-    study_root = _study_root(root)
+    study_root = _study_root(root, contract=contract)
     state_path = study_root / "manifests/state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     unsigned_state = dict(state)
@@ -78,6 +79,8 @@ def rebuild_historical_dashboard(
         partition="holdout",
         market_index=market_index,
     )
+    _assert_market_accounting(contract, development_evidence)
+    _assert_market_accounting(contract, holdout_evidence)
     market = merge_historical_market(
         development,
         holdout,
@@ -94,7 +97,11 @@ def rebuild_historical_dashboard(
         {
             "date": contract.holdout_start,
             "before_label": "开发期",
-            "after_label": "盲测期",
+            "after_label": (
+                "纠错封存复测期"
+                if contract.evidence_class == "bug_corrected_sealed_retest"
+                else "盲测期"
+            ),
         }
     ]
     historical["source_evidence"] = {
@@ -104,7 +111,7 @@ def rebuild_historical_dashboard(
         "holdout_data_sha256": holdout_evidence["partition_data_sha256"],
     }
 
-    report_path = root / REPORT_RELATIVE
+    report_path = root / _report_relative(contract)
     existing = json.loads(report_path.read_text(encoding="utf-8"))
     unsigned_existing = dict(existing)
     recorded_dashboard_sha256 = unsigned_existing.pop("dashboard_sha256", None)
@@ -112,7 +119,7 @@ def rebuild_historical_dashboard(
         raise ValueError("permanent_portfolio_historical_dashboard_binding")
     forward = existing.get("forward")
     dashboard = {
-        "schema_version": 1,
+        "schema_version": int(contract.raw.get("schema_version") or 1),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "study": state,
         "historical": historical,

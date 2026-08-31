@@ -164,4 +164,30 @@ describe("PermanentPortfolioPage", () => {
       .toBeInTheDocument();
     expect(screen.getByText("研究证据与校验哈希")).toBeInTheDocument();
   });
+
+  it("labels v2 as a corrected sealed retest instead of a pristine blind test", async () => {
+    vi.mocked(fetchPermanentPortfolio).mockResolvedValue({
+      ...payload,
+      study: {
+        ...payload.study,
+        studyId: "permanent_portfolio_v2",
+        status: "holdout_complete",
+        validity: "corrected_retest",
+        accountingVersion: "cash_distributions_v2",
+        evidenceClass: "bug_corrected_sealed_retest",
+      },
+      correction: {
+        v1Status: "invalidated",
+        reason: "v1会计口径失效；v2使用原始价格估值并显式计入现金分红。",
+        holdoutLabel: "纠错封存复测",
+      },
+    });
+
+    render(<PermanentPortfolioPage refreshToken={0} />);
+
+    expect(await screen.findByText("v2 纠错封存复测已完成"))
+      .toBeInTheDocument();
+    expect(screen.getByText(/v1会计口径失效/)).toBeInTheDocument();
+    expect(screen.queryByText("开发与盲测已封存")).not.toBeInTheDocument();
+  });
 });

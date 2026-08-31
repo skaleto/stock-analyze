@@ -12,6 +12,7 @@ from ...config import load_config
 
 
 STUDY_ID = "permanent_portfolio_v1"
+SUPPORTED_STUDY_IDS = frozenset({STUDY_ID, "permanent_portfolio_v2"})
 ASSET_ROLES = frozenset({"equity", "bond", "cash", "gold"})
 STATE_ORDER = (
     "draft",
@@ -40,6 +41,8 @@ class AssetSpec:
 @dataclass(frozen=True)
 class PermanentPortfolioContract:
     study_id: str
+    accounting_version: str
+    evidence_class: str
     source_start: str
     development_start: str
     development_end: str
@@ -90,6 +93,10 @@ def load_contract(path: str | Path) -> PermanentPortfolioContract:
     trading = raw["trading"]
     contract = PermanentPortfolioContract(
         study_id=str(raw["study_id"]),
+        accounting_version=str(
+            raw.get("accounting_version") or "adjusted_valuation_v1"
+        ),
+        evidence_class=str(raw.get("evidence_class") or "original_v1"),
         source_start=_date_key(raw["source_start"]),
         development_start=_date_key(raw["development_start"]),
         development_end=_date_key(raw["development_end"]),
@@ -112,8 +119,15 @@ def load_contract(path: str | Path) -> PermanentPortfolioContract:
         stamp_tax_rate=float(trading["stamp_tax_rate"]),
         raw=raw,
     )
-    if contract.study_id != STUDY_ID:
+    if contract.study_id not in SUPPORTED_STUDY_IDS:
         raise ValueError("permanent_portfolio_study_id")
+    expected_accounting = (
+        "cash_distributions_v2"
+        if contract.study_id == "permanent_portfolio_v2"
+        else "adjusted_valuation_v1"
+    )
+    if contract.accounting_version != expected_accounting:
+        raise ValueError("permanent_portfolio_accounting_version")
     if len(assets) != 4 or {asset.role for asset in assets} != ASSET_ROLES:
         raise ValueError("permanent_portfolio_assets")
     if len({asset.code for asset in assets}) != len(assets):

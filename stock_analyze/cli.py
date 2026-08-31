@@ -3940,7 +3940,9 @@ def _command_prepare_permanent_portfolio_data(
             end_date=str(args.end).replace("-", ""),
             output_root=(
                 args.repo_root
-                / "data/research/permanent_portfolio/v1/market_data"
+                / "data/research/permanent_portfolio"
+                / contract.study_id.rsplit("_", 1)[-1]
+                / "market_data"
             ),
             holdout_start=contract.holdout_start,
         )

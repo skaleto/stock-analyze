@@ -411,9 +411,22 @@ export function PermanentPortfolioPage({ refreshToken }: { refreshToken: number 
         </div>
         <div className="permanent-study-status">
           <ShieldCheck size={15} aria-hidden="true" />
-          {data.study.status === "holdout_complete" ? "开发与盲测已封存" : data.study.status}
+          {data.study.validity === "corrected_retest"
+            ? "v2 纠错封存复测已完成"
+            : data.study.validity === "invalidated"
+              ? "v1 结果已失效"
+              : data.study.status === "holdout_complete"
+                ? "开发与盲测已封存"
+                : data.study.status}
         </div>
       </header>
+
+      {data.correction?.reason ? (
+        <div className="permanent-correction-note" role="note">
+          <AlertTriangle size={16} aria-hidden="true" />
+          <span>{data.correction.reason}</span>
+        </div>
+      ) : null}
 
       {selected?.status === "unavailable" || !selectedPortfolio ? (
         <section className="permanent-sealed">

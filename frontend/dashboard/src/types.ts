@@ -93,6 +93,9 @@ export type PermanentPortfolioData = {
     holdoutSha256?: string | null;
     holdoutEnd?: string | null;
     forwardAsOf?: string | null;
+    validity?: "invalidated" | "corrected_retest" | string;
+    accountingVersion?: string | null;
+    evidenceClass?: string | null;
   };
   assets: Array<{ role: string; code: string; name: string }>;
   strategies: Array<{ id: string; name: string }>;
@@ -100,6 +103,11 @@ export type PermanentPortfolioData = {
   windows: {
     historical: PermanentPortfolioWindow;
     forward: PermanentPortfolioWindow;
+  };
+  correction?: {
+    v1Status?: string;
+    reason?: string;
+    holdoutLabel?: string;
   };
   errors: string[];
 };
