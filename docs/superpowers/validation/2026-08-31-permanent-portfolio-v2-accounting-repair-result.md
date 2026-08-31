@@ -80,13 +80,15 @@ Development 中动态版本收益和回撤均优于固定版本及等权版本�
 
 - v1 marker、state、Development/Holdout manifest、Parquet、result 与 Dashboard 文件的 SHA-256 前后完全一致。
 - 本地受保护路径 digest 前后一致；正式账户、Registry、season 和旧 sealed campaign 均未修改。
-- 永久组合聚焦后端测试：69/69 通过。
+- 永久组合聚焦后端测试：73/73 通过；其中包含账户派息再投资后与复权总回报链逐期对账的 parity 回归测试。
 - Dashboard 全量前端测试：263/263 通过；production build 通过。
 - 本地规范审计：203/203 通过（隔离 worktree 缺少大体积全市场数据根，仅产生预期 warning）。
 - 远端部署 canary：845/845 通过；`stock-analyze-dashboard.service` 为 active，摘要与永久组合 API 正常。
 - Python 全量 discover 运行了 2,263 个测试；永久组合相关测试全部通过。其余有 1 个浮点精确相等失败和 42 个缺少可选依赖的导入错误，均不在本次变更模块内，因此未声称全量 Python suite 通过。
 
 远端项目级 `SA_SYSTEM_AUDIT_DATA_ONLY=1` 仍因既有 A 股全市场数据基础失败：universe manifest 合同无效，Baostock 完成 5,540/5,880 个代码。该问题不被永久组合读取，也不是本次部署造成，但仍应作为独立运维/数据任务处理。总审计还会把两个带 `-` 前缀、允许失败的 iFinD 补充源命令状态码 2 误报为主行情失败；主行情与 QDII 两个必需命令实际均为状态码 0，systemd `Result=success`。
+
+Claude Code 2.1.215 对 `c072002^..c072002`、合同、计划、失效记录、结果与测试做了最终只读审查，结论为 `APPROVED`，没有 P0/P1。它指出的唯一实质性 P2 是计划中的 buy-and-hold parity 测试缺失；该测试随后补齐并通过。另有两套被最终 publication 替代的孤儿数据目录、v2 一次性 marker 自身仍使用 marker schema 1、计划 checkbox 未回填三项留痕问题；latest/state 均未引用孤儿目录，marker 不可重写，因此按证据保全原则保留原状。
 
 ## 部署
 
@@ -101,4 +103,3 @@ Development 中动态版本收益和回撤均优于固定版本及等权版本�
 - `accountingVersion=cash_distributions_v2`
 - Development/Holdout artifact SHA-256 与上述冻结值一致
 - 历史结果 complete，forward 仍为 unavailable
-

@@ -144,6 +144,54 @@ class PermanentPortfolioEngineTests(unittest.TestCase):
         self.assertEqual(result.nav.iloc[-1]["cash"], 1001.0)
         self.assertEqual(result.nav.iloc[-1]["total_value"], 1001.0)
 
+    def test_buy_and_hold_account_matches_adjusted_total_return_chain(
+        self,
+    ) -> None:
+        first = _row("20180102", open_price=10.0, close=10.0)
+        ex_date = _row(
+            "20180103",
+            open_price=9.0,
+            close=9.0,
+            distribution_cash_per_share=1.0,
+        )
+        ex_date["adj_factor"] = 10.0 / 9.0
+        ex_date["adjusted_close"] = 10.0
+        final = _row("20180104", open_price=10.0, close=10.0)
+        final["adj_factor"] = 10.0 / 9.0
+        final["adjusted_close"] = 100.0 / 9.0
+        market = pd.DataFrame([first, ex_date, final])
+
+        result = replay_strategy(
+            market,
+            strategy="buy_and_hold_parity",
+            initial_cash=0.000001,
+            initial_positions={"equity": 90},
+            target_schedule={"20180102": {"equity": 1.0}},
+            lot_size=1,
+            commission_rate=0.0,
+            minimum_commission=0.0,
+            slippage_rate=0.0,
+            stamp_tax_rate=0.0,
+        )
+
+        account_total_return = (
+            result.nav.iloc[-1]["total_value"]
+            / result.nav.iloc[0]["total_value"]
+            - 1.0
+        )
+        adjusted_total_return = (
+            market.iloc[-1]["adjusted_close"]
+            / market.iloc[0]["adjusted_close"]
+            - 1.0
+        )
+
+        self.assertEqual(result.trades.iloc[0]["shares"], 10)
+        self.assertAlmostEqual(
+            account_total_return,
+            adjusted_total_return,
+            places=8,
+        )
+
     def test_same_close_signal_never_executes_same_day(self) -> None:
         market = pd.DataFrame([_row("20180102")])
 
