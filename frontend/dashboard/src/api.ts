@@ -3058,6 +3058,10 @@ export function fetchSystemOverview(signal?: AbortSignal): Promise<SystemOvervie
 }
 
 const PERMANENT_PORTFOLIO_RESPONSE_LIMIT = 750_000;
+const permanentPortfolioStudyIds = new Set([
+  "permanent_portfolio_v1",
+  "permanent_portfolio_v2",
+]);
 
 function validatePermanentPortfolio(value: unknown): PermanentPortfolioData {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -3092,7 +3096,8 @@ function validatePermanentPortfolio(value: unknown): PermanentPortfolioData {
   }
   const studyRecord = study as Record<string, unknown>;
   if (
-    studyRecord.studyId !== "permanent_portfolio_v1"
+    typeof studyRecord.studyId !== "string"
+    || !permanentPortfolioStudyIds.has(studyRecord.studyId)
     || typeof studyRecord.status !== "string"
     || typeof studyRecord.initialCash !== "number"
     || !Number.isFinite(studyRecord.initialCash)

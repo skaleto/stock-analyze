@@ -112,6 +112,40 @@ function jsonResponse(value: unknown): Response {
 }
 
 describe("permanent portfolio API", () => {
+  it("accepts the corrected v2 sealed retest contract", async () => {
+    const payload = {
+      schemaVersion: 1,
+      generatedAt: "2026-08-31T15:43:21+00:00",
+      status: "available",
+      study: {
+        studyId: "permanent_portfolio_v2",
+        status: "holdout_complete",
+        initialCash: 200000,
+        validity: "corrected_retest",
+        accountingVersion: "cash_distributions_v2",
+      },
+      assets: [],
+      strategies: [],
+      benchmarks: [],
+      windows: {
+        historical: {
+          status: "complete",
+          start_date: "20180903",
+          end_date: "20260828",
+          portfolios: {},
+        },
+        forward: { status: "unavailable" },
+      },
+      errors: [],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(payload))),
+    );
+
+    await expect(fetchPermanentPortfolio()).resolves.toEqual(payload);
+  });
+
   it("loads continuous history and the forward paper window", async () => {
     const payload = {
       schemaVersion: 1,
